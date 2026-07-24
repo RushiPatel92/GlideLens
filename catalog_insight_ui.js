@@ -17,10 +17,20 @@
   let searchQuery = "";
   let hideInactive = false;
   let groupByVariable = false;
+  // When the panel is opened from a per-variable icon, we scope every view to
+  // the logic that targets that one variable until "Show all" clears it.
+  let focusVariable = null;
   const collapsedGroups = new Set();
 
   const KIND_LABEL = { client: "Client script", uip: "UI policy" };
   const RECORD_TABLE = { client: "catalog_script_client", uip: "catalog_ui_policy" };
+
+  const escapeHtml = (value) =>
+    String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
 
   const UI_CSS = `
     *{box-sizing:border-box}
@@ -65,6 +75,22 @@
     }
     .summary .chip-warn strong{color:#f0d79b}
     .warning{margin-left:auto;color:#d2b779}
+    .focus-banner{
+      display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:12px;
+      color:#cfeee9;border-bottom:1px solid #292944;
+      background:color-mix(in srgb, var(--teal) 12%, #21283a);
+    }
+    .focus-banner .focus-what{color:#8f8fb0}
+    .focus-banner strong{color:#eafffb;font-weight:650}
+    .focus-banner .focus-name{
+      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
+      color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
+    }
+    .focus-banner .focus-clear{
+      margin-left:auto;border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;
+      border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;
+    }
+    .focus-banner .focus-clear:hover{background:#4a4b78;color:#fff}
     .controls{
       display:flex;align-items:center;gap:8px;padding:10px 14px;
       border-bottom:1px solid #292944;
@@ -243,8 +269,33 @@
   const groupKeyOf = (row) =>
     row.kind === "client" && row.variable ? row.variableName || row.variable : NO_VARIABLE;
 
+  // Does a row target the focused variable? onChange client scripts match by the
+  // watched variable (sys_id or name); UI policies match when one of their
+  // actions targets it. Everything else (onLoad/onSubmit, variable-less UI
+  // policies) is form-level and excluded from the scoped view.
+  const rowActionsForFocus = (row) => {
+    if (!focusVariable || row.kind !== "uip" || !Array.isArray(row.actions)) return [];
+    return row.actions.filter(
+      (a) =>
+        (focusVariable.sysId && a.variable === focusVariable.sysId) ||
+        (focusVariable.name && a.variableName === focusVariable.name)
+    );
+  };
+  const matchesFocus = (row) => {
+    if (!focusVariable) return true;
+    if (row.kind === "client") {
+      return (
+        (focusVariable.sysId && row.variable === focusVariable.sysId) ||
+        (focusVariable.name && row.variableName === focusVariable.name)
+      );
+    }
+    if (row.kind === "uip") return rowActionsForFocus(row).length > 0;
+    return false;
+  };
+
   const filteredRows = () =>
     allRows().filter((row) => {
+      if (!matchesFocus(row)) return false;
       if (activeFilter !== "all" && row.kind !== activeFilter) return false;
       if (hideInactive && !row.active) return false;
       return !searchQuery || rowSearchText(row).includes(searchQuery);
@@ -340,6 +391,19 @@
       condEl.title = row.conditions;
       nameCell.append(condEl);
     }
+    // In the scoped view, spell out what this UI policy actually does to the
+    // focused variable (hides / makes mandatory / sets value…).
+    const focusActs = rowActionsForFocus(row);
+    if (focusActs.length) {
+      const eff = focusActs.map((a) => a.effect).filter(Boolean).join(" · ");
+      if (eff) {
+        const actEl = document.createElement("div");
+        actEl.className = "row-cond";
+        actEl.textContent = "→ " + eff;
+        actEl.title = eff;
+        nameCell.append(actEl);
+      }
+    }
 
     // Kind + subtype (onLoad/onChange… or "UI policy").
     const kindCell = document.createElement("div");
@@ -394,9 +458,16 @@
   const renderEmpty = (list) => {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = allRows().length
-      ? "Nothing matches these filters."
-      : "No catalog client scripts or UI policies target this item.";
+    if (focusVariable && allRows().length) {
+      empty.textContent =
+        "No client scripts or UI policy actions target “" +
+        (focusVariable.label || focusVariable.name) +
+        "”. Form-level logic may still apply — use Show all.";
+    } else {
+      empty.textContent = allRows().length
+        ? "Nothing matches these filters."
+        : "No catalog client scripts or UI policies target this item.";
+    }
     list.appendChild(empty);
   };
 
@@ -562,6 +633,7 @@
     searchQuery = "";
     hideInactive = false;
     groupByVariable = false;
+    focusVariable = result.focusVariable || null;
     collapsedGroups.clear();
 
     const rows = result.rows || [];
@@ -599,6 +671,18 @@
             ${setsNote ? "<span>" + setsNote + "</span>" : ""}
             ${result.itemName ? '<span style="margin-left:auto;color:#8f8fb0">' + result.itemName + "</span>" : ""}
           </div>
+          ${
+            focusVariable
+              ? '<div class="focus-banner"><span class="focus-what">Affecting</span>' +
+                "<strong>" +
+                escapeHtml(focusVariable.label || focusVariable.name) +
+                "</strong>" +
+                '<span class="focus-name">' +
+                escapeHtml(focusVariable.name) +
+                "</span>" +
+                '<button class="focus-clear" type="button" data-action="clear-focus">Show all ↗</button></div>'
+              : ""
+          }
           <div class="controls">
             <div class="filters" aria-label="Type filters">
               <button class="filter active" type="button" data-filter="all">All</button>
@@ -677,6 +761,16 @@
     if (search) {
       search.addEventListener("input", () => {
         searchQuery = search.value.trim().toLowerCase();
+        renderRows();
+      });
+    }
+
+    const clearFocusButton = resultsShadow.querySelector("[data-action='clear-focus']");
+    if (clearFocusButton) {
+      clearFocusButton.addEventListener("click", () => {
+        focusVariable = null;
+        const banner = resultsShadow.querySelector(".focus-banner");
+        if (banner) banner.remove();
         renderRows();
       });
     }

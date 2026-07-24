@@ -2666,6 +2666,47 @@ function inspectHiddenPortalVariables(variables) {
   return result;
 }
 
+// MAIN-world bridge for the variable-insight icons. A Service Portal catalog
+// variable's internal name and definition sys_id only live in the Angular
+// `field` model, which the isolated content script can't read. Running here in
+// the MAIN world we read each `field` off its scope, stamp the identity onto the
+// shared DOM as data-* attributes, and return the list. The content script then
+// anchors an icon next to each stamped element. Read-only: no field is mutated,
+// only decorated with data attributes it can clean up.
+function mapPortalVariableAnchors() {
+  const ng = window.angular;
+  if (!ng || !ng.element) return { foundForm: false, variables: [] };
+
+  const actuals = document.querySelectorAll("span.field-actual[ng-switch]");
+  if (!actuals.length) return { foundForm: false, variables: [] };
+
+  const variables = [];
+  const seen = new Set();
+  actuals.forEach((el) => {
+    let field = null;
+    try {
+      const scope = ng.element(el).scope();
+      field = scope && scope.field;
+    } catch (e) {
+      field = null;
+    }
+    if (!field || !field.name) return;
+
+    const name = String(field.name);
+    const sysId = field.sys_id ? String(field.sys_id) : "";
+    const type = field.type ? String(field.type) : "";
+    el.setAttribute("data-snh-var", name);
+    if (sysId) el.setAttribute("data-snh-var-sysid", sysId);
+    if (type) el.setAttribute("data-snh-var-type", type);
+
+    if (seen.has(name)) return;
+    seen.add(name);
+    variables.push({ name, sysId, type });
+  });
+
+  return { foundForm: variables.length > 0, variables };
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "OPEN_URL" && msg.url) {
@@ -2781,7 +2822,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (
     msg &&
     sender.tab &&
-    (msg.type === "TOGGLE_FIELD_NAMES" || msg.type === "TOGGLE_TRANSLATIONS")
+    (msg.type === "TOGGLE_FIELD_NAMES" ||
+      msg.type === "TOGGLE_TRANSLATIONS" ||
+      msg.type === "TOGGLE_VARIABLE_INSIGHT")
   ) {
     postWindowMessageInAllFrames(sender.tab.id, msg.type);
   }
@@ -2874,6 +2917,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({
         ok: true,
         frames: results.map((item) => item && item.result).filter(Boolean),
+      });
+    }).catch((error) => {
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
+  if (msg && msg.type === "MAP_PORTAL_VARIABLES" && sender.tab) {
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id, allFrames: true },
+      world: "MAIN",
+      func: mapPortalVariableAnchors,
+    }).then((results) => {
+      const frameResults = results
+        .map((item) => item && item.result)
+        .filter(Boolean);
+      const found = frameResults
+        .filter((item) => item.foundForm)
+        .sort((a, b) => (b.variables.length || 0) - (a.variables.length || 0))[0];
+      sendResponse({
+        ok: true,
+        foundForm: Boolean(found),
+        variables: found ? found.variables || [] : [],
       });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });

@@ -14,6 +14,10 @@
 const SNH = {
   fieldNamesOn: false,
   transIconsOn: false,
+  varInsightOn: false,
+  // Cached affecting-logic for the open catalog item, so every icon click and
+  // re-apply reuses one fetch: { rows, setCount, setIds, itemName, itemSysId, index }.
+  varInsightData: null,
   lastPrefillVariables: [],
   lastPrefillSource: null,
   lastPrefillResult: null,
@@ -79,6 +83,11 @@ const WORKSPACE_FIELD_DENYLIST = new Set([
 function handleFrameCommand(type) {
   if (type === "TOGGLE_FIELD_NAMES") return toggleFieldNames();
   if (type === "TOGGLE_TRANSLATIONS") return toggleTranslationIcons();
+  if (type === "TOGGLE_VARIABLE_INSIGHT") {
+    // Service Portal catalog forms live in the top frame; only it owns the icons.
+    if (window === window.top) toggleVariableInsightIcons().catch(() => {});
+    return null;
+  }
   return null;
 }
 
@@ -351,6 +360,15 @@ const ICON_VALUE =
   '<path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path>' +
   '<path d="M2 5h12"></path><path d="M7 2h1"></path>' +
   '<path d="m22 22-5-10-5 10"></path><path d="M14 18h6"></path></svg>';
+
+// Lucide "workflow" (client scripts / UI policy actions affecting a variable).
+const ICON_VAR_LOGIC =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="3" y="3" width="7" height="7" rx="1"></rect>' +
+  '<rect x="14" y="14" width="7" height="7" rx="1"></rect>' +
+  '<path d="M6.5 10v3a2 2 0 0 0 2 2H14"></path></svg>';
 
 // Minimal authenticated Table API GET (same-origin, cookie auth).
 async function snGet(table, query, fields) {
@@ -1591,6 +1609,38 @@ const CATALOG_UIP_FIELDS = [
   "applies_catalog", "applies_sc_task", "applies_req_item",
 ].join(",");
 
+const CATALOG_UIP_ACTION_FIELDS = [
+  "sys_id", "ui_policy", "catalog_variable", "variable",
+  "mandatory", "visible", "disabled", "value", "order",
+].join(",");
+
+// The variable a UI policy action targets. Like catalogWatchedVariableId, the
+// reference column name drifts across versions (`catalog_variable` vs
+// `variable`) and values sometimes carry an `IO:` prefix.
+function catalogActionVariableId(row) {
+  for (const field of ["catalog_variable", "variable"]) {
+    let value = snFieldValue(row, field).trim();
+    if (value.indexOf("IO:") === 0) value = value.slice(3);
+    if (isSysId(value)) return value;
+  }
+  return "";
+}
+
+// A UI policy action stores each effect as a 3-state string: "true" applies it,
+// "false" applies the opposite, anything else ("ignore"/"leave") means untouched.
+// Turn the set into a short human phrase for the scoped view.
+function describeCatalogActionEffect(action) {
+  const parts = [];
+  if (action.visible === "true") parts.push("shows");
+  else if (action.visible === "false") parts.push("hides");
+  if (action.mandatory === "true") parts.push("mandatory");
+  else if (action.mandatory === "false") parts.push("optional");
+  if (action.disabled === "true") parts.push("read-only");
+  else if (action.disabled === "false") parts.push("editable");
+  if (action.value) parts.push("sets value");
+  return parts.join(", ");
+}
+
 function snBool(row, field) {
   const v = snFieldValue(row, field).trim().toLowerCase();
   return v === "true" || v === "1";
@@ -1650,11 +1700,48 @@ async function fetchCatalogAffectingLogic(catalogItemSysId) {
     { displayAll: true, excludeRefLinks: true }
   );
 
-  // Resolve the onChange-watched variable sys_ids to a developer-facing name
-  // (and its question label). The `variable` field is a reference to
-  // item_option_new, so raw is a sys_id; ungrouped it reads as noise.
+  // UI policy ACTIONS make a policy variable-specific: each row hides/mandates/
+  // sets a single variable. Fetch the actions for the policies we found, keyed
+  // back to their policy so we can attribute them per variable.
+  const uipIds = Array.from(
+    new Set(uipRows.map((row) => snFieldValue(row, "sys_id")).filter(isSysId))
+  );
+  let actionRows = [];
+  if (uipIds.length) {
+    actionRows = await snGetMany(
+      "catalog_ui_policy_action",
+      "ui_policyIN" + uipIds.join(","),
+      CATALOG_UIP_ACTION_FIELDS,
+      300,
+      { displayAll: true, excludeRefLinks: true }
+    );
+  }
+  const actionsByPolicy = new Map();
+  actionRows.forEach((row) => {
+    const policyId = snFieldValue(row, "ui_policy");
+    const variableId = catalogActionVariableId(row);
+    if (!isSysId(policyId) || !isSysId(variableId)) return;
+    const list = actionsByPolicy.get(policyId) || [];
+    list.push({
+      variable: variableId,
+      mandatory: snFieldValue(row, "mandatory").trim().toLowerCase(),
+      visible: snFieldValue(row, "visible").trim().toLowerCase(),
+      disabled: snFieldValue(row, "disabled").trim().toLowerCase(),
+      value: snFieldDisplay(row, "value"),
+    });
+    actionsByPolicy.set(policyId, list);
+  });
+
+  // Resolve every referenced variable sys_id (onChange-watched AND action
+  // targets) to a developer-facing name and question label in one lookup. The
+  // reference is to item_option_new, so raw values read as noise ungrouped.
   const variableIds = Array.from(
-    new Set(clientRows.map((row) => catalogWatchedVariableId(row)).filter(isSysId))
+    new Set(
+      [
+        ...clientRows.map((row) => catalogWatchedVariableId(row)),
+        ...actionRows.map((row) => catalogActionVariableId(row)),
+      ].filter(isSysId)
+    )
   );
   const variableInfo = new Map();
   if (variableIds.length) {
@@ -1698,17 +1785,35 @@ async function fetchCatalogAffectingLogic(catalogItemSysId) {
 
   uipRows.forEach((row) => {
     const order = parseVariableOrder(snFieldValue(row, "order"));
+    const policyId = snFieldValue(row, "sys_id");
+    const actions = (actionsByPolicy.get(policyId) || []).map((action) => {
+      const info = variableInfo.get(action.variable) || {};
+      return {
+        variable: action.variable,
+        variableName: info.name || "",
+        variableLabel: info.label || "",
+        mandatory: action.mandatory,
+        visible: action.visible,
+        disabled: action.disabled,
+        value: action.value,
+        effect: describeCatalogActionEffect(action),
+      };
+    });
     const extras = [];
     if (snBool(row, "on_load")) extras.push("on load");
     if (snBool(row, "reverse_if_false")) extras.push("reverses");
+    if (actions.length) {
+      extras.push(actions.length + (actions.length === 1 ? " var" : " vars"));
+    }
     rows.push({
       kind: "uip",
-      id: snFieldValue(row, "sys_id"),
+      id: policyId,
       name: snFieldDisplay(row, "short_description"),
       subtype: extras.join(" · "),
       variable: "",
       variableName: "",
       variableLabel: "",
+      actions,
       boundTo: catalogBoundTo(row, "catalog_item", catalogItemSysId, setNames),
       active: snBool(row, "active"),
       views: catalogViewFlags(row),
@@ -1766,6 +1871,311 @@ async function showCatalogInsight() {
   } catch (error) {
     showToast(String(error && error.message ? error.message : error), true);
   }
+}
+
+/* =====================================================================
+ * Variable insight icons (Service Portal catalog forms)
+ *
+ * A per-variable sibling of "What affects this catalog item": drops a small
+ * icon next to each rendered catalog variable; clicking it opens the Catalog
+ * Insight panel scoped to that one variable (its onChange client scripts and
+ * the UI policy actions that target it). Toggle with Alt+double-click or the
+ * command palette. Read-only throughout.
+ *
+ * Two-worlds bridge: a variable's internal name and definition sys_id live only
+ * in the Angular `field` model, invisible to this isolated world. background.js
+ * runs mapPortalVariableAnchors() in the MAIN world, which stamps data-snh-var*
+ * onto each variable element; we then anchor icons off those stamps.
+ * ===================================================================== */
+
+// Index the affecting-logic rows by the variable each item targets, keyed by
+// BOTH internal name and definition sys_id so a DOM stamp can match on either.
+// "count" = onChange client scripts watching it + UI policy actions on it.
+function buildVariableLogicIndex(rows) {
+  const byName = new Map();
+  const bySysId = new Map();
+  const bump = (map, key, label) => {
+    if (!key) return;
+    const cur = map.get(key) || { count: 0, label: "" };
+    cur.count += 1;
+    if (!cur.label && label) cur.label = label;
+    map.set(key, cur);
+  };
+  (rows || []).forEach((row) => {
+    if (row.kind === "client" && row.variable) {
+      bump(byName, row.variableName, row.variableLabel);
+      bump(bySysId, row.variable, row.variableLabel);
+    } else if (row.kind === "uip" && Array.isArray(row.actions)) {
+      row.actions.forEach((action) => {
+        bump(byName, action.variableName, action.variableLabel);
+        bump(bySysId, action.variable, action.variableLabel);
+      });
+    }
+  });
+  return { byName, bySysId };
+}
+
+function lookupVariableLogic(index, name, sysId) {
+  if (!index) return { count: 0, label: name };
+  const bySys = (sysId && index.bySysId.get(sysId)) || null;
+  const byName = (name && index.byName.get(name)) || null;
+  return {
+    count: Math.max((bySys && bySys.count) || 0, (byName && byName.count) || 0),
+    label: (bySys && bySys.label) || (byName && byName.label) || name,
+  };
+}
+
+// Where to hang the icon for a stamped `.field-actual` element. Most variables
+// carry a `sp_field_label_<name>` span in the same .form-group; booleans and a
+// few others don't, so we fall back to the control container itself.
+function varInsightAnchorFor(fieldActualEl, type) {
+  const wrapper = fieldActualEl.closest(".form-group") || fieldActualEl.parentElement;
+  if (!wrapper) return null;
+  if (type !== "boolean") {
+    const labelSpan = wrapper.querySelector("span[id^='sp_field_label_']");
+    if (labelSpan) return labelSpan;
+  }
+  return fieldActualEl;
+}
+
+// The catalog form is a light surface, so use a deeper teal than the dark panels.
+function makeVariableInsightIcon(name, sysId, info) {
+  const count = (info && info.count) || 0;
+  const btn = document.createElement("span");
+  btn.className = "snh-var-insight";
+  btn.setAttribute("role", "button");
+  btn.tabIndex = 0;
+  btn.title = count
+    ? count +
+      (count === 1
+        ? " client script / UI policy action affects "
+        : " client scripts / UI policy actions affect ") +
+      "“" + name + "” — click to view"
+    : "No variable-specific logic on “" + name +
+      "” — click to see what runs on this form";
+  btn.innerHTML =
+    ICON_VAR_LOGIC +
+    (count
+      ? '<span style="font:600 9px/1 -apple-system,BlinkMacSystemFont,' +
+        "'Segoe UI',sans-serif;color:inherit\">" + count + "</span>"
+      : "");
+  btn.style.cssText =
+    "display:inline-flex;align-items:center;gap:3px;vertical-align:middle;" +
+    "margin-left:6px;color:" + (count ? "#0f9e8e" : "#8a8f99") +
+    ";cursor:pointer;line-height:0;";
+  const handler = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openVariableInsight(name, sysId);
+  };
+  btn.addEventListener("click", handler);
+  btn.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") handler(event);
+  });
+  btn.addEventListener("mouseenter", () => (btn.style.opacity = "0.7"));
+  btn.addEventListener("mouseleave", () => (btn.style.opacity = "1"));
+  return btn;
+}
+
+function openVariableInsight(name, sysId) {
+  const data = SNH.varInsightData;
+  if (!data || !globalThis.SNCatalogInsightUI) {
+    showToast("Reopen the variable icons and try again", true);
+    return;
+  }
+  const info = lookupVariableLogic(data.index, name, sysId);
+  globalThis.SNCatalogInsightUI.showResults({
+    rows: data.rows,
+    setCount: data.setCount,
+    setIds: data.setIds,
+    itemName: data.itemName,
+    itemSysId: data.itemSysId,
+    focusVariable: { name, sysId, label: (info && info.label) || name },
+  });
+}
+
+// (Re)stamp variable identities via the MAIN world only when something is
+// unstamped — a fresh render or the first pass. ng-hide toggles keep the stamp,
+// so the common re-render skips the round trip. Then anchor a missing icon on
+// every stamped variable (rich-text labels carry no logic, so they're skipped).
+async function injectVariableInsightIcons() {
+  if (!SNH.varInsightOn || !SNH.varInsightData) return 0;
+
+  const needsStamp =
+    !document.querySelector("[data-snh-var]") ||
+    Boolean(document.querySelector("span.field-actual[ng-switch]:not([data-snh-var])"));
+  if (needsStamp) {
+    let resp = null;
+    try {
+      resp = await chrome.runtime.sendMessage({ type: "MAP_PORTAL_VARIABLES" });
+    } catch (e) {
+      resp = null;
+    }
+    if (!resp || !resp.ok || !resp.foundForm) return 0;
+  }
+
+  const index = SNH.varInsightData.index;
+  let count = 0;
+  document.querySelectorAll("[data-snh-var]").forEach((el) => {
+    const name = el.getAttribute("data-snh-var");
+    if (!name) return;
+    const type = el.getAttribute("data-snh-var-type") || "";
+    if (type === "rich_text_label") return;
+    const sysId = el.getAttribute("data-snh-var-sysid") || "";
+    const anchor = varInsightAnchorFor(el, type);
+    if (!anchor || anchor.querySelector(":scope > .snh-var-insight")) return;
+    anchor.appendChild(makeVariableInsightIcon(name, sysId, lookupVariableLogic(index, name, sysId)));
+    count++;
+  });
+  return count;
+}
+
+async function toggleVariableInsightIcons(force) {
+  const turnOn = typeof force === "boolean" ? force : !SNH.varInsightOn;
+
+  removeSnhElements(".snh-var-insight");
+  document.querySelectorAll("[data-snh-var]").forEach((el) => {
+    el.removeAttribute("data-snh-var");
+    el.removeAttribute("data-snh-var-sysid");
+    el.removeAttribute("data-snh-var-type");
+  });
+
+  if (!turnOn) {
+    SNH.varInsightOn = false;
+    syncVarInsightObserver();
+    return 0;
+  }
+
+  const catalogItemSysId = currentCatalogItemDefinitionSysId();
+  if (!isSysId(catalogItemSysId)) {
+    SNH.varInsightOn = false;
+    syncVarInsightObserver();
+    showToast("Open a Service Portal catalog item first", true);
+    return 0;
+  }
+
+  try {
+    if (!SNH.varInsightData || SNH.varInsightData.itemSysId !== catalogItemSysId) {
+      showToast("Reading catalog client scripts and UI policies...", false, 6000);
+      const data = await fetchCatalogAffectingLogic(catalogItemSysId);
+      let itemName = "";
+      try {
+        const itemRows = await snGetMany(
+          "sc_cat_item", "sys_id=" + catalogItemSysId, "name", 1,
+          { displayAll: true, excludeRefLinks: true }
+        );
+        if (itemRows.length) itemName = snFieldDisplay(itemRows[0], "name");
+      } catch (e) {
+        /* name is cosmetic */
+      }
+      SNH.varInsightData = {
+        rows: data.rows,
+        setCount: data.setCount,
+        setIds: data.setIds,
+        itemName,
+        itemSysId: catalogItemSysId,
+        index: buildVariableLogicIndex(data.rows),
+      };
+    }
+  } catch (error) {
+    SNH.varInsightOn = false;
+    syncVarInsightObserver();
+    showToast(String(error && error.message ? error.message : error), true);
+    return 0;
+  }
+
+  SNH.varInsightOn = true;
+  const count = await injectVariableInsightIcons();
+  syncVarInsightObserver();
+  showToast(
+    count
+      ? "Variable insight icons on — Alt+double-click to hide"
+      : "No catalog variables found on this form",
+    !count,
+    2400
+  );
+  return count;
+}
+
+/*
+ * Re-apply for Service Portal. Unlike the classic observer, catalog forms are an
+ * Angular SPA: fields are recreated on section moves and variable-set loads
+ * (losing the stamp AND the icon), while ng-hide toggles keep both. A debounced
+ * observer gated by a cheap staleness check restores the icons; the MAIN-world
+ * round trip only fires when a variable is genuinely unstamped.
+ */
+const SNH_VAR_REAPPLY_DEBOUNCE_MS = 350;
+let snhVarObserver = null;
+let snhVarTimer = null;
+let snhVarBusy = false;
+
+function varInsightStale() {
+  if (!SNH.varInsightOn) return false;
+  if (document.querySelector("span.field-actual[ng-switch]:not([data-snh-var])")) return true;
+  const stamped = document.querySelectorAll("[data-snh-var]");
+  for (const el of stamped) {
+    const type = el.getAttribute("data-snh-var-type") || "";
+    if (type === "rich_text_label") continue;
+    const anchor = varInsightAnchorFor(el, type);
+    if (anchor && !anchor.querySelector(":scope > .snh-var-insight")) return true;
+  }
+  return false;
+}
+
+function queueVarReapply() {
+  if (snhVarTimer) clearTimeout(snhVarTimer);
+  snhVarTimer = setTimeout(runVarReapply, SNH_VAR_REAPPLY_DEBOUNCE_MS);
+}
+
+async function runVarReapply() {
+  snhVarTimer = null;
+  if (!snhVarObserver || !SNH.varInsightOn || snhVarBusy) return;
+
+  // Navigated (SPA) to a different catalog item: the cached logic index no
+  // longer matches this form. Tear the icons down rather than show stale data;
+  // the user Alt+double-clicks again on the new item. The OFF path is fully
+  // synchronous, so this completes before any await.
+  const currentItem = currentCatalogItemDefinitionSysId();
+  if (
+    SNH.varInsightData &&
+    isSysId(currentItem) &&
+    currentItem !== SNH.varInsightData.itemSysId
+  ) {
+    SNH.varInsightData = null;
+    toggleVariableInsightIcons(false);
+    return;
+  }
+
+  if (!varInsightStale()) return;
+  snhVarBusy = true;
+  snhVarObserver.disconnect();
+  try {
+    await injectVariableInsightIcons();
+  } catch (e) {
+    /* keep the feature alive across a bad render */
+  } finally {
+    snhVarBusy = false;
+    if (snhVarObserver) {
+      snhVarObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  }
+}
+
+function syncVarInsightObserver() {
+  if (!SNH.varInsightOn) {
+    if (snhVarTimer) {
+      clearTimeout(snhVarTimer);
+      snhVarTimer = null;
+    }
+    if (snhVarObserver) {
+      snhVarObserver.disconnect();
+      snhVarObserver = null;
+    }
+    return;
+  }
+  if (snhVarObserver) return;
+  snhVarObserver = new MutationObserver(queueVarReapply);
+  snhVarObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 // Walk up the table hierarchy to find where the field's dictionary entry lives.
@@ -2260,6 +2670,15 @@ function buildCommands() {
       group: "Catalog",
       keepOpen: true,
       run: showCatalogInsight,
+    },
+    {
+      id: "toggle-variable-insight",
+      name: "Toggle variable insight icons",
+      keywords: ["variable", "icon", "client script", "ui policy", "onchange", "action", "affects", "catalog", "insight", "double click", "alt"],
+      group: "Catalog",
+      hint: "Alt+double-click",
+      keepOpen: true,
+      run: () => broadcastFrameCommand("TOGGLE_VARIABLE_INSIGHT"),
     },
     {
       id: "open-table-list",
@@ -3009,3 +3428,20 @@ function handlePaletteShortcut(e) {
 
 window.addEventListener("keydown", handlePaletteShortcut, true);
 document.addEventListener("keydown", handlePaletteShortcut, true);
+
+// Alt+double-click toggles the per-variable insight icons on a Service Portal
+// catalog form. Gated: turning them ON requires an open catalog item, so a
+// stray Alt+double-click anywhere else is a silent no-op. Turning them OFF works
+// anywhere. The command palette entry is the discoverable alternative.
+if (window === window.top) {
+  document.addEventListener(
+    "dblclick",
+    (event) => {
+      if (!event.altKey) return;
+      const turningOn = !SNH.varInsightOn;
+      if (turningOn && !isSysId(currentCatalogItemDefinitionSysId())) return;
+      toggleVariableInsightIcons().catch(() => {});
+    },
+    true
+  );
+}
