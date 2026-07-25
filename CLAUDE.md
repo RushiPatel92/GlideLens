@@ -7,12 +7,15 @@ spirit of snUtils. Plain JS, zero runtime dependencies, zero build step.
 - Load unpacked: `chrome://extensions` → Developer mode → Load unpacked → this folder.
 - After editing, click the **reload** icon on the extension card. For
   content-script changes, also refresh the ServiceNow tab.
-- Package for the Chrome Web Store: `bash package.sh`. It ships an explicit
-  allowlist (`SHIP`) rather than an exclusion list, then cross-checks the zip
-  against every file `manifest.json` references. **Adding a new script or asset
-  means adding it to `SHIP`** — the manifest cross-check catches manifest-
-  referenced files, but `popup.js`/`popup.css` (pulled in by `popup.html`) and
-  `debug_timeline_main.js` (injected on demand) are invisible to it.
+- There is no build or packaging step. Users install via GitHub's **Code →
+  Download ZIP**, extract, and Load unpacked, so every committed file ships and
+  Chrome ignores the ones it does not recognise. A new script or asset only has
+  to be committed and referenced from `manifest.json` (or the page that loads
+  it) — there is no allowlist to keep in sync.
+- If the extension is ever submitted to the Chrome Web Store, that will need a
+  packaging script that zips only the extension files. `package.sh` did this and
+  was removed in 0.6.0 as unused; recover it from history (`git log --
+  package.sh`) rather than writing a new one from scratch.
 
 ## Architecture (read before changing message flow)
 ServiceNow's classic UI runs the real app inside an iframe named **`gsft_main`**;
@@ -51,6 +54,9 @@ the caller falls back gracefully.
   item" (catalog client scripts + UI policies). Loaded before `content.js`.
   Also serves the per-variable scoped view (`focusVariable`) opened by the
   variable insight icons.
+- `hidden_variables_ui.js` - isolated-world panel for "Show variable values" on
+  Service Portal catalog items, with the hidden/visible filter. Loaded before
+  `catalog_insight_ui.js`.
 - `debug_timeline_main.js` - MAIN-world Debug Timeline recorder imported by
   the service worker and injected into every frame on demand.
 - `popup.js` / `popup.html` / `popup.css` — popup UI: instance info, quick table
@@ -131,6 +137,13 @@ the caller falls back gracefully.
   `getWorkspaceFields()` walks every element in every shadow root.
 
 ## Roadmap
-Background Script runner, update set switcher, impersonation, Table API record
-search, GlideRecord snippet generator, per-environment favicon badge, and
-toggle persistence for Workspace forms.
+Background Script runner, Table API record search, GlideRecord snippet
+generator, and toggle persistence for Workspace forms.
+
+**Out of scope — do not propose these.** The update set switcher,
+impersonation, and the per-environment favicon/instance badge are already
+covered well by snUtils. This extension is not trying to replace snUtils, so
+rebuilding what it already does is wasted effort. Aim at the gaps snUtils
+leaves — catalog/Service Portal debugging, translation and dictionary
+inheritance, form introspection — rather than at parity features. When
+suggesting what to build next, leave these off the list entirely.

@@ -110,6 +110,7 @@ changed in each release.
 | `Ctrl+Shift+K` (`Cmd+Shift+K` on Mac) | Open the toolbar popup |
 | `\` (backslash) | Open the command palette on the current ServiceNow tab |
 | `Alt+Shift+F` | Toggle technical field names on the current form |
+| `Alt`+double-click | Toggle variable insight icons on a Service Portal catalog form |
 
 If a shortcut does nothing, another browser feature may have claimed it — rebind
 it at `chrome://extensions/shortcuts` (or `edge://extensions/shortcuts`).
@@ -143,7 +144,8 @@ and `Esc` to close. Some commands accept an argument in an inline input field.
 | --- | --- |
 | Prefill variables from ticket… | Enter a RITM/SCTASK/REQ/task number (or submitted-record sys_id) to prefill portal catalog variables from that ticket. |
 | Show variable values | Read-only panel listing every variable on the current Service Portal catalog item with its best-effort value, including variable-set variables. Filter by hidden/visible; hidden covers Hidden-type, UI Policy/client-script, and not-rendered variables. |
-| What affects this catalog item | Read-only panel listing the catalog client scripts and catalog UI policies bound to the current item or its variable sets — type (onLoad/onChange/…), watched variable, active state, and which views they run on. Click a row to open the record. Nothing here runs or edits the logic. |
+| What affects this catalog item | Read-only panel listing the catalog client scripts and catalog UI policies bound to the current item or its variable sets — type (onLoad/onChange/…), watched variable, active state, and which views they run on. Group onChange scripts by the variable they watch, see a ⚠ hint on rows that won't fire while ordering the item (inactive, or RITM/Task views only), and open the whole set as a platform list. Click a row to open the record. Nothing here runs or edits the logic. |
+| Toggle variable insight icons | Show/hide a per-variable icon on a Service Portal catalog form. Clicking an icon opens the panel above scoped to that one variable — the onChange scripts watching it and the UI policy actions targeting it (hides / mandatory / read-only / sets value) — with **Show all** to clear the scope. Also bound to `Alt`+double-click on the form. |
 | Copy portal variable debug info | Copy diagnostic details about the current portal record's variables/fields. |
 
 **Navigate**
@@ -164,11 +166,10 @@ Explorer, and Flow Designer.
 
 - Load unpacked as above; after editing, click **reload** on the extension card,
   and refresh the ServiceNow tab for content-script changes.
-- Package for the Chrome Web Store: `bash package.sh` (produces a clean zip with
-  only the files Chrome needs). The script ships an explicit allowlist and then
-  verifies every file `manifest.json` references made it in, so adding an asset
-  to the manifest without adding it to the script's `SHIP` list fails the build
-  instead of producing a zip that breaks on load.
+- There is no build step and nothing to package. Distribution is the GitHub
+  **Code → Download ZIP** route described above; the extension is not on the
+  Chrome Web Store, so extra repo files (`README.md`, `CLAUDE.md`, `.github/`)
+  simply ride along and Chrome ignores them.
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes (the two JS worlds, frames,
 and message flow).
