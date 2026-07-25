@@ -166,11 +166,10 @@ Explorer, and Flow Designer.
 
 - Load unpacked as above; after editing, click **reload** on the extension card,
   and refresh the ServiceNow tab for content-script changes.
-- Package for the Chrome Web Store: `bash package.sh` (produces a clean zip with
-  only the files Chrome needs). The script ships an explicit allowlist and then
-  verifies every file `manifest.json` references made it in, so adding an asset
-  to the manifest without adding it to the script's `SHIP` list fails the build
-  instead of producing a zip that breaks on load.
+- There is no build step and nothing to package. Distribution is the GitHub
+  **Code → Download ZIP** route described above; the extension is not on the
+  Chrome Web Store, so extra repo files (`README.md`, `CLAUDE.md`, `.github/`)
+  simply ride along and Chrome ignores them.
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes (the two JS worlds, frames,
 and message flow).

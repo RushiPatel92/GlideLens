@@ -51,6 +51,15 @@ reconstructed version by version.
   active state leans harder on teal so selection still dominates, and the search
   box gets a lighter fill, a defined border, and a legible placeholder.
 
+### Removed
+- `package.sh`. It built a Chrome Web Store submission zip, and there is no plan
+  to list on the store — everyone installs via GitHub's **Code → Download ZIP**,
+  which ships the whole repo and works fine because Chrome ignores the files it
+  does not recognise. Keeping it meant maintaining a `SHIP` allowlist alongside
+  every new script for a distribution path nobody used. If the store ever
+  becomes the plan, recover the script from git history rather than rewriting
+  it.
+
 ### Fixed
 - Catalog client-script grouping put every script under "Not variable-specific".
   The watched variable was read from `variable`, which is not the column on

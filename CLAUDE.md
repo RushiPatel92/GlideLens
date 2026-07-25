@@ -7,12 +7,15 @@ spirit of snUtils. Plain JS, zero runtime dependencies, zero build step.
 - Load unpacked: `chrome://extensions` → Developer mode → Load unpacked → this folder.
 - After editing, click the **reload** icon on the extension card. For
   content-script changes, also refresh the ServiceNow tab.
-- Package for the Chrome Web Store: `bash package.sh`. It ships an explicit
-  allowlist (`SHIP`) rather than an exclusion list, then cross-checks the zip
-  against every file `manifest.json` references. **Adding a new script or asset
-  means adding it to `SHIP`** — the manifest cross-check catches manifest-
-  referenced files, but `popup.js`/`popup.css` (pulled in by `popup.html`) and
-  `debug_timeline_main.js` (injected on demand) are invisible to it.
+- There is no build or packaging step. Users install via GitHub's **Code →
+  Download ZIP**, extract, and Load unpacked, so every committed file ships and
+  Chrome ignores the ones it does not recognise. A new script or asset only has
+  to be committed and referenced from `manifest.json` (or the page that loads
+  it) — there is no allowlist to keep in sync.
+- If the extension is ever submitted to the Chrome Web Store, that will need a
+  packaging script that zips only the extension files. `package.sh` did this and
+  was removed in 0.6.0 as unused; recover it from history (`git log --
+  package.sh`) rather than writing a new one from scratch.
 
 ## Architecture (read before changing message flow)
 ServiceNow's classic UI runs the real app inside an iframe named **`gsft_main`**;

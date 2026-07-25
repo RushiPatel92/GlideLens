@@ -1,5 +1,4 @@
-# Build output from package.sh
-sn-dev-helper.zip
+# Zips: downloaded release archives, or any local packaging output
 *.zip
 
 # Claude Code's local memory store — machine-local notes, not project source
