@@ -51,6 +51,9 @@ the caller falls back gracefully.
   item" (catalog client scripts + UI policies). Loaded before `content.js`.
   Also serves the per-variable scoped view (`focusVariable`) opened by the
   variable insight icons.
+- `hidden_variables_ui.js` - isolated-world panel for "Show variable values" on
+  Service Portal catalog items, with the hidden/visible filter. Loaded before
+  `catalog_insight_ui.js`.
 - `debug_timeline_main.js` - MAIN-world Debug Timeline recorder imported by
   the service worker and injected into every frame on demand.
 - `popup.js` / `popup.html` / `popup.css` — popup UI: instance info, quick table
@@ -131,6 +134,13 @@ the caller falls back gracefully.
   `getWorkspaceFields()` walks every element in every shadow root.
 
 ## Roadmap
-Background Script runner, update set switcher, impersonation, Table API record
-search, GlideRecord snippet generator, per-environment favicon badge, and
-toggle persistence for Workspace forms.
+Background Script runner, Table API record search, GlideRecord snippet
+generator, and toggle persistence for Workspace forms.
+
+**Out of scope — do not propose these.** The update set switcher,
+impersonation, and the per-environment favicon/instance badge are already
+covered well by snUtils. This extension is not trying to replace snUtils, so
+rebuilding what it already does is wasted effort. Aim at the gaps snUtils
+leaves — catalog/Service Portal debugging, translation and dictionary
+inheritance, form introspection — rather than at parity features. When
+suggesting what to build next, leave these off the list entirely.
