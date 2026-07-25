@@ -49,6 +49,8 @@ the caller falls back gracefully.
   Debug Timeline results panel.
 - `catalog_insight_ui.js` - isolated-world panel for "What affects this catalog
   item" (catalog client scripts + UI policies). Loaded before `content.js`.
+  Also serves the per-variable scoped view (`focusVariable`) opened by the
+  variable insight icons.
 - `debug_timeline_main.js` - MAIN-world Debug Timeline recorder imported by
   the service worker and injected into every frame on demand.
 - `popup.js` / `popup.html` / `popup.css` — popup UI: instance info, quick table
@@ -64,6 +66,19 @@ the caller falls back gracefully.
     filtered by `documentkey=<record sys_id>^fieldname=<field>` when a record is
     open, else `tablename^fieldname`.
 - **Field-name badges** parse the classic label id format `label.<table>.<field>`.
+- **Variable insight icons** (Service Portal catalog forms) drop a per-variable
+  icon; clicking opens Catalog Insight scoped to that variable's onChange client
+  scripts and UI policy actions. Toggle with Alt+double-click or the palette.
+  The variable's internal name and definition sys_id live only in the Angular
+  `field` model, so `background.js` runs `mapPortalVariableAnchors()` in the MAIN
+  world to stamp `data-snh-var*` onto each variable element; `content.js` anchors
+  icons off those stamps (label span `sp_field_label_<name>`, or the control
+  container for booleans). Re-apply uses its own SP-scoped observer (the classic
+  TOGGLE PERSISTENCE observer is deliberately not reused), and the MAIN-world
+  restamp fires only when a variable is unstamped. Per-variable attribution is
+  precise for onChange scripts (watched variable) and UI policy actions
+  (`catalog_ui_policy_action`, matched by sys_id and name); onLoad/onSubmit and
+  variable-less policies are form-level and excluded from the scoped view.
 - **Debug Timeline** is a best-effort, single-page interaction recorder for
   public `g_form` calls, native field events, GlideAjax timing, and JavaScript
   errors. It does not promise named Client Script or UI Policy attribution.
