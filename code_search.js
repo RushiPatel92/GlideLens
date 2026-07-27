@@ -364,8 +364,481 @@
     };
   }
 
+  /* =====================================================================
+   * REGISTRY
+   *
+   * Every table.field below was verified against a live instance on
+   * 2026-07-27 — a wrong column name does not error, it returns zero rows
+   * forever, so nothing here is guessed.
+   *
+   * `kind` backs the kind: filter and groups the results panel. `tier` 1 is
+   * default-on; tier 2 is opt-in (slow, noisy, or commonly restricted).
+   * ===================================================================== */
+
+  const SEARCH_TARGETS = [
+    /* --- The gap pack: configuration source no code index reaches -------- */
+    {
+      id: "dictionary",
+      kind: "dictionary",
+      label: "Dictionary",
+      table: "sys_dictionary",
+      fields: ["reference_qual", "default_value", "calculation", "attributes"],
+      title: ["name", "element"],
+      tier: 1,
+    },
+    {
+      id: "dictionary-override",
+      kind: "dictionary",
+      label: "Dictionary override",
+      table: "sys_dictionary_override",
+      fields: ["reference_qual", "default_value", "calculation", "attributes"],
+      title: ["name", "element"],
+      tier: 1,
+    },
+    {
+      /* Catalog variable ref quals — the single best reason this feature
+       * exists, and absent from every Code Search Group seen so far.
+       *
+       * reference_qual and default_value are defined on the PARENT table
+       * `question`, not here. They are queryable on item_option_new all the
+       * same (verified), but a probe that does not walk super_class will
+       * report them missing and silently disable this source. `macro` is
+       * deliberately absent: it is a reference to sys_ui_macro, so searching
+       * it would match a sys_id rather than any code. */
+      id: "catalog-variable",
+      kind: "catalog",
+      label: "Catalog variable",
+      table: "item_option_new",
+      fields: [
+        "reference_qual",
+        "default_value",
+        "post_insert_script",
+        "read_script",
+        "save_script",
+      ],
+      title: ["name"],
+      subtitle: ["question_text"],
+      tier: 1,
+    },
+    {
+      id: "transform-map",
+      kind: "transform",
+      label: "Transform map",
+      table: "sys_transform_map",
+      fields: ["script"],
+      title: ["name"],
+      tier: 1,
+    },
+    {
+      id: "transform-entry",
+      kind: "transform",
+      label: "Field map script",
+      table: "sys_transform_entry",
+      fields: ["source_script"],
+      title: ["target_field"],
+      subtitle: ["map"],
+      tier: 1,
+    },
+    {
+      /* The stage column is `when` (onBefore/onAfter/onStart/onComplete), not
+       * `type` — verified, because a wrong display column renders blank rather
+       * than failing. */
+      id: "transform-script",
+      kind: "transform",
+      label: "Transform script",
+      table: "sys_transform_script",
+      fields: ["script"],
+      title: ["when"],
+      subtitle: ["map"],
+      tier: 1,
+    },
+    {
+      id: "record-producer",
+      kind: "catalog",
+      label: "Record producer",
+      table: "sc_cat_item_producer",
+      fields: ["script"],
+      title: ["name"],
+      tier: 1,
+    },
+    {
+      /* Groups configure sys_ui_action as name,script — never `condition`,
+       * so the one-liner conditions stay invisible to instance code search
+       * even on an instance whose group covers this table. */
+      id: "ui-action",
+      kind: "ui-action",
+      label: "UI action",
+      table: "sys_ui_action",
+      fields: ["condition", "script"],
+      title: ["name"],
+      subtitle: ["table"],
+      tier: 1,
+    },
+
+    /* --- Everyday scripts ------------------------------------------------
+     * Reachable by instance code search where the plugin is present and the
+     * session has the role. Kept as adapters because that is neither
+     * guaranteed nor uniform, and because the coverage a group provides is
+     * per-field: R2 derives a table.field coverage map and skips whatever is
+     * already covered rather than dropping these outright. */
+    {
+      id: "script-include",
+      kind: "script",
+      label: "Script include",
+      table: "sys_script_include",
+      fields: ["script"],
+      title: ["name"],
+      subtitle: ["api_name"],
+      tier: 1,
+    },
+    {
+      id: "business-rule",
+      kind: "script",
+      label: "Business rule",
+      table: "sys_script",
+      fields: ["script", "condition"],
+      title: ["name"],
+      subtitle: ["collection"],
+      tier: 1,
+    },
+    {
+      id: "client-script",
+      kind: "script",
+      label: "Client script",
+      table: "sys_script_client",
+      fields: ["script", "condition"],
+      title: ["name"],
+      subtitle: ["table"],
+      tier: 1,
+    },
+    {
+      /* Extends sys_script_client, so `script` lives on the parent — the
+       * same super_class walk the catalog variables need. */
+      id: "catalog-client-script",
+      kind: "catalog",
+      label: "Catalog client script",
+      table: "catalog_script_client",
+      fields: ["script", "condition"],
+      title: ["name"],
+      subtitle: ["cat_item"],
+      tier: 1,
+    },
+    {
+      id: "script-action",
+      kind: "script",
+      label: "Script action",
+      table: "sysevent_script_action",
+      fields: ["script"],
+      title: ["name"],
+      subtitle: ["event_name"],
+      tier: 1,
+    },
+    {
+      id: "scripted-rest",
+      kind: "script",
+      label: "Scripted REST operation",
+      table: "sys_ws_operation",
+      fields: ["operation_script"],
+      title: ["name"],
+      subtitle: ["relative_path"],
+      tier: 1,
+    },
+  ];
+
+  function targetById(id) {
+    return SEARCH_TARGETS.filter((target) => target.id === id)[0] || null;
+  }
+
+  /* =====================================================================
+   * TRANSPORT
+   *
+   * Everything goes through the service worker, which runs the request in
+   * the MAIN world where g_ck is readable. A direct fetch from this isolated
+   * world carries the session cookie but NOT the CSRF token, and an instance
+   * that enforces the token on REST GETs answers 401 to every call — silently,
+   * because callers treat a throw as "no data". That bug shipped once already
+   * in this extension (see snGet in content.js); it is not repeating here.
+   * ===================================================================== */
+
+  const REQUEST_TIMEOUT_MS = 20000;
+  const MAX_CONCURRENCY = 4;
+  const PER_SOURCE_LIMIT = 50;
+
+  function defaultTransport(request) {
+    /* The service worker cannot be aborted mid-flight, so the timeout races
+     * the response rather than cancelling it. A late reply is discarded by the
+     * session check upstream. */
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const timer = setTimeout(
+        () => finish({ ok: false, status: 0, timedOut: true, error: "Timed out" }),
+        request.timeoutMs || REQUEST_TIMEOUT_MS
+      );
+      chrome.runtime
+        .sendMessage({
+          type: "SN_CODE_SEARCH_GET",
+          table: request.table,
+          query: request.query,
+          fields: request.fields,
+          limit: request.limit || PER_SOURCE_LIMIT,
+        })
+        .then((response) => {
+          clearTimeout(timer);
+          finish(response || { ok: false, status: 0, error: "No response" });
+        })
+        .catch((error) => {
+          clearTimeout(timer);
+          finish({ ok: false, status: 0, error: String(error) });
+        });
+    });
+  }
+
+  /*
+   * Bounded worker pool. Sources resolve as they finish so the panel can paint
+   * fast ones first, and `shouldStop` is checked between tasks so Cancel drains
+   * the queue instead of waiting for every request to land.
+   */
+  async function runPool(tasks, options) {
+    const opts = options || {};
+    const limit = Math.max(1, opts.concurrency || MAX_CONCURRENCY);
+    const queue = (Array.isArray(tasks) ? tasks : []).slice();
+    const results = [];
+    let index = 0;
+
+    async function worker() {
+      while (queue.length) {
+        if (opts.shouldStop && opts.shouldStop()) return;
+        const task = queue.shift();
+        const position = index++;
+        let outcome;
+        try {
+          outcome = await task();
+        } catch (error) {
+          outcome = { ok: false, status: 0, error: String(error) };
+        }
+        if (opts.shouldStop && opts.shouldStop()) return;
+        results[position] = outcome;
+        if (opts.onResult) opts.onResult(outcome);
+      }
+    }
+
+    const workers = [];
+    for (let i = 0; i < Math.min(limit, queue.length); i++) workers.push(worker());
+    await Promise.all(workers);
+    return results.filter((item) => item !== undefined);
+  }
+
+  /* =====================================================================
+   * PROBE
+   *
+   * Validates every table.field in the registry before the first search on an
+   * origin, so a field this instance does not have is reported in the footer
+   * rather than silently searched.
+   *
+   * It walks super_class, and that is not an optimisation. sys_dictionary
+   * stores a field against the table that DEFINES it, so probing
+   * item_option_new for reference_qual finds nothing — the column belongs to
+   * `question` — while the Table API answers queries for it on the child
+   * perfectly well. A probe without the walk would drop catalog variable
+   * reference qualifiers, the single source this feature most exists to reach.
+   * ===================================================================== */
+
+  const PROBE_CACHE_VERSION = 1;
+  const PROBE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const MAX_ANCESTRY_HOPS = 10;
+
+  function probeCacheKey(origin) {
+    return "snhCodeSearchProbe:" + origin;
+  }
+
+  function uniqueStrings(values) {
+    const seen = Object.create(null);
+    const out = [];
+    (values || []).forEach((value) => {
+      const text = String(value || "");
+      if (!text || seen[text]) return;
+      seen[text] = true;
+      out.push(text);
+    });
+    return out;
+  }
+
+  /*
+   * table name -> [table, parent, grandparent, …]. Two reads per hop at most:
+   * one to fetch the super_class references, one to turn those sys_ids into
+   * names. Bounded by MAX_ANCESTRY_HOPS so a cyclic hierarchy cannot hang the
+   * probe.
+   */
+  async function resolveAncestry(tables, transport) {
+    const tableGet = transport || defaultTransport;
+    const chains = Object.create(null);
+    const parentOf = Object.create(null);
+    const nameById = Object.create(null);
+
+    let frontier = uniqueStrings(tables);
+    const wanted = frontier.slice();
+
+    for (let hop = 0; hop < MAX_ANCESTRY_HOPS && frontier.length; hop++) {
+      const response = await tableGet({
+        table: "sys_db_object",
+        query: "nameIN" + frontier.join(","),
+        fields: "name,super_class",
+        limit: 200,
+      });
+      if (!response.ok) break;
+
+      const parentIds = [];
+      (response.result || []).forEach((row) => {
+        const name = rowValue(row, "name");
+        const parentId = rowValue(row, "super_class");
+        nameById[rowValue(row, "sys_id")] = name;
+        if (!name || !parentId) return;
+        parentOf[name] = parentId;
+        parentIds.push(parentId);
+      });
+      if (!parentIds.length) break;
+
+      const parents = await tableGet({
+        table: "sys_db_object",
+        query: "sys_idIN" + uniqueStrings(parentIds).join(","),
+        fields: "sys_id,name",
+        limit: 200,
+      });
+      if (!parents.ok) break;
+
+      const next = [];
+      (parents.result || []).forEach((row) => {
+        const id = rowValue(row, "sys_id");
+        const name = rowValue(row, "name");
+        if (!id || !name) return;
+        if (!nameById[id]) next.push(name);
+        nameById[id] = name;
+      });
+      frontier = uniqueStrings(next);
+    }
+
+    wanted.forEach((table) => {
+      const chain = [table];
+      let cursor = table;
+      for (let hop = 0; hop < MAX_ANCESTRY_HOPS; hop++) {
+        const parentId = parentOf[cursor];
+        const parentName = parentId ? nameById[parentId] : null;
+        if (!parentName || chain.indexOf(parentName) !== -1) break;
+        chain.push(parentName);
+        cursor = parentName;
+      }
+      chains[table] = chain;
+    });
+
+    return chains;
+  }
+
+  function rowValue(row, field) {
+    const raw = row && row[field];
+    if (raw == null) return "";
+    if (typeof raw === "object" && !Array.isArray(raw)) {
+      return raw.value != null ? String(raw.value) : "";
+    }
+    return String(raw);
+  }
+
+  async function probe(options) {
+    const opts = options || {};
+    const tableGet = opts.transport || defaultTransport;
+    const targets = opts.targets || SEARCH_TARGETS;
+    const tables = uniqueStrings(targets.map((target) => target.table));
+    const fields = uniqueStrings(
+      targets.reduce((all, target) => all.concat(target.fields), [])
+    );
+
+    const chains = await resolveAncestry(tables, tableGet);
+    const searchNames = uniqueStrings(
+      tables.reduce((all, table) => all.concat(chains[table] || [table]), [])
+    );
+
+    const response = await tableGet({
+      table: "sys_dictionary",
+      query:
+        "nameIN" + searchNames.join(",") + "^elementIN" + fields.join(","),
+      fields: "name,element",
+      limit: 2000,
+    });
+
+    /* A probe that could not run is UNKNOWN, not absent: refusing to search a
+     * source because one request failed would be the same silent-hole failure
+     * the whole design is built to avoid. Assume present and let the search
+     * report what actually happens. */
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: response.error || "Probe failed",
+        checkedAt: Date.now(),
+        targets: targets.reduce((map, target) => {
+          map[target.id] = { fields: target.fields.slice(), unverified: true };
+          return map;
+        }, Object.create(null)),
+      };
+    }
+
+    const defined = Object.create(null);
+    (response.result || []).forEach((row) => {
+      defined[rowValue(row, "name") + "." + rowValue(row, "element")] = true;
+    });
+
+    const result = Object.create(null);
+    targets.forEach((target) => {
+      const chain = chains[target.table] || [target.table];
+      const present = target.fields.filter((field) =>
+        chain.some((table) => defined[table + "." + field])
+      );
+      result[target.id] = {
+        fields: present,
+        missing: target.fields.filter((field) => present.indexOf(field) === -1),
+      };
+    });
+
+    return { ok: true, checkedAt: Date.now(), targets: result };
+  }
+
+  async function loadProbe(origin, options) {
+    const opts = options || {};
+    const key = probeCacheKey(origin);
+    if (!opts.force) {
+      try {
+        const cached = await chrome.storage.local.get(key);
+        const entry = cached && cached[key];
+        if (
+          entry &&
+          entry.version === PROBE_CACHE_VERSION &&
+          Date.now() - entry.checkedAt < PROBE_TTL_MS
+        ) {
+          return entry;
+        }
+      } catch (e) {}
+    }
+    const fresh = await probe(opts);
+    /* An unverified probe is not cached — a transient failure should not
+     * freeze "we do not know" in place for seven days. */
+    if (fresh.ok) {
+      try {
+        await chrome.storage.local.set({
+          [key]: Object.assign({ version: PROBE_CACHE_VERSION }, fresh),
+        });
+      } catch (e) {}
+    }
+    return fresh;
+  }
+
   globalThis.SNCodeSearch = {
     MIN_ANCHOR_LENGTH,
+    PER_SOURCE_LIMIT,
+    SEARCH_TARGETS,
+    targetById,
     parseQuery,
     extractAnchor,
     buildAnchorCondition,
@@ -378,5 +851,10 @@
     isSensitiveName,
     redactHit,
     createSessionTracker,
+    tableGet: defaultTransport,
+    runPool,
+    resolveAncestry,
+    probe,
+    loadProbe,
   };
 })();

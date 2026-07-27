@@ -316,3 +316,183 @@ test("cancel invalidates the in-flight search", () => {
   tracker.cancel();
   assert.strictEqual(tracker.isCurrent(id), false);
 });
+
+/* ---------------------------------------------------------------------------
+ * Registry
+ * ------------------------------------------------------------------------- */
+
+test("every registry target is well formed and uniquely identified", () => {
+  const seen = new Set();
+  own(CS.SEARCH_TARGETS).forEach((target) => {
+    assert.ok(target.id, "target without an id");
+    assert.strictEqual(seen.has(target.id), false, "duplicate id: " + target.id);
+    seen.add(target.id);
+    assert.match(target.table, /^[a-z0-9_]+$/, "unsafe table: " + target.table);
+    assert.ok(own(target.fields).length > 0, "no fields: " + target.id);
+    own(target.fields).forEach((field) =>
+      assert.match(field, /^[a-z0-9_]+$/, "unsafe field: " + target.id + "." + field)
+    );
+  });
+});
+
+test("every registry field survives encoded-query construction", () => {
+  own(CS.SEARCH_TARGETS).forEach((target) => {
+    const query = CS.buildFieldQuery(own(target.fields), "anchor");
+    assert.ok(query.indexOf("^OR") !== -1 || own(target.fields).length === 1);
+  });
+});
+
+test("item_option_new.macro is absent — it is a reference, not searchable text", () => {
+  const target = CS.targetById("catalog-variable");
+  assert.ok(target);
+  assert.strictEqual(own(target.fields).indexOf("macro"), -1);
+  assert.ok(own(target.fields).indexOf("reference_qual") !== -1);
+});
+
+/* ---------------------------------------------------------------------------
+ * Fetch pool
+ * ------------------------------------------------------------------------- */
+
+test("pool respects the concurrency ceiling", async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const tasks = Array.from({ length: 12 }, () => async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return { ok: true };
+  });
+  await CS.runPool(tasks, { concurrency: 4 });
+  assert.ok(peak <= 4, "peak concurrency was " + peak);
+});
+
+test("pool returns one result per task", async () => {
+  const tasks = Array.from({ length: 6 }, (unused, i) => async () => ({ ok: true, i }));
+  const results = await CS.runPool(tasks, { concurrency: 3 });
+  assert.strictEqual(results.length, 6);
+});
+
+test("a throwing task fails only itself", async () => {
+  const tasks = [
+    async () => ({ ok: true, id: "a" }),
+    async () => {
+      throw new Error("source exploded");
+    },
+    async () => ({ ok: true, id: "c" }),
+  ];
+  const results = own(await CS.runPool(tasks, { concurrency: 3 }));
+  assert.strictEqual(results.length, 3);
+  assert.strictEqual(results.filter((r) => r.ok).length, 2);
+  assert.match(results.filter((r) => !r.ok)[0].error, /source exploded/);
+});
+
+test("cancel drains the queue instead of running every task", async () => {
+  let started = 0;
+  let stop = false;
+  const tasks = Array.from({ length: 20 }, () => async () => {
+    started++;
+    await new Promise((r) => setTimeout(r, 1));
+    return { ok: true };
+  });
+  const pending = CS.runPool(tasks, { concurrency: 2, shouldStop: () => stop });
+  setTimeout(() => {
+    stop = true;
+  }, 5);
+  await pending;
+  assert.ok(started < 20, "pool ran all " + started + " tasks despite cancel");
+});
+
+/* ---------------------------------------------------------------------------
+ * Probe — the super_class walk that keeps catalog variables searchable
+ * ------------------------------------------------------------------------- */
+
+/* Mirrors the real hierarchy verified on the instance: item_option_new extends
+ * question, catalog_script_client extends sys_script_client, and the fields we
+ * search are defined on those PARENTS. */
+function fakeInstance() {
+  const tables = {
+    item_option_new: { sys_id: "t_ion", super_class: "t_question" },
+    question: { sys_id: "t_question", super_class: "t_meta" },
+    catalog_script_client: { sys_id: "t_csc", super_class: "t_ssc" },
+    sys_script_client: { sys_id: "t_ssc", super_class: "t_meta" },
+    sys_metadata: { sys_id: "t_meta", super_class: "" },
+  };
+  const dictionary = [
+    { name: "question", element: "reference_qual" },
+    { name: "question", element: "default_value" },
+    { name: "item_option_new", element: "read_script" },
+    { name: "sys_script_client", element: "script" },
+  ];
+  return async (request) => {
+    if (request.table === "sys_db_object") {
+      const rows = Object.keys(tables).map((name) =>
+        Object.assign({ name }, tables[name])
+      );
+      if (request.query.indexOf("nameIN") === 0) {
+        const wanted = request.query.slice("nameIN".length).split(",");
+        return { ok: true, result: rows.filter((r) => wanted.indexOf(r.name) !== -1) };
+      }
+      const wantedIds = request.query.slice("sys_idIN".length).split(",");
+      return { ok: true, result: rows.filter((r) => wantedIds.indexOf(r.sys_id) !== -1) };
+    }
+    if (request.table === "sys_dictionary") {
+      return { ok: true, result: dictionary };
+    }
+    return { ok: false, status: 404, error: "unexpected table " + request.table };
+  };
+}
+
+test("ancestry walk resolves the full super_class chain", async () => {
+  const chains = await CS.resolveAncestry(["item_option_new"], fakeInstance());
+  assert.deepStrictEqual(own(chains.item_option_new), [
+    "item_option_new",
+    "question",
+    "sys_metadata",
+  ]);
+});
+
+test("probe finds a field defined on a parent table", async () => {
+  const result = await CS.probe({
+    transport: fakeInstance(),
+    targets: [
+      {
+        id: "catalog-variable",
+        table: "item_option_new",
+        fields: ["reference_qual", "default_value", "read_script"],
+      },
+    ],
+  });
+  assert.strictEqual(result.ok, true);
+  const fields = own(result.targets["catalog-variable"].fields);
+  /* Defined on `question`, queryable on item_option_new. A probe without the
+   * super_class walk reports these missing and disables the source. */
+  assert.ok(fields.indexOf("reference_qual") !== -1, "inherited field dropped");
+  assert.ok(fields.indexOf("default_value") !== -1, "inherited field dropped");
+  assert.ok(fields.indexOf("read_script") !== -1, "own field dropped");
+  assert.strictEqual(own(result.targets["catalog-variable"].missing).length, 0);
+});
+
+test("probe reports a genuinely absent field as missing", async () => {
+  const result = await CS.probe({
+    transport: fakeInstance(),
+    targets: [
+      { id: "x", table: "item_option_new", fields: ["reference_qual", "not_a_column"] },
+    ],
+  });
+  assert.deepStrictEqual(own(result.targets.x.fields), ["reference_qual"]);
+  assert.deepStrictEqual(own(result.targets.x.missing), ["not_a_column"]);
+});
+
+test("a failed probe means unknown, not absent", async () => {
+  const failing = async () => ({ ok: false, status: 500, error: "boom" });
+  const result = await CS.probe({
+    transport: failing,
+    targets: [{ id: "x", table: "sys_script", fields: ["script", "condition"] }],
+  });
+  assert.strictEqual(result.ok, false);
+  /* Fields stay searchable: refusing a source because one request failed would
+   * be the silent hole the whole design exists to avoid. */
+  assert.deepStrictEqual(own(result.targets.x.fields), ["script", "condition"]);
+  assert.strictEqual(result.targets.x.unverified, true);
+});
