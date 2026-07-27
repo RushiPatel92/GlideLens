@@ -62,12 +62,20 @@ the toolbar/shell is the top frame. The form DOM (labels, fields) lives in
 - keyboard command (`background.js`) → content script for the field-name toggle.
 
 ### REST from the content script
-`content.js` calls the Table API (`/api/now/table/...`) directly. This works
-because `gsft_main` is **same-origin** with the instance, so the session cookie
-authenticates the GET. Cross-origin fetches would NOT work from a content
-script under MV3 — they'd have to move to the service worker. Reads here assume
-GET doesn't require the CSRF token; if an instance enforces it, calls throw and
-the caller falls back gracefully.
+`content.js` reads the Table API (`/api/now/table/...`) through `snGetMany`,
+which hands the request to the service worker to run in the **MAIN world**,
+where it can attach `X-UserToken` from `g_ck`. `snGet` is a one-row wrapper over
+that same path.
+
+**Do NOT fetch the Table API directly from the isolated world.** It is
+same-origin with the instance, so the session cookie goes along — but the CSRF
+token does not, and an instance that enforces the token on REST GETs answers
+**401 to every call**. This is not hypothetical; it was observed on a real
+instance, where it had been breaking dictionary-inheritance resolution for the
+translation icons. The failure mode is nasty: callers treat a throw as "no data"
+and fall back, so a read that never worked looks like an empty result rather
+than an error. Cross-origin fetches would not work from a content script under
+MV3 at all.
 
 ## Files
 - `manifest.json` — MV3 config, permissions, content scripts, command.
@@ -95,7 +103,16 @@ the caller falls back gracefully.
     checking `sys_dictionary`, so inherited fields resolve correctly.
   - "Languages" glyph → `sys_translated_text` (per-record VALUE translations),
     filtered by `documentkey=<record sys_id>^fieldname=<field>` when a record is
-    open, else `tablename^fieldname`.
+    open, else `tablename^fieldname`. Rendered **only** for fields whose
+    dictionary type is translatable (`translated`, `translated_text`,
+    `translated_html`, `translated_field`); nothing else can ever have a row
+    there. The set comes from one `sys_dictionary` query per table hierarchy,
+    cached for the page's life and resolved OFF the synchronous toggle path, so
+    value icons land a beat after the globes and `toggleTranslationIcons` keeps
+    returning its count immediately. A failed lookup shows the icon rather than
+    hiding a working one. Checked against a live instance: `task`, `incident`,
+    `sc_req_item` and `change_request` have zero translatable fields between
+    them, which is why the icon correctly never appears on those forms.
 - **Field-name badges** parse the classic label id format `label.<table>.<field>`.
 - **Variable insight icons** (Service Portal catalog forms) drop a per-variable
   icon; clicking opens Catalog Insight scoped to that variable's onChange client

@@ -370,22 +370,22 @@ const ICON_VAR_LOGIC =
   '<rect x="14" y="14" width="7" height="7" rx="1"></rect>' +
   '<path d="M6.5 10v3a2 2 0 0 0 2 2H14"></path></svg>';
 
-// Minimal authenticated Table API GET (same-origin, cookie auth).
+/*
+ * Single-row Table API read.
+ *
+ * This used to fetch directly from the isolated world. That carries the session
+ * cookie but NOT the CSRF token, and an instance that enforces the token on REST
+ * GETs answers 401 — observed on a real instance for every call. The failure was
+ * silent: resolveDefiningTable() caught it and fell back to the form table, so
+ * inherited fields resolved to the wrong table and their translations looked
+ * absent rather than misfiled.
+ *
+ * Delegating to snGetMany routes the read through the MAIN-world helper, which
+ * attaches X-UserToken from g_ck. Slower than a direct fetch by a message hop,
+ * and correct on instances a direct fetch cannot read at all.
+ */
 async function snGet(table, query, fields) {
-  const url =
-    location.origin +
-    "/api/now/table/" +
-    encodeURIComponent(table) +
-    "?sysparm_query=" + encodeURIComponent(query) +
-    "&sysparm_fields=" + encodeURIComponent(fields) +
-    "&sysparm_limit=1";
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const data = await res.json();
-  return (data && data.result) || [];
+  return snGetMany(table, query, fields, 1);
 }
 
 async function snGetMany(table, query, fields, limit, options) {
@@ -2185,7 +2185,7 @@ async function resolveDefiningTable(startTable, field) {
     const dict = await snGet("sys_dictionary", `name=${table}^element=${field}`, "sys_id");
     if (dict.length) return table; // defined directly on this table
     const obj = await snGet("sys_db_object", `name=${table}`, "super_class.name");
-    const parent = obj.length && obj[0]["super_class.name"];
+    const parent = obj.length && snFieldValue(obj[0], "super_class.name");
     if (!parent) break;
     table = parent;
   }
@@ -2323,6 +2323,140 @@ function makeIcon(svg, title, color, onClick) {
   return btn;
 }
 
+/* =====================================================================
+ * WHICH FIELDS CAN HAVE VALUE TRANSLATIONS
+ *
+ * sys_translated_text only ever holds rows for fields whose dictionary type is
+ * translatable. Verified against a live instance: task, incident, sc_req_item
+ * and change_request have ZERO such fields between them, so the value icon used
+ * to render beside every label on every form and always open an empty list.
+ *
+ * The lookup is one query per table hierarchy, cached for the page's life, and
+ * it is deliberately kept OFF the synchronous toggle path: toggleTranslationIcons
+ * still returns its count immediately, renders the globe everywhere, and value
+ * icons arrive when the query lands. That keeps the popup's response contract
+ * and the re-apply path unchanged.
+ * ===================================================================== */
+
+const SNH_TRANSLATABLE_TYPES =
+  "translated,translated_text,translated_html,translated_field";
+
+// table -> Set<field> once known, or null when the lookup failed. A missing
+// entry means "not fetched yet". Failure maps to null rather than an empty set
+// so a broken lookup shows the icon everywhere instead of hiding a working one.
+const snhTranslatableFields = new Map();
+const snhTranslatablePending = new Map();
+
+// The defining table matters here: a translatable field on a parent shows up on
+// a child's form, so the whole chain has to be queried, not just the form table.
+async function tableHierarchy(startTable) {
+  const chain = [];
+  let table = startTable;
+  for (let hop = 0; hop < 8 && table; hop++) {
+    if (chain.includes(table)) break; // a cyclic super_class would spin forever
+    chain.push(table);
+    const obj = await snGet("sys_db_object", `name=${table}`, "super_class.name");
+    const parent = obj.length && snFieldValue(obj[0], "super_class.name");
+    if (!parent) break;
+    table = parent;
+  }
+  return chain;
+}
+
+async function fetchTranslatableFields(table) {
+  const chain = await tableHierarchy(table);
+  if (!chain.length) return new Set();
+  const rows = await snGetMany(
+    "sys_dictionary",
+    `nameIN${chain.join(",")}^internal_typeIN${SNH_TRANSLATABLE_TYPES}`,
+    "element",
+    500
+  );
+  const fields = new Set();
+  rows.forEach((row) => {
+    const element = snFieldValue(row, "element");
+    if (element) fields.add(element);
+  });
+  return fields;
+}
+
+function ensureTranslatableFields(table) {
+  if (snhTranslatableFields.has(table)) return;
+  if (snhTranslatablePending.has(table)) return;
+  const pending = fetchTranslatableFields(table)
+    .then((fields) => {
+      snhTranslatableFields.set(table, fields);
+      // One line per table per page. This is a developer tool and its users live
+      // in the console; more importantly, the fallback below is indistinguishable
+      // from "no filtering happened", so silence here would make a failed lookup
+      // impossible to tell apart from stale code.
+      console.info(
+        `[SN Dev Helper] ${table}: ${fields.size} field(s) can have value translations`,
+        fields.size ? Array.from(fields) : ""
+      );
+    })
+    .catch((error) => {
+      snhTranslatableFields.set(table, null);
+      console.warn(
+        `[SN Dev Helper] could not determine translatable fields for ${table}; ` +
+          "showing the value icon on every field rather than hiding a working one.",
+        error
+      );
+    })
+    .then(() => {
+      snhTranslatablePending.delete(table);
+      decorateValueIconsFor(table);
+    })
+    // A throw in the late pass must not surface as an unhandled rejection; the
+    // globe is already rendered, so the worst case is a missing value icon.
+    .catch(() => {});
+  snhTranslatablePending.set(table, pending);
+}
+
+function fieldSupportsValueTranslation(table, field) {
+  const known = snhTranslatableFields.get(table);
+  if (known === undefined) return false; // unresolved; a later pass fills it in
+  if (known === null) return true; // lookup failed; don't hide a working icon
+  return known.has(field);
+}
+
+function makeValueTranslationIcon(table, field) {
+  const icon = makeIcon(
+    ICON_VALUE,
+    `Value translations for ${table}.${field} (sys_translated_text)`,
+    "#8a5cd6",
+    () => openValueTranslations(table, field)
+  );
+  // Own class so the late pass can tell a decorated label from a bare one. It
+  // keeps .snh-trans-icon too, so teardown and the staleness check still see it.
+  icon.classList.add("snh-trans-value");
+  return icon;
+}
+
+/*
+ * Second pass, run when a table's lookup resolves. It mutates the DOM while the
+ * re-apply observer is live, so it disconnects first for the same reason
+ * runQueuedReapply() does. The staleness check cannot be tripped into a loop by
+ * this: it asks for any .snh-trans-icon, and the globe is already there.
+ */
+function decorateValueIconsFor(table) {
+  if (!SNH.transIconsOn) return; // toggled off while the query was in flight
+
+  if (snhToggleObserver) snhToggleObserver.disconnect();
+  try {
+    const add = (entry) => {
+      if (!entry || entry.table !== table || !entry.field || !entry.target) return;
+      if (!fieldSupportsValueTranslation(entry.table, entry.field)) return;
+      if (entry.target.querySelector(":scope > .snh-trans-value")) return;
+      entry.target.appendChild(makeValueTranslationIcon(entry.table, entry.field));
+    };
+    getClassicFields().forEach(add);
+    getWorkspaceFields().forEach(add);
+  } finally {
+    if (snhToggleObserver) observeForReapply();
+  }
+}
+
 function toggleTranslationIcons(force) {
   const turnOn = typeof force === "boolean" ? force : !SNH.transIconsOn;
   SNH.transIconsOn = turnOn;
@@ -2334,8 +2468,11 @@ function toggleTranslationIcons(force) {
   }
 
   let count = 0;
+  const tables = new Set();
   const appendIcons = ({ table, field, target }) => {
     if (!table || !field || !target) return;
+    // The globe is unconditional: sys_documentation is keyed by table.field and
+    // any field can have a translated LABEL, whatever its type.
     target.appendChild(
       makeIcon(
         ICON_DOC,
@@ -2344,19 +2481,17 @@ function toggleTranslationIcons(force) {
         () => openLabelTranslations(table, field)
       )
     );
-    target.appendChild(
-      makeIcon(
-        ICON_VALUE,
-        `Value translations for ${table}.${field} (sys_translated_text)`,
-        "#8a5cd6",
-        () => openValueTranslations(table, field)
-      )
-    );
+    if (fieldSupportsValueTranslation(table, field)) {
+      target.appendChild(makeValueTranslationIcon(table, field));
+    }
+    tables.add(table);
     count++;
   };
 
   getClassicFields().forEach(appendIcons);
   getWorkspaceFields().forEach(appendIcons);
+  // No-ops for tables already resolved, so a re-apply costs nothing.
+  tables.forEach(ensureTranslatableFields);
   syncToggleObserver();
   return count;
 }
