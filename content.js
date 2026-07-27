@@ -2384,8 +2384,25 @@ function ensureTranslatableFields(table) {
   if (snhTranslatableFields.has(table)) return;
   if (snhTranslatablePending.has(table)) return;
   const pending = fetchTranslatableFields(table)
-    .then((fields) => snhTranslatableFields.set(table, fields))
-    .catch(() => snhTranslatableFields.set(table, null))
+    .then((fields) => {
+      snhTranslatableFields.set(table, fields);
+      // One line per table per page. This is a developer tool and its users live
+      // in the console; more importantly, the fallback below is indistinguishable
+      // from "no filtering happened", so silence here would make a failed lookup
+      // impossible to tell apart from stale code.
+      console.info(
+        `[SN Dev Helper] ${table}: ${fields.size} field(s) can have value translations`,
+        fields.size ? Array.from(fields) : ""
+      );
+    })
+    .catch((error) => {
+      snhTranslatableFields.set(table, null);
+      console.warn(
+        `[SN Dev Helper] could not determine translatable fields for ${table}; ` +
+          "showing the value icon on every field rather than hiding a working one.",
+        error
+      );
+    })
     .then(() => {
       snhTranslatablePending.delete(table);
       decorateValueIconsFor(table);
