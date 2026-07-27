@@ -834,8 +834,168 @@
     return fresh;
   }
 
+  /* =====================================================================
+   * SEARCH
+   *
+   * Per-source status is a first-class result, not an error path. One denied
+   * or absent table must never discard the rest, and — the harder half — a
+   * source that returned nothing must be distinguishable from a source that
+   * was never allowed to look. "No matches" and "you cannot read this table"
+   * look identical from the outside, and conflating them is how a search tool
+   * teaches people to trust an answer that was never given.
+   * ===================================================================== */
+
+  const GLOBAL_HIT_CAP = 500;
+
+  const SOURCE_STATUS = {
+    COMPLETE: "complete",
+    NO_MATCHES: "no-matches",
+    DENIED: "denied",
+    ABSENT: "absent",
+    TIMED_OUT: "timed-out",
+    CAPPED: "capped",
+    SKIPPED: "skipped",
+    ERROR: "error",
+  };
+
+  function selectTargets(parsed, probeResult, targets) {
+    const all = targets || SEARCH_TARGETS;
+    const wantTables = (parsed.filters && parsed.filters.tables) || [];
+    const wantKinds = (parsed.filters && parsed.filters.kinds) || [];
+    const probed = (probeResult && probeResult.targets) || Object.create(null);
+
+    return all
+      .filter((target) => (target.tier || 1) === 1)
+      .filter((target) => !wantTables.length || wantTables.indexOf(target.table) !== -1)
+      .filter((target) => !wantKinds.length || wantKinds.indexOf(target.kind) !== -1)
+      .map((target) => {
+        const entry = probed[target.id];
+        /* No probe entry means the probe never ran — search everything the
+         * registry declares rather than nothing. */
+        const fields = entry ? entry.fields : target.fields;
+        return Object.assign({}, target, {
+          fields: fields || [],
+          missingFields: (entry && entry.missing) || [],
+          unverified: Boolean(entry && entry.unverified),
+        });
+      })
+      .filter((target) => target.fields.length > 0);
+  }
+
+  /* The columns to ask for: what we search, plus what we display. sys_id is
+   * always needed — without it a hit cannot be opened. */
+  function requestFields(target) {
+    return uniqueStrings(
+      ["sys_id"]
+        .concat(target.fields)
+        .concat(target.title || [])
+        .concat(target.subtitle || [])
+    ).join(",");
+  }
+
+  function displayValue(row, fields) {
+    return (fields || [])
+      .map((field) => rowValue(row, field))
+      .filter((value) => value !== "")
+      .join(" · ");
+  }
+
+  /*
+   * Turns one source's rows into verified hits. This is where rule 1 is
+   * actually enforced: a row is only a hit if the field text really contains
+   * the term the user typed, not merely the anchor sent to the server.
+   */
+  function hitsFromRows(rows, target, parsed) {
+    const hits = [];
+    (rows || []).forEach((row) => {
+      target.fields.forEach((field) => {
+        const text = rowValue(row, field);
+        if (!text || !verifyMatch(text, parsed.term)) return;
+        hits.push(
+          redactHit({
+            sourceId: target.id,
+            kind: target.kind,
+            sourceLabel: target.label,
+            table: target.table,
+            sysId: rowValue(row, "sys_id"),
+            field,
+            name: displayValue(row, target.title) || rowValue(row, "sys_id"),
+            subtitle: displayValue(row, target.subtitle),
+            snippets: buildSnippets(text, parsed.term),
+          })
+        );
+      });
+    });
+    return hits;
+  }
+
+  function classify(response, verifiedCount, rowCount, limit) {
+    if (response.timedOut) return SOURCE_STATUS.TIMED_OUT;
+    if (!response.ok) {
+      if (response.status === 403 || response.status === 401) return SOURCE_STATUS.DENIED;
+      if (response.status === 404) return SOURCE_STATUS.ABSENT;
+      return SOURCE_STATUS.ERROR;
+    }
+    if (rowCount >= limit) return SOURCE_STATUS.CAPPED;
+    if (!verifiedCount) return SOURCE_STATUS.NO_MATCHES;
+    return SOURCE_STATUS.COMPLETE;
+  }
+
+  async function runSearch(parsed, options) {
+    const opts = options || {};
+    const transport = opts.transport || defaultTransport;
+    const limit = opts.limit || PER_SOURCE_LIMIT;
+    const targets = selectTargets(parsed, opts.probe, opts.targets);
+    const sources = [];
+    let hits = [];
+    let truncated = false;
+
+    const tasks = targets.map((target) => async () => {
+      const response = await transport({
+        table: target.table,
+        query: buildFieldQuery(target.fields, parsed.anchor),
+        fields: requestFields(target),
+        limit,
+      });
+      const rows = (response.ok && response.result) || [];
+      const verified = hitsFromRows(rows, target, parsed);
+      const summary = {
+        id: target.id,
+        label: target.label,
+        table: target.table,
+        kind: target.kind,
+        status: classify(response, verified.length, rows.length, limit),
+        count: verified.length,
+        missingFields: target.missingFields,
+        unverified: target.unverified,
+        error: response.ok ? "" : response.error || "",
+      };
+      sources.push(summary);
+      if (verified.length) {
+        hits = hits.concat(verified);
+        if (hits.length > GLOBAL_HIT_CAP) {
+          hits = hits.slice(0, GLOBAL_HIT_CAP);
+          truncated = true;
+        }
+      }
+      /* Streamed so the panel can paint a fast source before a slow one
+       * finishes; the caller drops anything from a stale session. */
+      if (opts.onSource) opts.onSource(summary, verified);
+      return summary;
+    });
+
+    await runPool(tasks, {
+      concurrency: opts.concurrency,
+      shouldStop: opts.shouldStop,
+    });
+
+    return { hits: dedupeHits(hits), sources, truncated, term: parsed.term };
+  }
+
   globalThis.SNCodeSearch = {
     MIN_ANCHOR_LENGTH,
+    SOURCE_STATUS,
+    GLOBAL_HIT_CAP,
     PER_SOURCE_LIMIT,
     SEARCH_TARGETS,
     targetById,
@@ -856,5 +1016,8 @@
     resolveAncestry,
     probe,
     loadProbe,
+    selectTargets,
+    hitsFromRows,
+    runSearch,
   };
 })();

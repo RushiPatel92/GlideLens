@@ -496,3 +496,159 @@ test("a failed probe means unknown, not absent", async () => {
   assert.deepStrictEqual(own(result.targets.x.fields), ["script", "condition"]);
   assert.strictEqual(result.targets.x.unverified, true);
 });
+
+/* ---------------------------------------------------------------------------
+ * Search orchestration
+ * ------------------------------------------------------------------------- */
+
+const DICT_TARGET = {
+  id: "dictionary",
+  kind: "dictionary",
+  label: "Dictionary",
+  table: "sys_dictionary",
+  fields: ["reference_qual"],
+  title: ["name", "element"],
+  tier: 1,
+};
+
+function transportReturning(rows, overrides) {
+  return async () => Object.assign({ ok: true, result: rows }, overrides || {});
+}
+
+test("only rows containing the real term become hits", async () => {
+  /* The server matched the anchor "current" and, per rule 1, may also have
+   * dropped the filter entirely and returned unrelated rows. Neither may
+   * reach the panel. */
+  const parsed = CS.parseQuery("current^active=true");
+  const rows = [
+    { sys_id: "1", name: "incident", element: "x", reference_qual: "current^active=true" },
+    { sys_id: "2", name: "incident", element: "y", reference_qual: "current.state == 3" },
+    { sys_id: "3", name: "incident", element: "z", reference_qual: "nothing relevant" },
+  ];
+  const result = await CS.runSearch(parsed, {
+    targets: [DICT_TARGET],
+    transport: transportReturning(rows),
+  });
+  assert.strictEqual(own(result.hits).length, 1);
+  assert.strictEqual(own(result.hits)[0].sysId, "1");
+});
+
+test("a hit carries the sys_id and a readable name", async () => {
+  const parsed = CS.parseQuery("javascript");
+  const result = await CS.runSearch(parsed, {
+    targets: [DICT_TARGET],
+    transport: transportReturning([
+      { sys_id: "abc", name: "incident", element: "caller_id", reference_qual: "javascript:x()" },
+    ]),
+  });
+  const hit = own(result.hits)[0];
+  assert.strictEqual(hit.sysId, "abc");
+  assert.strictEqual(hit.name, "incident · caller_id");
+  assert.strictEqual(hit.table, "sys_dictionary");
+  assert.strictEqual(hit.field, "reference_qual");
+  assert.ok(own(hit.snippets).length > 0);
+});
+
+test("a denied source is reported as denied, never as no matches", async () => {
+  const parsed = CS.parseQuery("javascript");
+  const result = await CS.runSearch(parsed, {
+    targets: [DICT_TARGET],
+    transport: async () => ({ ok: false, status: 403, error: "HTTP 403" }),
+  });
+  assert.strictEqual(own(result.sources)[0].status, "denied");
+  assert.strictEqual(own(result.sources)[0].count, 0);
+});
+
+test("status distinguishes absent, timed out and empty", async () => {
+  const parsed = CS.parseQuery("javascript");
+  const status = async (response) => {
+    const result = await CS.runSearch(parsed, {
+      targets: [DICT_TARGET],
+      transport: async () => response,
+    });
+    return own(result.sources)[0].status;
+  };
+  assert.strictEqual(await status({ ok: false, status: 404, error: "gone" }), "absent");
+  assert.strictEqual(await status({ ok: false, status: 0, timedOut: true }), "timed-out");
+  assert.strictEqual(await status({ ok: true, result: [] }), "no-matches");
+});
+
+test("one failing source does not discard the others", async () => {
+  const parsed = CS.parseQuery("javascript");
+  const good = Object.assign({}, DICT_TARGET, { id: "good", table: "sys_script" });
+  const result = await CS.runSearch(parsed, {
+    targets: [DICT_TARGET, good],
+    transport: async (request) =>
+      request.table === "sys_dictionary"
+        ? { ok: false, status: 403, error: "denied" }
+        : {
+            ok: true,
+            result: [{ sys_id: "9", name: "n", element: "e", reference_qual: "javascript:y()" }],
+          },
+  });
+  assert.strictEqual(own(result.hits).length, 1);
+  assert.strictEqual(own(result.sources).length, 2);
+  assert.strictEqual(
+    own(result.sources).filter((s) => s.status === "denied").length,
+    1
+  );
+});
+
+test("a source hitting the row limit is reported as capped", async () => {
+  const parsed = CS.parseQuery("javascript");
+  const rows = Array.from({ length: 5 }, (unused, i) => ({
+    sys_id: String(i),
+    name: "t",
+    element: "e",
+    reference_qual: "javascript:x()",
+  }));
+  const result = await CS.runSearch(parsed, {
+    targets: [DICT_TARGET],
+    transport: transportReturning(rows),
+    limit: 5,
+  });
+  assert.strictEqual(own(result.sources)[0].status, "capped");
+});
+
+test("table: and kind: filters narrow which sources run", () => {
+  const scoped = CS.selectTargets(
+    { filters: { tables: ["sys_dictionary"], kinds: [] } },
+    null
+  );
+  assert.strictEqual(own(scoped).length, 1);
+  assert.strictEqual(own(scoped)[0].table, "sys_dictionary");
+
+  const byKind = CS.selectTargets({ filters: { tables: [], kinds: ["transform"] } }, null);
+  assert.ok(own(byKind).length >= 3);
+  own(byKind).forEach((t) => assert.strictEqual(t.kind, "transform"));
+});
+
+test("the probe removes missing fields but keeps the source searchable", () => {
+  const probeResult = {
+    targets: { dictionary: { fields: ["reference_qual"], missing: ["calculation"] } },
+  };
+  const selected = CS.selectTargets({ filters: { tables: [], kinds: [] } }, probeResult);
+  const dictionary = own(selected).filter((t) => t.id === "dictionary")[0];
+  assert.deepStrictEqual(own(dictionary.fields), ["reference_qual"]);
+  assert.deepStrictEqual(own(dictionary.missingFields), ["calculation"]);
+});
+
+test("a source whose every field is missing is not searched at all", () => {
+  const probeResult = { targets: { dictionary: { fields: [], missing: ["reference_qual"] } } };
+  const selected = CS.selectTargets({ filters: { tables: ["sys_dictionary"], kinds: [] } }, probeResult);
+  assert.strictEqual(own(selected).length, 0);
+});
+
+test("a sensitive hit is redacted on the way out of the search", async () => {
+  const target = Object.assign({}, DICT_TARGET, { title: ["name"] });
+  const parsed = CS.parseQuery("javascript");
+  const result = await CS.runSearch(parsed, {
+    targets: [target],
+    transport: transportReturning([
+      { sys_id: "1", name: "u_api_key_lookup", reference_qual: "javascript: 'sk-live-xyz'" },
+    ]),
+  });
+  const hit = own(result.hits)[0];
+  assert.strictEqual(hit.redacted, true);
+  assert.ok(JSON.stringify(hit).indexOf("sk-live-xyz") === -1);
+});
