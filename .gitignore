@@ -4,4 +4,13 @@
 # Claude Code's local memory store — machine-local notes, not project source
 memory/
 
+# Local agent config. Only .claude/settings.local.json is covered by the user's
+# global ignore file, which does not travel with a clone, so ignore the whole
+# directory here.
+.claude/
+
+# Working notes and design drafts. This repo is public and every committed file
+# ships in the Download ZIP, so scratch material stays local.
+plans/
+
 .DS_Store
