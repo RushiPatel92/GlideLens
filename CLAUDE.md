@@ -95,7 +95,16 @@ the caller falls back gracefully.
     checking `sys_dictionary`, so inherited fields resolve correctly.
   - "Languages" glyph → `sys_translated_text` (per-record VALUE translations),
     filtered by `documentkey=<record sys_id>^fieldname=<field>` when a record is
-    open, else `tablename^fieldname`.
+    open, else `tablename^fieldname`. Rendered **only** for fields whose
+    dictionary type is translatable (`translated`, `translated_text`,
+    `translated_html`, `translated_field`); nothing else can ever have a row
+    there. The set comes from one `sys_dictionary` query per table hierarchy,
+    cached for the page's life and resolved OFF the synchronous toggle path, so
+    value icons land a beat after the globes and `toggleTranslationIcons` keeps
+    returning its count immediately. A failed lookup shows the icon rather than
+    hiding a working one. Checked against a live instance: `task`, `incident`,
+    `sc_req_item` and `change_request` have zero translatable fields between
+    them, which is why the icon correctly never appears on those forms.
 - **Field-name badges** parse the classic label id format `label.<table>.<field>`.
 - **Variable insight icons** (Service Portal catalog forms) drop a per-variable
   icon; clicking opens Catalog Insight scoped to that variable's onChange client
