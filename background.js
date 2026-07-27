@@ -2942,6 +2942,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+  if (msg && msg.type === "INJECT_CODE_SEARCH" && sender.tab) {
+    /*
+     * Lazy injection. code_search.js and code_search_ui.js are the two largest
+     * scripts in the extension for a feature used occasionally, so they are
+     * kept out of manifest.json's content_scripts and injected on first use of
+     * the palette command instead — nothing loads at document_idle.
+     *
+     * Isolated world (the default for files:), into the frame that asked, so
+     * content.js can call SNCodeSearch directly. Both files no-op if already
+     * present, which makes repeat invocations free. No web_accessible_resources
+     * entry is needed: executeScript with files: does not require one.
+     */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["code_search.js", "code_search_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
   if (msg && msg.type === "SN_CODE_SEARCH_GET" && sender.tab) {
     codeSearchTableGet(sender.tab.id, {
       table: msg.table,

@@ -2816,6 +2816,25 @@ function buildCommands() {
       run: () => broadcastFrameCommand("TOGGLE_VARIABLE_INSIGHT"),
     },
     {
+      id: "code-search",
+      name: "Search code…",
+      keywords: [
+        "code", "search", "grep", "find", "source", "script", "ref qual",
+        "reference qualifier", "dictionary", "transform", "variable",
+        "script include", "business rule",
+      ],
+      group: "Tools",
+      input: true,
+      placeholder: "text to find (e.g. AutoResolutionRefQualifier)",
+      /* No keepOpen: the palette closes on Enter and the search runs on into
+       * its own panel, rather than sitting on top of the results. */
+      run: (arg) => {
+        const term = (arg || "").trim();
+        if (!term) return;
+        return runCodeSearch(term);
+      },
+    },
+    {
       id: "open-table-list",
       name: "Open table list…",
       keywords: ["navigate", "jump", "list", "table", "open"],
@@ -2848,6 +2867,76 @@ function buildCommands() {
     })),
   ];
   return cmds;
+}
+
+/* =====================================================================
+ * CODE SEARCH
+ *
+ * Orchestration only — the engine is code_search.js and the panel is
+ * code_search_ui.js, both injected on demand rather than shipped in
+ * content_scripts (they are the largest scripts here, for a feature used
+ * occasionally).
+ * ===================================================================== */
+
+let codeSearchSession = null;
+
+async function ensureCodeSearchLoaded() {
+  if (globalThis.SNCodeSearch && globalThis.SNCodeSearchUI) return true;
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_CODE_SEARCH" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load code search.");
+  }
+  return Boolean(globalThis.SNCodeSearch && globalThis.SNCodeSearchUI);
+}
+
+async function runCodeSearch(rawTerm) {
+  try {
+    await ensureCodeSearchLoaded();
+  } catch (error) {
+    showToast(String(error.message || error), true);
+    return;
+  }
+
+  const engine = globalThis.SNCodeSearch;
+  const ui = globalThis.SNCodeSearchUI;
+
+  const parsed = engine.parseQuery(rawTerm);
+  if (!parsed.ok) {
+    showToast(parsed.error, true, 7000);
+    return;
+  }
+
+  /* One tracker for the page, so a second search invalidates the first rather
+   * than racing it into the panel. */
+  if (!codeSearchSession) codeSearchSession = engine.createSessionTracker();
+  const sessionId = codeSearchSession.next();
+  const isStale = () => !codeSearchSession.isCurrent(sessionId);
+
+  ui.open({
+    term: parsed.term,
+    onCancel: () => codeSearchSession.cancel(),
+  });
+
+  try {
+    /* The probe is per-origin and cached for a week; a failure means "unknown",
+     * so the search still runs against everything the registry declares. */
+    const probeResult = await engine.loadProbe(location.origin);
+    if (isStale()) return;
+
+    const result = await engine.runSearch(parsed, {
+      probe: probeResult,
+      shouldStop: isStale,
+      onSource: (summary, hits) => {
+        if (isStale()) return;
+        ui.addSource(summary, hits);
+      },
+    });
+    if (isStale()) return;
+    ui.complete(result);
+  } catch (error) {
+    if (isStale()) return;
+    ui.showError(String(error.message || error));
+  }
 }
 
 /* ---- Palette state ---- */
