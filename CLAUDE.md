@@ -62,12 +62,20 @@ the toolbar/shell is the top frame. The form DOM (labels, fields) lives in
 - keyboard command (`background.js`) → content script for the field-name toggle.
 
 ### REST from the content script
-`content.js` calls the Table API (`/api/now/table/...`) directly. This works
-because `gsft_main` is **same-origin** with the instance, so the session cookie
-authenticates the GET. Cross-origin fetches would NOT work from a content
-script under MV3 — they'd have to move to the service worker. Reads here assume
-GET doesn't require the CSRF token; if an instance enforces it, calls throw and
-the caller falls back gracefully.
+`content.js` reads the Table API (`/api/now/table/...`) through `snGetMany`,
+which hands the request to the service worker to run in the **MAIN world**,
+where it can attach `X-UserToken` from `g_ck`. `snGet` is a one-row wrapper over
+that same path.
+
+**Do NOT fetch the Table API directly from the isolated world.** It is
+same-origin with the instance, so the session cookie goes along — but the CSRF
+token does not, and an instance that enforces the token on REST GETs answers
+**401 to every call**. This is not hypothetical; it was observed on a real
+instance, where it had been breaking dictionary-inheritance resolution for the
+translation icons. The failure mode is nasty: callers treat a throw as "no data"
+and fall back, so a read that never worked looks like an empty result rather
+than an error. Cross-origin fetches would not work from a content script under
+MV3 at all.
 
 ## Files
 - `manifest.json` — MV3 config, permissions, content scripts, command.

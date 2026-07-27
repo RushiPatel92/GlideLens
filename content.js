@@ -370,22 +370,22 @@ const ICON_VAR_LOGIC =
   '<rect x="14" y="14" width="7" height="7" rx="1"></rect>' +
   '<path d="M6.5 10v3a2 2 0 0 0 2 2H14"></path></svg>';
 
-// Minimal authenticated Table API GET (same-origin, cookie auth).
+/*
+ * Single-row Table API read.
+ *
+ * This used to fetch directly from the isolated world. That carries the session
+ * cookie but NOT the CSRF token, and an instance that enforces the token on REST
+ * GETs answers 401 — observed on a real instance for every call. The failure was
+ * silent: resolveDefiningTable() caught it and fell back to the form table, so
+ * inherited fields resolved to the wrong table and their translations looked
+ * absent rather than misfiled.
+ *
+ * Delegating to snGetMany routes the read through the MAIN-world helper, which
+ * attaches X-UserToken from g_ck. Slower than a direct fetch by a message hop,
+ * and correct on instances a direct fetch cannot read at all.
+ */
 async function snGet(table, query, fields) {
-  const url =
-    location.origin +
-    "/api/now/table/" +
-    encodeURIComponent(table) +
-    "?sysparm_query=" + encodeURIComponent(query) +
-    "&sysparm_fields=" + encodeURIComponent(fields) +
-    "&sysparm_limit=1";
-  const res = await fetch(url, {
-    credentials: "include",
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error("HTTP " + res.status);
-  const data = await res.json();
-  return (data && data.result) || [];
+  return snGetMany(table, query, fields, 1);
 }
 
 async function snGetMany(table, query, fields, limit, options) {
@@ -2185,7 +2185,7 @@ async function resolveDefiningTable(startTable, field) {
     const dict = await snGet("sys_dictionary", `name=${table}^element=${field}`, "sys_id");
     if (dict.length) return table; // defined directly on this table
     const obj = await snGet("sys_db_object", `name=${table}`, "super_class.name");
-    const parent = obj.length && obj[0]["super_class.name"];
+    const parent = obj.length && snFieldValue(obj[0], "super_class.name");
     if (!parent) break;
     table = parent;
   }
@@ -2356,7 +2356,7 @@ async function tableHierarchy(startTable) {
     if (chain.includes(table)) break; // a cyclic super_class would spin forever
     chain.push(table);
     const obj = await snGet("sys_db_object", `name=${table}`, "super_class.name");
-    const parent = obj.length && obj[0]["super_class.name"];
+    const parent = obj.length && snFieldValue(obj[0], "super_class.name");
     if (!parent) break;
     table = parent;
   }
