@@ -1,13 +1,52 @@
 # Changelog
 
 All notable changes to SN Dev Helper are recorded here. The version is the one
-in [`manifest.json`](manifest.json); bump it in the same change that adds an
-entry below.
+in [`manifest.json`](manifest.json). Work can be staged under **Unreleased**;
+when a release is cut, rename that section and bump the manifest in the same
+change.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
+
+## [Unreleased]
+
+### Added
+- **Read-only code search** from the command palette. **Search code…** searches
+  14 Table API sources spanning everyday scripts and configuration source the
+  platform's own code search commonly misses: Script Includes, Business Rules,
+  Client Scripts, catalog client scripts, Script Actions, Scripted REST
+  operations, dictionary and override logic, catalog variable definitions,
+  transform logic, record producers, and UI Actions.
+- Plain case-insensitive text, `"quoted phrase"`, `table:`, and `kind:` query
+  syntax. Every returned row is verified in the browser against the original
+  term before it can render; this prevents an invalid or silently dropped
+  Table API condition from turning into trusted false results. Regex is refused
+  because an anchor-prefiltered regex search could silently miss matches.
+- A lazily loaded, shadow-root results panel with grouped, line-numbered
+  snippets, match highlighting, per-record and "open as list" links, filtering
+  over loaded results, cancellation, result caps, and a source-status drawer
+  that distinguishes no matches from denied, absent, timed-out, capped, and
+  failed sources. Search files load only on first use and `manifest.json` needs
+  no content-script entry.
+- A cached, inheritance-aware registry probe validates each searchable
+  table/field against the instance before use. Searches run through one
+  token-bearing frame with bounded concurrency and per-source status; source
+  bodies are not persisted, sensitive-named hits are redacted, and everything
+  is GET-only.
+
+### Fixed
+- Value-translation icons now appear only on fields whose dictionary type can
+  have `sys_translated_text` rows, instead of opening an inevitably empty list
+  from ordinary fields. The lookup covers inherited fields, is cached per table
+  for the page, and fails open with a console warning rather than hiding a
+  potentially valid icon.
+- Single-row Table API reads now use the MAIN-world, CSRF-token-bearing path.
+  On token-enforcing instances the previous isolated-world request returned
+  401, then silently fell back to the form table; inherited fields such as
+  `task.short_description` on an Incident could therefore open translation
+  records against the wrong table.
 
 ## [0.6.0] - 2026-07-25
 
