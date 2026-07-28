@@ -19,11 +19,14 @@ reconstructed version by version.
   Client Scripts, catalog client scripts, Script Actions, Scripted REST
   operations, dictionary and override logic, catalog variable definitions,
   transform logic, record producers, and UI Actions.
-- Plain case-insensitive text, `"quoted phrase"`, `table:`, and `kind:` query
-  syntax. Every returned row is verified in the browser against the original
-  term before it can render; this prevents an invalid or silently dropped
-  Table API condition from turning into trusted false results. Regex is refused
-  because an anchor-prefiltered regex search could silently miss matches.
+- Plain case-insensitive text, `"quoted phrase"`, and an explicit `table:`
+  escape hatch for retrying a capped or slow source. Normal searches always
+  cover every supported source, and a table-scoped results panel announces the
+  reduced scope prominently. Every returned row is verified in the browser
+  against the original term before it can render; this prevents an invalid or
+  silently dropped Table API condition from turning into trusted false results.
+  Regex is refused because an anchor-prefiltered regex search could silently
+  miss matches.
 - A lazily loaded, shadow-root results panel with grouped, line-numbered
   snippets, match highlighting, per-record and "open as list" links, filtering
   over loaded results, cancellation, result caps, and a source-status drawer

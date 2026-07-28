@@ -151,8 +151,12 @@ MV3 at all.
   scripts, record producers, UI Actions, Script Includes, Business Rules,
   Client Scripts, catalog client scripts, Script Actions, and Scripted REST
   operations. It supports a case-insensitive substring, one `"quoted phrase"`,
-  and `table:`/`kind:` filters; regex is deliberately refused because a literal
-  server prefilter cannot soundly cover alternation or optional matches.
+  and a `table:` escape hatch for targeted retries; normal searches cover every
+  tier-1 source, and the UI announces table scope prominently. There is
+  deliberately no `kind:` filter: its internal taxonomy was not discoverable,
+  and silently excluding sources undermines confidence in a usage search.
+  Regex is deliberately refused because a literal server prefilter cannot
+  soundly cover alternation or optional matches.
   Only a query-safe anchor reaches the encoded query, and every returned field
   is verified against the original term before rendering. This is mandatory:
   a live instance confirmed that an invalid field in `sysparm_query` is silently

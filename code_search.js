@@ -56,7 +56,7 @@
   /* =====================================================================
    * QUERY PARSING
    *
-   * R1 syntax, and no more: plain substring, "quoted phrase", table:, kind:.
+   * R1 syntax, and no more: plain substring, "quoted phrase", table:.
    * AND / -exclude / scope: / since: are sound but deferred; the shape below
    * (a filters object beside a term) is what lets them slot in later without
    * rewriting callers.
@@ -73,7 +73,7 @@
 
   function parseQuery(raw) {
     const input = String(raw == null ? "" : raw).trim();
-    const filters = { tables: [], kinds: [] };
+    const filters = { tables: [] };
 
     if (!input) {
       return { ok: false, error: "Type something to search for.", filters };
@@ -97,10 +97,26 @@
       return " ";
     });
 
-    rest = rest.replace(/(?:^|\s)(table|kind):([^\s]+)/gi, (whole, key, value) => {
-      const bucket = key.toLowerCase() === "table" ? filters.tables : filters.kinds;
+    /* kind: used to narrow the registry through an internal taxonomy. It was
+     * removed because a search for usage should be exhaustive by default, and
+     * silently omitting most sources creates false confidence. Refuse it
+     * explicitly so an old query cannot degrade into a literal that finds
+     * nothing. Quoted "kind:..." remains ordinary text. */
+    if (/(?:^|\s)kind:[^\s]+/i.test(rest)) {
+      return {
+        ok: false,
+        error:
+          "kind: filters aren't supported. Code Search searches every supported " +
+          "source by default; use table:<name> only for a targeted retry.",
+        filters,
+      };
+    }
+
+    rest = rest.replace(/(?:^|\s)table:([^\s]+)/gi, (whole, value) => {
       const cleaned = value.trim().toLowerCase();
-      if (cleaned && bucket.indexOf(cleaned) === -1) bucket.push(cleaned);
+      if (cleaned && filters.tables.indexOf(cleaned) === -1) {
+        filters.tables.push(cleaned);
+      }
       return " ";
     });
 
@@ -112,7 +128,7 @@
     const isPhrase = phrases.length > 0;
 
     if (!term) {
-      if (filters.tables.length || filters.kinds.length) {
+      if (filters.tables.length) {
         return {
           ok: false,
           error: "Add something to search for — filters alone match everything.",
@@ -371,8 +387,10 @@
    * 2026-07-27 — a wrong column name does not error, it returns zero rows
    * forever, so nothing here is guessed.
    *
-   * `kind` backs the kind: filter and groups the results panel. `tier` 1 is
-   * default-on; tier 2 is opt-in (slow, noisy, or commonly restricted).
+   * `kind` is internal classification metadata, not public query syntax.
+   * Searches cover every tier-1 source unless the user explicitly names a
+   * concrete ServiceNow table for a targeted retry. `tier` 1 is default-on;
+   * tier 2 is opt-in (slow, noisy, or commonly restricted).
    * ===================================================================== */
 
   const SEARCH_TARGETS = [
@@ -861,13 +879,11 @@
   function selectTargets(parsed, probeResult, targets) {
     const all = targets || SEARCH_TARGETS;
     const wantTables = (parsed.filters && parsed.filters.tables) || [];
-    const wantKinds = (parsed.filters && parsed.filters.kinds) || [];
     const probed = (probeResult && probeResult.targets) || Object.create(null);
 
     return all
       .filter((target) => (target.tier || 1) === 1)
       .filter((target) => !wantTables.length || wantTables.indexOf(target.table) !== -1)
-      .filter((target) => !wantKinds.length || wantKinds.indexOf(target.kind) !== -1)
       .map((target) => {
         const entry = probed[target.id];
         /* No probe entry means the probe never ran — search everything the

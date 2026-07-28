@@ -130,7 +130,7 @@ and `Esc` to close. Some commands accept an argument in an inline input field.
 | Toggle field names | Show/hide technical field names (`label.<table>.<field>`) as badges next to form labels. Also bound to `Alt+Shift+F`. |
 | Toggle translation icons | Show/hide per-label icons: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
 | Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax timing, and JavaScript errors, then view a filterable results panel. Best-effort; does not promise named Client Script / UI Policy attribution. |
-| Search code… | Search 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Optional `table:` and `kind:` filters narrow the sources before searching. Results are read-only and open the owning platform record. |
+| Search code… | Search all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
 
 #### Code search
 
@@ -142,8 +142,12 @@ case-insensitive. Examples:
 GlideRecord
 "current.assignment_group"
 table:sys_dictionary AutoResolutionRefQualifier
-kind:transform "ignore = true"
 ```
+
+An ordinary search always covers every supported source. Use `table:<name>`
+only to retry one concrete ServiceNow table after a broad search reports that
+source as capped or slow. A table-scoped results panel displays the scope
+prominently so it cannot be mistaken for a complete search.
 
 The results panel groups verified matches by source and shows the matching
 field, line-numbered snippets, and a link to each record or the matching set as
@@ -153,8 +157,8 @@ does not look complete. A filter box narrows the results already loaded.
 
 Code search is read-only: it performs same-instance Table API GETs and never
 runs or edits what it finds. It does not support regular expressions. Searches
-are capped at 50 records per source; refine the text or add a `table:`/`kind:`
-filter when a source reports **Capped**.
+are capped at 50 records per source; refine the text or use `table:<name>` to
+retry that source when it reports **Capped**.
 
 **Record**
 

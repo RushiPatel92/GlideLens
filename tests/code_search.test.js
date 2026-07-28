@@ -123,12 +123,18 @@ test("quoted phrase keeps spaces and is not parsed for filters", () => {
   assert.deepStrictEqual(own(parsed.filters.tables), []);
 });
 
-test("table: and kind: filters are extracted and lowercased", () => {
-  const parsed = CS.parseQuery("GlideRecord table:sys_script_include kind:Dictionary");
+test("table: filters are extracted and lowercased", () => {
+  const parsed = CS.parseQuery("GlideRecord table:SYS_SCRIPT_INCLUDE");
   assert.ok(parsed.ok);
   assert.strictEqual(parsed.term, "GlideRecord");
   assert.deepStrictEqual(own(parsed.filters.tables), ["sys_script_include"]);
-  assert.deepStrictEqual(own(parsed.filters.kinds), ["dictionary"]);
+});
+
+test("kind: filters are refused rather than silently narrowing the search", () => {
+  const parsed = CS.parseQuery("kind:catalog getpaymentterm");
+  assert.strictEqual(parsed.ok, false);
+  assert.match(parsed.error, /every supported source/);
+  assert.match(parsed.error, /table:<name>/);
 });
 
 test("filters with no term are refused rather than matching everything", () => {
@@ -610,24 +616,26 @@ test("a source hitting the row limit is reported as capped", async () => {
   assert.strictEqual(own(result.sources)[0].status, "capped");
 });
 
-test("table: and kind: filters narrow which sources run", () => {
+test("table: filters narrow which sources run", () => {
   const scoped = CS.selectTargets(
-    { filters: { tables: ["sys_dictionary"], kinds: [] } },
+    { filters: { tables: ["sys_dictionary"] } },
     null
   );
   assert.strictEqual(own(scoped).length, 1);
   assert.strictEqual(own(scoped)[0].table, "sys_dictionary");
+});
 
-  const byKind = CS.selectTargets({ filters: { tables: [], kinds: ["transform"] } }, null);
-  assert.ok(own(byKind).length >= 3);
-  own(byKind).forEach((t) => assert.strictEqual(t.kind, "transform"));
+test("an unscoped search selects every tier-1 source", () => {
+  const unscoped = CS.selectTargets({ filters: { tables: [] } }, null);
+  const tierOne = own(CS.SEARCH_TARGETS).filter((target) => (target.tier || 1) === 1);
+  assert.strictEqual(own(unscoped).length, tierOne.length);
 });
 
 test("the probe removes missing fields but keeps the source searchable", () => {
   const probeResult = {
     targets: { dictionary: { fields: ["reference_qual"], missing: ["calculation"] } },
   };
-  const selected = CS.selectTargets({ filters: { tables: [], kinds: [] } }, probeResult);
+  const selected = CS.selectTargets({ filters: { tables: [] } }, probeResult);
   const dictionary = own(selected).filter((t) => t.id === "dictionary")[0];
   assert.deepStrictEqual(own(dictionary.fields), ["reference_qual"]);
   assert.deepStrictEqual(own(dictionary.missingFields), ["calculation"]);
@@ -635,7 +643,7 @@ test("the probe removes missing fields but keeps the source searchable", () => {
 
 test("a source whose every field is missing is not searched at all", () => {
   const probeResult = { targets: { dictionary: { fields: [], missing: ["reference_qual"] } } };
-  const selected = CS.selectTargets({ filters: { tables: ["sys_dictionary"], kinds: [] } }, probeResult);
+  const selected = CS.selectTargets({ filters: { tables: ["sys_dictionary"] } }, probeResult);
   assert.strictEqual(own(selected).length, 0);
 });
 

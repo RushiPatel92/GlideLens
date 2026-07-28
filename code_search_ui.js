@@ -95,6 +95,11 @@
       border-radius:5px;padding:2px 8px;
     }
     .summary .chip-warn strong{color:#f0d79b}
+    .summary .chip-scope{
+      color:#bcece7;background:#183b3b;border:1px solid #2e6864;
+      border-radius:5px;padding:3px 8px;
+      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
+    }
     .spinner{
       width:11px;height:11px;border-radius:50%;border:2px solid #45456b;
       border-top-color:var(--teal);animation:spin .7s linear infinite;
@@ -504,7 +509,7 @@
     });
   };
 
-  const mount = (term) => {
+  const mount = (term, tableFilters) => {
     close();
     host = document.createElement("div");
     host.id = "sn-dev-helper-code-search";
@@ -527,6 +532,7 @@
             <button class="close" type="button" aria-label="Close">✕ Esc</button>
           </header>
           <div class="summary">
+            <span class="chip-scope" data-scope style="display:none"></span>
             <span><strong data-count="total">0</strong>matches</span>
             <span><strong data-count="sources">0</strong>sources reported</span>
             <span class="spinner" aria-label="Searching"></span>
@@ -556,6 +562,17 @@
 
     const termEl = shadow.querySelector(".term");
     if (termEl) termEl.textContent = term ? "“" + term + "”" : "";
+
+    const tables = (Array.isArray(tableFilters) ? tableFilters : []).filter(Boolean);
+    const scopeEl = shadow.querySelector("[data-scope]");
+    if (scopeEl && tables.length) {
+      scopeEl.style.display = "";
+      scopeEl.textContent =
+        (tables.length === 1 ? "Scoped to table: " : "Scoped to tables: ") +
+        tables.join(", ");
+      scopeEl.title = "Only the named table source" +
+        (tables.length === 1 ? " was" : "s were") + " searched";
+    }
 
     shadow.querySelector(".close").addEventListener("click", close);
     shadow
@@ -605,7 +622,7 @@
 
   const open = (options) => {
     const opts = options || {};
-    mount(opts.term);
+    mount(opts.term, opts.tables);
     onCancel = opts.onCancel || null;
   };
 

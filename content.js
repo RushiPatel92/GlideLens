@@ -2825,7 +2825,7 @@ function buildCommands() {
       ],
       group: "Tools",
       input: true,
-      placeholder: "text to find (e.g. AutoResolutionRefQualifier)",
+      placeholder: "text to find; optional table:<name>",
       /* No keepOpen: the palette closes on Enter and the search runs on into
        * its own panel, rather than sitting on top of the results. */
       run: (arg) => {
@@ -2914,6 +2914,7 @@ async function runCodeSearch(rawTerm) {
 
   ui.open({
     term: parsed.term,
+    tables: parsed.filters.tables,
     onCancel: () => codeSearchSession.cancel(),
   });
 
