@@ -97,21 +97,6 @@
       return " ";
     });
 
-    /* kind: used to narrow the registry through an internal taxonomy. It was
-     * removed because a search for usage should be exhaustive by default, and
-     * silently omitting most sources creates false confidence. Refuse it
-     * explicitly so an old query cannot degrade into a literal that finds
-     * nothing. Quoted "kind:..." remains ordinary text. */
-    if (/(?:^|\s)kind:[^\s]+/i.test(rest)) {
-      return {
-        ok: false,
-        error:
-          "kind: filters aren't supported. Code Search searches every supported " +
-          "source by default; use table:<name> only for a targeted retry.",
-        filters,
-      };
-    }
-
     rest = rest.replace(/(?:^|\s)table:([^\s]+)/gi, (whole, value) => {
       const cleaned = value.trim().toLowerCase();
       if (cleaned && filters.tables.indexOf(cleaned) === -1) {
@@ -520,6 +505,11 @@
       tier: 1,
     },
     {
+      /* A Table API read from sys_script_client also returns child
+       * catalog_script_client rows. The child has its own adapter below, so
+       * exactClass keeps one record from appearing in both groups. Verified
+       * against the PDI: sys_class_name is present in both parent and child
+       * payloads and identifies the concrete table. */
       id: "client-script",
       kind: "script",
       label: "Client script",
@@ -527,6 +517,7 @@
       fields: ["script", "condition"],
       title: ["name"],
       subtitle: ["table"],
+      exactClass: "sys_script_client",
       tier: 1,
     },
     {
@@ -906,7 +897,24 @@
         .concat(target.fields)
         .concat(target.title || [])
         .concat(target.subtitle || [])
+        .concat(target.exactClass ? ["sys_class_name"] : [])
     ).join(",");
+  }
+
+  /*
+   * Parent-table adapters can opt out of inherited child rows. The server
+   * condition prevents child rows from consuming the 50-row source cap; the
+   * client-side exactClass check below remains the authority because Table API
+   * conditions can be silently dropped.
+   */
+  function buildTargetQuery(target, anchor) {
+    const fieldQuery = buildFieldQuery(target.fields, anchor);
+    if (!target.exactClass) return fieldQuery;
+    const className = String(target.exactClass);
+    if (!/^[A-Za-z0-9_]+$/.test(className)) {
+      throw new Error("Unsafe exact class name for an encoded query: " + className);
+    }
+    return "sys_class_name=" + className + "^" + fieldQuery;
   }
 
   function displayValue(row, fields) {
@@ -924,6 +932,12 @@
   function hitsFromRows(rows, target, parsed) {
     const hits = [];
     (rows || []).forEach((row) => {
+      if (
+        target.exactClass &&
+        rowValue(row, "sys_class_name") !== target.exactClass
+      ) {
+        return;
+      }
       target.fields.forEach((field) => {
         const text = rowValue(row, field);
         if (!text || !verifyMatch(text, parsed.term)) return;
@@ -969,7 +983,7 @@
     const tasks = targets.map((target) => async () => {
       const response = await transport({
         table: target.table,
-        query: buildFieldQuery(target.fields, parsed.anchor),
+        query: buildTargetQuery(target, parsed.anchor),
         fields: requestFields(target),
         limit,
       });
@@ -1019,6 +1033,7 @@
     extractAnchor,
     buildAnchorCondition,
     buildFieldQuery,
+    buildTargetQuery,
     verifyMatch,
     findMatchOffsets,
     buildSnippets,

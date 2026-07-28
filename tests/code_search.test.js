@@ -130,11 +130,11 @@ test("table: filters are extracted and lowercased", () => {
   assert.deepStrictEqual(own(parsed.filters.tables), ["sys_script_include"]);
 });
 
-test("kind: filters are refused rather than silently narrowing the search", () => {
+test("unknown colon syntax remains ordinary search text", () => {
   const parsed = CS.parseQuery("kind:catalog getpaymentterm");
-  assert.strictEqual(parsed.ok, false);
-  assert.match(parsed.error, /every supported source/);
-  assert.match(parsed.error, /table:<name>/);
+  assert.ok(parsed.ok);
+  assert.strictEqual(parsed.term, "kind:catalog getpaymentterm");
+  assert.deepStrictEqual(own(parsed.filters.tables), []);
 });
 
 test("filters with no term are refused rather than matching everything", () => {
@@ -598,6 +598,73 @@ test("one failing source does not discard the others", async () => {
     own(result.sources).filter((s) => s.status === "denied").length,
     1
   );
+});
+
+test("a parent client-script adapter excludes catalog child rows", async () => {
+  const parsed = CS.parseQuery("getpaymentterm");
+  const clientTarget = {
+    id: "client-script",
+    kind: "script",
+    label: "Client script",
+    table: "sys_script_client",
+    fields: ["script", "condition"],
+    title: ["name"],
+    exactClass: "sys_script_client",
+    tier: 1,
+  };
+  const catalogTarget = {
+    id: "catalog-client-script",
+    kind: "catalog",
+    label: "Catalog client script",
+    table: "catalog_script_client",
+    fields: ["script", "condition"],
+    title: ["name"],
+    tier: 1,
+  };
+  const catalogRow = {
+    sys_id: "catalog-1",
+    name: "Catalog use",
+    sys_class_name: "catalog_script_client",
+    script: "getPaymentTerm();",
+    condition: "",
+  };
+  const requests = [];
+  const result = await CS.runSearch(parsed, {
+    targets: [clientTarget, catalogTarget],
+    transport: async (request) => {
+      requests.push(request);
+      if (request.table === "sys_script_client") {
+        return {
+          ok: true,
+          result: [
+            catalogRow,
+            {
+              sys_id: "client-1",
+              name: "Form use",
+              sys_class_name: "sys_script_client",
+              script: "getPaymentTerm();",
+              condition: "",
+            },
+          ],
+        };
+      }
+      return { ok: true, result: [catalogRow] };
+    },
+  });
+
+  const hits = own(result.hits);
+  assert.strictEqual(hits.length, 2);
+  assert.deepStrictEqual(
+    hits.map((hit) => hit.table).sort(),
+    ["catalog_script_client", "sys_script_client"]
+  );
+  assert.strictEqual(hits.filter((hit) => hit.sysId === "catalog-1").length, 1);
+
+  const parentRequest = requests.filter(
+    (request) => request.table === "sys_script_client"
+  )[0];
+  assert.match(parentRequest.query, /^sys_class_name=sys_script_client\^/);
+  assert.match(parentRequest.fields, /(?:^|,)sys_class_name(?:,|$)/);
 });
 
 test("a source hitting the row limit is reported as capped", async () => {

@@ -152,11 +152,9 @@ MV3 at all.
   Client Scripts, catalog client scripts, Script Actions, and Scripted REST
   operations. It supports a case-insensitive substring, one `"quoted phrase"`,
   and a `table:` escape hatch for targeted retries; normal searches cover every
-  tier-1 source, and the UI announces table scope prominently. There is
-  deliberately no `kind:` filter: its internal taxonomy was not discoverable,
-  and silently excluding sources undermines confidence in a usage search.
-  Regex is deliberately refused because a literal server prefilter cannot
-  soundly cover alternation or optional matches.
+  tier-1 source, and the UI announces table scope prominently. Regex is
+  deliberately refused because a literal server prefilter cannot soundly cover
+  alternation or optional matches.
   Only a query-safe anchor reaches the encoded query, and every returned field
   is verified against the original term before rendering. This is mandatory:
   a live instance confirmed that an invalid field in `sysparm_query` is silently
@@ -164,11 +162,16 @@ MV3 at all.
   `sys_db_object.super_class`, because catalog-variable and catalog-client-
   script fields are defined on parent tables even though the Table API exposes
   them on the children. Probe results are cached per origin for seven days; a
-  failed probe means unknown, not absent. Requests use `SN_CODE_SEARCH_GET`
-  through one token-bearing frame, concurrency 4, a 20-second source timeout,
-  and a 50-row per-source cap. The engine and UI are lazily injected on first
-  use and remain absent from `manifest.json`; all instance text is rendered
-  without instance-provided HTML, and sensitive-named hits are redacted.
+  failed probe means unknown, not absent. Parent-table adapters may declare an
+  `exactClass`; `sys_script_client` does this because its Table API response
+  includes `catalog_script_client` child rows that the child adapter also
+  returns. `sys_class_name` is requested, filtered server-side to protect the
+  row cap, and verified client-side before rendering. Requests use
+  `SN_CODE_SEARCH_GET` through one token-bearing frame, concurrency 4, a
+  20-second source timeout, and a 50-row per-source cap. The engine and UI are
+  lazily injected on first use and remain absent from `manifest.json`; all
+  instance text is rendered without instance-provided HTML, and sensitive-named
+  hits are redacted.
 
 ## Conventions & constraints
 - **IMPORTANT — Never delete a branch from GitHub or any Git remote.** Remote

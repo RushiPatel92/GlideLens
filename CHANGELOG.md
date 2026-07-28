@@ -27,7 +27,7 @@ reconstructed version by version.
   silently dropped Table API condition from turning into trusted false results.
   Regex is refused because an anchor-prefiltered regex search could silently
   miss matches.
-- A lazily loaded, shadow-root results panel with grouped, line-numbered
+- A larger, lazily loaded shadow-root results panel with grouped, line-numbered
   snippets, match highlighting, per-record and "open as list" links, filtering
   over loaded results, cancellation, result caps, and a source-status drawer
   that distinguishes no matches from denied, absent, timed-out, capped, and
@@ -40,6 +40,10 @@ reconstructed version by version.
   is GET-only.
 
 ### Fixed
+- Catalog Client Script results no longer appear a second time under Client
+  Scripts. The parent `sys_script_client` adapter now requests and verifies the
+  concrete `sys_class_name`, excluding inherited `catalog_script_client` rows
+  that are handled by their own adapter.
 - Value-translation icons now appear only on fields whose dictionary type can
   have `sys_translated_text` rows, instead of opening an inevitably empty list
   from ordinary fields. The lookup covers inherited fields, is cached per table

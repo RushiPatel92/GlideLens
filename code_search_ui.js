@@ -61,10 +61,10 @@
     button,input{font:inherit}
     .overlay{
       position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
-      display:flex;align-items:center;justify-content:center;padding:24px;
+      display:flex;align-items:center;justify-content:center;padding:12px;
     }
     .panel{
-      width:min(940px,calc(100vw - 32px));height:min(700px,calc(100vh - 40px));
+      width:min(1180px,calc(100vw - 24px));height:min(820px,calc(100vh - 24px));
       display:flex;flex-direction:column;overflow:hidden;
       background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
       box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;
@@ -111,7 +111,7 @@
       border-bottom:1px solid #292944;
     }
     .search{
-      margin-left:auto;width:250px;max-width:40vw;background:#313150;
+      margin-left:auto;width:320px;max-width:48vw;background:#313150;
       border:1px solid #575780;border-radius:6px;color:#f0f0fa;
       outline:none;padding:7px 9px;font-size:12px;
     }
