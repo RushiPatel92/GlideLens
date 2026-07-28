@@ -10,6 +10,8 @@ spirit of snUtils. Plain JavaScript, zero runtime dependencies, zero build step.
 - Instance info at a glance in the toolbar popup.
 - A `\` **command palette** on any ServiceNow tab for navigation, record
   helpers, and toggles.
+- Read-only **code search** across everyday scripts and configuration source
+  the platform's own code search commonly misses.
 - Technical **field-name badges** and **translation icons** on classic forms.
 - A best-effort **Debug Timeline** recorder for `g_form` calls, field events,
   GlideAjax timing, and JavaScript errors.
@@ -128,6 +130,35 @@ and `Esc` to close. Some commands accept an argument in an inline input field.
 | Toggle field names | Show/hide technical field names (`label.<table>.<field>`) as badges next to form labels. Also bound to `Alt+Shift+F`. |
 | Toggle translation icons | Show/hide per-label icons: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
 | Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax timing, and JavaScript errors, then view a filterable results panel. Best-effort; does not promise named Client Script / UI Policy attribution. |
+| Search code… | Search all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
+
+#### Code search
+
+Open the palette, choose **Search code…**, and enter at least three letters,
+digits, or underscores from the text you want to find. Matching is
+case-insensitive. Examples:
+
+```text
+GlideRecord
+"current.assignment_group"
+table:sys_dictionary AutoResolutionRefQualifier
+```
+
+An ordinary search always covers every supported source. Use `table:<name>`
+only to retry one concrete ServiceNow table after a broad search reports that
+source as capped or slow. A table-scoped results panel displays the scope
+prominently so it cannot be mistaken for a complete search.
+
+The results panel groups verified matches by source and shows the matching
+field, line-numbered snippets, and a link to each record or the matching set as
+a platform list. Its **Source status** drawer distinguishes no matches from
+access denied, unavailable, timed out, or capped sources, so a partial search
+does not look complete. A filter box narrows the results already loaded.
+
+Code search is read-only: it performs same-instance Table API GETs and never
+runs or edits what it finds. It does not support regular expressions. Searches
+are capped at 50 records per source; refine the text or use `table:<name>` to
+retry that source when it reports **Capped**.
 
 **Record**
 

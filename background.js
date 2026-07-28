@@ -117,6 +117,88 @@ async function tableApiGetInPage(request) {
   return { ok: true, result: (data && data.result) || [] };
 }
 
+/* =====================================================================
+ * CODE SEARCH TRANSPORT
+ *
+ * SN_TABLE_GET fans every read out to all frames and keeps whichever answers
+ * first. That is fine for the one-off reads it was built for, and wrong for
+ * search: a query across a dozen sources would become a dozen requests PER
+ * FRAME, several times over on a classic UI page.
+ *
+ * So code search resolves the token-bearing frame once per tab and sends every
+ * request to that frame alone. The MAIN-world function is the same one
+ * SN_TABLE_GET uses — the token problem it solves is identical, and there is
+ * no reason for two copies of it to drift apart.
+ * ===================================================================== */
+
+const codeSearchFrameByTab = new Map();
+
+function hasUserTokenInPage() {
+  try {
+    return typeof g_ck !== "undefined" && Boolean(g_ck);
+  } catch (e) {
+    return false;
+  }
+}
+
+/*
+ * The frame that can read g_ck. On classic UI that is usually the shell, but
+ * on some pages only gsft_main has it, so it is discovered rather than assumed.
+ * Frame 0 is the fallback: a wrong guess degrades to the 401 the caller already
+ * reports, where returning nothing at all would look like an empty instance.
+ */
+async function resolveTokenFrame(tabId) {
+  if (codeSearchFrameByTab.has(tabId)) return codeSearchFrameByTab.get(tabId);
+  let frameId = 0;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "MAIN",
+      func: hasUserTokenInPage,
+    });
+    const withToken = results.filter((item) => item && item.result);
+    if (withToken.length) frameId = withToken[0].frameId;
+  } catch (e) {}
+  codeSearchFrameByTab.set(tabId, frameId);
+  return frameId;
+}
+
+async function codeSearchTableGet(tabId, request, isRetry) {
+  const frameId = await resolveTokenFrame(tabId);
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      world: "MAIN",
+      func: tableApiGetInPage,
+      args: [request],
+    });
+  } catch (error) {
+    /* The cached frame can go away under navigation. Re-resolve once before
+     * treating it as a real failure. */
+    codeSearchFrameByTab.delete(tabId);
+    if (!isRetry) return codeSearchTableGet(tabId, request, true);
+    return { ok: false, status: 0, error: String(error) };
+  }
+  const response = results.map((item) => item && item.result).filter(Boolean)[0];
+  if (!response) {
+    return { ok: false, status: 0, error: "No response reading " + request.table };
+  }
+  /*
+   * A cached frame that still exists but has lost its token answers 401 rather
+   * than throwing, so the executeScript catch above never sees it. Treat the
+   * first 401 as a stale cache and re-resolve — no webNavigation permission
+   * needed to notice, which keeps the manifest as small as it is today.
+   */
+  if (response.status === 401 && !isRetry) {
+    codeSearchFrameByTab.delete(tabId);
+    return codeSearchTableGet(tabId, request, true);
+  }
+  return response;
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => codeSearchFrameByTab.delete(tabId));
+
 async function fillPortalVariables(variables) {
   const result = {
     foundForm: false,
@@ -2858,6 +2940,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
     });
+    return true;
+  }
+  if (msg && msg.type === "INJECT_CODE_SEARCH" && sender.tab) {
+    /*
+     * Lazy injection. code_search.js and code_search_ui.js are the two largest
+     * scripts in the extension for a feature used occasionally, so they are
+     * kept out of manifest.json's content_scripts and injected on first use of
+     * the palette command instead — nothing loads at document_idle.
+     *
+     * Isolated world (the default for files:), into the frame that asked, so
+     * content.js can call SNCodeSearch directly. Both files no-op if already
+     * present, which makes repeat invocations free. No web_accessible_resources
+     * entry is needed: executeScript with files: does not require one.
+     */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["code_search.js", "code_search_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "SN_CODE_SEARCH_GET" && sender.tab) {
+    codeSearchTableGet(sender.tab.id, {
+      table: msg.table,
+      query: msg.query,
+      fields: msg.fields,
+      limit: msg.limit,
+      options: {},
+    })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, status: 0, error: String(error) }));
     return true;
   }
   if (msg && msg.type === "GET_SYS_ID" && sender.tab) {

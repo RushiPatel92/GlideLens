@@ -67,6 +67,11 @@ which hands the request to the service worker to run in the **MAIN world**,
 where it can attach `X-UserToken` from `g_ck`. `snGet` is a one-row wrapper over
 that same path.
 
+Code Search uses the same rule through `SN_CODE_SEARCH_GET`, but resolves one
+token-bearing frame per tab and sends every pooled request to that frame alone.
+Do not route searches through `SN_TABLE_GET`: that handler fans out to every
+frame and would multiply every source query on classic pages.
+
 **Do NOT fetch the Table API directly from the isolated world.** It is
 same-origin with the instance, so the session cookie goes along — but the CSRF
 token does not, and an instance that enforces the token on REST GETs answers
@@ -90,11 +95,20 @@ MV3 at all.
 - `hidden_variables_ui.js` - isolated-world panel for "Show variable values" on
   Service Portal catalog items, with the hidden/visible filter. Loaded before
   `catalog_insight_ui.js`.
+- `code_search.js` - lazily injected isolated-world engine: query parser,
+  anchors, client-side verification, snippets, 14-source adapter registry,
+  inheritance-aware probe, bounded fetch pool, redaction and orchestration.
+- `code_search_ui.js` - lazily injected shadow-root Code Search results panel,
+  grouped verified matches, loaded-result filtering and source-status drawer.
 - `debug_timeline_main.js` - MAIN-world Debug Timeline recorder imported by
   the service worker and injected into every frame on demand.
 - `popup.js` / `popup.html` / `popup.css` — popup UI: instance info, quick table
   open, dev links, copy sys_id, toggles.
-- `background.js` — service worker: keyboard command + `OPEN_URL` handler.
+- `background.js` — service worker: keyboard command, `OPEN_URL`, lazy Code
+  Search injection, and token-bearing Table API handlers.
+- `tests/` - developer-only Node tests. They ship harmlessly in the repository
+  ZIP and Chrome ignores them; run Code Search tests by file path with
+  `node --test tests/code_search.test.js` (not `node --test tests/` on Node 24).
 
 ## Feature notes
 - **Translation icons** add two icons per label:
@@ -132,6 +146,32 @@ MV3 at all.
   errors. It does not promise named Client Script or UI Policy attribution.
   MAIN-world patches must remain reversible and traces must stay capped and
   redact fields or parameters whose names indicate secrets.
+- **Code Search** is a read-only, Table-API search across 14 source adapters:
+  dictionary and override logic, catalog variables, transform maps/entries/
+  scripts, record producers, UI Actions, Script Includes, Business Rules,
+  Client Scripts, catalog client scripts, Script Actions, and Scripted REST
+  operations. It supports a case-insensitive substring, one `"quoted phrase"`,
+  and a `table:` escape hatch for targeted retries; normal searches cover every
+  tier-1 source, and the UI announces table scope prominently. Regex is
+  deliberately refused because a literal server prefilter cannot soundly cover
+  alternation or optional matches.
+  Only a query-safe anchor reaches the encoded query, and every returned field
+  is verified against the original term before rendering. This is mandatory:
+  a live instance confirmed that an invalid field in `sysparm_query` is silently
+  dropped and can return every table row. The registry probe therefore walks
+  `sys_db_object.super_class`, because catalog-variable and catalog-client-
+  script fields are defined on parent tables even though the Table API exposes
+  them on the children. Probe results are cached per origin for seven days; a
+  failed probe means unknown, not absent. Parent-table adapters may declare an
+  `exactClass`; `sys_script_client` does this because its Table API response
+  includes `catalog_script_client` child rows that the child adapter also
+  returns. `sys_class_name` is requested, filtered server-side to protect the
+  row cap, and verified client-side before rendering. Requests use
+  `SN_CODE_SEARCH_GET` through one token-bearing frame, concurrency 4, a
+  20-second source timeout, and a 50-row per-source cap. The engine and UI are
+  lazily injected on first use and remain absent from `manifest.json`; all
+  instance text is rendered without instance-provided HTML, and sensitive-named
+  hits are redacted.
 
 ## Conventions & constraints
 - **IMPORTANT — Never delete a branch from GitHub or any Git remote.** Remote
