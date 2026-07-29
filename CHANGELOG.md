@@ -32,6 +32,10 @@ reconstructed version by version.
   table only ever produces one group — "UI action", not "UI action" beside
   "UI Action (instance search)". The **Source status** drawer still lists every
   source separately, because that is where a partial search has to be visible.
+- Groups and the header now report matches **and** records — "6 matches in 2
+  records" — because one record matching in its name, condition and script is
+  three findings with three snippets. The "open in a list" button names how many
+  records it will open, and a record's matches are kept together in the list.
 
 ### Fixed
 - Source rows in the status drawer now show why a source was skipped and what

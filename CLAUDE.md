@@ -113,9 +113,12 @@ MV3 at all.
   Search injection, and token-bearing Table API handlers.
 - `tests/` - developer-only Node tests. They ship harmlessly in the repository
   ZIP and Chrome ignores them; run Code Search tests by file path with
-  `node --test tests/code_search.test.js tests/code_search_api.test.js` (not
-  `node --test tests/` on Node 24). The second file covers Tier 1: the coverage
-  map, the ignored-`&table=` guard, cap saturation, and the adapter merge.
+  `node --test tests/code_search.test.js tests/code_search_api.test.js
+  tests/code_search_ui.test.js` (not `node --test tests/` on Node 24). The
+  second file covers Tier 1: the coverage map, the ignored-`&table=` guard, cap
+  saturation, and the adapter merge. The third covers the panel's counting —
+  hits are per `table.sysId.FIELD`, so matches and records are different
+  numbers and both are printed.
 
 ## Feature notes
 - **Translation icons** add two icons per label:

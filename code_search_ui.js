@@ -314,6 +314,8 @@
     const list = [];
     groups.forEach((group) => {
       group.status = groupStatus(group.statuses);
+      group.hits = clusterByRecord(group.hits);
+      group.records = countRecords(group.hits);
       list.push(group);
     });
     return list;
@@ -326,6 +328,63 @@
     });
     return total;
   };
+
+  /*
+   * Matches and records are different numbers and the panel says both.
+   * Hit identity is table+sysId+FIELD, so one UI Action matching in `name`,
+   * `condition` and `script` is three findings with three snippets — correct,
+   * and worth seeing. But "6" beside a button that then opens two records is a
+   * number contradicting itself one click later, so neither count is left to be
+   * inferred from the other.
+   */
+  const recordKey = (hit) => String(hit.table || "") + "|" + String(hit.sysId || "");
+
+  const countRecords = (hits) => {
+    const seen = Object.create(null);
+    let count = 0;
+    (hits || []).forEach((hit) => {
+      const key = recordKey(hit);
+      if (seen[key]) return;
+      seen[key] = true;
+      count += 1;
+    });
+    return count;
+  };
+
+  const totalRecords = () => {
+    const all = [];
+    sources.forEach((entry) => {
+      visibleHits(entry).forEach((hit) => all.push(hit));
+    });
+    return countRecords(all);
+  };
+
+  /*
+   * Keeps every field-match for one record together, in the order the records
+   * first appeared. Without this a record's hits can be split across the group:
+   * Tier 1 streams before the adapters, so a UI Action's `script` hit (instance
+   * index) and its `condition` hit (our adapter) arrive at opposite ends. The
+   * record count is only believable if the rows visibly cluster.
+   */
+  const clusterByRecord = (hits) => {
+    const order = [];
+    const byRecord = Object.create(null);
+    (hits || []).forEach((hit) => {
+      const key = recordKey(hit);
+      if (!byRecord[key]) {
+        byRecord[key] = [];
+        order.push(key);
+      }
+      byRecord[key].push(hit);
+    });
+    let out = [];
+    order.forEach((key) => {
+      out = out.concat(byRecord[key]);
+    });
+    return out;
+  };
+
+  const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
 
   /*
    * One snippet line: number, then the text split around the match so the term
@@ -421,7 +480,10 @@
 
     const count = document.createElement("span");
     count.className = "count";
-    count.textContent = String(hits.length);
+    count.textContent =
+      plural(hits.length, "match", "matches") +
+      " in " +
+      plural(entry.records, "record", "records");
     head.appendChild(count);
 
     const statusText = STATUS_TEXT[entry.status] || "";
@@ -449,7 +511,12 @@
         const listButton = document.createElement("button");
         listButton.type = "button";
         listButton.className = "open-list";
-        listButton.textContent = "Open these in a list ↗";
+        /* Names the number the list will actually contain, at the point where
+         * the expectation is set rather than after the click. */
+        listButton.textContent =
+          entry.records === 1
+            ? "Open this record in a list ↗"
+            : "Open these " + entry.records + " records in a list ↗";
         listButton.style.margin = "6px 20px 10px";
         listButton.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -508,6 +575,8 @@
     if (!shadow) return;
     const total = shadow.querySelector("[data-count='total']");
     if (total) total.textContent = String(totalHits());
+    const records = shadow.querySelector("[data-count='records']");
+    if (records) records.textContent = String(totalRecords());
     const done = shadow.querySelector("[data-count='sources']");
     if (done) done.textContent = String(sources.size);
     const spinner = shadow.querySelector(".spinner");
@@ -588,7 +657,8 @@
           </header>
           <div class="summary">
             <span class="chip-scope" data-scope style="display:none"></span>
-            <span><strong data-count="total">0</strong>matches</span>
+            <span><strong data-count="total">0</strong>matches in
+              <strong data-count="records">0</strong>records</span>
             <span><strong data-count="sources">0</strong>sources reported</span>
             <span class="spinner" aria-label="Searching"></span>
             <span class="chip-warn" data-cap style="display:none">
@@ -708,5 +778,17 @@
 
   const isOpen = () => Boolean(host);
 
-  globalThis.SNCodeSearchUI = { open, addSource, complete, showError, close, isOpen };
+  globalThis.SNCodeSearchUI = {
+    open,
+    addSource,
+    complete,
+    showError,
+    close,
+    isOpen,
+    /* Counting and clustering are logic, not presentation, and they are what
+     * keeps "6 matches in 2 records" true. Exposed so tests can hold them to
+     * that without a DOM. */
+    countRecords,
+    clusterByRecord,
+  };
 })();
