@@ -558,6 +558,13 @@
     return SEARCH_TARGETS.filter((target) => target.id === id)[0] || null;
   }
 
+  /* Used to give a Tier 1 record type the same display name the adapter for
+   * that table uses, so one table means one group in the results however many
+   * tiers found it. Table names are unique across the registry. */
+  function targetByTable(table) {
+    return SEARCH_TARGETS.filter((target) => target.table === table)[0] || null;
+  }
+
   /* =====================================================================
    * TRANSPORT
    *
@@ -975,10 +982,36 @@
     const opts = options || {};
     const transport = opts.transport || defaultTransport;
     const limit = opts.limit || PER_SOURCE_LIMIT;
-    const targets = selectTargets(parsed, opts.probe, opts.targets);
+    const selected = selectTargets(parsed, opts.probe, opts.targets);
+    const skip = opts.skipTargets || Object.create(null);
     const sources = [];
     let hits = [];
     let truncated = false;
+
+    /* A source Tier 1 already covered in full is reported as skipped, not
+     * quietly dropped: "we did not run this because something else did" has to
+     * be visible in the status drawer, or the footer's source count starts
+     * lying about what was searched. */
+    const targets = selected.filter((target) => {
+      if (!skip[target.id]) return true;
+      const summary = {
+        id: target.id,
+        label: target.label,
+        groupKey: target.table,
+        groupLabel: target.label,
+        table: target.table,
+        kind: target.kind,
+        status: SOURCE_STATUS.SKIPPED,
+        count: 0,
+        missingFields: target.missingFields,
+        unverified: target.unverified,
+        error: "",
+        note: "covered by instance code search",
+      };
+      sources.push(summary);
+      if (opts.onSource) opts.onSource(summary, []);
+      return false;
+    });
 
     const tasks = targets.map((target) => async () => {
       const response = await transport({
@@ -992,6 +1025,8 @@
       const summary = {
         id: target.id,
         label: target.label,
+        groupKey: target.table,
+        groupLabel: target.label,
         table: target.table,
         kind: target.kind,
         status: classify(response, verified.length, rows.length, limit),
@@ -1022,6 +1057,466 @@
     return { hits: dedupeHits(hits), sources, truncated, term: parsed.term };
   }
 
+  /* =====================================================================
+   * TIER 1 — the instance's own Code Search endpoint
+   *
+   * /api/sn_codesearch/code_search/search, measured on a real instance
+   * 2026-07-29. Three of its behaviours drive everything below.
+   *
+   * 1. `&table=` IS SILENTLY IGNORED for any table not configured in a search
+   *    group — including a nonsense name. The response is then a full unscoped
+   *    search that looks exactly like a scoped one. So the parameter is sent
+   *    only for tables in the coverage map, and every record type that comes
+   *    back is re-checked against what was asked for.
+   * 2. A GLOBAL 500-hit cap, not raisable by any limit parameter, with no
+   *    truncation flag in the response. One crowded source can consume all 500
+   *    slots and starve every other source in the same call (measured: 499 of
+   *    500 went to one record type). Hence the hybrid model in runApiSearch.
+   * 3. `lineMatches` includes ±1 lines of CONTEXT around each match, so
+   *    rendering one row per entry over-reports roughly 3×. Only contexts that
+   *    really contain the term become snippets — the same verify-before-render
+   *    rule the Table API tier lives by, for a different underlying reason.
+   *
+   * Matching is literal, case-insensitive substring across spaces and
+   * punctuation ("new GlideRecord" hits; "new  GlideRecord" does not), which is
+   * exactly R1's semantics — so hits from both tiers mean the same thing and
+   * can be merged. That is a property of this instance's `extended_matching`
+   * setting, though, so Tier 1 is never assumed complete.
+   * ===================================================================== */
+
+  const API_GLOBAL_CAP = 500;
+  const COVERAGE_CACHE_VERSION = 1;
+  const COVERAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function coverageCacheKey(origin) {
+    return "snhCodeSearchCoverage:" + origin;
+  }
+
+  function apiTransport(request) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const timer = setTimeout(
+        () => finish({ ok: false, status: 0, timedOut: true, error: "Timed out" }),
+        request.timeoutMs || REQUEST_TIMEOUT_MS
+      );
+      chrome.runtime
+        .sendMessage({
+          type: "SN_CODE_SEARCH_API_GET",
+          term: request.term,
+          table: request.table || "",
+        })
+        .then((response) => {
+          clearTimeout(timer);
+          finish(response || { ok: false, status: 0, error: "No response" });
+        })
+        .catch((error) => {
+          clearTimeout(timer);
+          finish({ ok: false, status: 0, error: String(error) });
+        });
+    });
+  }
+
+  /*
+   * The coverage map: which table.field pairs the instance's search groups
+   * actually index. Per FIELD, never per table — sys_ui_action is configured
+   * `name,script` in every group on the instance checked, so its `condition`
+   * one-liners stay invisible to Tier 1 while the table looks "covered".
+   *
+   * `additional_filter` marks a table as only partially searched; those keep
+   * their adapter. Neither config table has an `active` column (verified), so
+   * nothing here filters on one.
+   */
+  function buildCoverage(tableRows, groupRows) {
+    const tables = Object.create(null);
+    (tableRows || []).forEach((row) => {
+      const table = rowValue(row, "table");
+      if (!table) return;
+      const fields = String(rowValue(row, "search_fields") || "")
+        .split(",")
+        .map((field) => field.trim())
+        .filter(Boolean);
+      const filtered = rowValue(row, "additional_filter") !== "";
+      const entry =
+        tables[table] || (tables[table] = { table, fields: [], filtered: false });
+      /* The same table is configured in two or three groups with identical
+       * fields, so coverage is the union across groups. A filter on ANY of
+       * those configurations makes the table partially searched. */
+      fields.forEach((field) => {
+        if (entry.fields.indexOf(field) === -1) entry.fields.push(field);
+      });
+      if (filtered) entry.filtered = true;
+    });
+
+    const groups = (groupRows || []).map((row) => ({
+      sysId: rowValue(row, "sys_id"),
+      name: rowValue(row, "name"),
+      extendedMatching: rowValue(row, "extended_matching") === "true",
+    }));
+
+    const tableCount = Object.keys(tables).length;
+    /* Availability is derived from the config, never tracked beside it: a
+     * separate flag could say "available" over an empty map. */
+    return { tables, groups, tableCount, available: tableCount > 0 };
+  }
+
+  async function fetchCoverage(options) {
+    const opts = options || {};
+    const tableGet = opts.transport || defaultTransport;
+
+    const config = await tableGet({
+      table: "sn_codesearch_table",
+      query: "",
+      fields: "sys_id,table,search_fields,search_group,additional_filter",
+      limit: 500,
+    });
+    /*
+     * Unreadable config means Tier 1 is unavailable here — the plugin is
+     * absent, or this instance does not expose it. That is NOT an error state:
+     * the adapters are the permanent fallback and already cover the ground.
+     */
+    if (!config.ok) {
+      return {
+        ok: false,
+        available: false,
+        error: config.error || "Code Search configuration unreadable",
+        checkedAt: Date.now(),
+        tables: Object.create(null),
+        groups: [],
+      };
+    }
+
+    const groups = await tableGet({
+      table: "sn_codesearch_search_group",
+      query: "",
+      fields: "sys_id,name,extended_matching",
+      limit: 100,
+    });
+
+    const built = buildCoverage(config.result || [], (groups.ok && groups.result) || []);
+    return Object.assign(
+      { ok: true, available: built.tableCount > 0, checkedAt: Date.now() },
+      built
+    );
+  }
+
+  async function loadCoverage(origin, options) {
+    const opts = options || {};
+    const key = coverageCacheKey(origin);
+    if (!opts.force) {
+      try {
+        const cached = await chrome.storage.local.get(key);
+        const entry = cached && cached[key];
+        if (
+          entry &&
+          entry.version === COVERAGE_CACHE_VERSION &&
+          Date.now() - entry.checkedAt < COVERAGE_TTL_MS
+        ) {
+          return entry;
+        }
+      } catch (e) {}
+    }
+    const fresh = await fetchCoverage(opts);
+    /* Only a successful read is cached: a transient failure must not freeze
+     * "Tier 1 unavailable" in place for a week. */
+    if (fresh.ok) {
+      try {
+        await chrome.storage.local.set({
+          [key]: Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh),
+        });
+      } catch (e) {}
+    }
+    return fresh;
+  }
+
+  function coveredFields(coverage, table) {
+    const entry = coverage && coverage.tables && coverage.tables[table];
+    return entry && !entry.filtered ? entry.fields : [];
+  }
+
+  function isCovered(coverage, table, field) {
+    return coveredFields(coverage, table).indexOf(field) !== -1;
+  }
+
+  /*
+   * One endpoint response into verified hits, grouped by the CONCRETE class.
+   *
+   * Attribution is by className, not by recordType: the endpoint follows table
+   * inheritance, so the sys_script_client record type returns
+   * catalog_script_client rows. Filing each hit under its real class is what
+   * makes the dedupe key line up with the adapter that also returns it, so the
+   * same record from both tiers collapses to one row instead of appearing
+   * twice under two different headings.
+   */
+  function hitsFromApiResult(result, parsed, options) {
+    const opts = options || {};
+    const scopedTo = opts.table || "";
+    const byClass = Object.create(null);
+    let rawHits = 0;
+    let ignoredScope = 0;
+
+    (Array.isArray(result) ? result : []).forEach((group) => {
+      if (!group) return;
+      const recordType = String(group.recordType || "");
+      const hits = Array.isArray(group.hits) ? group.hits : [];
+      rawHits += hits.length;
+
+      /* Guard against the silently-ignored `table` parameter: a scoped request
+       * that comes back carrying other record types was never scoped at all. */
+      if (scopedTo && recordType !== scopedTo) {
+        ignoredScope += hits.length;
+        return;
+      }
+
+      hits.forEach((hit) => {
+        if (!hit) return;
+        const className = String(hit.className || recordType || "");
+        const sysId = String(hit.sysId || "");
+        if (!className || !sysId) return;
+
+        (Array.isArray(hit.matches) ? hit.matches : []).forEach((match) => {
+          if (!match) return;
+          const field = String(match.field || "");
+          if (!field) return;
+
+          /* ±1 context lines arrive alongside the real ones, and empty
+           * contexts occur. Only lines that actually contain the term survive,
+           * which is both the verification and the de-noising. */
+          const snippets = [];
+          (Array.isArray(match.lineMatches) ? match.lineMatches : []).forEach((line) => {
+            if (!line || snippets.length >= SNIPPET_MAX_PER_FIELD) return;
+            const text = String(line.context == null ? "" : line.context);
+            if (!text || !verifyMatch(text, parsed.term)) return;
+            const offset = findMatchOffsets(text, parsed.term, 1)[0];
+            if (offset == null) return;
+            const trimmed = text.replace(/^\s+/, "");
+            const shift = text.length - trimmed.length;
+            snippets.push({
+              line: Number(line.line) || 0,
+              text: trimmed.replace(/\s+$/, ""),
+              matchStart: Math.max(0, offset - shift),
+              matchEnd: Math.max(0, offset - shift) + String(parsed.term).length,
+            });
+          });
+          if (!snippets.length) return;
+
+          const bucket =
+            byClass[className] ||
+            (byClass[className] = {
+              table: className,
+              label: String(group.tableLabel || hit.tableLabel || className),
+              hits: [],
+            });
+          bucket.hits.push(
+            redactHit({
+              sourceId: "instance:" + className,
+              kind: "instance",
+              sourceLabel: bucket.label,
+              table: className,
+              sysId,
+              field,
+              name: String(hit.name || "") || sysId,
+              subtitle: String(match.fieldLabel || field),
+              snippets,
+            })
+          );
+        });
+      });
+    });
+
+    return {
+      byClass,
+      rawHits,
+      ignoredScope,
+      /* No truncation flag exists in the response, so saturation IS the
+       * signal. Under the cap nothing was dropped. */
+      capped: rawHits >= API_GLOBAL_CAP,
+    };
+  }
+
+  /*
+   * Tier 1 search. One unscoped call is the fast path (~1.6 s for everything).
+   * If it comes back saturated it was starved — a single record type can eat
+   * all 500 slots — so it is re-run as one scoped call per covered table
+   * through the same bounded pool the adapters use, giving every source its own
+   * budget and its own status.
+   */
+  async function runApiSearch(parsed, options) {
+    const opts = options || {};
+    const transport = opts.apiTransport || apiTransport;
+    const coverage = opts.coverage;
+    const wantTables = (parsed.filters && parsed.filters.tables) || [];
+
+    const unavailable = (reason) => ({
+      available: false,
+      reason,
+      hits: [],
+      sources: [],
+      searchedTables: [],
+      capped: false,
+    });
+
+    const configuredTables =
+      coverage && coverage.tables ? Object.keys(coverage.tables) : [];
+    if (!configuredTables.length) {
+      return unavailable("Instance code search is not available here");
+    }
+
+    /* A table: filter naming something no group configures must never be sent:
+     * the endpoint would ignore it and answer with everything. The adapters
+     * serve that scope instead. */
+    const scopes = wantTables.filter((table) => coveredFields(coverage, table).length);
+    if (wantTables.length && !scopes.length) {
+      return unavailable("Instance code search does not index the named table");
+    }
+
+    /* One entry per concrete class: the summary the drawer shows, paired with
+     * exactly the hits that belong to it, because the panel renders what it is
+     * handed per source rather than a flat list. */
+    const collect = (parseResult) =>
+      Object.keys(parseResult.byClass).map((className) => {
+        const bucket = parseResult.byClass[className];
+        const target = targetByTable(className);
+        return {
+          summary: {
+            id: "instance:" + className,
+            /* `label` names the SOURCE and keeps saying which tier it is, so
+             * the status drawer stays honest about what ran. `groupLabel` names
+             * the RESULTS, where the tier is our plumbing and not the user's
+             * concern — one table, one group, however many tiers found it. */
+            label: bucket.label + " (instance search)",
+            groupKey: className,
+            groupLabel: (target && target.label) || bucket.label,
+            table: className,
+            kind: "instance",
+            status: parseResult.capped ? SOURCE_STATUS.CAPPED : SOURCE_STATUS.COMPLETE,
+            count: bucket.hits.length,
+            missingFields: [],
+            unverified: false,
+            error: "",
+          },
+          hits: bucket.hits,
+        };
+      });
+
+    /* --- fast path: one unscoped call ---------------------------------- */
+    if (!scopes.length) {
+      const response = await transport({ term: parsed.term });
+      if (!response.ok) {
+        return {
+          available: false,
+          reason: response.timedOut
+            ? "Instance code search timed out"
+            : "Instance code search returned " + (response.status || "no response"),
+          hits: [],
+          sources: [],
+          searchedTables: [],
+          capped: false,
+        };
+      }
+      const parsedResult = hitsFromApiResult(response.result, parsed, {});
+      if (!parsedResult.capped) {
+        const collected = collect(parsedResult);
+        let hits = [];
+        collected.forEach((entry) => {
+          hits = hits.concat(entry.hits);
+          if (opts.onSource) opts.onSource(entry.summary, entry.hits);
+        });
+        return {
+          available: true,
+          hits,
+          sources: collected.map((entry) => entry.summary),
+          searchedTables: Object.keys(coverage.tables),
+          capped: false,
+        };
+      }
+      /* Saturated, so fall through and give each table its own budget. */
+    }
+
+    /* --- per-table path ------------------------------------------------- */
+    const tables = scopes.length ? scopes : Object.keys(coverage.tables);
+    const sources = [];
+    let hits = [];
+    let capped = false;
+
+    const tasks = tables.map((table) => async () => {
+      const response = await transport({ term: parsed.term, table });
+      if (!response.ok) {
+        const errorTarget = targetByTable(table);
+        const summary = {
+          id: "instance:" + table,
+          label: table + " (instance search)",
+          groupKey: table,
+          groupLabel: (errorTarget && errorTarget.label) || table,
+          table,
+          kind: "instance",
+          status: classify(response, 0, 0, API_GLOBAL_CAP),
+          count: 0,
+          missingFields: [],
+          unverified: false,
+          error: response.error || "",
+        };
+        sources.push(summary);
+        if (opts.onSource) opts.onSource(summary, []);
+        return summary;
+      }
+      const parsedResult = hitsFromApiResult(response.result, parsed, { table });
+      if (parsedResult.capped) capped = true;
+      const collected = collect(parsedResult);
+      collected.forEach((entry) => {
+        sources.push(entry.summary);
+        hits = hits.concat(entry.hits);
+        if (opts.onSource) opts.onSource(entry.summary, entry.hits);
+      });
+      return (collected[0] && collected[0].summary) || null;
+    });
+
+    await runPool(tasks, {
+      concurrency: opts.concurrency,
+      shouldStop: opts.shouldStop,
+    });
+
+    return {
+      available: true,
+      hits,
+      sources,
+      searchedTables: tables,
+      capped,
+    };
+  }
+
+  /*
+   * Which adapters Tier 1 has genuinely made redundant. Deliberately strict:
+   * an adapter is skipped only when the endpoint searched its table, returned
+   * without saturating, that table carries no additional_filter, and EVERY
+   * field the adapter reads is in the coverage map.
+   *
+   * Partial coverage keeps the adapter, which is what protects the two sources
+   * that matter most: sys_ui_action is configured without `condition`, and
+   * sys_script_client without `condition`, so both keep running here even
+   * though Tier 1 also reports them. Overlap is cheap — dedupeHits collapses it
+   * on table+sysId+field — while a silent hole is not.
+   */
+  function adaptersCoveredBy(tier1, coverage, targets) {
+    const skip = Object.create(null);
+    if (!tier1 || !tier1.available || tier1.capped) return skip;
+    const searched = tier1.searchedTables || [];
+    (targets || []).forEach((target) => {
+      if (searched.indexOf(target.table) === -1) return;
+      const covered = coveredFields(coverage, target.table);
+      if (!covered.length) return;
+      const everyFieldCovered = target.fields.every(
+        (field) => covered.indexOf(field) !== -1
+      );
+      if (everyFieldCovered) skip[target.id] = true;
+    });
+    return skip;
+  }
+
   globalThis.SNCodeSearch = {
     MIN_ANCHOR_LENGTH,
     SOURCE_STATUS,
@@ -1043,6 +1538,16 @@
     redactHit,
     createSessionTracker,
     tableGet: defaultTransport,
+    apiTransport,
+    API_GLOBAL_CAP,
+    buildCoverage,
+    fetchCoverage,
+    loadCoverage,
+    coveredFields,
+    isCovered,
+    hitsFromApiResult,
+    runApiSearch,
+    adaptersCoveredBy,
     runPool,
     resolveAncestry,
     probe,

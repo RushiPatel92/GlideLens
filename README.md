@@ -149,13 +149,23 @@ only to retry one concrete ServiceNow table after a broad search reports that
 source as capped or slow. A table-scoped results panel displays the scope
 prominently so it cannot be mistaken for a complete search.
 
+Where the instance has ServiceNow's own Code Search available, that index is
+used first and the Table API sources fill in what it does not reach — which is
+most of the reason this feature exists. Its search groups are configured per
+field, so, for example, UI Action **conditions** are indexed nowhere and are
+found only by the fallback. Nothing needs configuring for this: the extension
+reads the instance's existing search groups, and searches work the same way on
+an instance without the index, only slower.
+
 The results panel groups verified matches by source and shows the matching
 field, line-numbered snippets, and a link to each record or the matching set as
 a platform list. Its **Source status** drawer distinguishes no matches from
-access denied, unavailable, timed out, or capped sources, so a partial search
-does not look complete. A filter box narrows the results already loaded.
+access denied, unavailable, timed out, or capped sources, says when the
+instance's own index was not consulted, and marks any source it stood in for as
+skipped — so a partial search does not look complete. A filter box narrows the
+results already loaded.
 
-Code search is read-only: it performs same-instance Table API GETs and never
+Code search is read-only: it performs same-instance GETs and never
 runs or edits what it finds. It does not support regular expressions. Searches
 are capped at 50 records per source; refine the text or use `table:<name>` to
 retry that source when it reports **Capped**.

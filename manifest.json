@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SN Dev Helper",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Developer utilities for ServiceNow: instance info, quick table nav, dev shortcuts, copy sys_id, technical field names.",
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
   "host_permissions": ["https://*.service-now.com/*"],

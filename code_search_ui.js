@@ -251,7 +251,7 @@
     openUrl(
       location.origin +
         "/" +
-        entry.summary.table +
+        entry.table +
         "_list.do?sysparm_query=" +
         encodeURIComponent("sys_idIN" + ids.join(","))
     );
@@ -267,6 +267,60 @@
   const visibleHits = (entry) =>
     entry.hits.filter((hit) => !filterText || hitSearchText(hit).includes(filterText));
 
+  /*
+   * Results are grouped by TABLE, not by source. Two tiers can report the same
+   * table — the instance's own index and our adapter for the fields it does not
+   * cover — and which pipe found a record is our plumbing, not something a
+   * person searching for code should have to reconcile into one mental list.
+   *
+   * The status drawer stays per-source, because "did it really look everywhere"
+   * is a question about sources and answering it needs them kept apart.
+   */
+  const GROUP_STATUS_ORDER = [
+    "capped",
+    "denied",
+    "timed-out",
+    "error",
+    "absent",
+    "complete",
+    "no-matches",
+    "skipped",
+  ];
+
+  const groupStatus = (statuses) => {
+    for (let i = 0; i < GROUP_STATUS_ORDER.length; i++) {
+      if (statuses.indexOf(GROUP_STATUS_ORDER[i]) !== -1) return GROUP_STATUS_ORDER[i];
+    }
+    return statuses[0] || "complete";
+  };
+
+  const displayGroups = () => {
+    const groups = new Map();
+    sources.forEach((entry) => {
+      const summary = entry.summary;
+      const key = summary.groupKey || summary.table || summary.id;
+      const group =
+        groups.get(key) ||
+        groups.set(key, {
+          key,
+          label: summary.groupLabel || summary.label,
+          table: summary.table,
+          hits: [],
+          statuses: [],
+        }).get(key);
+      group.hits = group.hits.concat(visibleHits(entry));
+      group.statuses.push(summary.status);
+    });
+    const list = [];
+    groups.forEach((group) => {
+      group.status = groupStatus(group.statuses);
+      group.hits = clusterByRecord(group.hits);
+      group.records = countRecords(group.hits);
+      list.push(group);
+    });
+    return list;
+  };
+
   const totalHits = () => {
     let total = 0;
     sources.forEach((entry) => {
@@ -274,6 +328,63 @@
     });
     return total;
   };
+
+  /*
+   * Matches and records are different numbers and the panel says both.
+   * Hit identity is table+sysId+FIELD, so one UI Action matching in `name`,
+   * `condition` and `script` is three findings with three snippets — correct,
+   * and worth seeing. But "6" beside a button that then opens two records is a
+   * number contradicting itself one click later, so neither count is left to be
+   * inferred from the other.
+   */
+  const recordKey = (hit) => String(hit.table || "") + "|" + String(hit.sysId || "");
+
+  const countRecords = (hits) => {
+    const seen = Object.create(null);
+    let count = 0;
+    (hits || []).forEach((hit) => {
+      const key = recordKey(hit);
+      if (seen[key]) return;
+      seen[key] = true;
+      count += 1;
+    });
+    return count;
+  };
+
+  const totalRecords = () => {
+    const all = [];
+    sources.forEach((entry) => {
+      visibleHits(entry).forEach((hit) => all.push(hit));
+    });
+    return countRecords(all);
+  };
+
+  /*
+   * Keeps every field-match for one record together, in the order the records
+   * first appeared. Without this a record's hits can be split across the group:
+   * Tier 1 streams before the adapters, so a UI Action's `script` hit (instance
+   * index) and its `condition` hit (our adapter) arrive at opposite ends. The
+   * record count is only believable if the rows visibly cluster.
+   */
+  const clusterByRecord = (hits) => {
+    const order = [];
+    const byRecord = Object.create(null);
+    (hits || []).forEach((hit) => {
+      const key = recordKey(hit);
+      if (!byRecord[key]) {
+        byRecord[key] = [];
+        order.push(key);
+      }
+      byRecord[key].push(hit);
+    });
+    let out = [];
+    order.forEach((key) => {
+      out = out.concat(byRecord[key]);
+    });
+    return out;
+  };
+
+  const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
 
   /*
    * One snippet line: number, then the text split around the match so the term
@@ -348,8 +459,8 @@
   };
 
   const renderGroup = (entry) => {
-    const hits = visibleHits(entry);
-    const isCollapsed = collapsed.has(entry.summary.id);
+    const hits = entry.hits;
+    const isCollapsed = collapsed.has(entry.key);
 
     const group = document.createElement("div");
     group.className = "group";
@@ -364,26 +475,29 @@
     head.appendChild(caret);
 
     const label = document.createElement("span");
-    label.textContent = entry.summary.label;
+    label.textContent = entry.label;
     head.appendChild(label);
 
     const count = document.createElement("span");
     count.className = "count";
-    count.textContent = String(hits.length);
+    count.textContent =
+      plural(hits.length, "match", "matches") +
+      " in " +
+      plural(entry.records, "record", "records");
     head.appendChild(count);
 
-    const statusText = STATUS_TEXT[entry.summary.status] || "";
+    const statusText = STATUS_TEXT[entry.status] || "";
     if (statusText) {
       const status = document.createElement("span");
       status.className =
-        "status" + (NEEDS_ATTENTION.indexOf(entry.summary.status) !== -1 ? " warn" : "");
+        "status" + (NEEDS_ATTENTION.indexOf(entry.status) !== -1 ? " warn" : "");
       status.textContent = statusText;
       head.appendChild(status);
     }
 
     head.addEventListener("click", () => {
-      if (isCollapsed) collapsed.delete(entry.summary.id);
-      else collapsed.add(entry.summary.id);
+      if (isCollapsed) collapsed.delete(entry.key);
+      else collapsed.add(entry.key);
       renderRows();
     });
     group.appendChild(head);
@@ -397,7 +511,12 @@
         const listButton = document.createElement("button");
         listButton.type = "button";
         listButton.className = "open-list";
-        listButton.textContent = "Open these in a list ↗";
+        /* Names the number the list will actually contain, at the point where
+         * the expectation is set rather than after the click. */
+        listButton.textContent =
+          entry.records === 1
+            ? "Open this record in a list ↗"
+            : "Open these " + entry.records + " records in a list ↗";
         listButton.style.margin = "6px 20px 10px";
         listButton.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -415,17 +534,15 @@
     if (!container) return;
     container.textContent = "";
 
-    const entries = [];
-    sources.forEach((entry) => entries.push(entry));
+    const entries = displayGroups();
 
-    /* Sources with hits first; then anything the user needs to know about
+    /* Groups with hits first; then anything the user needs to know about
      * even though it produced none. A silent nothing is never shown as a
      * group — it lives in the status drawer. */
-    const withHits = entries.filter((entry) => visibleHits(entry).length > 0);
+    const withHits = entries.filter((entry) => entry.hits.length > 0);
     const attention = entries.filter(
       (entry) =>
-        visibleHits(entry).length === 0 &&
-        NEEDS_ATTENTION.indexOf(entry.summary.status) !== -1
+        entry.hits.length === 0 && NEEDS_ATTENTION.indexOf(entry.status) !== -1
     );
 
     withHits.concat(attention).forEach((entry) =>
@@ -458,6 +575,8 @@
     if (!shadow) return;
     const total = shadow.querySelector("[data-count='total']");
     if (total) total.textContent = String(totalHits());
+    const records = shadow.querySelector("[data-count='records']");
+    if (records) records.textContent = String(totalRecords());
     const done = shadow.querySelector("[data-count='sources']");
     if (done) done.textContent = String(sources.size);
     const spinner = shadow.querySelector(".spinner");
@@ -498,6 +617,11 @@
         parts.push(summary.count + (summary.count === 1 ? " match" : " matches"));
       }
       if (STATUS_TEXT[summary.status]) parts.push(STATUS_TEXT[summary.status]);
+      /* A status alone can be worse than silence: "skipped" without a reason
+       * reads as "we gave up". The note says who covered it instead, and the
+       * error says why a source could not answer. */
+      if (summary.note) parts.push(summary.note);
+      if (summary.error) parts.push(String(summary.error));
       if (summary.missingFields && summary.missingFields.length) {
         parts.push("not on this instance: " + summary.missingFields.join(", "));
       }
@@ -533,7 +657,8 @@
           </header>
           <div class="summary">
             <span class="chip-scope" data-scope style="display:none"></span>
-            <span><strong data-count="total">0</strong>matches</span>
+            <span><strong data-count="total">0</strong>matches in
+              <strong data-count="records">0</strong>records</span>
             <span><strong data-count="sources">0</strong>sources reported</span>
             <span class="spinner" aria-label="Searching"></span>
             <span class="chip-warn" data-cap style="display:none">
@@ -653,5 +778,17 @@
 
   const isOpen = () => Boolean(host);
 
-  globalThis.SNCodeSearchUI = { open, addSource, complete, showError, close, isOpen };
+  globalThis.SNCodeSearchUI = {
+    open,
+    addSource,
+    complete,
+    showError,
+    close,
+    isOpen,
+    /* Counting and clustering are logic, not presentation, and they are what
+     * keeps "6 matches in 2 records" true. Exposed so tests can hold them to
+     * that without a DOM. */
+    countRecords,
+    clusterByRecord,
+  };
 })();

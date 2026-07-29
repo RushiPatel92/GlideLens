@@ -2920,19 +2920,76 @@ async function runCodeSearch(rawTerm) {
 
   try {
     /* The probe is per-origin and cached for a week; a failure means "unknown",
-     * so the search still runs against everything the registry declares. */
-    const probeResult = await engine.loadProbe(location.origin);
+     * so the search still runs against everything the registry declares. The
+     * coverage map is the same deal for Tier 1: unreadable config means the
+     * instance's own code search is unavailable here, which is a normal state
+     * and not an error — the adapters cover the ground either way. */
+    const [probeResult, coverage] = await Promise.all([
+      engine.loadProbe(location.origin),
+      engine.loadCoverage(location.origin),
+    ]);
     if (isStale()) return;
+
+    /*
+     * The panel renders what each source hands it, so overlap has to be
+     * removed on the way IN — deduping the final result would leave the
+     * already-painted duplicates on screen.
+     *
+     * Tier 1 finishes before the adapters start, so first-writer-wins here
+     * means the instance's own hit is kept and the adapter's copy of the same
+     * record is dropped. Overlap is expected wherever a table is only
+     * partially covered: sys_ui_action is indexed as name,script, so its
+     * adapter still runs for `condition` and re-finds the `script` hits.
+     */
+    const seenHits = Object.create(null);
+    const onSource = (summary, hits) => {
+      if (isStale()) return;
+      const fresh = (hits || []).filter((hit) => {
+        const key = engine.dedupeKey(hit.table, hit.sysId, hit.field);
+        if (seenHits[key]) return false;
+        seenHits[key] = true;
+        return true;
+      });
+      ui.addSource(Object.assign({}, summary, { count: fresh.length }), fresh);
+    };
+
+    /* Tier 1 first, because what it managed to search decides which adapters
+     * are redundant. It streams its own sources into the panel as it goes. */
+    const tier1 = await engine.runApiSearch(parsed, {
+      coverage,
+      shouldStop: isStale,
+      onSource,
+    });
+    if (isStale()) return;
+
+    /* Tier 1 being unavailable is routine, not an error — but it has to be
+     * SAID. Silence would leave the impression the instance's own index was
+     * consulted and came back empty. */
+    if (!tier1.available) {
+      onSource(
+        {
+          id: "instance-search",
+          label: "Instance code search",
+          table: "",
+          kind: "instance",
+          status: engine.SOURCE_STATUS.ABSENT,
+          count: 0,
+          missingFields: [],
+          unverified: false,
+          error: tier1.reason || "",
+        },
+        []
+      );
+    }
 
     const result = await engine.runSearch(parsed, {
       probe: probeResult,
+      skipTargets: engine.adaptersCoveredBy(tier1, coverage, engine.SEARCH_TARGETS),
       shouldStop: isStale,
-      onSource: (summary, hits) => {
-        if (isStale()) return;
-        ui.addSource(summary, hits);
-      },
+      onSource,
     });
     if (isStale()) return;
+
     ui.complete(result);
   } catch (error) {
     if (isStale()) return;
