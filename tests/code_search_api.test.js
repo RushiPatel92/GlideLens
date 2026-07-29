@@ -415,6 +415,51 @@ test("the gap pack is never skipped, because no group configures it", () => {
   });
 });
 
+/* ---------------------------------------------------------------------------
+ * Display grouping — one table is one group, whichever tier found it
+ * ------------------------------------------------------------------------- */
+
+test("both tiers reporting one table agree on the group key and name", async () => {
+  const tier1 = await CS.runApiSearch(parsed("GlideRecord"), {
+    coverage: coverageFor({ sys_ui_action: "name,script" }),
+    apiTransport: () =>
+      Promise.resolve({ ok: true, status: 200, result: [
+        { recordType: "sys_ui_action", tableLabel: "UI Action", hits: [
+          apiHit("Resolve", "sys_ui_action", "ui1", "script", [line(1, "GlideRecord")]),
+        ] },
+      ] }),
+  });
+
+  const adapter = await CS.runSearch(parsed("GlideRecord"), {
+    targets: [CS.targetById("ui-action")],
+    transport: () =>
+      Promise.resolve({ ok: true, result: [
+        { sys_id: "ui2", name: "Close", condition: "new GlideRecord()", table: "incident" },
+      ] }),
+  });
+
+  const fromInstance = tier1.sources[0];
+  const fromAdapter = adapter.sources[0];
+  assert.strictEqual(fromInstance.groupKey, fromAdapter.groupKey, "same group");
+  assert.strictEqual(fromInstance.groupLabel, fromAdapter.groupLabel);
+  assert.strictEqual(fromInstance.groupLabel, "UI action");
+  /* The source label still names the tier, because the status drawer has to
+   * keep answering "what actually ran". */
+  assert.notStrictEqual(fromInstance.label, fromAdapter.label);
+  assert.match(fromInstance.label, /instance search/i);
+});
+
+test("a Tier 1 record type with no adapter still gets a readable group name", () => {
+  const out = CS.hitsFromApiResult(
+    [{ recordType: "sp_widget", tableLabel: "Widget", hits: [
+      apiHit("Catalog widget", "sp_widget", "w1", "script", [line(1, "GlideRecord")]),
+    ] }],
+    parsed("GlideRecord"),
+    {}
+  );
+  assert.strictEqual(out.byClass.sp_widget.label, "Widget");
+});
+
 test("a skipped source is reported, not silently dropped", async () => {
   const seen = [];
   const result = await CS.runSearch(parsed("GlideRecord"), {

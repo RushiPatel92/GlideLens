@@ -251,7 +251,7 @@
     openUrl(
       location.origin +
         "/" +
-        entry.summary.table +
+        entry.table +
         "_list.do?sysparm_query=" +
         encodeURIComponent("sys_idIN" + ids.join(","))
     );
@@ -266,6 +266,58 @@
 
   const visibleHits = (entry) =>
     entry.hits.filter((hit) => !filterText || hitSearchText(hit).includes(filterText));
+
+  /*
+   * Results are grouped by TABLE, not by source. Two tiers can report the same
+   * table — the instance's own index and our adapter for the fields it does not
+   * cover — and which pipe found a record is our plumbing, not something a
+   * person searching for code should have to reconcile into one mental list.
+   *
+   * The status drawer stays per-source, because "did it really look everywhere"
+   * is a question about sources and answering it needs them kept apart.
+   */
+  const GROUP_STATUS_ORDER = [
+    "capped",
+    "denied",
+    "timed-out",
+    "error",
+    "absent",
+    "complete",
+    "no-matches",
+    "skipped",
+  ];
+
+  const groupStatus = (statuses) => {
+    for (let i = 0; i < GROUP_STATUS_ORDER.length; i++) {
+      if (statuses.indexOf(GROUP_STATUS_ORDER[i]) !== -1) return GROUP_STATUS_ORDER[i];
+    }
+    return statuses[0] || "complete";
+  };
+
+  const displayGroups = () => {
+    const groups = new Map();
+    sources.forEach((entry) => {
+      const summary = entry.summary;
+      const key = summary.groupKey || summary.table || summary.id;
+      const group =
+        groups.get(key) ||
+        groups.set(key, {
+          key,
+          label: summary.groupLabel || summary.label,
+          table: summary.table,
+          hits: [],
+          statuses: [],
+        }).get(key);
+      group.hits = group.hits.concat(visibleHits(entry));
+      group.statuses.push(summary.status);
+    });
+    const list = [];
+    groups.forEach((group) => {
+      group.status = groupStatus(group.statuses);
+      list.push(group);
+    });
+    return list;
+  };
 
   const totalHits = () => {
     let total = 0;
@@ -348,8 +400,8 @@
   };
 
   const renderGroup = (entry) => {
-    const hits = visibleHits(entry);
-    const isCollapsed = collapsed.has(entry.summary.id);
+    const hits = entry.hits;
+    const isCollapsed = collapsed.has(entry.key);
 
     const group = document.createElement("div");
     group.className = "group";
@@ -364,7 +416,7 @@
     head.appendChild(caret);
 
     const label = document.createElement("span");
-    label.textContent = entry.summary.label;
+    label.textContent = entry.label;
     head.appendChild(label);
 
     const count = document.createElement("span");
@@ -372,18 +424,18 @@
     count.textContent = String(hits.length);
     head.appendChild(count);
 
-    const statusText = STATUS_TEXT[entry.summary.status] || "";
+    const statusText = STATUS_TEXT[entry.status] || "";
     if (statusText) {
       const status = document.createElement("span");
       status.className =
-        "status" + (NEEDS_ATTENTION.indexOf(entry.summary.status) !== -1 ? " warn" : "");
+        "status" + (NEEDS_ATTENTION.indexOf(entry.status) !== -1 ? " warn" : "");
       status.textContent = statusText;
       head.appendChild(status);
     }
 
     head.addEventListener("click", () => {
-      if (isCollapsed) collapsed.delete(entry.summary.id);
-      else collapsed.add(entry.summary.id);
+      if (isCollapsed) collapsed.delete(entry.key);
+      else collapsed.add(entry.key);
       renderRows();
     });
     group.appendChild(head);
@@ -415,17 +467,15 @@
     if (!container) return;
     container.textContent = "";
 
-    const entries = [];
-    sources.forEach((entry) => entries.push(entry));
+    const entries = displayGroups();
 
-    /* Sources with hits first; then anything the user needs to know about
+    /* Groups with hits first; then anything the user needs to know about
      * even though it produced none. A silent nothing is never shown as a
      * group — it lives in the status drawer. */
-    const withHits = entries.filter((entry) => visibleHits(entry).length > 0);
+    const withHits = entries.filter((entry) => entry.hits.length > 0);
     const attention = entries.filter(
       (entry) =>
-        visibleHits(entry).length === 0 &&
-        NEEDS_ATTENTION.indexOf(entry.summary.status) !== -1
+        entry.hits.length === 0 && NEEDS_ATTENTION.indexOf(entry.status) !== -1
     );
 
     withHits.concat(attention).forEach((entry) =>

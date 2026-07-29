@@ -558,6 +558,13 @@
     return SEARCH_TARGETS.filter((target) => target.id === id)[0] || null;
   }
 
+  /* Used to give a Tier 1 record type the same display name the adapter for
+   * that table uses, so one table means one group in the results however many
+   * tiers found it. Table names are unique across the registry. */
+  function targetByTable(table) {
+    return SEARCH_TARGETS.filter((target) => target.table === table)[0] || null;
+  }
+
   /* =====================================================================
    * TRANSPORT
    *
@@ -990,6 +997,8 @@
       const summary = {
         id: target.id,
         label: target.label,
+        groupKey: target.table,
+        groupLabel: target.label,
         table: target.table,
         kind: target.kind,
         status: SOURCE_STATUS.SKIPPED,
@@ -1016,6 +1025,8 @@
       const summary = {
         id: target.id,
         label: target.label,
+        groupKey: target.table,
+        groupLabel: target.label,
         table: target.table,
         kind: target.kind,
         status: classify(response, verified.length, rows.length, limit),
@@ -1369,10 +1380,17 @@
     const collect = (parseResult) =>
       Object.keys(parseResult.byClass).map((className) => {
         const bucket = parseResult.byClass[className];
+        const target = targetByTable(className);
         return {
           summary: {
             id: "instance:" + className,
+            /* `label` names the SOURCE and keeps saying which tier it is, so
+             * the status drawer stays honest about what ran. `groupLabel` names
+             * the RESULTS, where the tier is our plumbing and not the user's
+             * concern — one table, one group, however many tiers found it. */
             label: bucket.label + " (instance search)",
+            groupKey: className,
+            groupLabel: (target && target.label) || bucket.label,
             table: className,
             kind: "instance",
             status: parseResult.capped ? SOURCE_STATUS.CAPPED : SOURCE_STATUS.COMPLETE,
@@ -1428,9 +1446,12 @@
     const tasks = tables.map((table) => async () => {
       const response = await transport({ term: parsed.term, table });
       if (!response.ok) {
+        const errorTarget = targetByTable(table);
         const summary = {
           id: "instance:" + table,
           label: table + " (instance search)",
+          groupKey: table,
+          groupLabel: (errorTarget && errorTarget.label) || table,
           table,
           kind: "instance",
           status: classify(response, 0, 0, API_GLOBAL_CAP),

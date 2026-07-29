@@ -28,6 +28,10 @@ reconstructed version by version.
 - The results panel now says when the instance index was not consulted and why,
   and marks any adapter it stood in for as skipped rather than silently omitting
   it.
+- Results are grouped by record type rather than by which tier found them, so a
+  table only ever produces one group — "UI action", not "UI action" beside
+  "UI Action (instance search)". The **Source status** drawer still lists every
+  source separately, because that is where a partial search has to be visible.
 
 ### Fixed
 - Source rows in the status drawer now show why a source was skipped and what
