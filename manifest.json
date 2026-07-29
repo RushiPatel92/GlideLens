@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SN Dev Helper",
-  "version": "0.8.0",
-  "description": "Developer utilities for ServiceNow: instance info, quick table nav, dev shortcuts, copy sys_id, technical field names.",
+  "name": "GlideLens",
+  "version": "0.9.0",
+  "description": "A lens on ServiceNow forms, catalogs and code: field names, translation inheritance, catalog debugging, code search.",
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
   "host_permissions": ["https://*.service-now.com/*"],
   "icons": {
@@ -13,7 +13,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "SN Dev Helper",
+    "default_title": "GlideLens",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

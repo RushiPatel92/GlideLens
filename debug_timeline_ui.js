@@ -379,7 +379,7 @@
   const traceAsText = () => {
     const result = lastResult || { events: [] };
     const lines = [
-      "SN Dev Helper - Debug Timeline",
+      "GlideLens — Debug Timeline",
       "Best-effort trace; script and UI Policy attribution is not guaranteed.",
       "Started: " + (result.startedAt ? new Date(result.startedAt).toISOString() : "unknown"),
       "Stopped: " + (result.stoppedAt ? new Date(result.stoppedAt).toISOString() : "unknown"),

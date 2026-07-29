@@ -2391,14 +2391,14 @@ function ensureTranslatableFields(table) {
       // from "no filtering happened", so silence here would make a failed lookup
       // impossible to tell apart from stale code.
       console.info(
-        `[SN Dev Helper] ${table}: ${fields.size} field(s) can have value translations`,
+        `[GlideLens] ${table}: ${fields.size} field(s) can have value translations`,
         fields.size ? Array.from(fields) : ""
       );
     })
     .catch((error) => {
       snhTranslatableFields.set(table, null);
       console.warn(
-        `[SN Dev Helper] could not determine translatable fields for ${table}; ` +
+        `[GlideLens] could not determine translatable fields for ${table}; ` +
           "showing the value icon on every field rather than hiding a working one.",
         error
       );
@@ -3613,7 +3613,7 @@ function openPalette() {
       <div id="box" role="dialog" aria-modal="true" aria-labelledby="palette-title">
         <div id="palette-head" title="Drag to move. Double-click to recenter.">
           <div>
-            <div id="palette-kicker">SN Dev Helper</div>
+            <div id="palette-kicker">GlideLens</div>
             <div id="palette-title-row">
               <img id="drag-indicator" src="${chrome.runtime.getURL("icons/drag-indicator.svg")}" alt="" aria-hidden="true" />
               <div id="palette-title">Command palette</div>

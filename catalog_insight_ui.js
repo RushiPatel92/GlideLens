@@ -574,7 +574,7 @@
   const resultsAsText = () => {
     const rows = filteredRows();
     const lines = [
-      "SN Dev Helper — What affects this catalog item",
+      "GlideLens — What affects this catalog item",
       "Read-only; catalog client scripts and UI policies targeting this item.",
       (lastResult && lastResult.itemName ? "Item: " + lastResult.itemName : ""),
       "Rows: " + rows.length + " of " + allRows().length,
