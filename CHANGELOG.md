@@ -10,6 +10,17 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- A palette command, **Recheck what code search can reach**, that re-reads the
+  instance's search-group configuration and field definitions on demand instead
+  of waiting out the seven-day cache. It reports what actually moved — tables
+  added, removed or re-tuned, the instance index appearing or disappearing, or
+  no change at all — because a refresh that says nothing looks exactly like one
+  that did nothing. A failed read says so and leaves the cached coverage alone,
+  rather than reporting the instance index as gone.
+
 ## [0.8.0] - 2026-07-29
 
 ### Added

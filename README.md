@@ -131,6 +131,7 @@ and `Esc` to close. Some commands accept an argument in an inline input field.
 | Toggle translation icons | Show/hide per-label icons: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
 | Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax timing, and JavaScript errors, then view a filterable results panel. Best-effort; does not promise named Client Script / UI Policy attribution. |
 | Search code… | Search all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
+| Recheck what code search can reach | Re-read this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
 
 #### Code search
 
@@ -164,6 +165,12 @@ access denied, unavailable, timed out, or capped sources, says when the
 instance's own index was not consulted, and marks any source it stood in for as
 skipped — so a partial search does not look complete. A filter box narrows the
 results already loaded.
+
+What the instance can search is read once and cached for a week, so adding a
+table to a search group — or a new field appearing — would otherwise take up to
+seven days to show up in results. **Recheck what code search can reach** re-reads
+both immediately and says what moved: tables added, removed or re-tuned, the
+index appearing or disappearing, or nothing at all.
 
 Code search is read-only: it performs same-instance GETs and never
 runs or edits what it finds. It does not support regular expressions. Searches

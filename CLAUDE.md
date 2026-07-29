@@ -203,6 +203,12 @@ MV3 at all.
     `catalog_script_client` rows. Hits are filed under their concrete
     `className` so the dedupe key collides with the adapter that also returns
     them.
+  Both the probe and the coverage map cache per origin for seven days, so the
+  palette command **"Recheck what code search can reach"** forces both
+  (`refreshCapabilities`) and reports the diff against what was cached. Name it
+  after the symptom — missing hits — not after the caches; and never report a
+  failed read as a change, because neither loader caches a failure and the old
+  map survives it.
   Coverage is mapped per `table.field` from `sn_codesearch_table` (cached per
   origin for seven days) and an adapter is skipped only when Tier 1 searched its
   table, did not saturate, and covers every field it reads. Neither config table
