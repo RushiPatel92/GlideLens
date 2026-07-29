@@ -482,3 +482,85 @@ test("a skipped source is reported, not silently dropped", async () => {
   assert.strictEqual(seen[0].status, CS.SOURCE_STATUS.SKIPPED);
   assert.strictEqual(result.sources[0].status, CS.SOURCE_STATUS.SKIPPED);
 });
+
+/* ---------------------------------------------------------------------------
+ * Capability refresh — the diff, not the caches
+ *
+ * `refreshCapabilities` itself needs chrome.storage, so what is tested here is
+ * the part that has to be right: whether a refresh can tell the user something
+ * true about what moved. A refresh that reports nothing is indistinguishable
+ * from one that did nothing.
+ * ------------------------------------------------------------------------- */
+
+const summarize = (tables, adapters, available) =>
+  CS.summarizeCapabilities(
+    { ok: true, targets: adapters || {} },
+    {
+      available: available === undefined ? Object.keys(tables || {}).length > 0 : available,
+      tables: tables || {},
+    }
+  );
+
+test("an unchanged instance reports no change rather than a fake one", () => {
+  const before = summarize({ sys_script: { fields: ["script", "condition"] } });
+  const after = summarize({ sys_script: { fields: ["condition", "script"] } });
+  const change = CS.describeCapabilityChange(before, after);
+  assert.strictEqual(change.changed, false, "field order is not a change");
+  assert.match(change.summary, /No change/);
+});
+
+test("a table added to a search group is reported as added", () => {
+  const before = summarize({ sys_script: { fields: ["script"] } });
+  const after = summarize({
+    sys_script: { fields: ["script"] },
+    sp_widget: { fields: ["script"] },
+  });
+  const change = CS.describeCapabilityChange(before, after);
+  assert.strictEqual(change.changed, true);
+  assert.match(change.summary, /\+1 table/);
+  assert.match(change.summary, /2 tables/);
+});
+
+test("a table whose search_fields changed is re-tuned, not added", () => {
+  const before = summarize({ sys_ui_action: { fields: ["name", "script"] } });
+  const after = summarize({ sys_ui_action: { fields: ["name", "script", "condition"] } });
+  const change = CS.describeCapabilityChange(before, after);
+  assert.strictEqual(change.changed, true);
+  assert.match(change.summary, /re-tuned/);
+  assert.doesNotMatch(change.summary, /\+1 table/);
+});
+
+test("an additional_filter appearing counts as a change", () => {
+  const before = summarize({ sys_script: { fields: ["script"], filtered: false } });
+  const after = summarize({ sys_script: { fields: ["script"], filtered: true } });
+  assert.strictEqual(CS.describeCapabilityChange(before, after).changed, true);
+});
+
+test("Tier 1 appearing or disappearing outranks the table counts", () => {
+  const none = summarize({}, {}, false);
+  const some = summarize({ sys_script: { fields: ["script"] } });
+  const arrived = CS.describeCapabilityChange(none, some);
+  assert.strictEqual(arrived.changed, true);
+  assert.match(arrived.summary, /available now/i);
+
+  const lost = CS.describeCapabilityChange(some, none);
+  assert.strictEqual(lost.changed, true);
+  assert.match(lost.summary, /fall back/i);
+});
+
+test("adapter fields gained or lost are reported even when Tier 1 is unchanged", () => {
+  const tables = { sys_script: { fields: ["script"] } };
+  const before = summarize(tables, { "catalog-variable": { fields: ["default_value"] } });
+  const after = summarize(tables, {
+    "catalog-variable": { fields: ["default_value", "reference_qual"] },
+  });
+  const change = CS.describeCapabilityChange(before, after);
+  assert.strictEqual(change.changed, true);
+  assert.match(change.summary, /1 adapter/);
+});
+
+test("nothing cached is a first check, never a change to report", () => {
+  const change = CS.describeCapabilityChange(null, summarize({ sys_script: { fields: ["script"] } }));
+  assert.strictEqual(change.changed, true);
+  assert.match(change.summary, /^Checked:/);
+});

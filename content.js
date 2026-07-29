@@ -2835,6 +2835,17 @@ function buildCommands() {
       },
     },
     {
+      id: "refresh-code-search-coverage",
+      name: "Recheck what code search can reach",
+      keywords: [
+        "code search", "coverage", "index", "sources", "stale", "cache",
+        "refresh", "recheck", "search group", "sn_codesearch", "missing hits",
+      ],
+      group: "Tools",
+      keepOpen: true,
+      run: refreshCodeSearchCoverage,
+    },
+    {
       id: "open-table-list",
       name: "Open table list…",
       keywords: ["navigate", "jump", "list", "table", "open"],
@@ -2994,6 +3005,38 @@ async function runCodeSearch(rawTerm) {
   } catch (error) {
     if (isStale()) return;
     ui.showError(String(error.message || error));
+  }
+}
+
+/*
+ * What code search can reach is cached per origin for a week — the dictionary
+ * probe and the instance's own coverage map both. That is right for a search
+ * run many times a day and wrong the moment someone adds a table to a search
+ * group: until this command existed, the only way out was clearing extension
+ * storage by hand.
+ *
+ * The symptom is missing hits, not an error, so the command is named after the
+ * symptom rather than after the caches it happens to clear.
+ */
+async function refreshCodeSearchCoverage() {
+  try {
+    await ensureCodeSearchLoaded();
+  } catch (error) {
+    showToast(String(error.message || error), true);
+    return;
+  }
+
+  const engine = globalThis.SNCodeSearch;
+  showToast("Rechecking code search coverage…", false, 30000);
+  try {
+    const result = await engine.refreshCapabilities(location.origin);
+    showToast(result.change.summary, !result.ok, result.ok ? 9000 : 11000);
+  } catch (error) {
+    showToast(
+      "Couldn't recheck coverage: " + String(error.message || error),
+      true,
+      9000
+    );
   }
 }
 

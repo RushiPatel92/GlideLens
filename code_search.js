@@ -1517,6 +1517,214 @@
     return skip;
   }
 
+  /* =====================================================================
+   * CAPABILITY REFRESH
+   *
+   * Both caches live for seven days, which is right for a search that runs
+   * many times a day and wrong the moment an admin edits a search group or a
+   * field appears. Nothing else passes `force`, so without this a stale map
+   * quietly narrows every search for up to a week.
+   *
+   * Refreshing is only half of it: a refresh that reports nothing is
+   * indistinguishable from one that did nothing, and a silent no-op is exactly
+   * what makes someone stop trusting the button. So the old cache is read
+   * FIRST, the fresh read is diffed against it, and the difference is what the
+   * caller shows.
+   * ===================================================================== */
+
+  function plural(count, word) {
+    return count + " " + word + (count === 1 ? "" : "s");
+  }
+
+  /*
+   * The two caches as they stand, without fetching anything. TTL is
+   * deliberately ignored here: an expired entry is still what the last search
+   * used, and it is the honest "before" to diff against. Version is not
+   * ignored — an entry written by older code cannot be compared field for
+   * field, so it counts as nothing cached.
+   */
+  async function peekCapabilities(origin) {
+    const probeKey = probeCacheKey(origin);
+    const coverageKey = coverageCacheKey(origin);
+    try {
+      const cached = await chrome.storage.local.get([probeKey, coverageKey]);
+      const probeEntry = cached && cached[probeKey];
+      const coverageEntry = cached && cached[coverageKey];
+      return {
+        probe:
+          probeEntry && probeEntry.version === PROBE_CACHE_VERSION
+            ? probeEntry
+            : null,
+        coverage:
+          coverageEntry && coverageEntry.version === COVERAGE_CACHE_VERSION
+            ? coverageEntry
+            : null,
+      };
+    } catch (e) {
+      return { probe: null, coverage: null };
+    }
+  }
+
+  /*
+   * Capabilities reduced to the two things that decide what a search reaches:
+   * which table.fields the instance index covers, and which adapter fields the
+   * dictionary actually defines. Sorted, so a diff compares meaning rather
+   * than the order two reads happened to return rows in.
+   */
+  function summarizeCapabilities(probeResult, coverage) {
+    const tables = Object.create(null);
+    const sourceTables = (coverage && coverage.tables) || Object.create(null);
+    Object.keys(sourceTables).forEach((table) => {
+      const entry = sourceTables[table] || {};
+      tables[table] = {
+        fields: (entry.fields || []).slice().sort(),
+        filtered: Boolean(entry.filtered),
+      };
+    });
+
+    const adapters = Object.create(null);
+    const targets = (probeResult && probeResult.targets) || Object.create(null);
+    Object.keys(targets).forEach((id) => {
+      adapters[id] = ((targets[id] || {}).fields || []).slice().sort();
+    });
+
+    return {
+      tier1Available: Boolean(coverage && coverage.available),
+      tableCount: Object.keys(tables).length,
+      tables,
+      adapters,
+      probeOk: Boolean(probeResult && probeResult.ok),
+    };
+  }
+
+  function sameFields(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    return a.every((field, index) => field === b[index]);
+  }
+
+  /*
+   * One sentence a person can act on. The interesting cases are the
+   * transitions — Tier 1 appearing or disappearing — because those change
+   * which sources run, not just how many rows come back.
+   */
+  function describeCapabilityChange(before, after) {
+    if (!after) return { changed: false, summary: "Nothing was re-read." };
+    if (!before) {
+      return {
+        changed: true,
+        summary: after.tier1Available
+          ? "Checked: the instance code search index covers " +
+            plural(after.tableCount, "table") + "."
+          : "Checked: no instance code search index here, so searches use the " +
+            "Table API adapters.",
+      };
+    }
+
+    const added = Object.keys(after.tables).filter((t) => !before.tables[t]).sort();
+    const removed = Object.keys(before.tables).filter((t) => !after.tables[t]).sort();
+    const retuned = Object.keys(after.tables)
+      .filter(
+        (t) =>
+          before.tables[t] &&
+          (!sameFields(before.tables[t].fields, after.tables[t].fields) ||
+            before.tables[t].filtered !== after.tables[t].filtered)
+      )
+      .sort();
+    const adapters = Object.keys(after.adapters)
+      .filter(
+        (id) =>
+          before.adapters[id] && !sameFields(before.adapters[id], after.adapters[id])
+      )
+      .sort();
+
+    if (before.tier1Available !== after.tier1Available) {
+      return {
+        changed: true,
+        summary: after.tier1Available
+          ? "The instance code search index is available now — " +
+            plural(after.tableCount, "table") + " indexed."
+          : "The instance code search index is gone; searches fall back to the " +
+            "Table API adapters.",
+      };
+    }
+
+    const parts = [];
+    if (added.length) parts.push("+" + plural(added.length, "table"));
+    if (removed.length) parts.push("−" + plural(removed.length, "table"));
+    if (retuned.length) parts.push(plural(retuned.length, "table") + " re-tuned");
+    if (adapters.length) {
+      parts.push(plural(adapters.length, "adapter") + " with different fields");
+    }
+
+    if (!parts.length) {
+      return {
+        changed: false,
+        summary: after.tier1Available
+          ? "No change — the instance index still covers " +
+            plural(after.tableCount, "table") + "."
+          : "No change — still no instance code search index here.",
+      };
+    }
+
+    return {
+      changed: true,
+      summary:
+        (after.tier1Available
+          ? "Instance index now covers " + plural(after.tableCount, "table")
+          : "Search coverage changed") +
+        ": " + parts.join(", ") + ".",
+    };
+  }
+
+  /*
+   * Force both loaders past their caches and say what moved.
+   *
+   * A failed read is reported as a failure, never as a change: neither loader
+   * caches a failure, so the old map survives and claiming "no instance index"
+   * on the back of one bad request would be the exact silent-hole story this
+   * feature keeps running into.
+   */
+  async function refreshCapabilities(origin, options) {
+    const opts = Object.assign({}, options || {}, { force: true });
+    const previous = await peekCapabilities(origin);
+    const before =
+      previous.probe || previous.coverage
+        ? summarizeCapabilities(previous.probe, previous.coverage)
+        : null;
+
+    const [probeResult, coverage] = await Promise.all([
+      loadProbe(origin, opts),
+      loadCoverage(origin, opts),
+    ]);
+
+    if (!coverage.ok) {
+      return {
+        ok: false,
+        probe: probeResult,
+        coverage,
+        before,
+        after: null,
+        change: {
+          changed: false,
+          summary:
+            "Couldn't re-read the instance search config" +
+            (coverage.error ? " (" + coverage.error + ")" : "") +
+            "; the cached coverage is unchanged.",
+        },
+      };
+    }
+
+    const after = summarizeCapabilities(probeResult, coverage);
+    const change = describeCapabilityChange(before, after);
+    /* A failed probe leaves the adapter half of the answer stale, and the
+     * coverage half is still worth reporting — say both rather than either. */
+    if (!probeResult.ok) {
+      change.summary +=
+        " The dictionary probe failed, so adapter fields were not re-checked.";
+    }
+    return { ok: true, probe: probeResult, coverage, before, after, change };
+  }
+
   globalThis.SNCodeSearch = {
     MIN_ANCHOR_LENGTH,
     SOURCE_STATUS,
@@ -1552,6 +1760,10 @@
     resolveAncestry,
     probe,
     loadProbe,
+    peekCapabilities,
+    summarizeCapabilities,
+    describeCapabilityChange,
+    refreshCapabilities,
     selectTargets,
     hitsFromRows,
     runSearch,
