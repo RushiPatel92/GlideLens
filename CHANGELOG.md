@@ -10,7 +10,7 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## [Unreleased]
+## [0.8.0] - 2026-07-29
 
 ### Added
 - Code search now uses the instance's **own Code Search index** where it is
