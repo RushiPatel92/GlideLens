@@ -498,6 +498,11 @@
         parts.push(summary.count + (summary.count === 1 ? " match" : " matches"));
       }
       if (STATUS_TEXT[summary.status]) parts.push(STATUS_TEXT[summary.status]);
+      /* A status alone can be worse than silence: "skipped" without a reason
+       * reads as "we gave up". The note says who covered it instead, and the
+       * error says why a source could not answer. */
+      if (summary.note) parts.push(summary.note);
+      if (summary.error) parts.push(String(summary.error));
       if (summary.missingFields && summary.missingFields.length) {
         parts.push("not on this instance: " + summary.missingFields.join(", "));
       }

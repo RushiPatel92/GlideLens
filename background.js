@@ -117,6 +117,40 @@ async function tableApiGetInPage(request) {
   return { ok: true, result: (data && data.result) || [] };
 }
 
+/*
+ * MAIN-world reader for /api/sn_codesearch/code_search/search.
+ *
+ * The parameter is `term` — `search_term` and `sysparm_search` return an empty
+ * array rather than an error (verified 2026-07-27). Nothing else is sent:
+ * `limit`, `sysparm_limit`, `max` and `sysparm_max` were all measured as having
+ * no effect on the endpoint's hard 500-hit cap.
+ */
+async function codeSearchApiGetInPage(request) {
+  const params = new URLSearchParams();
+  params.set("term", request.term || "");
+  if (request.table) params.set("table", request.table);
+
+  const url =
+    location.origin +
+    "/api/sn_codesearch/code_search/search?" +
+    params.toString();
+  const headers = { Accept: "application/json" };
+  try {
+    if (typeof g_ck !== "undefined" && g_ck) headers["X-UserToken"] = g_ck;
+  } catch (e) {}
+
+  const res = await fetch(url, { credentials: "same-origin", headers });
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      error: "HTTP " + res.status + " from instance code search",
+    };
+  }
+  const data = await res.json();
+  return { ok: true, status: res.status, result: (data && data.result) || [] };
+}
+
 /* =====================================================================
  * CODE SEARCH TRANSPORT
  *
@@ -163,26 +197,31 @@ async function resolveTokenFrame(tabId) {
   return frameId;
 }
 
-async function codeSearchTableGet(tabId, request, isRetry) {
+/*
+ * Runs one read in the tab's token-bearing frame, with the frame-cache
+ * recovery both callers need. `func` is the MAIN-world reader; `what` names the
+ * thing being read for error messages only.
+ */
+async function codeSearchFrameGet(tabId, func, request, what, isRetry) {
   const frameId = await resolveTokenFrame(tabId);
   let results;
   try {
     results = await chrome.scripting.executeScript({
       target: { tabId, frameIds: [frameId] },
       world: "MAIN",
-      func: tableApiGetInPage,
+      func,
       args: [request],
     });
   } catch (error) {
     /* The cached frame can go away under navigation. Re-resolve once before
      * treating it as a real failure. */
     codeSearchFrameByTab.delete(tabId);
-    if (!isRetry) return codeSearchTableGet(tabId, request, true);
+    if (!isRetry) return codeSearchFrameGet(tabId, func, request, what, true);
     return { ok: false, status: 0, error: String(error) };
   }
   const response = results.map((item) => item && item.result).filter(Boolean)[0];
   if (!response) {
-    return { ok: false, status: 0, error: "No response reading " + request.table };
+    return { ok: false, status: 0, error: "No response reading " + what };
   }
   /*
    * A cached frame that still exists but has lost its token answers 401 rather
@@ -192,9 +231,34 @@ async function codeSearchTableGet(tabId, request, isRetry) {
    */
   if (response.status === 401 && !isRetry) {
     codeSearchFrameByTab.delete(tabId);
-    return codeSearchTableGet(tabId, request, true);
+    return codeSearchFrameGet(tabId, func, request, what, true);
   }
   return response;
+}
+
+function codeSearchTableGet(tabId, request) {
+  return codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table);
+}
+
+/*
+ * Tier 1: the instance's own Code Search endpoint. A different URL shape from
+ * the Table API, so it gets its own MAIN-world reader — but the same single
+ * resolved frame, because the token problem and the fan-out problem are
+ * identical.
+ *
+ * `table` is passed through ONLY when the caller has established the table is
+ * configured in a search group. Verified on a real instance 2026-07-29: an
+ * unconfigured or nonsense table name is not rejected, it is silently IGNORED,
+ * and the endpoint answers with a full unscoped search that is indistinguishable
+ * from a scoped one. The engine re-checks the record types that come back.
+ */
+function codeSearchApiGet(tabId, request) {
+  return codeSearchFrameGet(
+    tabId,
+    codeSearchApiGetInPage,
+    request,
+    "instance code search"
+  );
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => codeSearchFrameByTab.delete(tabId));
@@ -2971,6 +3035,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       limit: msg.limit,
       options: {},
     })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, status: 0, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "SN_CODE_SEARCH_API_GET" && sender.tab) {
+    codeSearchApiGet(sender.tab.id, { term: msg.term, table: msg.table })
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, status: 0, error: String(error) }));
     return true;

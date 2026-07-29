@@ -72,6 +72,11 @@ token-bearing frame per tab and sends every pooled request to that frame alone.
 Do not route searches through `SN_TABLE_GET`: that handler fans out to every
 frame and would multiply every source query on classic pages.
 
+`SN_CODE_SEARCH_API_GET` is the same deal for the instance's own Code Search
+endpoint (`/api/sn_codesearch/code_search/search`). It shares
+`codeSearchFrameGet` — the frame resolution, the stale-frame retry and the
+401-means-re-resolve rule — and differs only in the URL it builds.
+
 **Do NOT fetch the Table API directly from the isolated world.** It is
 same-origin with the instance, so the session cookie goes along — but the CSRF
 token does not, and an instance that enforces the token on REST GETs answers
@@ -108,7 +113,9 @@ MV3 at all.
   Search injection, and token-bearing Table API handlers.
 - `tests/` - developer-only Node tests. They ship harmlessly in the repository
   ZIP and Chrome ignores them; run Code Search tests by file path with
-  `node --test tests/code_search.test.js` (not `node --test tests/` on Node 24).
+  `node --test tests/code_search.test.js tests/code_search_api.test.js` (not
+  `node --test tests/` on Node 24). The second file covers Tier 1: the coverage
+  map, the ignored-`&table=` guard, cap saturation, and the adapter merge.
 
 ## Feature notes
 - **Translation icons** add two icons per label:
@@ -172,6 +179,34 @@ MV3 at all.
   lazily injected on first use and remain absent from `manifest.json`; all
   instance text is rendered without instance-provided HTML, and sensitive-named
   hits are redacted.
+
+  **Tier 1 — the instance's own index.** Where the Code Search plugin is
+  present, `runApiSearch` queries `/api/sn_codesearch/code_search/search` first
+  and the adapters fill the gaps. Four measured behaviours shape that code and
+  none of them are guesses (write-ups in `plans/`, gitignored):
+  - **`&table=` is silently IGNORED for any table not configured in a search
+    group** — including a nonsense name — and the endpoint answers with a full
+    unscoped search that is indistinguishable from a scoped one. Send it only
+    for tables in the coverage map, and re-check the record types that come
+    back. This is the Table API's silent-drop trap in a new place.
+  - **A global 500-hit cap**, not raisable by `limit`/`sysparm_limit`/`max`, with
+    no truncation flag. One record type can consume all 500 slots (measured:
+    499 of 500), so saturation triggers a per-table retry through the same pool.
+    Saturation is detected as `rawHits >= 500` because nothing else announces it.
+  - **`lineMatches` carries ±1 lines of context**, so only lines that really
+    contain the term become snippets. Use `context`, never `escaped` — a
+    pre-escaped field invites `innerHTML`.
+  - **Inheritance is followed**: the `sys_script_client` record type returns
+    `catalog_script_client` rows. Hits are filed under their concrete
+    `className` so the dedupe key collides with the adapter that also returns
+    them.
+  Coverage is mapped per `table.field` from `sn_codesearch_table` (cached per
+  origin for seven days) and an adapter is skipped only when Tier 1 searched its
+  table, did not saturate, and covers every field it reads. Neither config table
+  has an `active` column; `additional_filter` means partial coverage, so keep
+  the adapter. Matching is literal case-insensitive substring, the same as R1 —
+  but that is the `extended_matching` setting on this instance's groups, so Tier
+  1 is never assumed complete.
 
 ## Conventions & constraints
 - **IMPORTANT — Never delete a branch from GitHub or any Git remote.** Remote

@@ -10,6 +10,40 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- Code search now uses the instance's **own Code Search index** where it is
+  available, and falls back to the Table API adapters where it is not. One
+  request covers every record type the instance's search groups configure, so a
+  normal search returns in about a second and a half instead of fanning out over
+  a dozen table reads.
+- A cached per-origin **coverage map** built from `sn_codesearch_table`, keyed
+  per `table.field` rather than per table. An adapter is skipped only when the
+  index genuinely covers every field it reads, so the sources the index does not
+  reach keep running: dictionary and override logic, catalog variables,
+  transform entries, record producers, catalog client scripts, and — because
+  every search group configures `sys_ui_action` as `name,script` — UI Action
+  conditions.
+- The results panel now says when the instance index was not consulted and why,
+  and marks any adapter it stood in for as skipped rather than silently omitting
+  it.
+
+### Fixed
+- Source rows in the status drawer now show why a source was skipped and what
+  error a failing source returned. Both were being tracked and never rendered.
+
+### Security
+- The instance index is read GET-only through the same single token-bearing
+  frame as the Table API tier. Every line the endpoint returns is re-verified
+  against the search term before rendering — it returns ±1 lines of context
+  around each match, which would otherwise be reported as matches in their own
+  right — and hits with sensitive-looking names are redacted on this path too.
+- A `table:` filter is only ever passed to the endpoint for a table the coverage
+  map contains. An unconfigured or misspelled table name is not rejected by the
+  instance; it is silently ignored, and the response is a full unscoped search
+  that would otherwise look like a scoped one.
+
 ## [0.7.0] - 2026-07-28
 
 ### Added
