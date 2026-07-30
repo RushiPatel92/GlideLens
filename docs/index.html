@@ -632,6 +632,127 @@ a { color: var(--teal); }
 .dm-t.off { color: #ff9d9d; background: #3a2530; border-color: #5c3a48; }
 .dm-t.warn { color: #f0d79b; background: #3a3320; border-color: #5c5031; }
 
+/* --- Variable values rows (hidden_variables_ui.js) --- */
+.dm-be {
+  margin-left: 7px;
+  padding: 2px 6px;
+  border: 1px solid #5c5031;
+  border-radius: 4px;
+  background: #3a3320;
+  color: #e6c78f;
+  font: 600 9.5px/1 var(--sans);
+  vertical-align: middle;
+}
+.dm-vrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px 140px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 9px 15px;
+  border-bottom: 1px solid #23233a;
+}
+.dm-vrow:hover { background: #26263e; }
+.dm-vlabel { font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
+.dm-vname { margin-top: 1px; font: 10.5px var(--mono); color: #85859f; }
+.dm-vset { margin-top: 2px; font: 10px var(--mono); color: #6f6f88; }
+.dm-vtype { font-size: 11px; color: #9d9dba; }
+.dm-vvalue {
+  min-width: 0;
+  font: 11px var(--mono);
+  color: #c1c1d6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-vvalue.empty { color: #5f5f78; font-style: italic; }
+.dm-bucket {
+  justify-self: start;
+  padding: 2px 7px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dm-bucket.hidden-type { color: #ffb1b1; background: #432a36; border-color: #684050; }
+.dm-bucket.invisible   { color: #a9d5ff; background: #24364a; border-color: #365573; }
+.dm-bucket.absent      { color: #b5e4c2; background: #263b35; border-color: #39594d; }
+.dm-bucket.visible     { color: #8f9bb3; background: #252539; border-color: #34344f; }
+.dm-bucket.mrvs        { color: #e6c78f; background: #3a3320; border-color: #5c5031; }
+
+/* --- Debug Timeline events (debug_timeline_ui.js) --- */
+.dm-ev { border-bottom: 1px solid #23233a; }
+.dm-ev-main {
+  display: grid;
+  grid-template-columns: 68px 78px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 15px;
+  border: 0;
+  background: transparent;
+  color: #d7d7e8;
+  text-align: left;
+  cursor: pointer;
+}
+.dm-ev-main:hover { background: #26263e; }
+.dm-time { font: 11px var(--mono); color: #76768f; }
+.dm-cat {
+  justify-self: start;
+  padding: 3px 6px;
+  border: 1px solid #4a4d78;
+  border-radius: 4px;
+  background: #33345a;
+  color: #cdd0f2;
+  font-size: 10px;
+  font-weight: 600;
+}
+.dm-cat.g_form {
+  color: #7cf1e4;
+  background: color-mix(in srgb, var(--teal) 20%, #1c2a30);
+  border-color: color-mix(in srgb, var(--teal) 52%, #33345a);
+}
+.dm-cat.system {
+  color: #ffb3d5;
+  background: color-mix(in srgb, #ff6fae 20%, #2f2130);
+  border-color: color-mix(in srgb, #ff6fae 48%, #33345a);
+}
+.dm-cat.error     { color: #ffc0c0; background: #4a2c39; border-color: #744a5a; }
+.dm-cat.glideajax { color: #bfe1ff; background: #26374d; border-color: #3d6488; }
+.dm-cat.field     { color: #c4efce; background: #284037; border-color: #3f6555; }
+.dm-evsum { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+.dm-evtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
+.dm-ga {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid;
+  border-radius: 4px;
+  font: 700 9px/1.4 var(--sans);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.dm-ga.started   { color: #bfe1ff; background: #26374d; border-color: #3d6488; }
+.dm-ga.completed { color: #c4efce; background: #284037; border-color: #3f6555; }
+.dm-lowsig {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid #4a4b70;
+  border-radius: 9px;
+  color: #8f8faa;
+  font-size: 9.5px;
+}
+.dm-expand { font-size: 10.5px; color: #85859f; }
+.dm-evdet {
+  display: none;
+  margin: 0;
+  padding: 0 15px 11px 83px;
+  font: 10.5px/1.7 var(--mono);
+  color: #9d9dba;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dm-ev.open .dm-evdet { display: block; }
+
 .dm-empty { padding: 28px 15px; text-align: center; color: #85859f; font-size: 12.5px; }
 
 .dm-foot {
@@ -643,9 +764,12 @@ a { color: var(--teal); }
 }
 
 @media (max-width: 620px) {
-  .dm-crow { grid-template-columns: 1fr; gap: 5px; }
+  .dm-crow, .dm-vrow { grid-template-columns: 1fr; gap: 5px; }
   .dm-meta { justify-content: flex-start; }
   .dm-find { margin-left: 0; }
+  .dm-ev-main { grid-template-columns: 60px 72px minmax(0, 1fr); }
+  .dm-expand { display: none; }
+  .dm-evdet { padding-left: 15px; }
 }
 
 /* --------------------------------------------------------------------------- */
@@ -915,10 +1039,27 @@ a { color: var(--teal); }
             <span class="tag">hidden / visible filter</span>
             <span class="tag is-ok">read-only</span>
           </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Run the command, then switch the filter to hidden.</span>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Switch to <em>Hidden</em>, or try <em>Non-empty</em>.</p>
+            <div class="dm" id="dmVars">
+              <div class="dm-head">
+                <h3 class="dm-title">Variable Values <span class="dm-be">Best effort</span></h3>
+                <p class="dm-sub">Every variable on this catalog item with its best-effort current value. Hidden = permanently Hidden-type, switched off by a UI Policy or client script, or not rendered.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmvTotal">0</strong>variables</span>
+                <span><strong id="dmvHidden">0</strong>hidden</span>
+                <span><strong id="dmvVisible">0</strong>visible</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-vfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-vfilter="hidden" aria-pressed="false">Hidden</button>
+                <button class="dm-btn" type="button" data-vfilter="visible" aria-pressed="false">Visible</button>
+                <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
+                <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmvRows"></div>
+              <p class="dm-foot">Read-only inspector — does not modify the live form.</p>
             </div>
           </div>
         </div>
@@ -949,10 +1090,29 @@ a { color: var(--teal); }
             <span class="tag">reversible patches</span>
             <span class="tag">secrets redacted</span>
           </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Start recording, change two fields, stop, then filter the results.</span>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Click a row for details, or filter to <em>Errors</em>.</p>
+            <div class="dm" id="dmTl">
+              <div class="dm-head">
+                <h3 class="dm-title">Debug Timeline <span class="dm-be">Best effort</span></h3>
+                <p class="dm-sub">ServiceNow form activity correlated across the frames that were available during this interaction.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmtEvents">0</strong>events</span>
+                <span><strong>2</strong>frames</span>
+                <span><strong>2.4s</strong>duration</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-tfilter="g_form" aria-pressed="false">g_form</button>
+                <button class="dm-btn" type="button" data-tfilter="field" aria-pressed="false">Fields</button>
+                <button class="dm-btn" type="button" data-tfilter="glideajax" aria-pressed="false">GlideAjax</button>
+                <button class="dm-btn" type="button" data-tfilter="error" aria-pressed="false">Errors</button>
+                <button class="dm-tog" type="button" id="dmtLowSig" aria-pressed="false"><span class="dot"></span>Show low-signal (2)</button>
+                <input class="dm-find" id="dmtFind" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmtRows"></div>
+              <p class="dm-foot">Stacks identify runtime calls, not guaranteed Client Script or UI Policy names.</p>
             </div>
           </div>
         </div>
@@ -1720,6 +1880,306 @@ a { color: var(--teal); }
       btn.classList.toggle("on", on);
       render();
     });
+  });
+
+  find.addEventListener("input", render);
+  render();
+})();
+
+/* ---------------------------------------------------------------------------
+   Demo 3 — "Show variable values".
+
+   Buckets and their labels come from BUCKET_LABELS in hidden_variables_ui.js.
+   "Hidden" is the row's own hidden flag, not a bucket name: Hidden-type,
+   hidden by policy and not-rendered are three different reasons for the same
+   answer, which is the point of showing the bucket separately.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  var VARS = [
+    { label: "Laptop model", name: "laptop_model", type: "Select Box",
+      bucket: "visible", value: "macbook_pro_16", hidden: false },
+    { label: "Business justification", name: "business_justification", type: "Multi Line Text",
+      bucket: "visible", value: "Replacement for a damaged device", hidden: false },
+    { label: "Start date", name: "start_date", type: "Date",
+      bucket: "visible", value: "2026-08-17", hidden: false },
+    { label: "Approval chain", name: "approval_chain", type: "Multi Row Set",
+      bucket: "mrvs", value: "3 rows", hidden: false },
+    { label: "Employment type", name: "employment_type", type: "Select Box", set: "Employment details",
+      bucket: "invisible", value: "contractor", hidden: true },
+    { label: "Accessories", name: "accessories", type: "Checkbox", set: "Employment details",
+      bucket: "invisible", value: "false", hidden: true },
+    { label: "Cost centre code", name: "cost_centre_code", type: "Single Line Text",
+      bucket: "hidden-type", value: "CC-4471", hidden: true },
+    { label: "Legacy asset tag", name: "legacy_asset_tag", type: "Single Line Text",
+      bucket: "absent", value: "", hidden: true }
+  ];
+
+  var BUCKET_LABELS = {
+    "hidden-type": "Hidden type",
+    invisible: "Hidden by policy/script",
+    absent: "Not rendered",
+    visible: "Visible",
+    mrvs: "Multi-row set"
+  };
+
+  var host = document.getElementById("dmvRows");
+  var find = document.getElementById("dmvFind");
+  var nonEmpty = document.getElementById("dmvNonEmpty");
+  if (!host || !find) return;
+
+  var filter = "all";
+
+  function visible() {
+    var q = find.value.trim().toLowerCase();
+    return VARS.filter(function (v) {
+      if (filter === "hidden" && !v.hidden) return false;
+      if (filter === "visible" && v.hidden) return false;
+      if (nonEmpty.getAttribute("aria-pressed") === "true" && !v.value) return false;
+      if (!q) return true;
+      return [v.name, v.label, v.type, v.set, BUCKET_LABELS[v.bucket]]
+        .filter(Boolean).join(" ").toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  function rowEl(v) {
+    var el = document.createElement("div");
+    el.className = "dm-vrow";
+
+    var name = document.createElement("div");
+    var label = document.createElement("div");
+    label.className = "dm-vlabel";
+    label.textContent = v.label;
+    name.appendChild(label);
+    var internal = document.createElement("div");
+    internal.className = "dm-vname";
+    internal.textContent = v.name;
+    name.appendChild(internal);
+    if (v.set) {
+      var set = document.createElement("div");
+      set.className = "dm-vset";
+      set.textContent = "Set: " + v.set;
+      name.appendChild(set);
+    }
+
+    var type = document.createElement("div");
+    type.className = "dm-vtype";
+    type.textContent = v.type;
+
+    var bucket = document.createElement("span");
+    bucket.className = "dm-bucket " + v.bucket;
+    bucket.textContent = BUCKET_LABELS[v.bucket];
+
+    var value = document.createElement("div");
+    value.className = "dm-vvalue" + (v.value ? "" : " empty");
+    value.textContent = v.value || "(empty)";
+    value.title = v.value || "(empty)";
+
+    el.append(name, type, bucket, value);
+    return el;
+  }
+
+  function render() {
+    var list = visible();
+    host.textContent = "";
+
+    if (!list.length) {
+      var empty = document.createElement("div");
+      empty.className = "dm-empty";
+      empty.textContent = "No variables match these filters.";
+      host.appendChild(empty);
+    } else {
+      list.forEach(function (v) { host.appendChild(rowEl(v)); });
+    }
+
+    document.getElementById("dmvTotal").textContent = String(list.length);
+    document.getElementById("dmvHidden").textContent =
+      String(list.filter(function (v) { return v.hidden; }).length);
+    document.getElementById("dmvVisible").textContent =
+      String(list.filter(function (v) { return !v.hidden; }).length);
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#dmVars .dm-btn[data-vfilter]"),
+    function (btn) {
+      btn.addEventListener("click", function () {
+        filter = btn.getAttribute("data-vfilter");
+        Array.prototype.forEach.call(
+          document.querySelectorAll("#dmVars .dm-btn[data-vfilter]"),
+          function (other) {
+            var on = other === btn;
+            other.classList.toggle("on", on);
+            other.setAttribute("aria-pressed", on ? "true" : "false");
+          }
+        );
+        render();
+      });
+    }
+  );
+
+  nonEmpty.addEventListener("click", function () {
+    var on = nonEmpty.getAttribute("aria-pressed") !== "true";
+    nonEmpty.setAttribute("aria-pressed", on ? "true" : "false");
+    nonEmpty.classList.toggle("on", on);
+    render();
+  });
+
+  find.addEventListener("input", render);
+  render();
+})();
+
+/* ---------------------------------------------------------------------------
+   Demo 4 — the Debug Timeline results panel.
+
+   Categories and their labels are CATEGORY_LABELS from debug_timeline_ui.js.
+   Low-signal events are hidden until asked for, and the trace deliberately
+   shows what ran rather than which named script ran it — the panel does not
+   claim Client Script or UI Policy attribution, so neither does this.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  var EVENTS = [
+    { t: "0.00s", cat: "system", text: "Recording started",
+      det: "frames: 2 (top, gsft_main)\npatched: g_form, XMLHttpRequest, window.onerror" },
+    { t: "0.42s", cat: "field", text: "change on laptop_model",
+      det: "element: select#laptop_model\nvalue: '' -> 'macbook_pro_16'\ntrusted: true" },
+    { t: "0.44s", cat: "g_form", text: "g_form.getValue('laptop_model')",
+      det: "returned: 'macbook_pro_16'\nframe: gsft_main" },
+    { t: "0.44s", cat: "g_form", text: "g_form.getValue('laptop_model')",
+      det: "returned: 'macbook_pro_16'\nframe: gsft_main", low: "repeat" },
+    { t: "0.45s", cat: "g_form", text: "g_form.setDisplay('accessories', false)",
+      det: "field: accessories\ndisplayed: true -> false\nframe: gsft_main" },
+    { t: "0.61s", cat: "glideajax", action: "start", text: "AssetAjax.getModelPrice",
+      det: "sysparm_name: getModelPrice\nsysparm_model: macbook_pro_16" },
+    { t: "1.28s", cat: "glideajax", action: "complete", text: "AssetAjax.getModelPrice — 667ms",
+      det: "status: 200\nduration: 667ms\nanswer: '2399.00'" },
+    { t: "1.29s", cat: "g_form", text: "g_form.setValue('unit_price', '2399.00')",
+      det: "field: unit_price\nvalue: '' -> '2399.00'" },
+    { t: "1.31s", cat: "field", text: "change on unit_price",
+      det: "element: input#unit_price\ntrusted: false  (set programmatically)" },
+    { t: "1.44s", cat: "g_form", text: "g_form.getValue('unit_price')",
+      det: "returned: '2399.00'", low: "repeat" },
+    { t: "2.04s", cat: "error", text: "TypeError: Cannot read properties of null",
+      det: "message: Cannot read properties of null (reading 'value')\nat onChangeAccessories (catalog_script:14:22)\nNote: the stack names a runtime call, not a Client Script record." },
+    { t: "2.05s", cat: "g_form", text: "g_form.addErrorMessage('Could not price this model')",
+      det: "frame: gsft_main" }
+  ];
+
+  var LABELS = { system: "System", g_form: "g_form", field: "Field", glideajax: "GlideAjax", error: "Error" };
+
+  var host = document.getElementById("dmtRows");
+  var find = document.getElementById("dmtFind");
+  var lowSig = document.getElementById("dmtLowSig");
+  if (!host || !find) return;
+
+  var filter = "all";
+
+  function visible() {
+    var q = find.value.trim().toLowerCase();
+    return EVENTS.filter(function (e) {
+      if (e.low && lowSig.getAttribute("aria-pressed") !== "true") return false;
+      if (filter !== "all" && e.cat !== filter) return false;
+      if (!q) return true;
+      return (e.text + " " + e.det + " " + LABELS[e.cat]).toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  function eventEl(e) {
+    var row = document.createElement("div");
+    row.className = "dm-ev";
+
+    var main = document.createElement("button");
+    main.type = "button";
+    main.className = "dm-ev-main";
+
+    var time = document.createElement("span");
+    time.className = "dm-time";
+    time.textContent = e.t;
+    main.appendChild(time);
+
+    var cat = document.createElement("span");
+    cat.className = "dm-cat " + e.cat;
+    cat.textContent = LABELS[e.cat];
+    main.appendChild(cat);
+
+    var sum = document.createElement("span");
+    sum.className = "dm-evsum";
+    if (e.action) {
+      var status = document.createElement("span");
+      status.className = "dm-ga " + (e.action === "start" ? "started" : "completed");
+      status.textContent = e.action === "start" ? "Started" : "Completed";
+      sum.appendChild(status);
+    }
+    var text = document.createElement("span");
+    text.className = "dm-evtext";
+    text.textContent = e.text;
+    sum.appendChild(text);
+    if (e.low) {
+      var badge = document.createElement("span");
+      badge.className = "dm-lowsig";
+      badge.textContent = e.low;
+      sum.appendChild(badge);
+    }
+    main.appendChild(sum);
+
+    var expand = document.createElement("span");
+    expand.className = "dm-expand";
+    expand.textContent = "Details";
+    main.appendChild(expand);
+
+    var det = document.createElement("pre");
+    det.className = "dm-evdet";
+    det.textContent = e.det;
+
+    main.addEventListener("click", function () {
+      var open = row.classList.toggle("open");
+      expand.textContent = open ? "Hide" : "Details";
+    });
+
+    row.append(main, det);
+    return row;
+  }
+
+  function render() {
+    var list = visible();
+    host.textContent = "";
+
+    if (!list.length) {
+      var empty = document.createElement("div");
+      empty.className = "dm-empty";
+      empty.textContent = "No events match these filters.";
+      host.appendChild(empty);
+    } else {
+      list.forEach(function (e) { host.appendChild(eventEl(e)); });
+    }
+    document.getElementById("dmtEvents").textContent = String(list.length);
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#dmTl .dm-btn[data-tfilter]"),
+    function (btn) {
+      btn.addEventListener("click", function () {
+        filter = btn.getAttribute("data-tfilter");
+        Array.prototype.forEach.call(
+          document.querySelectorAll("#dmTl .dm-btn[data-tfilter]"),
+          function (other) {
+            var on = other === btn;
+            other.classList.toggle("on", on);
+            other.setAttribute("aria-pressed", on ? "true" : "false");
+          }
+        );
+        render();
+      });
+    }
+  );
+
+  lowSig.addEventListener("click", function () {
+    var on = lowSig.getAttribute("aria-pressed") !== "true";
+    lowSig.setAttribute("aria-pressed", on ? "true" : "false");
+    lowSig.classList.toggle("on", on);
+    render();
   });
 
   find.addEventListener("input", render);
