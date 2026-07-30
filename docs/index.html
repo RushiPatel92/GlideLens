@@ -1085,13 +1085,22 @@ a { color: var(--teal); }
             shows you <strong>what ran, not which script ran it</strong>, and says so
             rather than guessing.
           </p>
+          <p>
+            GlideAjax rows carry what you would otherwise open the Network tab
+            for: the <strong>Script Include, the method, every parameter added,
+            and the decoded response</strong>, next to how long the call took and
+            in order with the rest of the interaction — rather than pieced back
+            together from a list of XHRs. Parameter and response names that read
+            like secrets are redacted before anything is shown.
+          </p>
           <div class="tags">
             <span class="tag">single page</span>
+            <span class="tag">params · response</span>
             <span class="tag">reversible patches</span>
             <span class="tag">secrets redacted</span>
           </div>
           <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Click a row for details, or filter to <em>Errors</em>.</p>
+            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Open a <em>GlideAjax</em> row for its params and response.</p>
             <div class="dm" id="dmTl">
               <div class="dm-head">
                 <h3 class="dm-title">Debug Timeline <span class="dm-be">Best effort</span></h3>
@@ -2051,10 +2060,14 @@ a { color: var(--teal); }
       det: "returned: 'macbook_pro_16'\nframe: gsft_main", low: "repeat" },
     { t: "0.45s", cat: "g_form", text: "g_form.setDisplay('accessories', false)",
       det: "field: accessories\ndisplayed: true -> false\nframe: gsft_main" },
-    { t: "0.61s", cat: "glideajax", action: "start", text: "AssetAjax.getModelPrice",
-      det: "sysparm_name: getModelPrice\nsysparm_model: macbook_pro_16" },
-    { t: "1.28s", cat: "glideajax", action: "complete", text: "AssetAjax.getModelPrice — 667ms",
-      det: "status: 200\nduration: 667ms\nanswer: '2399.00'" },
+    /* The GlideAjax pair is the reason this feature saves a Network-tab round
+       trip, so the detail mirrors the real payload: className, method, every
+       addParam value, then the decoded answer and the duration. The token
+       param is redacted by name, which is what actually happens. */
+    { t: "0.61s", cat: "glideajax", action: "start", text: "AssetAjax.getModelPrice started",
+      det: "script include: AssetAjax\nmethod:        getModelPrice\nparams:\n  sysparm_name:       getModelPrice\n  sysparm_model:      macbook_pro_16\n  sysparm_user_token: [REDACTED]" },
+    { t: "1.28s", cat: "glideajax", action: "complete", text: "AssetAjax.getModelPrice completed in 667 ms",
+      det: "script include: AssetAjax\nmethod:        getModelPrice\nduration:      667 ms\nanswer:        2399.00" },
     { t: "1.29s", cat: "g_form", text: "g_form.setValue('unit_price', '2399.00')",
       det: "field: unit_price\nvalue: '' -> '2399.00'" },
     { t: "1.31s", cat: "field", text: "change on unit_price",

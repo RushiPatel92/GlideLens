@@ -17,7 +17,9 @@ walkthrough.
   the platform's own code search commonly misses.
 - Technical **field-name badges** and **translation icons** on classic forms.
 - A best-effort **Debug Timeline** recorder for `g_form` calls, field events,
-  GlideAjax timing, and JavaScript errors.
+  GlideAjax and JavaScript errors — GlideAjax rows show the Script Include,
+  method, parameters and decoded response, so you don't go digging in the
+  Network tab.
 
 ---
 
@@ -132,7 +134,7 @@ and `Esc` to close. Some commands accept an argument in an inline input field.
 | --- | --- |
 | Toggle field names | Show/hide technical field names (`label.<table>.<field>`) as badges next to form labels. Also bound to `Alt+Shift+F`. |
 | Toggle translation icons | Show/hide per-label icons: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
-| Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax timing, and JavaScript errors, then view a filterable results panel. Best-effort; does not promise named Client Script / UI Policy attribution. |
+| Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then view a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
 | Search code… | Search all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
 | Recheck what code search can reach | Re-read this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
 
