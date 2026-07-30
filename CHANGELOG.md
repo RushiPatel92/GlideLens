@@ -10,6 +10,21 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Fixed
+- **Debug Timeline now records `getXMLAnswer` GlideAjax calls.** They were
+  missing entirely — a recording of a page whose scripts use that form showed
+  no GlideAjax activity at all, which reads as "nothing happened" rather than
+  "not captured". Only `getXML` and `getXMLWait` were patched, and
+  `getXMLAnswer` does not reliably route through `getXML`. Those calls now
+  appear with the same detail as the others: the Script Include, the method,
+  every parameter, the decoded answer and the duration. Its callback receives
+  the answer as a plain string rather than an XMLHttpRequest, which is why the
+  response did not decode even on the builds where the call was seen.
+  On platform builds where `getXMLAnswer` *does* delegate to `getXML`, the
+  request is still recorded once rather than twice.
+
 ## [0.9.0] - 2026-07-30
 
 ### Changed

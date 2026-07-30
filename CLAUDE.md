@@ -118,7 +118,10 @@ MV3 at all.
   second file covers Tier 1: the coverage map, the ignored-`&table=` guard, cap
   saturation, and the adapter merge. The third covers the panel's counting —
   hits are per `table.sysId.FIELD`, so matches and records are different
-  numbers and both are printed.
+  numbers and both are printed. `tests/debug_timeline.test.js` covers the
+  GlideAjax recording; it loads the MAIN-world recorder by wrapping it in a
+  `Function` whose parameters are the browser globals it uses, so it runs with
+  no DOM.
 
 ## Feature notes
 - **Translation icons** add two icons per label:
@@ -156,6 +159,14 @@ MV3 at all.
   errors. It does not promise named Client Script or UI Policy attribution.
   MAIN-world patches must remain reversible and traces must stay capped and
   redact fields or parameters whose names indicate secrets.
+  GlideAjax is patched at three entry points — `getXML`, `getXMLWait` and
+  `getXMLAnswer`. All three are needed: `getXMLAnswer` was missing until
+  0.9.x and those calls recorded as nothing at all, because it does not
+  reliably delegate to `getXML`. It also hands its callback the answer as a
+  plain **string** rather than an XMLHttpRequest. On builds where it *does*
+  delegate, a per-instance flag (`glideAjaxOwnedElsewhere`) keeps the inner
+  `getXML` silent so one request is not recorded twice — only one of those two
+  shapes is observable on any given instance, so both stay covered by tests.
 - **Code Search** is a read-only, Table-API search across 14 source adapters:
   dictionary and override logic, catalog variables, transform maps/entries/
   scripts, record producers, UI Actions, Script Includes, Business Rules,

@@ -401,6 +401,8 @@ function startDebugTimelineInPage() {
 
   const glideAjaxMetadata = new WeakMap();
   const patchedGlideAjaxPrototypes = new WeakSet();
+  /* Instances whose request is already being recorded by an outer wrapper. */
+  const glideAjaxOwnedElsewhere = new WeakSet();
 
   const glideAjaxInfo = (instance) => {
     const metadata = glideAjaxMetadata.get(instance) || { params: {} };
@@ -508,6 +510,14 @@ function startDebugTimelineInPage() {
 
     installPatch(prototype, "getXML", (original) => {
       return function (...args) {
+        /* getXMLAnswer records the call itself. On platform versions where it
+         * delegates here, this would otherwise emit a second start/complete
+         * pair for one logical request. The flag is set synchronously around
+         * the delegating call, which is when this wrapper decides both whether
+         * to announce a start and whether to wrap the callback — so checking it
+         * here is enough to stay silent for the whole request. */
+        if (glideAjaxOwnedElsewhere.has(this)) return original.apply(this, args);
+
         const info = glideAjaxInfo(this);
         const started = Date.now();
         const stack = captureStack();
@@ -554,6 +564,75 @@ function startDebugTimelineInPage() {
             stack
           );
           throw error;
+        }
+      };
+    });
+
+    /*
+     * getXMLAnswer is the common convenience form, and it is NOT reliably
+     * routed through the patched getXML — on a real instance these calls were
+     * recorded as nothing at all. It differs in one way that matters: the
+     * callback receives the answer STRING directly rather than an
+     * XMLHttpRequest, which glideAjaxResponseInfo already handles.
+     */
+    installPatch(prototype, "getXMLAnswer", (original) => {
+      return function (...args) {
+        const info = glideAjaxInfo(this);
+        const started = Date.now();
+        const stack = captureStack();
+        addEvent(
+          "glideajax",
+          "start",
+          info.className + (info.method ? "." + info.method : "") + " started",
+          info,
+          stack
+        );
+
+        if (typeof args[0] === "function") {
+          const callback = args[0];
+          args[0] = function (...callbackArgs) {
+            const durationMs = Date.now() - started;
+            const response = glideAjaxResponseInfo(callbackArgs[0]);
+            addEvent(
+              "glideajax",
+              "complete",
+              info.className +
+                (info.method ? "." + info.method : "") +
+                " completed in " +
+                durationMs +
+                " ms",
+              Object.assign(
+                {},
+                info,
+                { durationMs },
+                response ? { response } : {}
+              ),
+              ""
+            );
+            return callback.apply(this, callbackArgs);
+          };
+        }
+
+        glideAjaxOwnedElsewhere.add(this);
+        try {
+          return original.apply(this, args);
+        } catch (error) {
+          addEvent(
+            "error",
+            "glideajax",
+            info.className +
+              (info.method ? "." + info.method : "") +
+              " threw: " +
+              truncate(error && error.message ? error.message : error, 200),
+            Object.assign({}, info, { durationMs: Date.now() - started }),
+            stack
+          );
+          throw error;
+        } finally {
+          /* Cleared synchronously: any inner getXML has already run and made
+           * its decision by now, and a later retry on this instance should be
+           * recorded normally. */
+          glideAjaxOwnedElsewhere.delete(this);
         }
       };
     });
