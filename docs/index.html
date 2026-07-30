@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GlideLens — a lens on ServiceNow forms, catalogs and code</title>
-<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: code search across 14 sources, catalog debugging that tells you what actually runs, technical field names, and translation records." />
+<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and translation records." />
 
 <!-- Served from /docs, so the site root is this folder — icons are copied in
      beside this file rather than referenced out of ../icons. -->
@@ -16,7 +16,7 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="GlideLens" />
 <meta property="og:title" content="GlideLens — a lens on ServiceNow forms, catalogs and code" />
-<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, technical field names, and translation records." />
+<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and translation records." />
 <meta property="og:url" content="https://glidelens.consultnowit.com/" />
 <meta name="twitter:card" content="summary" />
 
@@ -818,8 +818,8 @@ a { color: var(--teal); }
       <p class="hero-sub rise" style="animation-delay: 120ms">
         A command palette over the platform you already work in. Search the
         script the instance's own index can't see, read
-        <strong>what actually runs</strong> on a catalog item, and put the real
-        column names back on the form.
+        <strong>what actually runs</strong> on a catalog item, and replay a form
+        interaction after it has happened.
       </p>
 
       <!-- The palette below is real. Filtering it browses the page. -->
@@ -1128,39 +1128,6 @@ a { color: var(--teal); }
       </article>
 
       <!-- 6 -->
-      <article class="feature" id="field-names">
-        <div class="feature-rail">
-          <p class="eyebrow">Forms</p>
-          <dl>
-            <dt>Reads</dt>
-            <dd>sys_dictionary</dd>
-            <dd>sys_db_object</dd>
-            <dt>Shortcut</dt>
-            <dd class="plain">Alt + Shift + F</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Technical field names</h2>
-          <p>
-            Every label on a classic form gets its real column name beside it. The
-            badges <strong>survive a form re-render</strong> — a section switch or a
-            UI Policy run puts them straight back, instead of making you toggle
-            again.
-          </p>
-          <div class="tags">
-            <span class="tag">classic UI</span>
-            <span class="tag">persists across re-render</span>
-          </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Screenshot slot</b>
-              <span>An incident form with badges showing — one clear, readable crop.</span>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 7 -->
       <article class="feature" id="translations">
         <div class="feature-rail">
           <p class="eyebrow">Forms</p>
@@ -1298,7 +1265,6 @@ a { color: var(--teal); }
   var COMMANDS = [
     { group: "Tools",     name: "Search code…",                        key: "",            go: "#code-search" },
     { group: "Tools",     name: "Recheck what code search can reach",   key: "",            go: "#code-search" },
-    { group: "Tools",     name: "Toggle field names",                  key: "Alt+Shift+F", go: "#field-names" },
     { group: "Tools",     name: "Toggle translation icons",            key: "",            go: "#translations" },
     { group: "Tools",     name: "Start debug timeline",                key: "",            go: "#debug-timeline" },
     { group: "Catalog",   name: "What affects this catalog item",      key: "",            go: "#catalog-insight" },

@@ -133,10 +133,10 @@ MV3 at all.
   the first pass by being written from memory instead of read from the source —
   read the source.
 
-  The three features that inject into ServiceNow's own DOM — field-name badges,
-  translation icons, variable insight icons — are deliberately NOT recreated.
-  Faking the platform's form chrome for an audience that knows exactly what it
-  looks like reads as sloppy; those slots want real screenshots.
+  The two features that inject into ServiceNow's own DOM — translation icons and
+  variable insight icons — are deliberately NOT recreated. Faking the platform's
+  form chrome for an audience that knows exactly what it looks like reads as
+  sloppy; those slots want real screenshots.
 
   The demos are `dm-` prefixed throughout because the page already owns `.row`,
   `.tag`, `.count` and `.search`, and because `.feature-body p` caps prose at
@@ -171,6 +171,10 @@ MV3 at all.
     `sc_req_item` and `change_request` have zero translatable fields between
     them, which is why the icon correctly never appears on those forms.
 - **Field-name badges** parse the classic label id format `label.<table>.<field>`.
+  **Unlisted since 0.9.x** — snUtils covers this, so the palette command, the
+  landing page section and the README rows were removed. The code and the
+  `Alt+Shift+F` command stay, so the toggle still works for anyone who knows the
+  shortcut. Do not re-add it to the palette or the site without being asked.
 - **Variable insight icons** (Service Portal catalog forms) drop a per-variable
   icon; clicking opens Catalog Insight scoped to that variable's onChange client
   scripts and UI policy actions. Toggle with Alt+double-click or the palette.

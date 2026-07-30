@@ -1,8 +1,8 @@
 # GlideLens
 
-A lens on ServiceNow forms, catalogs and code: field names, translation
-inheritance, catalog debugging, code search. A Manifest V3 Chrome extension in
-plain JavaScript, with zero runtime dependencies and zero build step.
+A lens on ServiceNow forms, catalogs and code: code search, catalog debugging,
+translation inheritance, form tracing. A Manifest V3 Chrome extension in plain
+JavaScript, with zero runtime dependencies and zero build step.
 
 **[See what it does →](https://glidelens.consultnowit.com/)** — feature tour
 with a working command palette. This README stays the reference; the site is the
@@ -15,7 +15,7 @@ walkthrough.
   helpers, and toggles.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
-- Technical **field-name badges** and **translation icons** on classic forms.
+- **Translation icons** on classic form labels, resolving inherited fields.
 - A best-effort **Debug Timeline** recorder for `g_form` calls, field events,
   GlideAjax and JavaScript errors — GlideAjax rows show the Script Include,
   method, parameters and decoded response, so you don't go digging in the
@@ -116,7 +116,6 @@ changed in each release.
 | --- | --- |
 | `Ctrl+Shift+K` (`Cmd+Shift+K` on Mac) | Open the toolbar popup |
 | `\` (backslash) | Open the command palette on the current ServiceNow tab |
-| `Alt+Shift+F` | Toggle technical field names on the current form |
 | `Alt`+double-click | Toggle variable insight icons on a Service Portal catalog form |
 
 If a shortcut does nothing, another browser feature may have claimed it — rebind
@@ -132,7 +131,6 @@ and `Esc` to close. Some commands accept an argument in an inline input field.
 
 | Command | Description |
 | --- | --- |
-| Toggle field names | Show/hide technical field names (`label.<table>.<field>`) as badges next to form labels. Also bound to `Alt+Shift+F`. |
 | Toggle translation icons | Show/hide per-label icons: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
 | Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then view a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
 | Search code… | Search all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
