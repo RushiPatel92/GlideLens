@@ -1,4 +1,4 @@
-# SN Dev Helper — Claude Code project notes
+# GlideLens — Claude Code project notes
 
 A Manifest V3 Chrome extension of developer utilities for ServiceNow, in the
 spirit of snUtils. Plain JS, zero runtime dependencies, zero build step.

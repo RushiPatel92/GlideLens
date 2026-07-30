@@ -26,17 +26,16 @@ header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
 }
-.logo {
-  display: inline-grid;
-  place-items: center;
-  width: 22px; height: 22px;
-  border-radius: 5px;
-  background: var(--pink);
-  color: #2a0713;
-  font-weight: 800;
-  font-size: 11px;
+/* One wordmark, two tones. The spans sit inside .wordmark so header's gap
+   cannot split "Glide" from "Lens". */
+.wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 14px;
+  letter-spacing: -0.01em;
 }
-.title { font-weight: 700; }
+.logo { font-weight: 800; color: var(--pink); }
+.title { font-weight: 800; color: var(--text); }
 .status { margin-left: auto; font-size: 11px; color: var(--muted); }
 .status.ok  { color: var(--ok); }
 .status.bad { color: #ff8b8b; }

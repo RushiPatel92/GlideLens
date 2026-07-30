@@ -286,7 +286,7 @@
     const result = lastResult || { rows: [] };
     const rows = filteredRows();
     const lines = [
-      "SN Dev Helper - Portal Variable Values",
+      "GlideLens — Portal Variable Values",
       "Read-only inspector; does not modify the live form.",
       "Rows: " + String(rows.length) + " of " + String((result.rows || []).length),
       "",

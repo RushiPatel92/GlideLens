@@ -1,7 +1,9 @@
-# SN Dev Helper
+# GlideLens
 
-A Manifest V3 Chrome extension of developer utilities for ServiceNow, in the
-spirit of snUtils. Plain JavaScript, zero runtime dependencies, zero build step.
+A lens on ServiceNow forms, catalogs and code: field names, translation
+inheritance, catalog debugging, code search. A Manifest V3 Chrome extension in
+the spirit of snUtils. Plain JavaScript, zero runtime dependencies, zero build
+step.
 
 > Proof of concept, coded entirely with the help of AI.
 
@@ -30,13 +32,13 @@ there's a new version.
 
 ### 1. Download the zip
 
-1. Open the repository page: <https://github.com/RushiPatel92/sndevhelper>
+1. Open the repository page: <https://github.com/RushiPatel92/GlideLens>
 2. Click the green **Code** button near the top of the file list.
 3. Choose **Download ZIP**. Your browser saves something like
-   `sndevhelper-main.zip` to your Downloads folder.
+   `GlideLens-main.zip` to your Downloads folder.
 
    Direct link:
-   <https://github.com/RushiPatel92/sndevhelper/archive/refs/heads/main.zip>
+   <https://github.com/RushiPatel92/GlideLens/archive/refs/heads/main.zip>
 
 ### 2. Extract it to a permanent location
 
@@ -48,7 +50,7 @@ folder.**
 A good home on Windows is a dedicated folder in your user profile, for example:
 
 ```
-C:\Users\<you>\BrowserExtensions\SnDevHelper
+C:\Users\<you>\BrowserExtensions\GlideLens
 ```
 
 To extract:
@@ -57,7 +59,7 @@ To extract:
 2. Set the destination to your permanent folder (e.g.
    `C:\Users\<you>\BrowserExtensions\`) and extract.
 3. Open the extracted folder. GitHub zips wrap everything in an inner folder
-   (e.g. `sndevhelper-main`). Make sure you can see
+   (e.g. `GlideLens-main`). Make sure you can see
    **`manifest.json`** directly inside the folder you plan to load — that file
    must sit at the top level of the folder you point the browser at.
 
@@ -72,19 +74,19 @@ To extract:
 3. Click **Load unpacked**.
 4. Browse to the folder that contains `manifest.json` and click **Select
    Folder**.
-5. "SN Dev Helper" now appears as a card in your extensions list.
+5. "GlideLens" now appears as a card in your extensions list.
 
 ### 4. Pin it (optional but recommended)
 
 Click the puzzle-piece **Extensions** icon in the toolbar, then the pin next to
-**SN Dev Helper** so its icon stays visible.
+**GlideLens** so its icon stays visible.
 
 ### Updating to a newer version
 
 1. Download and extract the new zip **into the same folder**, replacing the old
    files (or extract fresh and re-point the browser at the new folder).
 2. Go to `chrome://extensions` (or `edge://extensions`) and click the **reload**
-   (↻) icon on the SN Dev Helper card.
+   (↻) icon on the GlideLens card.
 3. Refresh any open ServiceNow tab so the updated content script loads.
 
 The version shown on the extension card matches the one in

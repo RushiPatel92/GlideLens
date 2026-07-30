@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to SN Dev Helper are recorded here. The version is the one
+All notable changes to GlideLens are recorded here. The version is the one
 in [`manifest.json`](manifest.json). Work can be staged under **Unreleased**;
 when a release is cut, rename that section and bump the manifest in the same
 change.
@@ -10,7 +10,23 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## [Unreleased]
+## [0.9.0] - 2026-07-30
+
+### Changed
+- **The extension is now called GlideLens.** It was SN Dev Helper. The name
+  covers what it grew into — a way of looking at forms, catalogs and code —
+  rather than the grab-bag of shortcuts it started as. You will see the new
+  name on the extension card, in the popup, on the command palette, and at the
+  top of anything you copy out of a results panel.
+- The repository moved to `github.com/RushiPatel92/GlideLens`, so the
+  Download-ZIP link and the file it saves changed name too. GitHub redirects
+  the old address indefinitely, so an existing bookmark or clone keeps working.
+  Nothing about an installed copy changes: reload it in place as usual, and
+  every saved setting and cached search-coverage map survives, because only the
+  visible names changed and none of the internal storage keys did.
+- The toolbar icon still shows the old `SN` mark; new artwork is coming in a
+  later release. Only the picture is stale — the card, the popup and the panels
+  all say GlideLens.
 
 ### Added
 - A palette command, **Recheck what code search can reach**, that re-reads the
@@ -219,6 +235,9 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
-[0.6.0]: https://github.com/RushiPatel92/sndevhelper/releases/tag/v0.6.0
-[0.5.0]: https://github.com/RushiPatel92/sndevhelper/releases/tag/v0.5.0
-[0.4.0]: https://github.com/RushiPatel92/sndevhelper/releases/tag/v0.4.0
+[0.9.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.9.0
+[0.8.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.8.0
+[0.7.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.7.0
+[0.6.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.6.0
+[0.5.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.5.0
+[0.4.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.4.0
