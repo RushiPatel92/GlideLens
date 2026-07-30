@@ -2778,14 +2778,11 @@ function buildCommands() {
       keepOpen: true,
       run: prefillPortalVariablesFromTicket,
     },
-    {
-      id: "copy-portal-variable-debug",
-      name: "Copy portal variable debug info",
-      keywords: ["debug", "portal", "variable", "field", "dom", "g_form"],
-      group: "Catalog",
-      keepOpen: true,
-      run: copyPortalVariableDebugInfo,
-    },
+    // "Copy portal variable debug info" was unlisted in 0.9.x. It reports the
+    // last prefill run's internals, which is a diagnostic for developing that
+    // feature rather than something to hand a user, and it says nothing useful
+    // unless a prefill has just run. copyPortalVariableDebugInfo() and the
+    // GET_PORTAL_VARIABLE_DEBUG handler stay for debugging prefill by hand.
     {
       id: "show-variable-values",
       name: "Show variable values",

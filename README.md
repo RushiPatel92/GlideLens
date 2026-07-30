@@ -197,7 +197,6 @@ retry that source when it reports **Capped**.
 | Show variable values | Read-only panel listing every variable on the current Service Portal catalog item with its best-effort value, including variable-set variables. Filter by hidden/visible; hidden covers Hidden-type, UI Policy/client-script, and not-rendered variables. |
 | What affects this catalog item | Read-only panel listing the catalog client scripts and catalog UI policies bound to the current item or its variable sets — type (onLoad/onChange/…), watched variable, active state, and which views they run on. Group onChange scripts by the variable they watch, see a ⚠ hint on rows that won't fire while ordering the item (inactive, or RITM/Task views only), and open the whole set as a platform list. Click a row to open the record. Nothing here runs or edits the logic. |
 | Toggle variable insight icons | Show/hide a per-variable icon on a Service Portal catalog form. Clicking an icon opens the panel above scoped to that one variable — the onChange scripts watching it and the UI policy actions targeting it (hides / mandatory / read-only / sets value) — with **Show all** to clear the scope. Also bound to `Alt`+double-click on the form. |
-| Copy portal variable debug info | Copy diagnostic details about the current portal record's variables/fields. |
 
 **Navigate**
 

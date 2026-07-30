@@ -13,6 +13,11 @@ reconstructed version by version.
 ## [Unreleased]
 
 ### Removed
+- **"Copy portal variable debug info" is gone from the command palette.** It
+  dumped the internals of the last prefill run as JSON — a diagnostic for
+  building that feature, not something worth a slot in the Catalog group, and
+  it had nothing to say unless a prefill had just run in the same page. Prefill
+  itself is untouched.
 - **"Toggle field names" is gone.** snUtils already shows technical field
   names, and duplicating it was never the point of this extension. The command
   has been removed from the palette, the site and the README, and the
