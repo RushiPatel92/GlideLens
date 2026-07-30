@@ -1,7 +1,7 @@
 # GlideLens — Claude Code project notes
 
-A Manifest V3 Chrome extension of developer utilities for ServiceNow, in the
-spirit of snUtils. Plain JS, zero runtime dependencies, zero build step.
+A Manifest V3 Chrome extension of developer utilities for ServiceNow. Plain JS,
+zero runtime dependencies, zero build step.
 
 ## Run / debug loop
 - Load unpacked: `chrome://extensions` → Developer mode → Load unpacked → this folder.
