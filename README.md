@@ -2,8 +2,7 @@
 
 A lens on ServiceNow forms, catalogs and code: field names, translation
 inheritance, catalog debugging, code search. A Manifest V3 Chrome extension in
-the spirit of snUtils. Plain JavaScript, zero runtime dependencies, zero build
-step.
+plain JavaScript, with zero runtime dependencies and zero build step.
 
 > Proof of concept, coded entirely with the help of AI.
 
