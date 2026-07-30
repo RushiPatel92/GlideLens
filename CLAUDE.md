@@ -115,12 +115,24 @@ MV3 at all.
   `main` → `/docs` at `glidelens.consultnowit.com` (`docs/CNAME`). One
   hand-written file, no generator and no build, reusing the `popup.css` tokens
   so the page and the product match. Not part of the extension; Chrome ignores
-  it. Two things to keep true: the site root **is** `docs/`, so assets must live
-  inside it (hence `docs/icon32.png`, not `../icons/`), and the hero palette's
-  command list mirrors the real one in `content.js` — rename a command there and
-  rename it here. Media belongs on GitHub's attachment CDN (drop a file into an
-  issue comment, copy the `user-attachments` URL) rather than in the repo, so the
+  it. Media belongs on GitHub's attachment CDN (drop a file into an issue
+  comment, copy the `user-attachments` URL) rather than in the repo, so the
   install ZIP stays small.
+
+  Three things to keep true. The site root **is** `docs/`, so assets must live
+  inside it (hence `docs/icon32.png`, not `../icons/`). The hero palette's
+  command list mirrors the real one in `content.js`. And the two live demos
+  reproduce real panels — the code search demo follows `code_search_ui.js`, the
+  catalog demo follows `catalog_insight_ui.js`, down to `groupKeyOf` (only an
+  onChange client script with a variable gets its own group; onLoad, onSubmit
+  and all UI policies share "Not variable-specific") and the search haystack
+  (which includes `conditions`). **A demo that lies is worse than no demo**:
+  change a panel and change its demo in the same commit. Both got this wrong on
+  the first pass by being written from memory instead of from the source.
+
+  The demos are `dm-` prefixed throughout because the page already owns `.row`,
+  `.tag`, `.count` and `.search`, and because `.feature-body p` caps prose at
+  `62ch` — panel `<p>` elements have to opt out of it.
 - `tests/` - developer-only Node tests. They ship harmlessly in the repository
   ZIP and Chrome ignores them; run Code Search tests by file path with
   `node --test tests/code_search.test.js tests/code_search_api.test.js

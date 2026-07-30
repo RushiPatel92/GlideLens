@@ -386,6 +386,259 @@ a { color: var(--teal); }
 }
 .colophon .spacer { margin-left: auto; }
 
+/* ---------------------------------------------------------------------------
+   Live demos. These recreate the extension's OWN panels — the markup and the
+   colours come from code_search_ui.js and catalog_insight_ui.js, so this is the
+   same design system rather than an impression of it.
+
+   Every class here is dm- prefixed on purpose: the page already owns .row,
+   .tag, .count and .search, and an unprefixed demo would inherit them.
+
+   The data is fictional. If a panel changes, change the demo — a demo that
+   lies is worse than no demo.
+   --------------------------------------------------------------------------- */
+.shot.is-live { border-style: solid; background: transparent; }
+
+/* .feature-body p caps prose at 62ch and adds a top margin. The demo panels
+   contain <p> too, and they are UI rather than prose — they must fill the
+   panel, so opt them out rather than fight it per-element. */
+.feature-body .shot p { max-width: none; margin: 0; }
+.feature-body .shot p.dm-sub { margin-top: 4px; }
+
+/* Deliberately not flex: the caption is a sentence with inline emphasis, and
+   flex would make every text fragment its own item and space them apart. */
+.dm-cap {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--sunken);
+  font: 500 11px/1.6 var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.dm-cap b { color: var(--teal); font-weight: 600; }
+.dm-cap em { color: var(--text); font-style: normal; }
+
+/* The panel shell, lifted from the extension's own overlay. */
+.dm {
+  background: #1e1e2e;
+  color: #dedeee;
+  font-size: 13px;
+  --teal: #31d4c4;
+}
+.dm-head { padding: 13px 15px 11px; border-bottom: 1px solid #2e2e4e; }
+.dm-title { margin: 0; font-size: 14.5px; font-weight: 650; color: #f5f5ff; }
+.dm-title span { font: 13px var(--mono); color: #7fded2; }
+.dm-sub { font-size: 11.5px; line-height: 1.45; color: #85859f; }
+
+.dm-sum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 9px 15px;
+  border-bottom: 1px solid #2e2e4e;
+  background: #212134;
+  font-size: 11.5px;
+  color: #9d9dba;
+}
+.dm-sum strong { color: #f0f0fa; font-size: 12.5px; margin-right: 4px; }
+.dm-sum .warn { color: #e0c187; }
+.dm-sum .warn strong { color: #f0d79b; }
+
+.dm-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 15px;
+  border-bottom: 1px solid #2e2e4e;
+}
+.dm-btn, .dm-tog {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid #4a4b78;
+  border-radius: 6px;
+  background: #32335a;
+  color: #cfcfe4;
+  font: 500 11.5px/1.4 var(--sans);
+  cursor: pointer;
+}
+.dm-btn:hover, .dm-tog:hover { background: #4a4b78; color: #fff; }
+.dm-btn.on {
+  background: color-mix(in srgb, var(--teal) 20%, #32335a);
+  border-color: var(--teal);
+  color: #d8fbf6;
+}
+.dm-tog .dot { width: 7px; height: 7px; border-radius: 50%; background: #55556f; }
+.dm-tog.on .dot { background: var(--teal); }
+.dm-tog.on { border-color: var(--teal); color: #d8fbf6; }
+.dm-find {
+  flex: 1;
+  min-width: 130px;
+  margin-left: auto;
+  padding: 6px 9px;
+  border: 1px solid #575780;
+  border-radius: 6px;
+  background: #313150;
+  color: #f0f0fa;
+  font: 400 11.5px/1.4 var(--sans);
+}
+.dm-find:focus { outline: none; border-color: var(--teal); background: #37375a; }
+.dm-find::placeholder { color: #a4a4be; }
+
+.dm-rows { max-height: 340px; overflow: auto; }
+
+/* Group header, shared by both demos. */
+.dm-grp-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 15px;
+  border: 0;
+  background: #2a2a46;
+  color: #cfcfe4;
+  font: 600 11.5px/1.4 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.dm-grp-head:hover { background: #32325a; }
+.dm-grp-head .dm-caret { width: 9px; font-size: 9px; color: #7d7d9c; }
+.dm-grp-head .dm-n {
+  padding: 1px 8px;
+  border-radius: 9px;
+  background: #3a3a5e;
+  color: #9d9dba;
+  font-weight: 500;
+  font-size: 11px;
+}
+.dm-grp-head .dm-st { margin-left: auto; font-weight: 500; font-size: 11px; color: #9d9dba; }
+.dm-grp-head .dm-st.warn { color: #e0c187; }
+
+/* --- Code search rows --- */
+.dm-hit {
+  padding: 9px 15px;
+  border-bottom: 1px solid #23233a;
+  cursor: default;
+}
+.dm-hit:hover { background: #26264080; }
+.dm-hit-top { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
+.dm-hit-name { font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
+.dm-hit-sub { font-size: 11px; color: #85859f; }
+.dm-hit-field {
+  margin-left: auto;
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #2f2f4e;
+  color: #a9a9c8;
+  font: 10px var(--mono);
+}
+.dm-snip {
+  display: flex;
+  gap: 10px;
+  font: 11px/1.6 var(--mono);
+  color: #b9b9d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dm-snip .dm-ln { min-width: 32px; flex: none; text-align: right; color: #63637f; user-select: none; }
+.dm-snip mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--teal) 34%, transparent);
+  color: #eafffb;
+}
+
+.dm-drawer { border-top: 1px solid #2e2e4e; background: #1a1a2a; }
+.dm-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 15px;
+  border: 0;
+  background: transparent;
+  color: #9d9dba;
+  font: 400 11px/1.4 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.dm-drawer-head:hover { color: #dedeee; }
+.dm-drawer-list { display: none; padding: 2px 15px 10px; }
+.dm-drawer-list.open { display: block; }
+.dm-drow {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 11px;
+  color: #9d9dba;
+}
+.dm-drow .dm-dname { color: #cfcfe4; min-width: 150px; }
+.dm-drow .dm-dtbl { font: 10px var(--mono); color: #6e6e88; }
+.dm-drow .dm-dstate { margin-left: auto; }
+.dm-drow .dm-dstate.warn { color: #e0c187; }
+
+/* --- Catalog insight rows --- */
+.dm-crow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px auto;
+  gap: 10px;
+  align-items: start;
+  padding: 9px 15px;
+  border-bottom: 1px solid #23233a;
+  cursor: default;
+}
+.dm-crow:hover { background: #26263e; }
+.dm-crow.off { opacity: 0.55; }
+.dm-crow.flag { box-shadow: inset 3px 0 0 #a5842f; }
+.dm-cname { min-width: 0; font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
+.dm-cbound { margin-top: 2px; font-size: 11px; color: #85859f; }
+.dm-ccond { margin-top: 2px; font: 10.5px var(--mono); color: #7d7d95; }
+.dm-kind { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dm-badge {
+  align-self: flex-start;
+  padding: 2px 7px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.dm-badge.client { color: #a9d5ff; background: #24364a; border-color: #365573; }
+.dm-badge.uip { color: #e6c78f; background: #3a3320; border-color: #5c5031; }
+.dm-subtype { font: 10.5px var(--mono); color: #7d7d95; }
+.dm-meta { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; font-size: 10.5px; }
+.dm-t {
+  padding: 2px 6px;
+  border: 1px solid #34344f;
+  border-radius: 4px;
+  background: #252539;
+  color: #9d9dba;
+  white-space: nowrap;
+}
+.dm-t.on { color: #b5e4c2; background: #263b35; border-color: #39594d; }
+.dm-t.off { color: #ff9d9d; background: #3a2530; border-color: #5c3a48; }
+.dm-t.warn { color: #f0d79b; background: #3a3320; border-color: #5c5031; }
+
+.dm-empty { padding: 28px 15px; text-align: center; color: #85859f; font-size: 12.5px; }
+
+.dm-foot {
+  padding: 8px 15px;
+  border-top: 1px solid #2e2e4e;
+  background: #1a1a2a;
+  font-size: 11px;
+  color: #6e6e88;
+}
+
+@media (max-width: 620px) {
+  .dm-crow { grid-template-columns: 1fr; gap: 5px; }
+  .dm-meta { justify-content: flex-start; }
+  .dm-find { margin-left: 0; }
+}
+
 /* --------------------------------------------------------------------------- */
 @media (max-width: 720px) {
   .feature { grid-template-columns: 1fr; gap: 18px; }
@@ -511,10 +764,30 @@ a { color: var(--teal); }
             <span class="tag is-ok">read-only</span>
             <span class="tag is-ok">secrets redacted</span>
           </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Search a term, show the grouped results, then open the Source status drawer.</span>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Filter it, collapse a group, open the drawer.</p>
+            <div class="dm" id="dmSearch">
+              <div class="dm-head">
+                <h3 class="dm-title">Code search <span>getUserGroups</span></h3>
+                <p class="dm-sub">Verified matches only. Every field was checked against your term in the browser before it was shown.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmsMatches">0</strong>matches</span>
+                <span><strong id="dmsRecords">0</strong>records</span>
+                <span><strong>14</strong>sources searched</span>
+                <span class="warn"><strong>1</strong>needs attention</span>
+              </div>
+              <div class="dm-ctl">
+                <input class="dm-find" id="dmsFind" type="search" placeholder="Filter these results…" aria-label="Filter these results" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmsRows"></div>
+              <div class="dm-drawer">
+                <button class="dm-drawer-head" type="button" id="dmsDrawerBtn" aria-expanded="false" aria-controls="dmsDrawer">
+                  <span class="dm-caret" id="dmsDrawerCaret">▶</span><span>Source status — what was searched</span>
+                </button>
+                <div class="dm-drawer-list" id="dmsDrawer"></div>
+              </div>
+              <p class="dm-foot">Read-only — nothing here runs or edits what it finds.</p>
             </div>
           </div>
         </div>
@@ -548,12 +821,29 @@ a { color: var(--teal); }
             <span class="tag">open in platform</span>
             <span class="tag is-ok">read-only</span>
           </div>
-          <div class="shot">
-            <!-- Replace this block with the recording:
-                 <video src="PASTE_URL" autoplay loop muted playsinline></video> -->
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Open a catalog item → run the command → group by variable → point at a ⚠ row.</span>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em> and <em>Active only</em>.</p>
+            <div class="dm" id="dmCat">
+              <div class="dm-head">
+                <h3 class="dm-title">What affects this catalog item</h3>
+                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmcTotal">0</strong>shown</span>
+                <span><strong id="dmcActive">0</strong>active</span>
+                <span><strong id="dmcInactive">0</strong>inactive</span>
+                <span class="warn" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong id="dmcBlocked">0</strong>won't run here</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-kind="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-kind="client" aria-pressed="false">Client scripts</button>
+                <button class="dm-btn" type="button" data-kind="uip" aria-pressed="false">UI policies</button>
+                <button class="dm-tog" type="button" id="dmcActiveOnly" aria-pressed="false"><span class="dot"></span>Active only</button>
+                <button class="dm-tog" type="button" id="dmcGroup" aria-pressed="false"><span class="dot"></span>Group by variable</button>
+                <input class="dm-find" id="dmcFind" type="search" placeholder="Search name, type, variable…" aria-label="Search" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmcRows"></div>
+              <p class="dm-foot">Rows flagged ⚠ are active but scoped away from the catalog form — the usual answer to "why isn't my script running".</p>
             </div>
           </div>
         </div>
@@ -953,6 +1243,477 @@ a { color: var(--teal); }
     input.select();
   });
 
+  render();
+})();
+
+/* ---------------------------------------------------------------------------
+   Demo 1 — the code search results panel.
+
+   Fictional data, real behaviour: the filter, the group collapse and the
+   Source status drawer all work the way they do in code_search_ui.js. Built
+   with textContent throughout, matching the extension's own rule that no
+   instance text is ever turned into markup.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  var TERM = "getUserGroups";
+
+  var GROUPS = [
+    {
+      key: "si", label: "Script Include", status: "",
+      hits: [
+        { name: "HRProfileUtils", sub: "global · HRProfileUtils", field: "script", sysId: "a1",
+          snippets: [
+            { line: 41, text: "  // Resolve the requester's groups before checking approval" },
+            { line: 42, text: "  var groups = new AccessHelper().getUserGroups(userId);" },
+            { line: 43, text: "  if (!groups.length) return false;" }
+          ] },
+        { name: "AccessHelper", sub: "global · AccessHelper", field: "script", sysId: "a2",
+          snippets: [
+            { line: 17, text: "  getUserGroups: function (userId) {" },
+            { line: 18, text: "    var gr = new GlideRecord('sys_user_grmember');" }
+          ] }
+      ]
+    },
+    {
+      key: "br", label: "Business rule", status: "",
+      hits: [
+        { name: "Populate approval group", sub: "sc_req_item · before insert", field: "script", sysId: "b1",
+          snippets: [
+            { line: 8, text: "  var groups = new AccessHelper().getUserGroups(current.opened_by);" }
+          ] }
+      ]
+    },
+    {
+      key: "ua", label: "UI action", status: "",
+      /* Same record, two fields — which is exactly why the panel prints
+         matches and records as separate numbers. */
+      hits: [
+        { name: "Request access", sub: "sc_cat_item · form button", field: "condition", sysId: "c1",
+          snippets: [
+            { line: 1, text: "new AccessHelper().getUserGroups(gs.getUserID()).indexOf('itil') > -1" }
+          ] },
+        { name: "Request access", sub: "sc_cat_item · form button", field: "script", sysId: "c1",
+          snippets: [
+            { line: 12, text: "  var groups = new AccessHelper().getUserGroups(gs.getUserID());" },
+            { line: 13, text: "  current.assignment_group = groups[0];" }
+          ] }
+      ]
+    },
+    { key: "ccs", label: "Catalog client script", status: "no matches", hits: [] },
+    { key: "tf",  label: "Transform script",      status: "timed out", warn: true, hits: [] }
+  ];
+
+  var DRAWER = [
+    { name: "Script Include",        table: "sys_script_include",  state: "2 records" },
+    { name: "Business rule",         table: "sys_script",          state: "1 record" },
+    { name: "UI action",             table: "sys_ui_action",       state: "1 record · fallback only", warn: false },
+    { name: "Client script",         table: "sys_script_client",   state: "no matches" },
+    { name: "Catalog client script", table: "catalog_script_client", state: "no matches" },
+    { name: "Transform script",      table: "sys_transform_script", state: "timed out", warn: true }
+  ];
+
+  var rows = document.getElementById("dmsRows");
+  var find = document.getElementById("dmsFind");
+  var drawerBtn = document.getElementById("dmsDrawerBtn");
+  var drawer = document.getElementById("dmsDrawer");
+  if (!rows || !find || !drawer) return;
+
+  var collapsed = {};
+
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
+  function hitMatches(hit, q) {
+    if (!q) return true;
+    var hay = hit.name + " " + hit.sub + " " + hit.field;
+    hit.snippets.forEach(function (s) { hay += " " + s.text; });
+    return hay.toLowerCase().indexOf(q) !== -1;
+  }
+
+  /* Split the line around the term so it can be highlighted without ever
+     assembling markup from the text itself. */
+  function snippetEl(snippet) {
+    var line = document.createElement("div");
+    line.className = "dm-snip";
+
+    var num = document.createElement("span");
+    num.className = "dm-ln";
+    num.textContent = String(snippet.line);
+    line.appendChild(num);
+
+    var body = document.createElement("span");
+    var text = snippet.text;
+    var at = text.toLowerCase().indexOf(TERM.toLowerCase());
+
+    if (at === -1) {
+      body.textContent = text;
+    } else {
+      body.appendChild(document.createTextNode(text.slice(0, at)));
+      var mark = document.createElement("mark");
+      mark.textContent = text.slice(at, at + TERM.length);
+      body.appendChild(mark);
+      body.appendChild(document.createTextNode(text.slice(at + TERM.length)));
+    }
+    line.appendChild(body);
+    return line;
+  }
+
+  function hitEl(hit) {
+    var el = document.createElement("div");
+    el.className = "dm-hit";
+
+    var top = document.createElement("div");
+    top.className = "dm-hit-top";
+
+    var name = document.createElement("span");
+    name.className = "dm-hit-name";
+    name.textContent = hit.name;
+    top.appendChild(name);
+
+    var sub = document.createElement("span");
+    sub.className = "dm-hit-sub";
+    sub.textContent = hit.sub;
+    top.appendChild(sub);
+
+    var field = document.createElement("span");
+    field.className = "dm-hit-field";
+    field.textContent = hit.field;
+    top.appendChild(field);
+
+    el.appendChild(top);
+    hit.snippets.forEach(function (s) { el.appendChild(snippetEl(s)); });
+    return el;
+  }
+
+  function render() {
+    var q = find.value.trim().toLowerCase();
+    rows.textContent = "";
+
+    var shownHits = 0;
+    var shownRecords = 0;
+    var any = false;
+
+    GROUPS.forEach(function (group) {
+      var visible = group.hits.filter(function (h) { return hitMatches(h, q); });
+
+      /* A filter hides empty-but-notable groups; with no filter they stay, so
+         "searched and found nothing" is still visible. */
+      if (q && !visible.length) return;
+      any = true;
+
+      shownHits += visible.length;
+      var ids = {};
+      visible.forEach(function (h) { ids[h.sysId] = 1; });
+      shownRecords += Object.keys(ids).length;
+
+      var isShut = !!collapsed[group.key];
+
+      var head = document.createElement("button");
+      head.type = "button";
+      head.className = "dm-grp-head";
+      head.setAttribute("aria-expanded", isShut ? "false" : "true");
+
+      var caret = document.createElement("span");
+      caret.className = "dm-caret";
+      caret.textContent = isShut ? "▶" : "▼";
+      head.appendChild(caret);
+
+      var label = document.createElement("span");
+      label.textContent = group.label;
+      head.appendChild(label);
+
+      if (visible.length) {
+        var n = document.createElement("span");
+        n.className = "dm-n";
+        /* Matches and records are genuinely different numbers, so both are
+           printed — same as the real panel. */
+        n.textContent = plural(visible.length, "match", "matches") + " in " +
+          plural(Object.keys(ids).length, "record", "records");
+        head.appendChild(n);
+      }
+
+      if (group.status) {
+        var st = document.createElement("span");
+        st.className = "dm-st" + (group.warn ? " warn" : "");
+        st.textContent = group.status;
+        head.appendChild(st);
+      }
+
+      head.addEventListener("click", function () {
+        collapsed[group.key] = !collapsed[group.key];
+        render();
+      });
+      rows.appendChild(head);
+
+      if (!isShut) visible.forEach(function (h) { rows.appendChild(hitEl(h)); });
+    });
+
+    if (!any) {
+      var empty = document.createElement("div");
+      empty.className = "dm-empty";
+      empty.textContent = "Nothing loaded matches “" + find.value.trim() + "”.";
+      rows.appendChild(empty);
+    }
+
+    document.getElementById("dmsMatches").textContent = String(shownHits);
+    document.getElementById("dmsRecords").textContent = String(shownRecords);
+  }
+
+  DRAWER.forEach(function (row) {
+    var el = document.createElement("div");
+    el.className = "dm-drow";
+
+    var name = document.createElement("span");
+    name.className = "dm-dname";
+    name.textContent = row.name;
+
+    var table = document.createElement("span");
+    table.className = "dm-dtbl";
+    table.textContent = row.table;
+
+    var state = document.createElement("span");
+    state.className = "dm-dstate" + (row.warn ? " warn" : "");
+    state.textContent = row.state;
+
+    el.append(name, table, state);
+    drawer.appendChild(el);
+  });
+
+  drawerBtn.addEventListener("click", function () {
+    var open = drawer.classList.toggle("open");
+    drawerBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    document.getElementById("dmsDrawerCaret").textContent = open ? "▼" : "▶";
+  });
+
+  find.addEventListener("input", render);
+  render();
+})();
+
+/* ---------------------------------------------------------------------------
+   Demo 2 — "What affects this catalog item".
+
+   The four controls are the real ones: kind filter, active-only, group by
+   variable, and free text. Grouping follows the extension's own rule — onLoad
+   and onSubmit scripts and variable-less policies are form-level, not filed
+   under a variable, because they are not attributable to one.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  var ITEM = "New Starter Laptop Request";
+
+  var ROWS = [
+    { name: "Set laptop model options", kind: "client", subtype: "onChange",
+      variable: "laptop_model", varLabel: "Laptop model", bound: ITEM,
+      active: true, blocked: false, order: 100 },
+    { name: "Clear accessories on model change", kind: "client", subtype: "onChange",
+      variable: "laptop_model", varLabel: "Laptop model", bound: ITEM,
+      active: true, blocked: false, order: 200 },
+    { name: "Hide accessories for contractors", kind: "uip", subtype: "UI policy",
+      variable: "accessories", varLabel: "Accessories",
+      bound: "Variable set: Employment details", active: true,
+      blocked: true, cond: "employment_type is contractor", effect: "hides · read-only" },
+    { name: "Make justification mandatory", kind: "uip", subtype: "UI policy",
+      variable: "business_justification", varLabel: "Business justification",
+      bound: ITEM, active: true, blocked: false,
+      cond: "laptop_model is macbook_pro_16", effect: "mandatory" },
+    { name: "Legacy manager lookup", kind: "client", subtype: "onChange",
+      variable: "manager", varLabel: "Reporting manager", bound: ITEM,
+      active: false, blocked: false },
+    { name: "Validate cost centre", kind: "client", subtype: "onSubmit",
+      variable: "", varLabel: "", bound: ITEM, active: true, blocked: false },
+    { name: "Default the start date", kind: "client", subtype: "onLoad",
+      variable: "", varLabel: "", bound: ITEM, active: true, blocked: false }
+  ];
+
+  var NO_VAR = " none";
+
+  var host = document.getElementById("dmcRows");
+  var find = document.getElementById("dmcFind");
+  var activeOnly = document.getElementById("dmcActiveOnly");
+  var groupBtn = document.getElementById("dmcGroup");
+  if (!host || !find) return;
+
+  var kind = "all";
+
+  function visibleRows() {
+    var q = find.value.trim().toLowerCase();
+    return ROWS.filter(function (r) {
+      if (kind !== "all" && r.kind !== kind) return false;
+      if (activeOnly.getAttribute("aria-pressed") === "true" && !r.active) return false;
+      if (!q) return true;
+      /* Same haystack as the real panel: name, kind, subtype, variable name and
+         label, what it is bound to, and the condition. The condition matters —
+         it is how you find the policy that keys off a variable it does not
+         itself own. */
+      return [r.name, r.kind === "client" ? "Client script" : "UI policy", r.subtype,
+              r.variable, r.varLabel, r.bound, r.cond]
+        .filter(Boolean).join(" ").toLowerCase().indexOf(q) !== -1;
+    });
+  }
+
+  function rowEl(r) {
+    var el = document.createElement("div");
+    el.className = "dm-crow" + (r.active ? "" : " off") + (r.active && r.blocked ? " flag" : "");
+
+    var left = document.createElement("div");
+    var name = document.createElement("div");
+    name.className = "dm-cname";
+    name.textContent = r.name;
+    left.appendChild(name);
+
+    var bound = document.createElement("div");
+    bound.className = "dm-cbound";
+    bound.textContent = r.bound;
+    left.appendChild(bound);
+
+    if (r.cond) {
+      var cond = document.createElement("div");
+      cond.className = "dm-ccond";
+      cond.textContent = "if: " + r.cond;
+      left.appendChild(cond);
+    }
+    if (r.effect) {
+      var eff = document.createElement("div");
+      eff.className = "dm-ccond";
+      eff.textContent = "→ " + r.effect;
+      left.appendChild(eff);
+    }
+
+    var mid = document.createElement("div");
+    mid.className = "dm-kind";
+    var badge = document.createElement("span");
+    badge.className = "dm-badge " + r.kind;
+    badge.textContent = r.kind === "client" ? "Client script" : "UI policy";
+    mid.appendChild(badge);
+    var sub = document.createElement("span");
+    sub.className = "dm-subtype";
+    sub.textContent = r.subtype + (r.kind === "client" && r.variable ? " · " + r.variable : "");
+    mid.appendChild(sub);
+
+    var meta = document.createElement("div");
+    meta.className = "dm-meta";
+    var act = document.createElement("span");
+    act.className = "dm-t " + (r.active ? "on" : "off");
+    act.textContent = r.active ? "Active" : "Inactive";
+    meta.appendChild(act);
+
+    if (r.active && r.blocked) {
+      var warn = document.createElement("span");
+      warn.className = "dm-t warn";
+      warn.title = "Won't run while ordering this item — scoped to RITM / Task only.";
+      warn.textContent = "⚠ Not on catalog form";
+      meta.appendChild(warn);
+    }
+    if (r.order) {
+      var ord = document.createElement("span");
+      ord.className = "dm-t";
+      ord.textContent = "#" + r.order;
+      meta.appendChild(ord);
+    }
+
+    el.append(left, mid, meta);
+    return el;
+  }
+
+  /* Mirrors groupKeyOf() in catalog_insight_ui.js. Only an onChange client
+     script watches one specific variable; onLoad, onSubmit and every UI policy
+     share the "not variable-specific" bucket, because attribution to a single
+     variable would be a guess. */
+  function groupKey(r) {
+    return r.kind === "client" && r.variable ? r.variable : NO_VAR;
+  }
+
+  function render() {
+    var list = visibleRows();
+    host.textContent = "";
+
+    if (!list.length) {
+      var empty = document.createElement("div");
+      empty.className = "dm-empty";
+      empty.textContent = "Nothing matches those filters.";
+      host.appendChild(empty);
+    } else if (groupBtn.getAttribute("aria-pressed") === "true") {
+      var buckets = {};
+      list.forEach(function (r) {
+        var k = groupKey(r);
+        if (!buckets[k]) buckets[k] = [];
+        buckets[k].push(r);
+      });
+
+      /* Named variables alphabetically, then the catch-all last — least
+         specific answer, so it does not lead. */
+      var order = Object.keys(buckets)
+        .filter(function (k) { return k !== NO_VAR; })
+        .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+      if (buckets[NO_VAR]) order.push(NO_VAR);
+
+      order.forEach(function (k) {
+        var isNone = k === NO_VAR;
+        var sample = buckets[k][0];
+
+        var head = document.createElement("div");
+        head.className = "dm-grp-head";
+
+        var label = document.createElement("span");
+        label.textContent = isNone ? "Not variable-specific" : k;
+        head.appendChild(label);
+
+        var hint = document.createElement("span");
+        hint.className = "dm-subtype";
+        hint.textContent = isNone ? "onLoad / onSubmit / UI policies" : (sample.varLabel || "");
+        if (hint.textContent) head.appendChild(hint);
+
+        var n = document.createElement("span");
+        n.className = "dm-n";
+        n.textContent = buckets[k].length;
+        head.appendChild(n);
+
+        host.appendChild(head);
+        buckets[k].forEach(function (r) { host.appendChild(rowEl(r)); });
+      });
+    } else {
+      list.forEach(function (r) { host.appendChild(rowEl(r)); });
+    }
+
+    document.getElementById("dmcTotal").textContent = String(list.length);
+    document.getElementById("dmcActive").textContent =
+      String(list.filter(function (r) { return r.active; }).length);
+    document.getElementById("dmcInactive").textContent =
+      String(list.filter(function (r) { return !r.active; }).length);
+    document.getElementById("dmcBlocked").textContent =
+      String(list.filter(function (r) { return r.active && r.blocked; }).length);
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#dmCat .dm-btn[data-kind]"),
+    function (btn) {
+      btn.addEventListener("click", function () {
+        kind = btn.getAttribute("data-kind");
+        Array.prototype.forEach.call(
+          document.querySelectorAll("#dmCat .dm-btn[data-kind]"),
+          function (other) {
+            var on = other === btn;
+            other.classList.toggle("on", on);
+            other.setAttribute("aria-pressed", on ? "true" : "false");
+          }
+        );
+        render();
+      });
+    }
+  );
+
+  [activeOnly, groupBtn].forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var on = btn.getAttribute("aria-pressed") !== "true";
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.classList.toggle("on", on);
+      render();
+    });
+  });
+
+  find.addEventListener("input", render);
   render();
 })();
 </script>
