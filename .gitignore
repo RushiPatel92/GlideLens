@@ -8,6 +8,7 @@ memory/
 # global ignore file, which does not travel with a clone, so ignore the whole
 # directory here.
 .claude/
+.codex/
 
 # Working notes and design drafts. This repo is public and every committed file
 # ships in the Download ZIP, so scratch material stays local.
