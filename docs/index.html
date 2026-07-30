@@ -42,7 +42,9 @@
   --sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 
   --gut: clamp(20px, 5vw, 48px);
-  --rail: 172px;
+  /* Wide enough for the longest table name the rail carries
+     (catalog_ui_policy_action), which broke mid-word at 172px. */
+  --rail: 192px;
 }
 
 * { box-sizing: border-box; }
@@ -488,7 +490,10 @@ a { color: var(--teal); }
 .dm-find:focus { outline: none; border-color: var(--teal); background: #37375a; }
 .dm-find::placeholder { color: #a4a4be; }
 
-.dm-rows { max-height: 340px; overflow: auto; }
+/* Tall enough that filtering visibly removes rows. At 340px only about three
+   rows showed, so a filter that dropped one row below the fold looked like a
+   filter that did nothing. */
+.dm-rows { max-height: 580px; overflow: auto; }
 
 /* Group header, shared by both demos. */
 .dm-grp-head {
@@ -583,11 +588,15 @@ a { color: var(--teal); }
 .dm-drow .dm-dstate.warn { color: #e0c187; }
 
 /* --- Catalog insight rows --- */
+/* Fixed track widths, matching .row in catalog_insight_ui.js. Each row is its
+   own grid container, so an `auto` track resolves per row and the columns
+   drift out of line — which is exactly what went wrong here. Only the name
+   column may flex. */
 .dm-crow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 132px auto;
-  gap: 10px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) 168px 150px;
+  gap: 12px;
+  align-items: center;
   padding: 9px 15px;
   border-bottom: 1px solid #23233a;
   cursor: default;
@@ -610,7 +619,7 @@ a { color: var(--teal); }
 .dm-badge.client { color: #a9d5ff; background: #24364a; border-color: #365573; }
 .dm-badge.uip { color: #e6c78f; background: #3a3320; border-color: #5c5031; }
 .dm-subtype { font: 10.5px var(--mono); color: #7d7d95; }
-.dm-meta { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; font-size: 10.5px; }
+.dm-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 10.5px; }
 .dm-t {
   padding: 2px 6px;
   border: 1px solid #34344f;
@@ -765,7 +774,7 @@ a { color: var(--teal); }
             <span class="tag is-ok">secrets redacted</span>
           </div>
           <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Filter it, collapse a group, open the drawer.</p>
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Collapse a group, open the drawer, or filter for <em>AccessHelper</em>.</p>
             <div class="dm" id="dmSearch">
               <div class="dm-head">
                 <h3 class="dm-title">Code search <span>getUserGroups</span></h3>
@@ -822,7 +831,7 @@ a { color: var(--teal); }
             <span class="tag is-ok">read-only</span>
           </div>
           <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em> and <em>Active only</em>.</p>
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em>, <em>Active only</em>, or search <em>laptop_model</em>.</p>
             <div class="dm" id="dmCat">
               <div class="dm-head">
                 <h3 class="dm-title">What affects this catalog item</h3>
@@ -884,6 +893,72 @@ a { color: var(--teal); }
       </article>
 
       <!-- 4 -->
+      <article class="feature" id="variable-values">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+          <dl>
+            <dt>Covers</dt>
+            <dd class="plain">Hidden-type</dd>
+            <dd class="plain">UI Policy hidden</dd>
+            <dd class="plain">Not rendered</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Show variable values</h2>
+          <p>
+            Every variable on the item with its current value, variable sets
+            included — and crucially <strong>the ones you cannot see</strong>.
+            Filter to hidden to find the variable a policy quietly set behind your
+            back.
+          </p>
+          <div class="tags">
+            <span class="tag">hidden / visible filter</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Run the command, then switch the filter to hidden.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 5 -->
+      <article class="feature" id="debug-timeline">
+        <div class="feature-rail">
+          <p class="eyebrow">Debugging</p>
+          <dl>
+            <dt>Captures</dt>
+            <dd>g_form</dd>
+            <dd>GlideAjax</dd>
+            <dd class="plain">field events, errors</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Debug Timeline</h2>
+          <p>
+            Record one page's interaction and read back what happened: public
+            <code>g_form</code> calls, native field events, GlideAjax timing, and
+            JavaScript errors on a filterable timeline. Best-effort by design — it
+            shows you <strong>what ran, not which script ran it</strong>, and says so
+            rather than guessing.
+          </p>
+          <div class="tags">
+            <span class="tag">single page</span>
+            <span class="tag">reversible patches</span>
+            <span class="tag">secrets redacted</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Start recording, change two fields, stop, then filter the results.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 6 -->
       <article class="feature" id="field-names">
         <div class="feature-rail">
           <p class="eyebrow">Forms</p>
@@ -916,7 +991,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 5 -->
+      <!-- 7 -->
       <article class="feature" id="translations">
         <div class="feature-rail">
           <p class="eyebrow">Forms</p>
@@ -945,72 +1020,6 @@ a { color: var(--teal); }
             <div class="shot-todo">
               <b>Screenshot slot</b>
               <span>A label with both icons, ideally on an inherited field.</span>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 6 -->
-      <article class="feature" id="variable-values">
-        <div class="feature-rail">
-          <p class="eyebrow">Catalog</p>
-          <dl>
-            <dt>Covers</dt>
-            <dd class="plain">Hidden-type</dd>
-            <dd class="plain">UI Policy hidden</dd>
-            <dd class="plain">Not rendered</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Show variable values</h2>
-          <p>
-            Every variable on the item with its current value, variable sets
-            included — and crucially <strong>the ones you cannot see</strong>.
-            Filter to hidden to find the variable a policy quietly set behind your
-            back.
-          </p>
-          <div class="tags">
-            <span class="tag">hidden / visible filter</span>
-            <span class="tag is-ok">read-only</span>
-          </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Run the command, then switch the filter to hidden.</span>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 7 -->
-      <article class="feature" id="debug-timeline">
-        <div class="feature-rail">
-          <p class="eyebrow">Debugging</p>
-          <dl>
-            <dt>Captures</dt>
-            <dd>g_form</dd>
-            <dd>GlideAjax</dd>
-            <dd class="plain">field events, errors</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Debug Timeline</h2>
-          <p>
-            Record one page's interaction and read back what happened: public
-            <code>g_form</code> calls, native field events, GlideAjax timing, and
-            JavaScript errors on a filterable timeline. Best-effort by design — it
-            shows you <strong>what ran, not which script ran it</strong>, and says so
-            rather than guessing.
-          </p>
-          <div class="tags">
-            <span class="tag">single page</span>
-            <span class="tag">reversible patches</span>
-            <span class="tag">secrets redacted</span>
-          </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Start recording, change two fields, stop, then filter the results.</span>
             </div>
           </div>
         </div>
