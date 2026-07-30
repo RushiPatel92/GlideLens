@@ -111,6 +111,36 @@ MV3 at all.
   open, dev links, copy sys_id, toggles.
 - `background.js` — service worker: keyboard command, `OPEN_URL`, lazy Code
   Search injection, and token-bearing Table API handlers.
+- `docs/index.html` — the public landing page, served by GitHub Pages from
+  `main` → `/docs` at `glidelens.consultnowit.com` (`docs/CNAME`). One
+  hand-written file, no generator and no build, reusing the `popup.css` tokens
+  so the page and the product match. Not part of the extension; Chrome ignores
+  it. Media belongs on GitHub's attachment CDN (drop a file into an issue
+  comment, copy the `user-attachments` URL) rather than in the repo, so the
+  install ZIP stays small.
+
+  Three things to keep true. The site root **is** `docs/`, so assets must live
+  inside it (hence `docs/icon32.png`, not `../icons/`). The hero palette's
+  command list mirrors the real one in `content.js`. And the four live demos
+  reproduce real panels: code search (`code_search_ui.js`), catalog insight
+  (`catalog_insight_ui.js`), variable values (`hidden_variables_ui.js`) and
+  Debug Timeline (`debug_timeline_ui.js`). Fidelity goes down to the details —
+  `groupKeyOf` (only an onChange client script with a variable gets its own
+  group; onLoad, onSubmit and all UI policies share "Not variable-specific"),
+  the catalog search haystack (which includes `conditions`), `BUCKET_LABELS`,
+  and `CATEGORY_LABELS`. **A demo that lies is worse than no demo**: change a
+  panel and change its demo in the same commit. The first two got this wrong on
+  the first pass by being written from memory instead of read from the source —
+  read the source.
+
+  The three features that inject into ServiceNow's own DOM — field-name badges,
+  translation icons, variable insight icons — are deliberately NOT recreated.
+  Faking the platform's form chrome for an audience that knows exactly what it
+  looks like reads as sloppy; those slots want real screenshots.
+
+  The demos are `dm-` prefixed throughout because the page already owns `.row`,
+  `.tag`, `.count` and `.search`, and because `.feature-body p` caps prose at
+  `62ch` — panel `<p>` elements have to opt out of it.
 - `tests/` - developer-only Node tests. They ship harmlessly in the repository
   ZIP and Chrome ignores them; run Code Search tests by file path with
   `node --test tests/code_search.test.js tests/code_search_api.test.js
