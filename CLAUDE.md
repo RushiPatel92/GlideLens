@@ -111,6 +111,16 @@ MV3 at all.
   open, dev links, copy sys_id, toggles.
 - `background.js` — service worker: keyboard command, `OPEN_URL`, lazy Code
   Search injection, and token-bearing Table API handlers.
+- `docs/index.html` — the public landing page, served by GitHub Pages from
+  `main` → `/docs` at `glidelens.consultnowit.com` (`docs/CNAME`). One
+  hand-written file, no generator and no build, reusing the `popup.css` tokens
+  so the page and the product match. Not part of the extension; Chrome ignores
+  it. Two things to keep true: the site root **is** `docs/`, so assets must live
+  inside it (hence `docs/icon32.png`, not `../icons/`), and the hero palette's
+  command list mirrors the real one in `content.js` — rename a command there and
+  rename it here. Media belongs on GitHub's attachment CDN (drop a file into an
+  issue comment, copy the `user-attachments` URL) rather than in the repo, so the
+  install ZIP stays small.
 - `tests/` - developer-only Node tests. They ship harmlessly in the repository
   ZIP and Chrome ignores them; run Code Search tests by file path with
   `node --test tests/code_search.test.js tests/code_search_api.test.js

@@ -4,6 +4,10 @@ A lens on ServiceNow forms, catalogs and code: field names, translation
 inheritance, catalog debugging, code search. A Manifest V3 Chrome extension in
 plain JavaScript, with zero runtime dependencies and zero build step.
 
+**[See what it does →](https://glidelens.consultnowit.com/)** — feature tour
+with a working command palette. This README stays the reference; the site is the
+walkthrough.
+
 ## What it does
 
 - Instance info at a glance in the toolbar popup.
@@ -217,6 +221,11 @@ Explorer, and Flow Designer.
   **Code → Download ZIP** route described above; the extension is not on the
   Chrome Web Store, so extra repo files (`README.md`, `CLAUDE.md`, `.github/`)
   simply ride along and Chrome ignores them.
+- The landing page is one hand-written file, [`docs/index.html`](docs/index.html),
+  published by GitHub Pages from `main` → `/docs` at
+  <https://glidelens.consultnowit.com/>. No generator, no build, same design
+  tokens as [`popup.css`](popup.css). Screenshots and clips belong on GitHub's
+  attachment CDN rather than committed here, so the install download stays small.
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes (the two JS worlds, frames,
 and message flow).

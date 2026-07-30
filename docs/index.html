@@ -1,0 +1,961 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GlideLens — a lens on ServiceNow forms, catalogs and code</title>
+<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: code search across 14 sources, catalog debugging that tells you what actually runs, technical field names, and translation records." />
+
+<!-- Served from /docs, so the site root is this folder — icons are copied in
+     beside this file rather than referenced out of ../icons. -->
+<link rel="icon" href="icon32.png" />
+
+<!-- Link previews, for when this gets shared. No og:image yet: the 128px
+     extension icon crops badly at 1200×630, so it is better to have none than
+     a bad one. Add a proper preview card here when there is one. -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="GlideLens" />
+<meta property="og:title" content="GlideLens — a lens on ServiceNow forms, catalogs and code" />
+<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, technical field names, and translation records." />
+<meta property="og:url" content="https://glidelens.consultnowit.com/" />
+<meta name="twitter:card" content="summary" />
+
+<style>
+/* ---------------------------------------------------------------------------
+   Tokens — lifted verbatim from the extension's popup.css so the page and the
+   product read as one thing. Teal is the workhorse, pink is the rare spark.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg:      #1b1d22;
+  --surface: #24262d;
+  --sunken:  #17181c;
+  --line:    #34373f;
+  --text:    #e7e9ee;
+  --muted:   #9aa0ab;
+  --teal:    #31d4c4;
+  --teal-d:  #1f9c92;
+  --pink:    #ff6fae;
+  --ok:      #62d28f;
+  --warn:    #e7b155;
+
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+
+  --gut: clamp(20px, 5vw, 48px);
+  --rail: 172px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; scroll-padding-top: 76px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--teal); }
+
+:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 var(--gut); }
+
+/* Utility label: mono, wide, quiet. Used for eyebrows and rail headings. */
+.eyebrow {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Masthead
+   --------------------------------------------------------------------------- */
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: rgba(27, 29, 34, 0.86);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.masthead-in {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 var(--gut);
+}
+.mark {
+  display: block;
+  width: 24px; height: 24px;
+  border-radius: 6px;
+}
+.wordmark { font: 700 15px/1 var(--sans); letter-spacing: -0.01em; }
+.masthead-links { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.masthead-links a {
+  padding: 7px 11px;
+  border-radius: 7px;
+  font: 500 13.5px/1 var(--sans);
+  color: var(--muted);
+  text-decoration: none;
+}
+.masthead-links a:hover { color: var(--text); background: var(--surface); }
+.masthead-links a.is-primary {
+  color: var(--teal);
+  border: 1px solid color-mix(in srgb, var(--teal) 40%, transparent);
+}
+.masthead-links a.is-primary:hover {
+  background: color-mix(in srgb, var(--teal) 12%, transparent);
+  color: var(--teal);
+}
+
+/* ---------------------------------------------------------------------------
+   Hero — the thesis is the palette itself, so it gets the room.
+   --------------------------------------------------------------------------- */
+.hero { padding: clamp(56px, 9vw, 104px) 0 clamp(40px, 6vw, 72px); }
+
+.hero h1 {
+  margin: 18px 0 0;
+  font: 700 clamp(38px, 7.2vw, 76px)/1.02 var(--mono);
+  letter-spacing: -0.045em;
+}
+.hero h1 .key {
+  color: var(--teal);
+  /* The backslash is the product's front door; give it presence, not decoration. */
+  font-size: 1.12em;
+}
+.hero-sub {
+  max-width: 46ch;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: clamp(16px, 1.7vw, 18.5px);
+}
+.hero-sub strong { color: var(--text); font-weight: 600; }
+
+/* ---------------------------------------------------------------------------
+   Signature: a working command palette. Type to filter, arrows to move,
+   Enter to jump to that feature. It is the demo and the site nav at once.
+   --------------------------------------------------------------------------- */
+.palette {
+  margin: 40px 0 0;
+  max-width: 620px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.85);
+  overflow: hidden;
+}
+.palette-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.palette-kicker { font: 700 10px/1 var(--mono); letter-spacing: 0.14em; color: var(--pink); }
+.palette-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: 400 15px/1.4 var(--mono);
+  caret-color: var(--teal);
+}
+.palette-input::placeholder { color: var(--muted); opacity: 0.75; }
+.palette-input:focus { outline: none; }
+
+.palette-list { max-height: 306px; overflow-y: auto; padding: 6px; margin: 0; list-style: none; }
+.palette-group {
+  padding: 12px 10px 6px;
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  font-size: 14.5px;
+}
+.palette-row .cmd-name { flex: 1; min-width: 0; }
+.palette-row .cmd-key {
+  font: 500 11.5px/1 var(--mono);
+  color: var(--muted);
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.palette-row.is-active {
+  background: color-mix(in srgb, var(--teal) 13%, transparent);
+  border-left-color: var(--teal);
+}
+.palette-row.is-active .cmd-key { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
+.palette-empty { padding: 26px 12px; text-align: center; color: var(--muted); font-size: 14px; }
+
+.palette-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--sunken);
+  font: 400 12px/1.5 var(--mono);
+  color: var(--muted);
+}
+.palette-foot kbd {
+  font: inherit;
+  color: var(--text);
+}
+
+.hero-note {
+  margin: 16px 0 0;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Features — the left rail carries the ServiceNow tables each feature reads.
+   A ServiceNow developer reads `catalog_ui_policy_action` and already knows
+   what the feature does, so the rail is information rather than ornament.
+   --------------------------------------------------------------------------- */
+.features { padding: clamp(28px, 5vw, 56px) 0 0; }
+
+.feature {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  gap: clamp(20px, 4vw, 46px);
+  padding: clamp(38px, 5vw, 62px) 0;
+  border-top: 1px solid var(--line);
+}
+.feature-rail { padding-top: 4px; }
+.feature-rail dl { margin: 12px 0 0; font: 400 12.5px/1.7 var(--mono); }
+.feature-rail dt {
+  margin-top: 10px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.feature-rail dd { margin: 0; color: var(--teal); word-break: break-word; }
+.feature-rail dd.plain { color: var(--text); }
+
+.feature-body h2 {
+  margin: 0;
+  font: 700 clamp(24px, 3vw, 31px)/1.18 var(--mono);
+  letter-spacing: -0.032em;
+}
+.feature-body p { margin: 14px 0 0; color: var(--muted); max-width: 62ch; }
+.feature-body p strong { color: var(--text); font-weight: 600; }
+
+.tags { display: flex; flex-wrap: wrap; gap: 7px; margin: 18px 0 0; }
+.tag {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  font: 500 12px/1.5 var(--mono);
+  color: var(--muted);
+}
+.tag.is-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.tag.is-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+
+/* Media slot. Replace the placeholder with a <video> or <img> once recorded. */
+.shot {
+  margin: 22px 0 0;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+.shot video, .shot img { display: block; width: 100%; height: auto; }
+.shot-todo {
+  display: grid;
+  gap: 7px;
+  padding: 30px 22px;
+  text-align: center;
+}
+.shot-todo b { font: 600 11px/1 var(--mono); letter-spacing: 0.15em; text-transform: uppercase; color: var(--teal); }
+.shot-todo span { font-size: 13.5px; color: var(--muted); }
+
+/* ---------------------------------------------------------------------------
+   Install — numbered because it genuinely is a sequence; the order matters.
+   --------------------------------------------------------------------------- */
+.install { padding: clamp(52px, 7vw, 84px) 0; border-top: 1px solid var(--line); }
+.install h2 {
+  margin: 16px 0 0;
+  font: 700 clamp(26px, 3.4vw, 36px)/1.15 var(--mono);
+  letter-spacing: -0.035em;
+}
+.install-lede { margin: 14px 0 0; color: var(--muted); max-width: 58ch; }
+
+.steps { counter-reset: step; list-style: none; margin: 36px 0 0; padding: 0; }
+.steps li {
+  counter-increment: step;
+  position: relative;
+  padding: 0 0 26px 52px;
+  border-left: 1px solid var(--line);
+  margin-left: 15px;
+}
+.steps li:last-child { border-left-color: transparent; padding-bottom: 0; }
+.steps li::before {
+  content: counter(step, decimal-leading-zero);
+  position: absolute;
+  left: -16px;
+  top: -2px;
+  display: grid;
+  place-items: center;
+  width: 31px; height: 31px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font: 600 11px/1 var(--mono);
+  color: var(--teal);
+}
+.steps h3 { margin: 4px 0 0; font: 600 16.5px/1.35 var(--sans); }
+.steps p { margin: 7px 0 0; color: var(--muted); font-size: 14.5px; max-width: 58ch; }
+.steps code {
+  font: 500 13px/1 var(--mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+
+.callout {
+  margin: 34px 0 0;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--teal);
+  border-radius: 8px;
+}
+.callout p { margin: 0; font-size: 14.5px; color: var(--muted); }
+.callout p + p { margin-top: 9px; }
+.callout strong { color: var(--text); font-weight: 600; }
+
+/* ---------------------------------------------------------------------------
+   Scope — saying plainly what this is not is worth more than another feature.
+   --------------------------------------------------------------------------- */
+.scope { padding: clamp(48px, 6vw, 76px) 0; border-top: 1px solid var(--line); }
+.scope h2 {
+  margin: 16px 0 0;
+  font: 700 clamp(22px, 2.8vw, 29px)/1.2 var(--mono);
+  letter-spacing: -0.03em;
+}
+.scope p { margin: 15px 0 0; color: var(--muted); max-width: 64ch; }
+.scope p strong { color: var(--text); font-weight: 600; }
+
+/* --------------------------------------------------------------------------- */
+.colophon {
+  padding: 30px 0 44px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  align-items: center;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.colophon a { text-decoration: none; }
+.colophon a:hover { text-decoration: underline; }
+.colophon .ver {
+  font: 500 12px/1 var(--mono);
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--text);
+}
+.colophon .spacer { margin-left: auto; }
+
+/* --------------------------------------------------------------------------- */
+@media (max-width: 720px) {
+  .feature { grid-template-columns: 1fr; gap: 18px; }
+  .feature-rail dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0 18px; }
+  .masthead-links a.is-secondary { display: none; }
+  .colophon .spacer { margin-left: 0; width: 100%; height: 0; }
+}
+
+/* One orchestrated entrance, then the page sits still. */
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.5s cubic-bezier(0.22, 0.8, 0.3, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: none; }
+  .palette { box-shadow: none; }
+}
+</style>
+</head>
+
+<body>
+
+<header class="masthead">
+  <div class="masthead-in">
+    <img class="mark" src="icon32.png" width="24" height="24" alt="" />
+    <span class="wordmark">GlideLens</span>
+    <nav class="masthead-links">
+      <a class="is-secondary" href="#install">Install</a>
+      <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
+      <a class="is-primary" href="https://github.com/RushiPatel92/GlideLens">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <!-- ===================== HERO ===================== -->
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow rise">Chrome &amp; Edge · for ServiceNow developers</p>
+
+      <h1 class="rise" style="animation-delay: 60ms">
+        Press <span class="key">\</span><br />anywhere in ServiceNow.
+      </h1>
+
+      <p class="hero-sub rise" style="animation-delay: 120ms">
+        A command palette over the platform you already work in. Search the
+        script the instance's own index can't see, read
+        <strong>what actually runs</strong> on a catalog item, and put the real
+        column names back on the form.
+      </p>
+
+      <!-- The palette below is real. Filtering it browses the page. -->
+      <div class="palette rise" style="animation-delay: 180ms" id="palette">
+        <div class="palette-top">
+          <span class="palette-kicker">GLIDELENS</span>
+          <input
+            class="palette-input"
+            id="paletteInput"
+            type="text"
+            placeholder="Type to filter commands…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Filter commands"
+            aria-controls="paletteList"
+          />
+        </div>
+        <ul class="palette-list" id="paletteList" role="listbox" aria-label="Commands"></ul>
+        <div class="palette-foot">
+          <span><kbd>↑</kbd> <kbd>↓</kbd> move</span>
+          <span><kbd>↵</kbd> jump to it</span>
+          <span>this palette works — try it</span>
+        </div>
+      </div>
+
+      <p class="hero-note rise" style="animation-delay: 240ms">
+        Same commands as the real thing. In ServiceNow they run; here they scroll.
+      </p>
+    </div>
+  </section>
+
+  <!-- ===================== FEATURES ===================== -->
+  <div class="features">
+    <div class="wrap">
+
+      <!-- 1 -->
+      <article class="feature" id="code-search">
+        <div class="feature-rail">
+          <p class="eyebrow">Search</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>sys_script_include</dd>
+            <dd>sys_script</dd>
+            <dd>sys_ui_action</dd>
+            <dd class="plain">+ 11 more sources</dd>
+            <dt>Uses</dt>
+            <dd class="plain">the instance index, first</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Find the script the index can't see</h2>
+          <p>
+            Search fourteen sources of everyday script and configuration —
+            Script Includes, Business Rules, Client Scripts, UI Actions, catalog
+            variables, reference qualifiers, transform logic, record producers,
+            Script Actions, Scripted REST. Where the platform's own Code Search
+            is installed it runs first and the rest fill the gaps, because its
+            search groups are configured field by field: <strong>UI Action
+            conditions are indexed nowhere</strong>, so nothing but the fallback
+            will ever find them.
+          </p>
+          <p>
+            Every hit is verified against your term in the browser before it is
+            shown. That is not belt-and-braces — an invalid field in an encoded
+            query is <strong>silently dropped</strong> by the Table API, and the
+            unfiltered result that comes back looks exactly like a match. The
+            Source status drawer keeps the same honesty: no matches, access
+            denied, timed out and capped are four different answers, and it
+            tells you which one you got.
+          </p>
+          <div class="tags">
+            <span class="tag">14 sources</span>
+            <span class="tag">"quoted phrase"</span>
+            <span class="tag">table: scope</span>
+            <span class="tag is-ok">read-only</span>
+            <span class="tag is-ok">secrets redacted</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Search a term, show the grouped results, then open the Source status drawer.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 2 -->
+      <article class="feature" id="catalog-insight">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>catalog_script_client</dd>
+            <dd>catalog_ui_policy</dd>
+            <dd>catalog_ui_policy_action</dd>
+            <dt>Where</dt>
+            <dd class="plain">Service Portal</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>What affects this catalog item</h2>
+          <p>
+            Open a catalog item and get every client script and UI policy bound to
+            it or its variable sets, grouped by the variable they watch. Rows that
+            cannot fire while ordering — inactive, or scoped to RITM and Task views
+            only — are flagged, so <strong>"why isn't my script running"</strong>
+            answers itself before you open a single record.
+          </p>
+          <div class="tags">
+            <span class="tag">group by variable</span>
+            <span class="tag is-warn">⚠ won't run here</span>
+            <span class="tag">open in platform</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot">
+            <!-- Replace this block with the recording:
+                 <video src="PASTE_URL" autoplay loop muted playsinline></video> -->
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Open a catalog item → run the command → group by variable → point at a ⚠ row.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 3 -->
+      <article class="feature" id="variable-icons">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>item_option_new</dd>
+            <dd>catalog_ui_policy_action</dd>
+            <dt>Shortcut</dt>
+            <dd class="plain">Alt + double-click</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Per-variable insight icons</h2>
+          <p>
+            An icon beside every variable on the form. Click one and the panel
+            narrows to that variable alone: the onChange scripts watching it, and
+            what each UI policy does to it — <strong>hides, mandatory, read-only,
+            sets value</strong>. Attribution is matched on sys_id, not guessed from
+            script text.
+          </p>
+          <div class="tags">
+            <span class="tag">per-variable scope</span>
+            <span class="tag">show all to clear</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Alt + double-click to reveal the icons, click one, show the scoped panel.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 4 -->
+      <article class="feature" id="field-names">
+        <div class="feature-rail">
+          <p class="eyebrow">Forms</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>sys_dictionary</dd>
+            <dd>sys_db_object</dd>
+            <dt>Shortcut</dt>
+            <dd class="plain">Alt + Shift + F</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Technical field names</h2>
+          <p>
+            Every label on a classic form gets its real column name beside it. The
+            badges <strong>survive a form re-render</strong> — a section switch or a
+            UI Policy run puts them straight back, instead of making you toggle
+            again.
+          </p>
+          <div class="tags">
+            <span class="tag">classic UI</span>
+            <span class="tag">persists across re-render</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Screenshot slot</b>
+              <span>An incident form with badges showing — one clear, readable crop.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 5 -->
+      <article class="feature" id="translations">
+        <div class="feature-rail">
+          <p class="eyebrow">Forms</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>sys_documentation</dd>
+            <dd>sys_translated_text</dd>
+            <dt>Resolves</dt>
+            <dd class="plain">inherited fields</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Translation records, one click away</h2>
+          <p>
+            Two icons per label: a globe for the label, plural and hint, and a
+            languages glyph for per-record value translations. The defining table is
+            resolved by walking <strong>super_class</strong>, so a field inherited
+            from <code>task</code> lands on the right dictionary record rather than a
+            dead end.
+          </p>
+          <div class="tags">
+            <span class="tag">label · plural · hint</span>
+            <span class="tag">value translations</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Screenshot slot</b>
+              <span>A label with both icons, ideally on an inherited field.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 6 -->
+      <article class="feature" id="variable-values">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+          <dl>
+            <dt>Covers</dt>
+            <dd class="plain">Hidden-type</dd>
+            <dd class="plain">UI Policy hidden</dd>
+            <dd class="plain">Not rendered</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Show variable values</h2>
+          <p>
+            Every variable on the item with its current value, variable sets
+            included — and crucially <strong>the ones you cannot see</strong>.
+            Filter to hidden to find the variable a policy quietly set behind your
+            back.
+          </p>
+          <div class="tags">
+            <span class="tag">hidden / visible filter</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Run the command, then switch the filter to hidden.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 7 -->
+      <article class="feature" id="debug-timeline">
+        <div class="feature-rail">
+          <p class="eyebrow">Debugging</p>
+          <dl>
+            <dt>Captures</dt>
+            <dd>g_form</dd>
+            <dd>GlideAjax</dd>
+            <dd class="plain">field events, errors</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Debug Timeline</h2>
+          <p>
+            Record one page's interaction and read back what happened: public
+            <code>g_form</code> calls, native field events, GlideAjax timing, and
+            JavaScript errors on a filterable timeline. Best-effort by design — it
+            shows you <strong>what ran, not which script ran it</strong>, and says so
+            rather than guessing.
+          </p>
+          <div class="tags">
+            <span class="tag">single page</span>
+            <span class="tag">reversible patches</span>
+            <span class="tag">secrets redacted</span>
+          </div>
+          <div class="shot">
+            <div class="shot-todo">
+              <b>Clip slot</b>
+              <span>Start recording, change two fields, stop, then filter the results.</span>
+            </div>
+          </div>
+        </div>
+      </article>
+
+    </div>
+  </div>
+
+  <!-- ===================== INSTALL ===================== -->
+  <section class="install" id="install">
+    <div class="wrap">
+      <p class="eyebrow">Install</p>
+      <h2>Four steps, once.</h2>
+      <p class="install-lede">
+        Not on the Chrome Web Store — you load it unpacked from a folder. After
+        this, updating is a download and one click. Edge works too; use
+        <code>edge://extensions</code> throughout.
+      </p>
+
+      <ol class="steps">
+        <li>
+          <h3>Download the ZIP</h3>
+          <p>
+            On the repository, click the green <strong>Code</strong> button, then
+            <a href="https://github.com/RushiPatel92/GlideLens/archive/refs/heads/main.zip">Download ZIP</a>.
+          </p>
+        </li>
+        <li>
+          <h3>Extract somewhere permanent</h3>
+          <p>
+            Your browser reads the folder every time it starts, so don't leave it in
+            Downloads. <code>C:\Users\you\BrowserExtensions\GlideLens</code> is a
+            good home. Make sure <code>manifest.json</code> sits directly inside the
+            folder you pick — GitHub wraps everything in an inner folder.
+          </p>
+        </li>
+        <li>
+          <h3>Load unpacked</h3>
+          <p>
+            Go to <code>chrome://extensions</code>, turn on
+            <strong>Developer mode</strong>, click <strong>Load unpacked</strong>,
+            and select that folder.
+          </p>
+        </li>
+        <li>
+          <h3>Pin it</h3>
+          <p>
+            Click the puzzle-piece icon in the toolbar and pin GlideLens. Then
+            open any ServiceNow tab and press <code>\</code>.
+          </p>
+        </li>
+      </ol>
+
+      <div class="callout">
+        <p><strong>Updating.</strong> Download the new ZIP over the same folder, hit reload on the extension card, and refresh your ServiceNow tab so the content script reloads.</p>
+        <p><strong>Nothing leaves your browser.</strong> The extension only activates on <code>*.service-now.com</code>, reads through your own session, and has no server of its own.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== SCOPE ===================== -->
+  <section class="scope">
+    <div class="wrap">
+      <p class="eyebrow">What this isn't</p>
+      <h2>Deliberately narrow.</h2>
+      <p>
+        It is not a general ServiceNow toolbelt, and it does not try to become
+        one. Update set switching, impersonation and environment badges are well
+        served by tools that already exist, so they stay out of scope. This aims
+        squarely at the gaps: <strong>catalog and Service Portal debugging</strong>,
+        dictionary inheritance, form introspection, and the script no index
+        reaches.
+      </p>
+      <p>
+        Everything it reads goes through the Table API on your own session, with
+        your own permissions — there is no server, no account and no telemetry.
+        It never writes and never runs your scripts. Code search shows the
+        matching lines and one line either side, and redacts hits whose field
+        names read like secrets.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="wrap">
+  <div class="colophon">
+    <span class="ver">v0.9.0</span>
+    <a href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/RushiPatel92/GlideLens/issues">Report an issue</a>
+    <span class="spacer"></span>
+    <span>Proof of concept, built with AI assistance. No warranty.</span>
+  </div>
+</footer>
+
+<script>
+/* ---------------------------------------------------------------------------
+   The hero palette. Deliberately mirrors the extension's own interaction model:
+   type to filter, arrows to move, Enter to act. Here "act" means scroll to the
+   section that explains the command, so the demo doubles as navigation.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  /* Names kept in step with the real palette in content.js. If a command is
+     renamed there, rename it here — a demo that lies is worse than no demo. */
+  var COMMANDS = [
+    { group: "Tools",     name: "Search code…",                        key: "",            go: "#code-search" },
+    { group: "Tools",     name: "Recheck what code search can reach",   key: "",            go: "#code-search" },
+    { group: "Tools",     name: "Toggle field names",                  key: "Alt+Shift+F", go: "#field-names" },
+    { group: "Tools",     name: "Toggle translation icons",            key: "",            go: "#translations" },
+    { group: "Tools",     name: "Start debug timeline",                key: "",            go: "#debug-timeline" },
+    { group: "Catalog",   name: "What affects this catalog item",      key: "",            go: "#catalog-insight" },
+    { group: "Catalog",   name: "Toggle variable insight icons",       key: "Alt+dbl",     go: "#variable-icons" },
+    { group: "Catalog",   name: "Show variable values",                key: "",            go: "#variable-values" },
+    { group: "Catalog",   name: "Prefill variables from ticket…",      key: "",            go: "#install" },
+    { group: "Catalog",   name: "Copy portal variable debug info",     key: "",            go: "#install" },
+    { group: "Record",    name: "Copy sys_id",                         key: "",            go: "#install" },
+    { group: "Record",    name: "Open playbook executions",            key: "",            go: "#install" },
+    { group: "Record",    name: "Open customer updates by sys_id…",    key: "",            go: "#install" },
+    { group: "Navigate",  name: "Open table list…",                    key: "",            go: "#install" },
+    { group: "Navigate",  name: "Open new record…",                    key: "",            go: "#install" }
+  ];
+
+  var input = document.getElementById("paletteInput");
+  var list = document.getElementById("paletteList");
+  if (!input || !list) return;
+
+  var visible = [];
+  var active = 0;
+
+  function matches(cmd, q) {
+    if (!q) return true;
+    return (cmd.name + " " + cmd.group).toLowerCase().indexOf(q) !== -1;
+  }
+
+  function render() {
+    var q = input.value.trim().toLowerCase();
+    visible = COMMANDS.filter(function (c) { return matches(c, q); });
+    if (active >= visible.length) active = Math.max(0, visible.length - 1);
+
+    list.textContent = "";
+
+    if (!visible.length) {
+      var empty = document.createElement("li");
+      empty.className = "palette-empty";
+      empty.textContent = "No command matches “" + input.value.trim() + "”.";
+      list.appendChild(empty);
+      return;
+    }
+
+    var lastGroup = null;
+    visible.forEach(function (cmd, i) {
+      if (cmd.group !== lastGroup) {
+        lastGroup = cmd.group;
+        var head = document.createElement("li");
+        head.className = "palette-group";
+        head.setAttribute("aria-hidden", "true");
+        head.textContent = cmd.group;
+        list.appendChild(head);
+      }
+
+      var row = document.createElement("li");
+      row.className = "palette-row" + (i === active ? " is-active" : "");
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", i === active ? "true" : "false");
+
+      var name = document.createElement("span");
+      name.className = "cmd-name";
+      name.textContent = cmd.name;
+      row.appendChild(name);
+
+      if (cmd.key) {
+        var key = document.createElement("span");
+        key.className = "cmd-key";
+        key.textContent = cmd.key;
+        row.appendChild(key);
+      }
+
+      row.addEventListener("mouseenter", function () { active = i; paint(); });
+      row.addEventListener("click", function () { run(cmd); });
+      list.appendChild(row);
+    });
+  }
+
+  /* Repaint selection only — cheaper than rebuilding, and keeps hover smooth. */
+  function paint() {
+    var rows = list.querySelectorAll(".palette-row");
+    for (var i = 0; i < rows.length; i++) {
+      var on = i === active;
+      rows[i].classList.toggle("is-active", on);
+      rows[i].setAttribute("aria-selected", on ? "true" : "false");
+    }
+  }
+
+  function scrollActiveIntoView() {
+    var row = list.querySelectorAll(".palette-row")[active];
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+  }
+
+  function run(cmd) {
+    var target = document.querySelector(cmd.go);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function move(delta) {
+    if (!visible.length) return;
+    active = (active + delta + visible.length) % visible.length;
+    paint();
+    scrollActiveIntoView();
+  }
+
+  input.addEventListener("input", function () { active = 0; render(); });
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (e.key === "Enter") { e.preventDefault(); if (visible[active]) run(visible[active]); }
+    else if (e.key === "Escape") { input.value = ""; active = 0; render(); }
+  });
+
+  /* Backslash focuses the palette from anywhere on the page — the same key that
+     opens it inside ServiceNow, so the muscle memory starts here. */
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "\\" || e.target === input) return;
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || e.target.isContentEditable) return;
+    e.preventDefault();
+    input.focus();
+    input.select();
+  });
+
+  render();
+})();
+</script>
+
+</body>
+</html>
