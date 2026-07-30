@@ -44,10 +44,6 @@
         "default": "Ctrl+Shift+K",
         "mac": "Command+Shift+K"
       }
-    },
-    "toggle-field-names": {
-      "suggested_key": { "default": "Alt+Shift+F" },
-      "description": "Toggle technical field names on the current form"
     }
   }
 }

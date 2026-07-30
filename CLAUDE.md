@@ -55,11 +55,11 @@ the toolbar/shell is the top frame. The form DOM (labels, fields) lives in
    pick the frame that actually returned SN context (the one with `g_form`).
 
 ### Message flow
-- popup → content script: `chrome.tabs.sendMessage` (`TOGGLE_FIELD_NAMES`,
-  `TOGGLE_TRANSLATIONS`). Delivered to all frames; `gsft_main` does the work.
+- popup → content script: `chrome.tabs.sendMessage` (`TOGGLE_TRANSLATIONS`, and
+  `TOGGLE_FIELD_NAMES` which nothing sends any more — see the field-name badge
+  note). Delivered to all frames; `gsft_main` does the work.
 - content script → service worker: `chrome.runtime.sendMessage` (`OPEN_URL`),
   because content scripts can't call `chrome.tabs.create`.
-- keyboard command (`background.js`) → content script for the field-name toggle.
 
 ### REST from the content script
 `content.js` reads the Table API (`/api/now/table/...`) through `snGetMany`,
@@ -88,7 +88,8 @@ than an error. Cross-origin fetches would not work from a content script under
 MV3 at all.
 
 ## Files
-- `manifest.json` — MV3 config, permissions, content scripts, command.
+- `manifest.json` — MV3 config, permissions, content scripts, and the single
+  `_execute_action` command.
 - `content.js` — isolated world: field-name badges, translation icons,
   dictionary-inheritance resolution, Table API helper (`snGet`).
 - `debug_timeline_ui.js` - isolated-world recording indicator and filterable
@@ -109,8 +110,8 @@ MV3 at all.
   the service worker and injected into every frame on demand.
 - `popup.js` / `popup.html` / `popup.css` — popup UI: instance info, quick table
   open, dev links, copy sys_id, toggles.
-- `background.js` — service worker: keyboard command, `OPEN_URL`, lazy Code
-  Search injection, and token-bearing Table API handlers.
+- `background.js` — service worker: `OPEN_URL`, lazy Code Search injection, and
+  token-bearing Table API handlers.
 - `docs/index.html` — the public landing page, served by GitHub Pages from
   `main` → `/docs` at `glidelens.consultnowit.com` (`docs/CNAME`). One
   hand-written file, no generator and no build, reusing the `popup.css` tokens
@@ -171,10 +172,13 @@ MV3 at all.
     `sc_req_item` and `change_request` have zero translatable fields between
     them, which is why the icon correctly never appears on those forms.
 - **Field-name badges** parse the classic label id format `label.<table>.<field>`.
-  **Unlisted since 0.9.x** — snUtils covers this, so the palette command, the
-  landing page section and the README rows were removed. The code and the
-  `Alt+Shift+F` command stay, so the toggle still works for anyone who knows the
-  shortcut. Do not re-add it to the palette or the site without being asked.
+  **Retired in 0.9.x** — snUtils covers this. The palette command, the landing
+  page section, the README rows and the `Alt+Shift+F` manifest command are all
+  gone, so nothing reaches it any more. The implementation and its
+  `TOGGLE_FIELD_NAMES` message handler stay in `content.js` deliberately:
+  reviving it means re-adding the manifest command plus a
+  `chrome.commands.onCommand` listener in `background.js`, not rewriting the
+  feature. Do not re-list it anywhere without being asked.
 - **Variable insight icons** (Service Portal catalog forms) drop a per-variable
   icon; clicking opens Catalog Insight scoped to that variable's onChange client
   scripts and UI policy actions. Toggle with Alt+double-click or the palette.

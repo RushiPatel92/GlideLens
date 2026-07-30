@@ -1,17 +1,17 @@
 /*
  * background.js — MV3 service worker.
- * Currently just wires the keyboard shortcut to the field-name toggle.
- * Good place to later add: context menus, cross-tab state, alarms, etc.
+ * Owns the token-bearing Table API reads, lazy Code Search injection, and
+ * OPEN_URL. Good place to later add: context menus, cross-tab state, alarms.
+ *
+ * There is no `chrome.commands.onCommand` listener any more: the only
+ * registered command is `_execute_action`, which Chrome handles itself.
+ * `toggle-field-names` (Alt+Shift+F) was unregistered in 0.9.x along with its
+ * palette command — the toggle itself still lives in content.js behind the
+ * TOGGLE_FIELD_NAMES message, so restoring it means re-adding the manifest
+ * command and a listener that posts that message.
  */
 
 importScripts("debug_timeline_main.js");
-
-chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== "toggle-field-names") return;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !/\.service-now\.com/.test(tab.url || "")) return;
-  postWindowMessageInAllFrames(tab.id, "TOGGLE_FIELD_NAMES");
-});
 
 function sendToTab(tabId, msg, options) {
   if (!tabId) return;

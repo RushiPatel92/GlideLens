@@ -2672,9 +2672,10 @@ function buildCommands() {
     (url) => url.includes("sys_pd_process_definition")
   );
 
-  // "Toggle field names" was retired from the palette in 0.9.x — snUtils covers
-  // it. The implementation stays put and Alt+Shift+F still reaches it; only the
-  // discoverable surfaces (palette, site, README) were removed.
+  // "Toggle field names" was retired in 0.9.x — snUtils covers it. The palette
+  // command and the Alt+Shift+F manifest command are both gone, so nothing
+  // dispatches TOGGLE_FIELD_NAMES; toggleFieldNames() and its message handler
+  // are kept so the feature can be re-listed rather than rewritten.
   const cmds = [
     {
       id: "toggle-translations",

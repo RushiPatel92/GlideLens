@@ -13,11 +13,13 @@ reconstructed version by version.
 ## [Unreleased]
 
 ### Removed
-- **"Toggle field names" is gone from the command palette, the site and this
-  README.** snUtils already shows technical field names, and duplicating it was
-  never the point of this extension. The badges themselves still work and
-  `Alt+Shift+F` still toggles them — the feature is unlisted rather than
-  deleted, so nothing breaks for anyone using the shortcut today.
+- **"Toggle field names" is gone.** snUtils already shows technical field
+  names, and duplicating it was never the point of this extension. The command
+  has been removed from the palette, the site and the README, and the
+  `Alt+Shift+F` shortcut is no longer registered — it will disappear from
+  `chrome://extensions/shortcuts` when you reload the extension. The badge code
+  itself is still in place, unreferenced, so the feature can come back cheaply
+  if it is ever missed.
 
 ### Fixed
 - **Debug Timeline now records `getXMLAnswer` GlideAjax calls.** They were
