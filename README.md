@@ -4,8 +4,6 @@ A lens on ServiceNow forms, catalogs and code: field names, translation
 inheritance, catalog debugging, code search. A Manifest V3 Chrome extension in
 plain JavaScript, with zero runtime dependencies and zero build step.
 
-> Proof of concept, coded entirely with the help of AI.
-
 ## What it does
 
 - Instance info at a glance in the toolbar popup.
