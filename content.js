@@ -2672,15 +2672,11 @@ function buildCommands() {
     (url) => url.includes("sys_pd_process_definition")
   );
 
+  // "Toggle field names" was retired in 0.9.x — snUtils covers it. The palette
+  // command and the Alt+Shift+F manifest command are both gone, so nothing
+  // dispatches TOGGLE_FIELD_NAMES; toggleFieldNames() and its message handler
+  // are kept so the feature can be re-listed rather than rewritten.
   const cmds = [
-    {
-      id: "toggle-fields",
-      name: "Toggle field names",
-      keywords: ["technical", "label", "badge", "field name", "alt shift f"],
-      group: "Tools",
-      hint: "Alt+Shift+F",
-      run: () => broadcastFrameCommand("TOGGLE_FIELD_NAMES"),
-    },
     {
       id: "toggle-translations",
       name: "Toggle translation icons",
@@ -2782,14 +2778,11 @@ function buildCommands() {
       keepOpen: true,
       run: prefillPortalVariablesFromTicket,
     },
-    {
-      id: "copy-portal-variable-debug",
-      name: "Copy portal variable debug info",
-      keywords: ["debug", "portal", "variable", "field", "dom", "g_form"],
-      group: "Catalog",
-      keepOpen: true,
-      run: copyPortalVariableDebugInfo,
-    },
+    // "Copy portal variable debug info" was unlisted in 0.9.x. It reports the
+    // last prefill run's internals, which is a diagnostic for developing that
+    // feature rather than something to hand a user, and it says nothing useful
+    // unless a prefill has just run. copyPortalVariableDebugInfo() and the
+    // GET_PORTAL_VARIABLE_DEBUG handler stay for debugging prefill by hand.
     {
       id: "show-variable-values",
       name: "Show variable values",

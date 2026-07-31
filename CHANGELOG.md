@@ -12,6 +12,20 @@ reconstructed version by version.
 
 ## [Unreleased]
 
+### Removed
+- **"Copy portal variable debug info" is gone from the command palette.** It
+  dumped the internals of the last prefill run as JSON — a diagnostic for
+  building that feature, not something worth a slot in the Catalog group, and
+  it had nothing to say unless a prefill had just run in the same page. Prefill
+  itself is untouched.
+- **"Toggle field names" is gone.** snUtils already shows technical field
+  names, and duplicating it was never the point of this extension. The command
+  has been removed from the palette, the site and the README, and the
+  `Alt+Shift+F` shortcut is no longer registered — it will disappear from
+  `chrome://extensions/shortcuts` when you reload the extension. The badge code
+  itself is still in place, unreferenced, so the feature can come back cheaply
+  if it is ever missed.
+
 ### Fixed
 - **Debug Timeline now records `getXMLAnswer` GlideAjax calls.** They were
   missing entirely — a recording of a page whose scripts use that form showed
