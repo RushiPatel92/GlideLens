@@ -279,11 +279,13 @@ a { color: var(--teal); }
 .tag.is-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .tag.is-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
 
-/* Media slot. Replace the placeholder with a <video> or <img> once recorded.
-   Real media gets .is-media: a solid frame, because the dashed border reads as
-   "nothing here yet". Screenshots of ServiceNow are light-on-white against a
-   dark page, so .is-shot insets them — edge-to-edge white reads as a hole
-   punched in the layout rather than as a framed screenshot. */
+/* Media slot. The bare .shot is dashed on purpose: an empty one reads as
+   "nothing here yet", so a new section can be laid out before its media
+   exists. Anything actually filled says so — .is-live for the recreated
+   panels, .is-media for a real <video> or <img> — and turns the border solid.
+   Screenshots of ServiceNow are light-on-white against a dark page, so
+   .is-shot insets them: edge-to-edge white reads as a hole punched in the
+   layout rather than as a framed screenshot. */
 .shot {
   margin: 22px 0 0;
   border: 1px dashed var(--line);
@@ -295,14 +297,6 @@ a { color: var(--teal); }
 .shot.is-media.is-shot { padding: 14px; }
 .shot video, .shot img { display: block; width: 100%; height: auto; }
 .shot.is-shot img { border-radius: 6px; }
-.shot-todo {
-  display: grid;
-  gap: 7px;
-  padding: 30px 22px;
-  text-align: center;
-}
-.shot-todo b { font: 600 11px/1 var(--mono); letter-spacing: 0.15em; text-transform: uppercase; color: var(--teal); }
-.shot-todo span { font-size: 13.5px; color: var(--muted); }
 
 /* ---------------------------------------------------------------------------
    Install — numbered because it genuinely is a sequence; the order matters.

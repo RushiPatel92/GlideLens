@@ -22,7 +22,7 @@ Column names and dot-walks in this codebase are easy to get wrong and fail
 *silently* — a wrong column returns zero rows forever rather than erroring. Do
 not guess them. There is a developer instance and a CLI to check against:
 
-The tool is a separate private repo, `RushiPatel92/sn-pdi-tools` — a
+The tool is a separate private repo, `RushiPatel92/cnit-instance-tools` — a
 dependency-free PowerShell CLI over the Table API (`schema`, `get`, and guarded
 writes). Read its `AGENTS.md` first; it carries the commands and the rules. It
 is cloned outside this repo, and deliberately not named here: if you cannot
@@ -30,7 +30,7 @@ find it, ask rather than guessing a path.
 - **It must never be committed into this repo, or cloned inside it.** Every
   committed file here ships in the Download ZIP. It is a dev tool, not part of
   the extension, and nothing in `content.js` may depend on it.
-- Call `pdi.ps1`, never `pdi.cmd`, for anything with a `-Query`: `^` is
+- Call `cnit.ps1`, never `cnit.cmd`, for anything with a `-Query`: `^` is
   cmd.exe's escape character, so the batch wrapper corrupts encoded queries into
   ones that quietly match nothing.
 - Credentials live outside both repos and a host allowlist gates every call. If
