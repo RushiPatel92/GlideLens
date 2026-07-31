@@ -278,13 +278,146 @@ async function fillPortalVariables(variables) {
   const simpleFillDelayMs = 25;
   const choiceFillDelayMs = 150;
   const referenceFillDelayMs = 400;
-  const triggerReferenceDelayMs = 1000;
   const nativeVerificationDelayMs = 150;
   const nativeVerificationAttempts = 3;
   const retryDelayMs = 250;
   const maxFillPasses = 3;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /* ---------------------------------------------------------------------
+     GLIDEAJAX SETTLE
+     Prefill's whole timing problem is that setting a variable can start a
+     catalog client script whose GlideAjax response lands later and overwrites
+     whatever was written after it. This used to be handled by naming the
+     variables known to do that, which could only ever work on the instance the
+     names were collected from.
+
+     Watch the requests instead. Count what GlideAjax has in flight, and treat
+     "nothing in flight, and nothing started or finished for a moment" as
+     settled. A form that fires no GlideAjax leaves lastActivityAt untouched, so
+     the wait returns on its first check and costs nothing.
+
+     Two rules this must not break. The patch is reversible and is removed in a
+     finally block, because it lives on the page's own GlideAjax prototype. And
+     nothing here may take the page down: if GlideAjax is absent or patching
+     throws, restoreGlideAjax stays null and every wait degrades to the fixed
+     per-type delay that was there before.
+     --------------------------------------------------------------------- */
+  const ajaxSettleQuietMs = 150;
+  const ajaxSettleCeilingMs = 2000;
+  const ajaxPollMs = 25;
+
+  let ajaxInFlight = 0;
+  let ajaxLastActivityAt = 0;
+  let restoreGlideAjax = null;
+
+  const noteAjaxStart = () => {
+    ajaxInFlight++;
+    ajaxLastActivityAt = Date.now();
+  };
+
+  const noteAjaxEnd = () => {
+    if (ajaxInFlight > 0) ajaxInFlight--;
+    ajaxLastActivityAt = Date.now();
+  };
+
+  const installGlideAjaxCounter = () => {
+    let prototype;
+    try {
+      prototype = window.GlideAjax && window.GlideAjax.prototype;
+    } catch (e) {
+      return null;
+    }
+    if (!prototype) return null;
+
+    const originals = {};
+
+    /* getXML and getXMLAnswer both take the callback first. On builds where
+       getXMLAnswer delegates to getXML the same request is counted twice --
+       harmless, because both halves also decrement, so the counter still
+       reaches zero. Debug Timeline needs to care about that double-count
+       because it records events; this only asks "is anything outstanding". */
+    const wrapCallbackMethod = (methodName) => {
+      const original = prototype[methodName];
+      if (typeof original !== "function") return;
+      originals[methodName] = original;
+      prototype[methodName] = function (callback) {
+        /* No callback means no completion to observe. Counting it would pin
+           the counter open until the ceiling and slow every later variable,
+           so leave those calls exactly as they were. */
+        if (typeof callback !== "function") return original.apply(this, arguments);
+
+        const rest = Array.prototype.slice.call(arguments, 1);
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          noteAjaxEnd();
+        };
+
+        noteAjaxStart();
+        /* A response that never arrives must not pin the counter forever. */
+        const timer = setTimeout(done, ajaxSettleCeilingMs);
+        const wrapped = function () {
+          clearTimeout(timer);
+          done();
+          return callback.apply(this, arguments);
+        };
+
+        try {
+          return original.apply(this, [wrapped].concat(rest));
+        } catch (e) {
+          clearTimeout(timer);
+          done();
+          throw e;
+        }
+      };
+    };
+
+    try {
+      wrapCallbackMethod("getXML");
+      wrapCallbackMethod("getXMLAnswer");
+
+      /* getXMLWait blocks until the response is in, so it has already finished
+         by the time it returns. Counted only so the two halves stay symmetric. */
+      const originalWait = prototype.getXMLWait;
+      if (typeof originalWait === "function") {
+        originals.getXMLWait = originalWait;
+        prototype.getXMLWait = function () {
+          noteAjaxStart();
+          try {
+            return originalWait.apply(this, arguments);
+          } finally {
+            noteAjaxEnd();
+          }
+        };
+      }
+    } catch (e) {
+      /* Fall through and hand back a restore for whatever did get patched. */
+    }
+
+    const patched = Object.keys(originals);
+    if (!patched.length) return null;
+
+    return () => {
+      for (const methodName of patched) {
+        try {
+          prototype[methodName] = originals[methodName];
+        } catch (e) {}
+      }
+    };
+  };
+
+  const waitForAjaxQuiet = async () => {
+    if (!restoreGlideAjax) return;
+    const deadline = Date.now() + ajaxSettleCeilingMs;
+    for (;;) {
+      if (!ajaxInFlight && Date.now() - ajaxLastActivityAt >= ajaxSettleQuietMs) return;
+      if (Date.now() >= deadline) return;
+      await sleep(ajaxPollMs);
+    }
+  };
 
   const emitProgress = (message) => {
     try {
@@ -659,18 +792,16 @@ async function fillPortalVariables(variables) {
     return ["3", "5", "18", "choice", "multiple_choice", "select_box"].indexOf(type) >= 0;
   };
 
-  const asyncTriggerVariableNames = new Set([
-    "country_site",
-    "i_confirm_i_have_selected_all_company_codes",
-    "i_confirm_i_have_selected_all_company_codes_for_this_request",
-    "different_payment_for_each_cbu",
-    "company_codes_associated_with_your_request",
-  ]);
-
-  const isKnownAsyncTriggerVariable = (variable) => {
-    const name = String((variable && variable.name) || "").trim().toLowerCase();
-    return asyncTriggerVariableNames.has(name) || /(^|_)company_code$/.test(name);
-  };
+  /* A variable that drives dependent logic is worth re-poking even when its
+     value already matches, so the dependents recalculate. Which variables those
+     are is a question about type, not about name: choice, reference and glide
+     list variables are what catalog client scripts watch. This used to be a
+     list of variable names from one instance's catalog, which told us nothing
+     about anybody else's. */
+  const drivesDependentLogic = (variable) =>
+    isReferenceVariable(variable) ||
+    isGlideListVariable(variable) ||
+    isChoiceLikeVariable(variable);
 
   const findAngularFieldScopes = (el, variable) => {
     const angular = getAngular();
@@ -1824,12 +1955,19 @@ async function fillPortalVariables(variables) {
     return Boolean(await setElementValue(el, variable));
   };
 
+  /* The per-type delay is the floor, and it doubles as the window in which an
+     onChange handler gets to start its request: a handler that fires a
+     GlideAjax a tick after setValue has 150ms (choice) or 400ms (reference) to
+     do it before the wait below looks. Plain text variables keep their 25ms
+     because they are not what catalog client scripts watch, and widening the
+     window for all of them would cost a second across a large form for nothing.
+     Past the floor, the wait lasts exactly as long as the instance takes. */
   const delayAfterVariableChange = async (variable) => {
     let delay = simpleFillDelayMs;
     if (isChoiceLikeVariable(variable)) delay = choiceFillDelayMs;
     if (isReferenceVariable(variable) || isGlideListVariable(variable)) delay = referenceFillDelayMs;
-    if (isKnownAsyncTriggerVariable(variable)) delay = triggerReferenceDelayMs;
     if (delay > 0) await sleep(delay);
+    await waitForAjaxQuiet();
   };
 
   const fillWithDom = async () => {
@@ -2051,7 +2189,7 @@ async function fillPortalVariables(variables) {
             emitProgress(prefix + " " + index + " of " + batch.length + ": " + (variable.label || variable.name));
             const current = gForm.getValue(key);
             if (!isMultiRowVariableSet(variable) && isSameFilledValue(current, variable.value, variable.displayValue)) {
-              if (isKnownAsyncTriggerVariable(variable) || isReferenceVariable(variable)) {
+              if (drivesDependentLogic(variable)) {
                 await triggerDomChangeForVariable(variable);
                 setGFormValue(gForm, key, variable);
                 invokeGFormChangeHandlers(gForm, key, variable, current);
@@ -2153,7 +2291,21 @@ async function fillPortalVariables(variables) {
   };
 
   const gForm = findPortalGForm();
-  return gForm ? await fillWithGForm(gForm) : await fillWithDom();
+  restoreGlideAjax = installGlideAjaxCounter();
+  try {
+    return gForm ? await fillWithGForm(gForm) : await fillWithDom();
+  } finally {
+    /* The patch is on the page's own GlideAjax prototype, so it comes off
+       however this exits. Leaving it installed would mean every later
+       GlideAjax on the page ran through a counter nobody reads. */
+    const restore = restoreGlideAjax;
+    restoreGlideAjax = null;
+    if (restore) {
+      try {
+        restore();
+      } catch (e) {}
+    }
+  }
 }
 
 function inspectPortalVariableDebug() {
@@ -2201,9 +2353,6 @@ function inspectPortalVariableDebug() {
     const summary = { source, keys: [], fieldNames: [] };
     try {
       summary.sysId = typeof gForm.getSysId === "function" ? safeValue(gForm.getSysId()) : "";
-    } catch (e) {}
-    try {
-      summary.countrySite = typeof gForm.getValue === "function" ? safeValue(gForm.getValue("country_site")) : "";
     } catch (e) {}
     try {
       summary.keys = Object.keys(gForm).slice(0, 80);

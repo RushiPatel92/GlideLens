@@ -10,6 +10,20 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Fixed
+- **Prefill now waits for the form to settle on any instance, not just one.**
+  Setting a variable can start a catalog client script whose GlideAjax response
+  arrives later and overwrites the variable filled after it. Which variables did
+  that was decided from a hardcoded list of five variable names, so everyone
+  whose catalog used different names got the short wait on exactly the variables
+  that needed the long one — values that quietly reverted, on a run that
+  reported success. Prefill now watches GlideAjax itself and waits for the
+  requests to go quiet, so the wait fits the form in front of it. On forms that
+  fire no requests it is also faster, because there is no longer a fixed
+  one-second pause to sit through.
+
 ## [0.10.0] - 2026-07-31
 
 ### Changed

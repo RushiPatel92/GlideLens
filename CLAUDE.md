@@ -152,7 +152,13 @@ MV3 at all.
   numbers and both are printed. `tests/debug_timeline.test.js` covers the
   GlideAjax recording; it loads the MAIN-world recorder by wrapping it in a
   `Function` whose parameters are the browser globals it uses, so it runs with
-  no DOM.
+  no DOM. `tests/prefill_settle.test.js` covers prefill's GlideAjax patch the
+  same way, but has to wrap the whole of `background.js` because
+  `fillPortalVariables` is a plain top-level function in it. It is mostly about
+  the patch coming back OFF: the fake prototype records every assignment, so a
+  wrapper installed and then removed is still inspectable after the fill
+  returns. The timing itself is not unit-testable without a real form — verify
+  that on an instance.
 
 ## Feature notes
 - **Translation icons** add two icons per label:
@@ -192,6 +198,26 @@ MV3 at all.
   precise for onChange scripts (watched variable) and UI policy actions
   (`catalog_ui_policy_action`, matched by sys_id and name); onLoad/onSubmit and
   variable-less policies are form-level and excluded from the scoped view.
+- **Prefill timing** is decided by watching GlideAjax, never by variable name.
+  Setting a variable can start a catalog client script whose response lands
+  later and overwrites whatever was written after it. `fillPortalVariables`
+  patches `getXML`, `getXMLAnswer` and `getXMLWait` on the page's own
+  `GlideAjax.prototype` to count what is in flight, then waits for "nothing
+  outstanding, and nothing started or finished for 150ms", capped at 2s.
+  Three rules hold this together. The patch is installed and removed around the
+  whole fill in a `finally`, because it lives on the page's prototype. A call
+  with no callback is passed through untouched — its completion cannot be
+  observed, and counting it would pin the counter open until the ceiling and
+  slow every variable after it. And the per-type delay stays as the floor
+  (25/150/400ms), because it doubles as the window in which an onChange handler
+  gets to *start* its request; without it the wait would look before anything
+  was in flight and return immediately.
+  This replaced a hardcoded `Set` of five variable names plus a `company_code`
+  regex, collected from one instance's catalog. It gave every other user the
+  fast path on their slow variables — the exact bug it was added to fix — and
+  put someone's internal catalog vocabulary in a public repo. Do not reintroduce
+  name matching here; if the settle window proves too tight, widen the ceiling
+  or learn slow variables per origin from retries.
 - **Debug Timeline** is a best-effort, single-page interaction recorder for
   public `g_form` calls, native field events, GlideAjax timing, and JavaScript
   errors. It does not promise named Client Script or UI Policy attribution.
