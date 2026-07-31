@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GlideLens",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "A lens on ServiceNow forms, catalogs and code: code search, catalog debugging, translation inheritance, form tracing.",
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
   "host_permissions": ["https://*.service-now.com/*"],
