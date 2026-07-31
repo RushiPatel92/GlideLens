@@ -279,7 +279,11 @@ a { color: var(--teal); }
 .tag.is-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .tag.is-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
 
-/* Media slot. Replace the placeholder with a <video> or <img> once recorded. */
+/* Media slot. Replace the placeholder with a <video> or <img> once recorded.
+   Real media gets .is-media: a solid frame, because the dashed border reads as
+   "nothing here yet". Screenshots of ServiceNow are light-on-white against a
+   dark page, so .is-shot insets them — edge-to-edge white reads as a hole
+   punched in the layout rather than as a framed screenshot. */
 .shot {
   margin: 22px 0 0;
   border: 1px dashed var(--line);
@@ -287,7 +291,10 @@ a { color: var(--teal); }
   background: var(--sunken);
   overflow: hidden;
 }
+.shot.is-media { border-style: solid; }
+.shot.is-media.is-shot { padding: 14px; }
 .shot video, .shot img { display: block; width: 100%; height: auto; }
+.shot.is-shot img { border-radius: 6px; }
 .shot-todo {
   display: grid;
   gap: 7px;
@@ -1007,11 +1014,12 @@ a { color: var(--teal); }
             <span class="tag">per-variable scope</span>
             <span class="tag">show all to clear</span>
           </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Clip slot</b>
-              <span>Alt + double-click to reveal the icons, click one, show the scoped panel.</span>
-            </div>
+          <div class="shot is-media">
+            <video
+              src="https://github.com/user-attachments/assets/b87c9ad2-ad4a-4dc0-8b22-fdadc9e2be73"
+              width="1280" height="720"
+              autoplay muted loop playsinline preload="metadata"
+              aria-label="Alt + double-click reveals an icon beside every catalog variable; clicking one opens the insight panel scoped to that variable."></video>
           </div>
         </div>
       </article>
@@ -1142,21 +1150,22 @@ a { color: var(--teal); }
         <div class="feature-body">
           <h2>Translation records, one click away</h2>
           <p>
-            Two icons per label: a globe for the label, plural and hint, and a
-            languages glyph for per-record value translations. The defining table is
-            resolved by walking <strong>super_class</strong>, so a field inherited
-            from <code>task</code> lands on the right dictionary record rather than a
-            dead end.
+            A globe on every label, for the label, plural and hint. Alongside it, a
+            languages glyph — but only on fields whose dictionary type can actually
+            hold per-record value translations, so an icon appearing means there is
+            somewhere for it to go. The defining table is resolved by walking
+            <strong>super_class</strong>, so a field inherited from <code>task</code>
+            lands on the right dictionary record rather than a dead end.
           </p>
           <div class="tags">
             <span class="tag">label · plural · hint</span>
             <span class="tag">value translations</span>
           </div>
-          <div class="shot">
-            <div class="shot-todo">
-              <b>Screenshot slot</b>
-              <span>A label with both icons, ideally on an inherited field.</span>
-            </div>
+          <div class="shot is-media is-shot">
+            <img
+              src="https://github.com/user-attachments/assets/eafe7336-0009-4e2f-80cb-db92af1f8338"
+              width="1005" height="657" loading="lazy" decoding="async"
+              alt="A ServiceNow form with a globe icon beside every field label, and a languages glyph beside Name only — the one field on the form that can hold value translations." />
           </div>
         </div>
       </article>
