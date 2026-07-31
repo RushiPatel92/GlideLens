@@ -10,7 +10,14 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## [Unreleased]
+## [0.10.0] - 2026-07-31
+
+### Changed
+- **The toolbar icon is the GlideLens mark.** 0.9.0 renamed the extension but
+  kept the old `SN` artwork, so the one place you look most often still showed
+  the old name's mark. It is replaced at every size, tuned separately at 16px so
+  it stays readable in the toolbar, and drawn on transparency so it sits
+  correctly against both light and dark Chrome themes.
 
 ### Removed
 - **"Copy portal variable debug info" is gone from the command palette.** It
@@ -264,6 +271,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.10.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.10.0
 [0.9.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.9.0
 [0.8.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.8.0
 [0.7.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.7.0

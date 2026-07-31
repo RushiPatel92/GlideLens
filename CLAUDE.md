@@ -172,7 +172,7 @@ MV3 at all.
     `sc_req_item` and `change_request` have zero translatable fields between
     them, which is why the icon correctly never appears on those forms.
 - **Field-name badges** parse the classic label id format `label.<table>.<field>`.
-  **Retired in 0.9.x** — snUtils covers this. The palette command, the landing
+  **Retired in 0.10.0** — snUtils covers this. The palette command, the landing
   page section, the README rows and the `Alt+Shift+F` manifest command are all
   gone, so nothing reaches it any more. The implementation and its
   `TOGGLE_FIELD_NAMES` message handler stay in `content.js` deliberately:
@@ -199,7 +199,7 @@ MV3 at all.
   redact fields or parameters whose names indicate secrets.
   GlideAjax is patched at three entry points — `getXML`, `getXMLWait` and
   `getXMLAnswer`. All three are needed: `getXMLAnswer` was missing until
-  0.9.x and those calls recorded as nothing at all, because it does not
+  0.10.0 and those calls recorded as nothing at all, because it does not
   reliably delegate to `getXML`. It also hands its callback the answer as a
   plain **string** rather than an XMLHttpRequest. On builds where it *does*
   delegate, a per-instance flag (`glideAjaxOwnedElsewhere`) keeps the inner

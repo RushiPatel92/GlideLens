@@ -5,7 +5,7 @@
  *
  * There is no `chrome.commands.onCommand` listener any more: the only
  * registered command is `_execute_action`, which Chrome handles itself.
- * `toggle-field-names` (Alt+Shift+F) was unregistered in 0.9.x along with its
+ * `toggle-field-names` (Alt+Shift+F) was unregistered in 0.10.0 along with its
  * palette command — the toggle itself still lives in content.js behind the
  * TOGGLE_FIELD_NAMES message, so restoring it means re-adding the manifest
  * command and a listener that posts that message.
