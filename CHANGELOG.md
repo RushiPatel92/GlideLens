@@ -16,8 +16,8 @@ reconstructed version by version.
 - **A store-artifact builder, `node package.mjs`.** Writes
   `dist/glidelens-<version>.zip` from an explicit allowlist, so the repository's
   "every committed file ships" no longer applies to the distributable — project
-  notes, tests and the landing page stay out. Deterministic, and it prints the
-  sha256.
+  notes, tests and the landing page stay out. Two builds of one working copy are
+  byte-identical, and it prints the sha256.
   Its guards are derived from source rather than hand-maintained: it parses
   `manifest.json`, `importScripts(...)`, `executeScript({ files })` and
   `popup.html`, and refuses to build if any referenced file is missing from the

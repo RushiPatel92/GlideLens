@@ -246,9 +246,16 @@ function crc32(buffer) {
   return (c ^ -1) >>> 0;
 }
 
-/* Fixed timestamp so two builds of the same commit are byte-identical, which
- * makes "did this zip change?" answerable with a hash. 1980-01-01 is the
- * earliest a DOS timestamp can express. */
+/* Fixed timestamp so two builds of the same working copy are byte-identical,
+ * which makes "did this zip change?" answerable with a hash. 1980-01-01 is the
+ * earliest a DOS timestamp can express.
+ *
+ * Reproducible per CHECKOUT, not per commit: .gitattributes pins eol only for
+ * *.sh and *.svg, so with core.autocrlf=true a Windows clone gets CRLF in the
+ * .js/.json/.html/.css files and a Linux clone gets LF. Same behaviour in
+ * Chrome, different bytes, different hash. Pinning `* text eol=lf` would make
+ * the artifact reproducible everywhere, at the cost of rewriting the line
+ * endings of every file in the repo — deliberately not done here. */
 const DOS_TIME = 0;
 const DOS_DATE = 0x0021;
 

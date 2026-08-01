@@ -15,8 +15,10 @@ zero runtime dependencies, zero build step.
   (`--check` to run the guards without writing). It writes
   `dist/glidelens-<version>.zip` from an explicit allowlist, so the Download-ZIP
   route's "everything ships" does NOT apply to it — `CLAUDE.md`, `tests/`,
-  `docs/` and the rest stay out. Deterministic: the same commit always produces
-  the same bytes and the script prints the sha256.
+  `docs/` and the rest stay out. Deterministic per checkout: two builds of the
+  same working copy produce the same bytes, and the script prints the sha256.
+  (Not across platforms — `.gitattributes` pins eol only for `*.sh`/`*.svg`, so
+  a Windows clone ships CRLF and a Linux clone LF.)
 - **Adding a file that Chrome has to load means adding it to `SHIP` in
   `package.mjs`.** The guards will tell you if you forget, because they are
   derived from source rather than hand-maintained — they parse `manifest.json`,
