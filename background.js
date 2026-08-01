@@ -687,17 +687,15 @@ async function fillPortalVariables(variables) {
       choices.find((choice) => sameValue(choiceLabel(choice), value));
   };
 
-  const choiceValueAliases = {
-    supplier_type: {
-      standard: "customers_to_be_created_as_vendors",
-    },
-  };
-
-  const aliasedChoiceValue = (variable, value) => {
-    const aliases = choiceValueAliases[String((variable && variable.name) || "").trim()];
-    if (!aliases) return "";
-    return aliases[normalizeComparable(value)] || "";
-  };
+  /* A choice value is matched against the form's OWN choice list and nothing
+     else. There used to be an alias table here rewriting one variable's value
+     to a different internal choice value, keyed by variable name — a
+     tenant-specific rule that would silently pick the WRONG choice on anybody
+     else's form of the same name. (Names not repeated: this repo is public.) It
+     also carried the only caller that let commitChoiceSuggestion fall back to
+     "whatever the first non-empty option is", a guess this should never make.
+     Both are gone; a choice that does not match is reported unfilled rather
+     than approximated. */
 
   const isReferenceVariable = (variable) => {
     const type = String((variable && variable.type) || "").trim().toLowerCase();
@@ -1087,7 +1085,7 @@ async function fillPortalVariables(variables) {
       (/^[0-9a-f]{32}$/i.test(String(value || "")) && sameValue(value, displayValue) ? candidates[0] : null);
   };
 
-  const findChoiceSuggestion = (el, value, displayValue, allowFallback) => {
+  const findChoiceSuggestion = (el, value, displayValue) => {
     const options = [];
     const addOptions = (root) => {
       if (!root || !root.querySelectorAll) return;
@@ -1123,10 +1121,10 @@ async function fillPortalVariables(variables) {
 
     return options.find((option) => !isNone(option) && textMatches(option, displayValue)) ||
       options.find((option) => !isNone(option) && textMatches(option, value)) ||
-      (allowFallback ? options.find((option) => !isNone(option)) : null);
+      null;
   };
 
-  const commitChoiceSuggestion = async (el, value, displayValue, allowFallback) => {
+  const commitChoiceSuggestion = async (el, value, displayValue) => {
     const container = select2ContainerForElement(el);
     if (!container) return false;
     try {
@@ -1135,7 +1133,7 @@ async function fillPortalVariables(variables) {
       container.click();
     } catch (e) {}
     await sleep(125);
-    const option = findChoiceSuggestion(el, value, displayValue, allowFallback);
+    const option = findChoiceSuggestion(el, value, displayValue);
     if (!clickOption(option)) {
       closeSelect2Dropdown(el);
       return false;
@@ -1408,9 +1406,6 @@ async function fillPortalVariables(variables) {
       fieldScopes.some((candidate) => candidate && isGlideListField(candidate.field)) ||
       isSelect2MultiElement(el);
 
-    const aliasValue = isChoice ? aliasedChoiceValue(variable, value) : "";
-    if (aliasValue) value = aliasValue;
-
     fieldScopes.forEach((candidate) => {
       if (!candidate.field) return;
       const match = findChoiceMatch(candidate.field.choices, value, displayValue);
@@ -1445,9 +1440,7 @@ async function fillPortalVariables(variables) {
     } else if (el.tagName && el.tagName.toLowerCase() === "select") {
       const options = Array.from(el.options || []);
       const match = options.find((option) => sameValue(option.value, value)) ||
-        options.find((option) => sameValue(option.text, displayValue) || sameValue(option.text, value)) ||
-        (aliasValue ? options.find((option) => sameValue(option.value, aliasValue)) : null) ||
-        (aliasValue ? options.find((option) => normalizeComparable(option.text).indexOf(normalizeComparable(aliasValue)) >= 0) : null);
+        options.find((option) => sameValue(option.text, displayValue) || sameValue(option.text, value));
       if (match) {
         el.value = match.value;
         value = match.value;
@@ -1507,7 +1500,7 @@ async function fillPortalVariables(variables) {
     updateSelect2Display(el, value, displayValue);
 
     if (isChoice && select2ContainerForElement(el)) {
-      const selectedChoiceText = await commitChoiceSuggestion(el, value, displayValue, Boolean(aliasValue));
+      const selectedChoiceText = await commitChoiceSuggestion(el, value, displayValue);
       if (typeof selectedChoiceText === "string" && selectedChoiceText) displayValue = selectedChoiceText;
       updateSelect2Display(el, value, displayValue);
     }
@@ -1837,10 +1830,7 @@ async function fillPortalVariables(variables) {
       (target && target.field && Array.isArray(target.field.choices)
         ? target.field.choices
         : []);
-    const aliasValue = aliasedChoiceValue(variable, variable.value);
-    const match =
-      findChoiceMatch(choices, aliasValue || variable.value, variable.displayValue) ||
-      (aliasValue ? findChoiceMatch(choices, aliasValue, aliasValue) : null);
+    const match = findChoiceMatch(choices, variable.value, variable.displayValue);
     if (match) {
       nativeVariable.value = String(match.value);
       nativeVariable.displayValue = String(
@@ -1850,8 +1840,6 @@ async function fillPortalVariables(variables) {
         variable.displayValue ||
         match.value
       );
-    } else if (aliasValue) {
-      nativeVariable.value = aliasValue;
     }
     return nativeVariable;
   };

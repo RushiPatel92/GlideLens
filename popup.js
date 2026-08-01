@@ -36,7 +36,15 @@ function renderInfo(data) {
     : '<div class="muted">Connected — open a form for more context.</div>';
 }
 
-/* runs in the SN page MAIN world; must be self-contained */
+/*
+ * Runs in the SN page MAIN world; must be self-contained.
+ *
+ * Return only what renderInfo() actually displays. This used to also hand back
+ * g_user.userID and the g_ck CSRF token, neither of which had a consumer —
+ * carrying a session token across the world boundary into the popup for nothing
+ * is a liability, not a convenience. The token-bearing reads live in
+ * background.js, where the token never leaves the page's own world.
+ */
 function probe() {
   const out = { found: false, href: location.href };
   try {
@@ -44,9 +52,7 @@ function probe() {
       out.found = true;
       out.userName = g_user.userName;
       out.fullName = [g_user.firstName, g_user.lastName].filter(Boolean).join(" ");
-      out.userID   = g_user.userID;
     }
-    if (typeof g_ck !== "undefined") out.token = g_ck;
     if (typeof window.NOW !== "undefined" && window.NOW) {
       out.found   = true;
       out.node    = window.NOW.node || window.NOW.nodeName || null;

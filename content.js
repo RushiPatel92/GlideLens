@@ -761,18 +761,6 @@ async function fetchProducerVariables(source) {
   return { variables, skipped, readAny, queryUsed: queriesUsed.join(" | ") };
 }
 
-function isSingleLineTextVariable(variable) {
-  const type = normalizeVariableType((variable && variable.type) || "");
-  return (
-    type === "6" ||
-    type === "free_text" ||
-    type === "single_line" ||
-    type === "single_line_text" ||
-    type === "single-line_text" ||
-    type === "single-line-text"
-  );
-}
-
 function isAttachmentVariable(variable) {
   return isAttachmentVariableType((variable && variable.type) || "");
 }
@@ -781,62 +769,22 @@ function isMultiRowVariableSet(variable) {
   return isMultiRowVariableSetType((variable && variable.type) || "");
 }
 
-const UNIQUE_SUPPLIER_NAME_FIELDS = new Set([
-  "supplier_legal_name",
-  "supplier_name",
-]);
-const UNIQUE_SUPPLIER_EMAIL_FIELDS = new Set([
-  "primary_contact_email",
-  "supplier_contact_person_email_address",
-]);
-
-function randomLetterSuffix(length) {
-  const alphabet = "abcdefghijklmnopqrstuvwxyz";
-  const bytes = new Uint8Array(length);
-  try {
-    crypto.getRandomValues(bytes);
-  } catch (e) {
-    for (let index = 0; index < bytes.length; index++) {
-      bytes[index] = Math.floor(Math.random() * 256);
-    }
-  }
-  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
-}
-
-function appendEmailSuffix(value, suffix) {
-  const email = String(value == null ? "" : value);
-  const atIndex = email.indexOf("@");
-  if (atIndex < 0) return email + suffix;
-  const dotIndex = email.indexOf(".", atIndex + 1);
-  const insertIndex = dotIndex < 0 ? email.length : dotIndex;
-  return email.slice(0, insertIndex) + suffix + email.slice(insertIndex);
-}
-
-function uniquifyCopiedSupplierFields(variables) {
-  const matched = Array.from(variables.values()).filter((variable) => {
-    const name = String((variable && variable.name) || "").trim().toLowerCase();
-    return (
-      isSingleLineTextVariable(variable) &&
-      (
-        UNIQUE_SUPPLIER_NAME_FIELDS.has(name) ||
-        UNIQUE_SUPPLIER_EMAIL_FIELDS.has(name)
-      )
-    );
-  });
-  if (!matched.length) return;
-
-  const suffix = randomLetterSuffix(5);
-  matched.forEach((variable) => {
-    const name = String(variable.name || "").trim().toLowerCase();
-    const originalValue = String(variable.value == null ? "" : variable.value);
-    if (!originalValue) return;
-    const uniqueValue = UNIQUE_SUPPLIER_EMAIL_FIELDS.has(name)
-      ? appendEmailSuffix(originalValue, suffix)
-      : originalValue + suffix;
-    variable.value = uniqueValue;
-    variable.displayValue = uniqueValue;
-  });
-}
+/*
+ * Prefill copies values across unchanged.
+ *
+ * It used to mutate a few of them on the way past, appending random letters to
+ * four variables matched by name so a copied record would clear a uniqueness
+ * constraint on one instance's catalog. Same mistake as the hardcoded
+ * prefill-timing Set — one tenant's vocabulary deciding behaviour for everyone
+ * — but worse, because it silently CORRUPTED the copied value for anybody else
+ * whose variables happened to share those names, with nothing in the UI saying
+ * it had happened. The names are deliberately not repeated here; they were
+ * somebody's internal catalog and this repo is public.
+ *
+ * Do not reintroduce name matching. If clearing a uniqueness constraint is
+ * worth solving, it is a visible, opt-in transform the user asks for and can
+ * see in the result, not a rule keyed off variable names.
+ */
 
 function splitSysIdList(value) {
   return String(value == null ? "" : value)
@@ -1202,7 +1150,6 @@ async function fetchSourceVariables(source, onProgress) {
     onProgress
   );
   await resolveAttachmentDisplayValues(variables, onProgress);
-  uniquifyCopiedSupplierFields(variables);
 
   return { variables: sortVariablesForFill(variables), skipped };
 }
