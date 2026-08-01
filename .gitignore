@@ -1,6 +1,10 @@
 # Zips: downloaded release archives, or any local packaging output
 *.zip
 
+# Build output from `node package.mjs`. Never committed — the store artifact is
+# rebuilt from a clean checkout, and it is byte-identical for a given commit.
+dist/
+
 # Claude Code's local memory store — machine-local notes, not project source
 memory/
 

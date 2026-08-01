@@ -7,15 +7,29 @@ zero runtime dependencies, zero build step.
 - Load unpacked: `chrome://extensions` → Developer mode → Load unpacked → this folder.
 - After editing, click the **reload** icon on the extension card. For
   content-script changes, also refresh the ServiceNow tab.
-- There is no build or packaging step. Users install via GitHub's **Code →
-  Download ZIP**, extract, and Load unpacked, so every committed file ships and
-  Chrome ignores the ones it does not recognise. A new script or asset only has
-  to be committed and referenced from `manifest.json` (or the page that loads
-  it) — there is no allowlist to keep in sync.
-- If the extension is ever submitted to the Chrome Web Store, that will need a
-  packaging script that zips only the extension files. `package.sh` did this and
-  was removed in 0.6.0 as unused; recover it from history (`git log --
-  package.sh`) rather than writing a new one from scratch.
+- There is no build step for development. Users installing from GitHub's **Code
+  → Download ZIP** get every committed file and Chrome ignores the ones it does
+  not recognise, so a new script or asset only has to be committed and
+  referenced from `manifest.json` (or the page that loads it).
+- **The store artifact is different, and it is built: `node package.mjs`**
+  (`--check` to run the guards without writing). It writes
+  `dist/glidelens-<version>.zip` from an explicit allowlist, so the Download-ZIP
+  route's "everything ships" does NOT apply to it — `CLAUDE.md`, `tests/`,
+  `docs/` and the rest stay out. Deterministic: the same commit always produces
+  the same bytes and the script prints the sha256.
+- **Adding a file that Chrome has to load means adding it to `SHIP` in
+  `package.mjs`.** The guards will tell you if you forget, because they are
+  derived from source rather than hand-maintained — they parse `manifest.json`,
+  `importScripts(...)`, `executeScript({ files })` and `popup.html`, and the
+  build fails naming which of the four found the missing file. Adding a *fifth*
+  way to load a file means teaching `package.mjs` about it; nothing else will
+  notice.
+- The old bash `package.sh` (removed in 0.6.0) is **not** the thing to recover.
+  It shelled out to `zip`, which is not installed on the Windows/Git-Bash setup
+  here, and its cross-check read `manifest.json` only — which could never have
+  caught `code_search.js`/`code_search_ui.js`, since those are deliberately
+  absent from the manifest and injected lazily. Restoring it unchanged would
+  have built a zip that passed its own guard and shipped a broken Code Search.
 
 ## Verifying Table API assumptions against a real instance
 Column names and dot-walks in this codebase are easy to get wrong and fail
@@ -142,6 +156,11 @@ MV3 at all.
   The demos are `dm-` prefixed throughout because the page already owns `.row`,
   `.tag`, `.count` and `.search`, and because `.feature-body p` caps prose at
   `62ch` — panel `<p>` elements have to opt out of it.
+- `package.mjs` — the store-artifact builder. Not part of the extension and
+  excluded from its own output. Carries a minimal ZIP writer (zlib + a
+  hand-rolled central directory) because `zip` is absent on this machine and
+  PowerShell's `Compress-Archive` writes backslash-separated entry paths that
+  Chrome will not load.
 - `tests/` - developer-only Node tests. They ship harmlessly in the repository
   ZIP and Chrome ignores them; run Code Search tests by file path with
   `node --test tests/code_search.test.js tests/code_search_api.test.js

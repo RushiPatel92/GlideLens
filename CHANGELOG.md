@@ -12,6 +12,20 @@ reconstructed version by version.
 
 ## [Unreleased]
 
+### Added
+- **A store-artifact builder, `node package.mjs`.** Writes
+  `dist/glidelens-<version>.zip` from an explicit allowlist, so the repository's
+  "every committed file ships" no longer applies to the distributable — project
+  notes, tests and the landing page stay out. Deterministic, and it prints the
+  sha256.
+  Its guards are derived from source rather than hand-maintained: it parses
+  `manifest.json`, `importScripts(...)`, `executeScript({ files })` and
+  `popup.html`, and refuses to build if any referenced file is missing from the
+  allowlist, naming which of the four found it. That matters because the
+  previous script cross-checked `manifest.json` alone, and Code Search's two
+  files are deliberately absent from the manifest and injected lazily — it would
+  have built a passing zip with a Code Search command that failed at runtime.
+
 ### Fixed
 - **Prefill no longer rewrites the values it copies.** Four variables matched by
   name had random letters appended to them, and one choice variable had its
