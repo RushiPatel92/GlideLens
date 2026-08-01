@@ -669,7 +669,7 @@
             <span class="muted" data-count-wrap="inactive"><strong data-count="inactive">0</strong>inactive</span>
             <span class="chip-warn" data-count-wrap="notfiring" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong data-count="notfiring">0</strong>won't run here</span>
             ${setsNote ? "<span>" + setsNote + "</span>" : ""}
-            ${result.itemName ? '<span style="margin-left:auto;color:#8f8fb0">' + result.itemName + "</span>" : ""}
+            ${result.itemName ? '<span style="margin-left:auto;color:#8f8fb0">' + escapeHtml(result.itemName) + "</span>" : ""}
           </div>
           ${
             focusVariable

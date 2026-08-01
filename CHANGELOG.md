@@ -10,6 +10,32 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Fixed
+- **Prefill no longer rewrites the values it copies.** Four variables matched by
+  name had random letters appended to them, and one choice variable had its
+  value swapped for a different internal choice — rules collected from a single
+  instance's catalog. On anybody else's catalog with the same variable names,
+  the first silently corrupted the copied value and the second silently selected
+  the wrong choice, with nothing in the UI to say either had happened. Both are
+  gone: prefill now copies values through unchanged and matches choices only
+  against the form's own choice list. This is the same class of fix as 0.10.1's
+  prefill timing, and completes it.
+- **A choice that does not match is now reported unfilled, not approximated.**
+  The removed alias table was the only caller that let choice selection fall
+  back to "whatever the first non-empty option is".
+- **Catalog item names are escaped before rendering.** "What affects this
+  catalog item" put the item's name straight into the panel's markup, so an item
+  whose name contained HTML could inject into the page. Every other instance
+  string in that panel was already escaped.
+
+### Security
+- **The popup no longer reads the session's CSRF token.** Its MAIN-world probe
+  returned `g_ck` and the user's `sys_id` alongside the instance details it
+  displays, and used neither. Nothing outside `background.js` needs the token,
+  and it never leaves the page's own world there.
+
 ## [0.10.1] - 2026-07-31
 
 ### Fixed
