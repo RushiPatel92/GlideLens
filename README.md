@@ -216,10 +216,14 @@ Explorer, and Flow Designer.
 
 - Load unpacked as above; after editing, click **reload** on the extension card,
   and refresh the ServiceNow tab for content-script changes.
-- There is no build step and nothing to package. Distribution is the GitHub
-  **Code → Download ZIP** route described above; the extension is not on the
-  Chrome Web Store, so extra repo files (`README.md`, `CLAUDE.md`, `.github/`)
-  simply ride along and Chrome ignores them.
+- There is no build step for development. The GitHub **Code → Download ZIP**
+  route described above ships every repo file (`README.md`, `CLAUDE.md`,
+  `.github/`); Chrome ignores the ones it does not recognise.
+- A store-ready artifact is a different thing and *is* built: `node package.mjs`
+  writes `dist/glidelens-<version>.zip` from an explicit allowlist, so none of
+  those extra files ride along. Its guards are derived from the source — adding
+  a file Chrome has to load means adding it to `SHIP`, and the build fails
+  loudly if you forget.
 - The landing page is one hand-written file, [`docs/index.html`](docs/index.html),
   published by GitHub Pages from `main` → `/docs` at
   <https://glidelens.consultnowit.com/>. No generator, no build, same design
@@ -228,3 +232,23 @@ Explorer, and Flow Designer.
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes (the two JS worlds, frames,
 and message flow).
+
+---
+
+## Privacy
+
+There is no GlideLens server, no account and no telemetry. Everything the
+extension reads is processed in your browser and goes no further than the
+ServiceNow instance it came from — it can only reach `*.service-now.com`, so it
+could not contact a third party if it tried. Three small things are cached in
+local extension storage: your pinned palette command, and two per-instance maps
+of what code search can reach.
+
+Full detail, including what a Debug Timeline trace can contain and the one place
+the extension writes anything: <https://glidelens.consultnowit.com/privacy.html>.
+
+---
+
+GlideLens is an independent project. It is not affiliated with, endorsed by, or
+sponsored by ServiceNow, Inc. "ServiceNow" and related marks are trademarks of
+ServiceNow, Inc.
