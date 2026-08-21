@@ -33,6 +33,12 @@ there's a new version.
 > unchanged. Follow the same steps below, but use `edge://extensions` wherever
 > they say `chrome://extensions`.
 
+**Chrome 111 or newer** (Edge 111 or newer), released March 2023. The panels
+colour themselves with CSS `color-mix()`, which nothing older understands — on
+an earlier build the panels open but parts of them are unreadable rather than
+merely plain. The manifest declares this floor, so the browser refuses to
+install rather than leaving you to discover it.
+
 ### 1. Download the zip
 
 1. Open the repository page: <https://github.com/RushiPatel92/GlideLens>
