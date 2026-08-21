@@ -388,6 +388,16 @@ a { color: var(--teal); }
   color: var(--text);
 }
 .colophon .spacer { margin-left: auto; }
+/* Full-width row of its own beneath the links: a trademark line reads as legal
+   boilerplate, not as another footer link. */
+.colophon .disclaimer {
+  width: 100%;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  opacity: 0.85;
+}
 
 /* ---------------------------------------------------------------------------
    Live demos. These recreate the extension's OWN panels — the markup and the
@@ -1235,9 +1245,12 @@ a { color: var(--teal); }
       <p>
         Everything it reads goes through the Table API on your own session, with
         your own permissions — there is no server, no account and no telemetry.
-        It never writes and never runs your scripts. Code search shows the
+        It never writes directly to your records and never submits a form; the
+        one thing that changes anything is Prefill, which fills unsaved fields on
+        the catalog form in front of you for you to review. Code search shows the
         matching lines and one line either side, and redacts hits whose field
-        names read like secrets.
+        names read like secrets. The
+        <a href="privacy.html">privacy policy</a> spells all of this out.
       </p>
     </div>
   </section>
@@ -1249,8 +1262,12 @@ a { color: var(--teal); }
     <span class="ver">v0.10.1</span>
     <a href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
     <a href="https://github.com/RushiPatel92/GlideLens/issues">Report an issue</a>
+    <a href="privacy.html">Privacy</a>
     <span class="spacer"></span>
-    <span>Proof of concept, built with AI assistance. No warranty.</span>
+    <span>Built with AI assistance. Provided as-is, without warranty.</span>
+    <p class="disclaimer">GlideLens is an independent project. It is not
+    affiliated with, endorsed by, or sponsored by ServiceNow, Inc. "ServiceNow"
+    and related marks are trademarks of ServiceNow, Inc.</p>
   </div>
 </footer>
 

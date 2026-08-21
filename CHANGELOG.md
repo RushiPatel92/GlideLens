@@ -13,6 +13,21 @@ reconstructed version by version.
 ## [Unreleased]
 
 ### Added
+- **A privacy policy**, at
+  [glidelens.consultnowit.com/privacy.html](https://glidelens.consultnowit.com/privacy.html).
+  It sets out what the extension reads and why, what is cached locally (three
+  small things), what leaves your device (nothing beyond requests to your own
+  instance), what a Debug Timeline trace can contain, and what each permission
+  is for. Required for a Chrome Web Store listing, and worth having regardless
+  for a tool that reads your instance.
+- An independence disclaimer on the site and in the README: GlideLens is not
+  affiliated with or endorsed by ServiceNow, Inc.
+
+### Changed
+- **"It never writes" is now stated accurately.** The site said the extension
+  never writes, which was wrong: Prefill changes unsaved fields on the catalog
+  form in front of you. It never writes to a record and never submits a form,
+  and that is now what the page says. The footer also drops "Proof of concept".
 - **A store-artifact builder, `node package.mjs`.** Writes
   `dist/glidelens-<version>.zip` from an explicit allowlist, so the repository's
   "every committed file ships" no longer applies to the distributable — project
