@@ -13,6 +13,15 @@ reconstructed version by version.
 ## [Unreleased]
 
 ### Added
+- **A declared browser floor: `minimum_chrome_version` is now `111`.** The five
+  panels colour themselves with CSS `color-mix()`, which arrived in Chrome 111
+  (March 2023) and is used in 43 places across every panel — not just the
+  palette. On anything older the panels still open, but parts of them render
+  unreadable rather than merely unstyled. Declaring the floor makes the browser
+  refuse the install instead of leaving someone to find that out for
+  themselves. Nothing else in the extension needs anything newer: there is no
+  `:has()`, no container query, no `structuredClone`, and `world: "MAIN"` has
+  been available since Chrome 95.
 - **A privacy policy**, at
   [glidelens.consultnowit.com/privacy.html](https://glidelens.consultnowit.com/privacy.html).
   It sets out what the extension reads and why, what is cached locally (three
