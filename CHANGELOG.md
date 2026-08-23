@@ -10,7 +10,7 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## [Unreleased]
+## [0.11.1] - 2026-08-23
 
 ### Added
 - **An MIT licence.** The repository was public with no `LICENSE` file, which
@@ -392,6 +392,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.11.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.1
 [0.11.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.0
 [0.10.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.10.1
 [0.10.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.10.0
