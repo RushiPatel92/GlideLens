@@ -265,7 +265,7 @@
   // How the "Group by variable" view keys each row. onChange client scripts
   // watch a specific variable; everything else (onLoad/onSubmit, UI policies)
   // shares the "not variable-specific" bucket.
-  const NO_VARIABLE = " none";
+  const NO_VARIABLE = "\0none";
   const groupKeyOf = (row) =>
     row.kind === "client" && row.variable ? row.variableName || row.variable : NO_VARIABLE;
 

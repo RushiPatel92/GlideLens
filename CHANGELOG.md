@@ -25,6 +25,15 @@ reconstructed version by version.
   permission to declare, justify, and have a reviewer weigh.
 
 ### Fixed
+- **A literal NUL byte in `catalog_insight_ui.js` is now the `\0` escape.** The
+  "not variable-specific" group key was written as a raw U+0000 in the source
+  rather than as an escape sequence. It ran correctly — the runtime value is
+  identical — but a NUL makes tooling classify the file as binary: `git` stored
+  it without line-ending normalisation and `grep` refused to search it, reporting
+  only "Binary file matches". A store reviewer's scanners see the same thing, and
+  a binary-looking script in an extension package is not what you want them
+  asking about. Normalising it also converts the file's stored line endings to
+  LF, like every other file, which is why its diff looks larger than one line.
 - **The popup builds its rows as DOM nodes instead of markup.** Instance-supplied
   values — the signed-in user's own first and last name, the node, the build, the
   table — were interpolated into an `innerHTML` string. MV3's page CSP stops an
