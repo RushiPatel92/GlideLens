@@ -129,7 +129,9 @@ MV3 at all.
 - `background.js` — service worker: `OPEN_URL`, lazy Code Search injection, and
   token-bearing Table API handlers.
 - `docs/index.html` — the public landing page, served by GitHub Pages from
-  `main` → `/docs` at `glidelens.consultnowit.com` (`docs/CNAME`). One
+  `main` → `/docs` at `rushipatel92.github.io/GlideLens/`. There is no
+  `docs/CNAME`: the custom domain was dropped so the project reads as a personal,
+  non-commercial one rather than a company's. One
   hand-written file, no generator and no build, reusing the `popup.css` tokens
   so the page and the product match. Not part of the extension; Chrome ignores
   it. Media belongs on GitHub's attachment CDN (drop a file into an issue

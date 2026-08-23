@@ -4,7 +4,7 @@ A lens on ServiceNow forms, catalogs and code: code search, catalog debugging,
 translation inheritance, form tracing. A Manifest V3 Chrome extension in plain
 JavaScript, with zero runtime dependencies and zero build step.
 
-**[See what it does →](https://glidelens.consultnowit.com/)** — feature tour
+**[See what it does →](https://rushipatel92.github.io/GlideLens/)** — feature tour
 with a working command palette. This README stays the reference; the site is the
 walkthrough.
 
@@ -232,7 +232,7 @@ Explorer, and Flow Designer.
   loudly if you forget.
 - The landing page is one hand-written file, [`docs/index.html`](docs/index.html),
   published by GitHub Pages from `main` → `/docs` at
-  <https://glidelens.consultnowit.com/>. No generator, no build, same design
+  <https://rushipatel92.github.io/GlideLens/>. No generator, no build, same design
   tokens as [`popup.css`](popup.css). Screenshots and clips belong on GitHub's
   attachment CDN rather than committed here, so the install download stays small.
 
@@ -251,7 +251,14 @@ local extension storage: your pinned palette command, and two per-instance maps
 of what code search can reach.
 
 Full detail, including what a Debug Timeline trace can contain and the one place
-the extension writes anything: <https://glidelens.consultnowit.com/privacy.html>.
+the extension writes anything: <https://rushipatel92.github.io/GlideLens/privacy.html>.
+
+---
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). GlideLens is a personal, non-commercial project:
+it is free, there is nothing to buy, and there is no company behind it.
 
 ---
 

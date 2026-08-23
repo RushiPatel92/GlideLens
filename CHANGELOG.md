@@ -10,6 +10,24 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **An MIT licence.** The repository was public with no `LICENSE` file, which
+  means "all rights reserved" rather than open source — nobody could legally
+  reuse or fork it, which was never the intent.
+
+### Changed
+- **The site moved to `rushipatel92.github.io/GlideLens/`.** It was served from
+  a subdomain of a consultancy's domain, which is the wrong signal for what this
+  is: a free, unmonetised personal project with no company behind it. That
+  distinction also has a concrete consequence — the Chrome Web Store requires an
+  EEA trader/non-trader declaration, and a professional-purpose listing must
+  publish the developer's legal name, address and phone number publicly.
+  GlideLens is not a commercial activity, so the hosting now says so too. The
+  privacy policy moves with it, and `docs/CNAME` is gone. The page itself never
+  named the company — the domain was the only place it appeared.
+
 ## [0.11.0] - 2026-08-22
 
 ### Added
@@ -23,7 +41,7 @@ reconstructed version by version.
   `:has()`, no container query, no `structuredClone`, and `world: "MAIN"` has
   been available since Chrome 95.
 - **A privacy policy**, at
-  [glidelens.consultnowit.com/privacy.html](https://glidelens.consultnowit.com/privacy.html).
+  [rushipatel92.github.io/GlideLens/privacy.html](https://rushipatel92.github.io/GlideLens/privacy.html).
   It sets out what the extension reads and why, what is cached locally (three
   small things), what leaves your device (nothing beyond requests to your own
   instance), what a Debug Timeline trace can contain, and what each permission
