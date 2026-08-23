@@ -17,6 +17,22 @@ reconstructed version by version.
   means "all rights reserved" rather than open source — nobody could legally
   reuse or fork it, which was never the intent.
 
+### Removed
+- **The `activeTab` permission.** It was doing nothing: the
+  `https://*.service-now.com/*` host permission already exposes the tab URL on
+  the only tabs the extension works on, and on any other tab the URL is simply
+  absent, which is exactly what makes the popup say "not SN". One fewer
+  permission to declare, justify, and have a reviewer weigh.
+
+### Fixed
+- **The popup builds its rows as DOM nodes instead of markup.** Instance-supplied
+  values — the signed-in user's own first and last name, the node, the build, the
+  table — were interpolated into an `innerHTML` string. MV3's page CSP stops an
+  injected `<script>` from running, but it does not stop markup: an `<img src>`
+  pointing off-instance would still have fired a request from the privileged
+  popup, and injected elements could have dressed themselves up as popup chrome.
+  Every value is now set with `textContent`.
+
 ### Changed
 - **The site moved to `rushipatel92.github.io/GlideLens/`.** It was served from
   a subdomain of a consultancy's domain, which is the wrong signal for what this

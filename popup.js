@@ -12,28 +12,53 @@ function setStatus(text, cls) {
   s.className = "status" + (cls ? " " + cls : "");
 }
 
+/*
+ * Every value below is instance-controlled — a user's own first/last name, the
+ * node, the build, the table. They are rendered as text nodes, never as markup.
+ * MV3's page CSP stops injected <script> from running, but it does not stop
+ * markup: an <img src> pointing off-instance would still fire a request from
+ * the privileged popup, and injected elements could dress up as popup chrome.
+ * Build the rows, do not interpolate them.
+ */
 function renderInfo(data) {
   const el = $("info");
+  el.textContent = "";
+
+  const muted = (text) => {
+    const d = document.createElement("div");
+    d.className = "muted";
+    d.textContent = text;
+    return d;
+  };
+
   if (!data) {
-    el.innerHTML = '<div class="muted">No ServiceNow context found on this tab.</div>';
+    el.append(muted("No ServiceNow context found on this tab."));
     return;
   }
-  const rows = [];
+
+  const kv = document.createElement("div");
+  kv.className = "kv";
   const add = (k, v, mono) => {
     if (!v) return;
-    rows.push(
-      `<div class="k">${k}</div><div class="v${mono ? " mono" : ""}">${v}</div>`
-    );
+    const key = document.createElement("div");
+    key.className = "k";
+    key.textContent = k;
+    const val = document.createElement("div");
+    val.className = "v" + (mono ? " mono" : "");
+    val.textContent = v;
+    kv.append(key, val);
   };
+
   add("Instance", ORIGIN ? ORIGIN.replace(/^https?:\/\//, "") : "");
   add("User", data.fullName ? `${data.fullName} (${data.userName})` : data.userName);
   add("Node",    data.node);
   add("Version", data.version);
   add("Table",   data.table,  true);
   add("sys_id",  data.sysId,  true);
-  el.innerHTML = rows.length
-    ? `<div class="kv">${rows.join("")}</div>`
-    : '<div class="muted">Connected — open a form for more context.</div>';
+
+  el.append(kv.childElementCount
+    ? kv
+    : muted("Connected — open a form for more context."));
 }
 
 /*
