@@ -75,6 +75,9 @@ const SHIP = [
   "popup.js",
   "popup.css",
   "icons",
+  // Not loaded by Chrome. Ships because the MIT licence requires the notice to
+  // travel with "all copies", and a store download is a copy.
+  "LICENSE",
 ];
 
 /*
