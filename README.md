@@ -4,10 +4,13 @@ A lens on ServiceNow forms, catalogs and code: code search, catalog debugging,
 translation inheritance, form tracing. A Manifest V3 Chrome extension in plain
 JavaScript, with zero runtime dependencies and zero build step.
 
-**[Add to Chrome →](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
-· **[See what it does →](https://rushipatel92.github.io/GlideLens/)** — a feature
-tour with a working command palette. This README stays the reference; the site
-is the walkthrough.
+[![Add to Chrome](https://img.shields.io/badge/Add_to_Chrome-1f9c92?style=for-the-badge&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)
+
+Rather look before installing? The tour runs a real command palette and shows
+every panel in place — this README stays the reference, the site is the
+walkthrough.
+
+[![See what it does](https://img.shields.io/badge/See_what_it_does-1b1d22?style=for-the-badge&logo=readthedocs&logoColor=31d4c4)](https://rushipatel92.github.io/GlideLens/)
 
 ## What it does
 
@@ -26,7 +29,7 @@ is the walkthrough.
 
 ## Install
 
-**[Add GlideLens to Chrome →](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
+**[Add GlideLens to Chrome](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
 
 That is the whole install. Chrome keeps it up to date on its own, so there is
 nothing to re-download when a new version ships.
