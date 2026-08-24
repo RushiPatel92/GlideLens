@@ -328,10 +328,13 @@ a { color: var(--teal); }
 }
 .store-card {
   position: relative;
-  padding: 22px 20px 20px;
+  /* The top padding is a reserved band for the pill, kept on every card so a
+     marked one does not sit lower than its neighbour. */
+  padding: 44px 20px 20px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
+  text-align: center;
 }
 .store-card.is-yours {
   border-color: color-mix(in srgb, var(--teal) 45%, transparent);
@@ -350,13 +353,10 @@ a { color: var(--teal); }
    renders before its logo arrives looks broken. Their gradient ids are
    prefixed glc-/gle- because both files shipped id="a".."c" and the second
    inlined copy would otherwise paint with the first one's gradients. */
-.store-logo { display: block; width: 34px; height: 34px; margin: 0 0 13px; }
+.store-logo { display: block; width: 34px; height: 34px; margin: 0 auto 13px; }
 
-/* Reserve the pill's corner unconditionally, so a card does not reflow when
-   the script marks it and a longer browser name never slides underneath. */
 .store-name {
   margin: 0;
-  padding-right: 94px;
   font: 700 18.5px/1.2 var(--sans);
   letter-spacing: -0.01em;
 }
