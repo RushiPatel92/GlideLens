@@ -4,13 +4,13 @@ A lens on ServiceNow forms, catalogs and code: code search, catalog debugging,
 translation inheritance, form tracing. A Manifest V3 Chrome extension in plain
 JavaScript, with zero runtime dependencies and zero build step.
 
-[![Add to Chrome](https://img.shields.io/badge/Add_to_Chrome-1f9c92?style=for-the-badge&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)
+[![Add to Chrome](https://img.shields.io/badge/Add_to_Chrome-1f9c92?style=for-the-badge)](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)&nbsp;&nbsp;&nbsp;[![Add to Edge](https://img.shields.io/badge/Add_to_Edge-1f9c92?style=for-the-badge)](https://microsoftedge.microsoft.com/addons/detail/glidelens/aoohpfoblgnnciiiplppjkjabhjgaghj)
 
 Rather look before installing? The tour runs a real command palette and shows
 every panel in place — this README stays the reference, the site is the
 walkthrough.
 
-[![See what it does](https://img.shields.io/badge/See_what_it_does-1b1d22?style=for-the-badge&logo=readthedocs&logoColor=31d4c4)](https://rushipatel92.github.io/GlideLens/)
+[![See what it does](https://img.shields.io/badge/See_what_it_does-1f9c92?style=for-the-badge)](https://rushipatel92.github.io/GlideLens/)
 
 ## What it does
 
@@ -29,15 +29,13 @@ walkthrough.
 
 ## Install
 
-**[Add GlideLens to Chrome](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
+**[Add GlideLens to Chrome](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)** ·
+**[Add GlideLens to Edge](https://microsoftedge.microsoft.com/addons/detail/glidelens/aoohpfoblgnnciiiplppjkjabhjgaghj)**
 
-That is the whole install. Chrome keeps it up to date on its own, so there is
-nothing to re-download when a new version ships.
-
-> **Microsoft Edge works too.** Edge is Chromium-based and runs this extension
-> unchanged. Open the same Chrome Web Store page in Edge, click **Allow
-> extensions from other stores** in the banner it shows, then **Get**. There is
-> no Edge Add-ons listing yet.
+That is the whole install. Your browser keeps it up to date on its own, so
+there is nothing to re-download when a new version ships. It is the same
+package on both stores — Edge is Chromium-based and runs the extension
+unchanged.
 
 **Chrome 111 or newer** (Edge 111 or newer), released March 2023. The panels
 colour themselves with CSS `color-mix()`, which nothing older understands — on

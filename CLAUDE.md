@@ -368,8 +368,7 @@ level, and this section is that something.
 
 Store listing URLs:
 - Chrome: `https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck`
-- Edge: submitted 2026-08-24, in certification. Add the URL here on approval,
-  and point the README's Edge paragraph at it.
+- Edge: `https://microsoftedge.microsoft.com/addons/detail/glidelens/aoohpfoblgnnciiiplppjkjabhjgaghj`
 
 Per release:
 1. Bump `version` in `manifest.json` and add the `CHANGELOG.md` entry.

@@ -309,6 +309,80 @@ a { color: var(--teal); }
 }
 .install-lede { margin: 14px 0 0; color: var(--muted); max-width: 58ch; }
 
+/* ---------------------------------------------------------------------------
+   Store cards. Two, not the four a browser grid usually has: GlideLens is
+   Chromium-only, and a card for a browser it cannot run in is an invitation
+   to a one-star review. No browser logos either — simple-icons dropped
+   Microsoft's marks, so an accurate Chrome logo beside an improvised Edge one
+   would look worse than neither.
+
+   The "Your browser" pill is added by script. With JS off both cards read
+   equally, which is a correct page rather than a broken one.
+   --------------------------------------------------------------------------- */
+.stores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+  gap: 14px;
+  margin: 32px 0 0;
+  max-width: 640px;
+}
+.store-card {
+  position: relative;
+  /* The top padding is a reserved band for the pill, kept on every card so a
+     marked one does not sit lower than its neighbour. */
+  padding: 44px 20px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: center;
+}
+.store-card.is-yours {
+  border-color: color-mix(in srgb, var(--teal) 45%, transparent);
+  background: color-mix(in srgb, var(--teal) 5%, var(--surface));
+}
+.store-you {
+  position: absolute;
+  top: 13px; right: 13px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--teal) 16%, transparent);
+  color: var(--teal);
+  font: 600 10.5px/1.45 var(--mono);
+}
+/* Inlined rather than linked: the marks are small, and a store card that
+   renders before its logo arrives looks broken. Their gradient ids are
+   prefixed glc-/gle- because both files shipped id="a".."c" and the second
+   inlined copy would otherwise paint with the first one's gradients. */
+.store-logo { display: block; width: 34px; height: 34px; margin: 0 auto 13px; }
+
+.store-name {
+  margin: 0;
+  font: 700 18.5px/1.2 var(--sans);
+  letter-spacing: -0.01em;
+}
+.store-where { margin: 5px 0 0; color: var(--muted); font-size: 13.5px; }
+.store-go {
+  display: block;
+  margin: 17px 0 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--teal-d);
+  color: var(--bg);
+  text-align: center;
+  text-decoration: none;
+  font: 600 14px/1 var(--sans);
+}
+.store-go:hover { background: var(--teal); }
+.store-note { margin: 20px 0 0; color: var(--muted); font-size: 13.5px; max-width: 58ch; }
+.store-note code {
+  font: 500 12.5px/1 var(--mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+
 .steps { counter-reset: step; list-style: none; margin: 36px 0 0; padding: 0; }
 .steps li {
   counter-increment: step;
@@ -808,10 +882,9 @@ a { color: var(--teal); }
     <img class="mark" src="icon32.png" width="24" height="24" alt="" />
     <span class="wordmark">GlideLens</span>
     <nav class="masthead-links">
-      <a class="is-secondary" href="#install">Install</a>
       <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
       <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens">GitHub ↗</a>
-      <a class="is-primary" href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Add to Chrome ↗</a>
+      <a class="is-primary" href="#install">Install</a>
     </nav>
   </div>
 </header>
@@ -1184,22 +1257,34 @@ a { color: var(--teal); }
       <p class="eyebrow">Install</p>
       <h2>One click, then backslash.</h2>
       <p class="install-lede">
-        It is on the Chrome Web Store, so Chrome keeps it current by itself.
-        Edge runs it unchanged — open the same listing and allow extensions
-        from other stores when it offers.
+        It is on the Chrome Web Store and Edge Add-ons, so your browser keeps
+        it current by itself. Same package either way — nothing about it is
+        browser-specific.
+      </p>
+
+      <div class="stores" id="stores">
+        <div class="store-card" data-browser="chrome">
+          <svg class="store-logo" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 48 48"><defs><linearGradient id="glc-a" x1="3.2173" y1="15" x2="44.7812" y2="15" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#d93025"/><stop offset="1" stop-color="#ea4335"/></linearGradient><linearGradient id="glc-b" x1="20.7219" y1="47.6791" x2="41.5039" y2="11.6837" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fcc934"/><stop offset="1" stop-color="#fbbc04"/></linearGradient><linearGradient id="glc-c" x1="26.5981" y1="46.5015" x2="5.8161" y2="10.506" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1e8e3e"/><stop offset="1" stop-color="#34a853"/></linearGradient></defs><circle cx="24" cy="23.9947" r="12" style="fill:#fff"/><path d="M3.2154,36A24,24,0,1,0,12,3.2154,24,24,0,0,0,3.2154,36ZM34.3923,18A12,12,0,1,1,18,13.6077,12,12,0,0,1,34.3923,18Z" style="fill:none"/><path d="M24,12H44.7812a23.9939,23.9939,0,0,0-41.5639.0029L13.6079,30l.0093-.0024A11.9852,11.9852,0,0,1,24,12Z" style="fill:url(#glc-a)"/><circle cx="24" cy="24" r="9.5" style="fill:#1a73e8"/><path d="M34.3913,30.0029,24.0007,48A23.994,23.994,0,0,0,44.78,12.0031H23.9989l-.0025.0093A11.985,11.985,0,0,1,34.3913,30.0029Z" style="fill:url(#glc-b)"/><path d="M13.6086,30.0031,3.218,12.006A23.994,23.994,0,0,0,24.0025,48L34.3931,30.0029l-.0067-.0068a11.9852,11.9852,0,0,1-20.7778.007Z" style="fill:url(#glc-c)"/></svg>
+          <p class="store-name">Google Chrome</p>
+          <p class="store-where">Chrome Web Store</p>
+          <a class="store-go" href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Add to Chrome</a>
+        </div>
+        <div class="store-card" data-browser="edge">
+          <svg class="store-logo" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><defs><radialGradient id="gle-b" cx="161.8" cy="68.9" r="95.4" gradientTransform="matrix(1 0 0 -.95 0 248.8)" gradientUnits="userSpaceOnUse"><stop offset=".7" stop-opacity="0"/><stop offset=".9" stop-opacity=".5"/><stop offset="1"/></radialGradient><radialGradient id="gle-d" cx="-340.3" cy="63" r="143.2" gradientTransform="matrix(.15 -.99 -.8 -.12 176.6 -125.4)" gradientUnits="userSpaceOnUse"><stop offset=".8" stop-opacity="0"/><stop offset=".9" stop-opacity=".5"/><stop offset="1"/></radialGradient><radialGradient id="gle-e" cx="113.4" cy="570.2" r="202.4" gradientTransform="matrix(-.04 1 2.13 .08 -1179.5 -106.7)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#35c1f1"/><stop offset=".1" stop-color="#34c1ed"/><stop offset=".2" stop-color="#2fc2df"/><stop offset=".3" stop-color="#2bc3d2"/><stop offset=".7" stop-color="#36c752"/></radialGradient><radialGradient id="gle-f" cx="376.5" cy="568" r="97.3" gradientTransform="matrix(.28 .96 .78 -.23 -303.8 -148.5)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#66eb6e"/><stop offset="1" stop-color="#66eb6e" stop-opacity="0"/></radialGradient><linearGradient id="gle-a" x1="63.3" y1="84" x2="241.7" y2="84" gradientTransform="matrix(1 0 0 -1 0 266)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0c59a4"/><stop offset="1" stop-color="#114a8b"/></linearGradient><linearGradient id="gle-c" x1="157.3" y1="161.4" x2="46" y2="40.1" gradientTransform="matrix(1 0 0 -1 0 266)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1b9de2"/><stop offset=".2" stop-color="#1595df"/><stop offset=".7" stop-color="#0680d7"/><stop offset="1" stop-color="#0078d4"/></linearGradient></defs><path d="M235.7 195.5a93.7 93.7 0 0 1-10.6 4.7 101.9 101.9 0 0 1-35.9 6.4c-47.3 0-88.5-32.5-88.5-74.3a31.5 31.5 0 0 1 16.4-27.3c-42.8 1.8-53.8 46.4-53.8 72.5 0 74 68.1 81.4 82.8 81.4 7.9 0 19.8-2.3 27-4.6l1.3-.4a128.3 128.3 0 0 0 66.6-52.8 4 4 0 0 0-5.3-5.6Z" transform="translate(-4.6 -5)" style="fill:url(#gle-a)"/><path d="M235.7 195.5a93.7 93.7 0 0 1-10.6 4.7 101.9 101.9 0 0 1-35.9 6.4c-47.3 0-88.5-32.5-88.5-74.3a31.5 31.5 0 0 1 16.4-27.3c-42.8 1.8-53.8 46.4-53.8 72.5 0 74 68.1 81.4 82.8 81.4 7.9 0 19.8-2.3 27-4.6l1.3-.4a128.3 128.3 0 0 0 66.6-52.8 4 4 0 0 0-5.3-5.6Z" transform="translate(-4.6 -5)" style="isolation:isolate;opacity:.35;fill:url(#gle-b)"/><path d="M110.3 246.3A79.2 79.2 0 0 1 87.6 225a80.7 80.7 0 0 1 29.5-120c3.2-1.5 8.5-4.1 15.6-4a32.4 32.4 0 0 1 25.7 13 31.9 31.9 0 0 1 6.3 18.7c0-.2 24.5-79.6-80-79.6-43.9 0-80 41.6-80 78.2a130.2 130.2 0 0 0 12.1 56 128 128 0 0 0 156.4 67 75.5 75.5 0 0 1-62.8-8Z" transform="translate(-4.6 -5)" style="fill:url(#gle-c)"/><path d="M110.3 246.3A79.2 79.2 0 0 1 87.6 225a80.7 80.7 0 0 1 29.5-120c3.2-1.5 8.5-4.1 15.6-4a32.4 32.4 0 0 1 25.7 13 31.9 31.9 0 0 1 6.3 18.7c0-.2 24.5-79.6-80-79.6-43.9 0-80 41.6-80 78.2a130.2 130.2 0 0 0 12.1 56 128 128 0 0 0 156.4 67 75.5 75.5 0 0 1-62.8-8Z" transform="translate(-4.6 -5)" style="opacity:.41;fill:url(#gle-d);isolation:isolate"/><path d="M157 153.8c-.9 1-3.4 2.5-3.4 5.6 0 2.6 1.7 5.2 4.8 7.3 14.3 10 41.4 8.6 41.5 8.6a59.6 59.6 0 0 0 30.3-8.3 61.4 61.4 0 0 0 30.4-52.9c.3-22.4-8-37.3-11.3-43.9C228 28.8 182.3 5 132.6 5a128 128 0 0 0-128 126.2c.5-36.5 36.8-66 80-66 3.5 0 23.5.3 42 10a72.6 72.6 0 0 1 30.9 29.3c6.1 10.6 7.2 24.1 7.2 29.5s-2.7 13.3-7.8 19.9Z" transform="translate(-4.6 -5)" style="fill:url(#gle-e)"/><path d="M157 153.8c-.9 1-3.4 2.5-3.4 5.6 0 2.6 1.7 5.2 4.8 7.3 14.3 10 41.4 8.6 41.5 8.6a59.6 59.6 0 0 0 30.3-8.3 61.4 61.4 0 0 0 30.4-52.9c.3-22.4-8-37.3-11.3-43.9C228 28.8 182.3 5 132.6 5a128 128 0 0 0-128 126.2c.5-36.5 36.8-66 80-66 3.5 0 23.5.3 42 10a72.6 72.6 0 0 1 30.9 29.3c6.1 10.6 7.2 24.1 7.2 29.5s-2.7 13.3-7.8 19.9Z" transform="translate(-4.6 -5)" style="fill:url(#gle-f)"/></svg>
+          <p class="store-name">Microsoft Edge</p>
+          <p class="store-where">Microsoft Edge Add-ons</p>
+          <a class="store-go" href="https://microsoftedge.microsoft.com/addons/detail/glidelens/aoohpfoblgnnciiiplppjkjabhjgaghj">Add to Edge</a>
+        </div>
+      </div>
+
+      <p class="store-note">
+        Chromium browsers, version 111 or newer — from March 2023. The panels
+        colour themselves with <code>color-mix()</code>, so the manifest
+        declares that floor and the browser declines to install rather than
+        leaving you to discover it. There is no Firefox or Safari build.
       </p>
 
       <ol class="steps">
-        <li>
-          <h3>Add it to Chrome</h3>
-          <p>
-            Open the <a href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Chrome Web Store listing</a> and click
-            <strong>Add to Chrome</strong>. Needs Chrome 111 or Edge 111, from
-            March 2023 — the panels colour themselves with
-            <code>color-mix()</code>, so the manifest declares that floor rather
-            than letting you discover it.
-          </p>
-        </li>
         <li>
           <h3>Pin it</h3>
           <p>
@@ -2184,6 +2269,32 @@ a { color: var(--teal); }
 
   find.addEventListener("input", render);
   render();
+})();
+/* ---------------------------------------------------------------------------
+   Mark whichever store card matches the visitor's browser. Edge's UA contains
+   both "Edg/" and "Chrome/", so Edge has to be tested first or every Edge user
+   is told they are on Chrome. Opera and Brave also carry "Chrome/"; Opera is
+   excluded by "OPR/", Brave is deliberately not, because Brave installs from
+   the Chrome Web Store and the Chrome card is the right answer for it.
+
+   Anything else (Firefox, Safari) matches nothing and no pill appears, which
+   is honest: there is no build for them.
+   --------------------------------------------------------------------------- */
+(function () {
+  var ua = navigator.userAgent || "";
+  var mine = /Edg\//.test(ua) ? "edge"
+           : (/Chrome\//.test(ua) && !/OPR\//.test(ua)) ? "chrome"
+           : null;
+  if (!mine) return;
+
+  var card = document.querySelector('.store-card[data-browser="' + mine + '"]');
+  if (!card) return;
+
+  card.classList.add("is-yours");
+  var pill = document.createElement("span");
+  pill.className = "store-you";
+  pill.textContent = "Your browser";
+  card.appendChild(pill);
 })();
 </script>
 
