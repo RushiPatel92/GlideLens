@@ -4,9 +4,10 @@ A lens on ServiceNow forms, catalogs and code: code search, catalog debugging,
 translation inheritance, form tracing. A Manifest V3 Chrome extension in plain
 JavaScript, with zero runtime dependencies and zero build step.
 
-**[See what it does →](https://rushipatel92.github.io/GlideLens/)** — feature tour
-with a working command palette. This README stays the reference; the site is the
-walkthrough.
+**[Add to Chrome →](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
+· **[See what it does →](https://rushipatel92.github.io/GlideLens/)** — a feature
+tour with a working command palette. This README stays the reference; the site
+is the walkthrough.
 
 ## What it does
 
@@ -23,21 +24,34 @@ walkthrough.
 
 ---
 
-## Install from the repository zip
+## Install
 
-The extension is not on the Chrome Web Store — you load it "unpacked" from a
-folder on your PC. This is a one-time setup; after that you just reload it when
-there's a new version.
+**[Add GlideLens to Chrome →](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
+
+That is the whole install. Chrome keeps it up to date on its own, so there is
+nothing to re-download when a new version ships.
 
 > **Microsoft Edge works too.** Edge is Chromium-based and runs this extension
-> unchanged. Follow the same steps below, but use `edge://extensions` wherever
-> they say `chrome://extensions`.
+> unchanged. Open the same Chrome Web Store page in Edge, click **Allow
+> extensions from other stores** in the banner it shows, then **Get**. There is
+> no Edge Add-ons listing yet.
 
 **Chrome 111 or newer** (Edge 111 or newer), released March 2023. The panels
 colour themselves with CSS `color-mix()`, which nothing older understands — on
 an earlier build the panels open but parts of them are unreadable rather than
 merely plain. The manifest declares this floor, so the browser refuses to
 install rather than leaving you to discover it.
+
+Once it is installed, click the puzzle-piece **Extensions** icon in the toolbar
+and pin **GlideLens** so its icon stays visible. Then open any ServiceNow tab
+and press `\`.
+
+## Install from the repository zip instead
+
+You do not need this if you installed from the store. It is here for running the
+code you can read — a fork, an unreleased `main`, or an environment where the
+Chrome Web Store is blocked. You load the extension "unpacked" from a folder on
+your PC, and you update it by hand.
 
 ### 1. Download the zip
 
@@ -90,7 +104,9 @@ To extract:
 Click the puzzle-piece **Extensions** icon in the toolbar, then the pin next to
 **GlideLens** so its icon stays visible.
 
-### Updating to a newer version
+### Updating an unpacked copy
+
+The store copy updates itself; this one does not.
 
 1. Download and extract the new zip **into the same folder**, replacing the old
    files (or extract fresh and re-point the browser at the new folder).

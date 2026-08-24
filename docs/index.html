@@ -810,7 +810,8 @@ a { color: var(--teal); }
     <nav class="masthead-links">
       <a class="is-secondary" href="#install">Install</a>
       <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
-      <a class="is-primary" href="https://github.com/RushiPatel92/GlideLens">GitHub ↗</a>
+      <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens">GitHub ↗</a>
+      <a class="is-primary" href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Add to Chrome ↗</a>
     </nav>
   </div>
 </header>
@@ -1181,49 +1182,50 @@ a { color: var(--teal); }
   <section class="install" id="install">
     <div class="wrap">
       <p class="eyebrow">Install</p>
-      <h2>Four steps, once.</h2>
+      <h2>One click, then backslash.</h2>
       <p class="install-lede">
-        Not on the Chrome Web Store — you load it unpacked from a folder. After
-        this, updating is a download and one click. Edge works too; use
-        <code>edge://extensions</code> throughout.
+        It is on the Chrome Web Store, so Chrome keeps it current by itself.
+        Edge runs it unchanged — open the same listing and allow extensions
+        from other stores when it offers.
       </p>
 
       <ol class="steps">
         <li>
-          <h3>Download the ZIP</h3>
+          <h3>Add it to Chrome</h3>
           <p>
-            On the repository, click the green <strong>Code</strong> button, then
-            <a href="https://github.com/RushiPatel92/GlideLens/archive/refs/heads/main.zip">Download ZIP</a>.
-          </p>
-        </li>
-        <li>
-          <h3>Extract somewhere permanent</h3>
-          <p>
-            Your browser reads the folder every time it starts, so don't leave it in
-            Downloads. <code>C:\Users\you\BrowserExtensions\GlideLens</code> is a
-            good home. Make sure <code>manifest.json</code> sits directly inside the
-            folder you pick — GitHub wraps everything in an inner folder.
-          </p>
-        </li>
-        <li>
-          <h3>Load unpacked</h3>
-          <p>
-            Go to <code>chrome://extensions</code>, turn on
-            <strong>Developer mode</strong>, click <strong>Load unpacked</strong>,
-            and select that folder.
+            Open the <a href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Chrome Web Store listing</a> and click
+            <strong>Add to Chrome</strong>. Needs Chrome 111 or Edge 111, from
+            March 2023 — the panels colour themselves with
+            <code>color-mix()</code>, so the manifest declares that floor rather
+            than letting you discover it.
           </p>
         </li>
         <li>
           <h3>Pin it</h3>
           <p>
-            Click the puzzle-piece icon in the toolbar and pin GlideLens. Then
-            open any ServiceNow tab and press <code>\</code>.
+            Click the puzzle-piece icon in the toolbar and pin GlideLens, so the
+            popup is one click from anywhere.
+          </p>
+        </li>
+        <li>
+          <h3>Press <code>\</code></h3>
+          <p>
+            Open any ServiceNow tab and hit backslash. Everything else starts
+            from that palette.
           </p>
         </li>
       </ol>
 
       <div class="callout">
-        <p><strong>Updating.</strong> Download the new ZIP over the same folder, hit reload on the extension card, and refresh your ServiceNow tab so the content script reloads.</p>
+        <p><strong>Or run it from source.</strong> On the repository, click
+        <strong>Code</strong> then <a href="https://github.com/RushiPatel92/GlideLens/archive/refs/heads/main.zip">Download ZIP</a>, extract it
+        somewhere permanent — your browser re-reads that folder on every start,
+        so not Downloads — and load it at <code>chrome://extensions</code> with
+        <strong>Developer mode</strong> on and <strong>Load unpacked</strong>.
+        Point it at the folder that directly holds <code>manifest.json</code>;
+        GitHub wraps everything in an inner folder. An unpacked copy will not
+        update itself: re-download over the same folder, hit reload on the card,
+        and refresh your ServiceNow tab.</p>
         <p><strong>Nothing leaves your browser.</strong> The extension only activates on <code>*.service-now.com</code>, reads through your own session, and has no server of its own.</p>
       </div>
     </div>
