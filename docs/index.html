@@ -309,6 +309,74 @@ a { color: var(--teal); }
 }
 .install-lede { margin: 14px 0 0; color: var(--muted); max-width: 58ch; }
 
+/* ---------------------------------------------------------------------------
+   Store cards. Two, not the four a browser grid usually has: GlideLens is
+   Chromium-only, and a card for a browser it cannot run in is an invitation
+   to a one-star review. No browser logos either — simple-icons dropped
+   Microsoft's marks, so an accurate Chrome logo beside an improvised Edge one
+   would look worse than neither.
+
+   The "Your browser" pill is added by script. With JS off both cards read
+   equally, which is a correct page rather than a broken one.
+   --------------------------------------------------------------------------- */
+.stores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(238px, 1fr));
+  gap: 14px;
+  margin: 32px 0 0;
+  max-width: 640px;
+}
+.store-card {
+  position: relative;
+  padding: 22px 20px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.store-card.is-yours {
+  border-color: color-mix(in srgb, var(--teal) 45%, transparent);
+  background: color-mix(in srgb, var(--teal) 5%, var(--surface));
+}
+.store-you {
+  position: absolute;
+  top: 13px; right: 13px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--teal) 16%, transparent);
+  color: var(--teal);
+  font: 600 10.5px/1.45 var(--mono);
+}
+/* Reserve the pill's corner unconditionally, so a card does not reflow when
+   the script marks it and a longer browser name never slides underneath. */
+.store-name {
+  margin: 0;
+  padding-right: 94px;
+  font: 700 18.5px/1.2 var(--sans);
+  letter-spacing: -0.01em;
+}
+.store-where { margin: 5px 0 0; color: var(--muted); font-size: 13.5px; }
+.store-go {
+  display: block;
+  margin: 17px 0 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--teal-d);
+  color: var(--bg);
+  text-align: center;
+  text-decoration: none;
+  font: 600 14px/1 var(--sans);
+}
+.store-go:hover { background: var(--teal); }
+.store-note { margin: 20px 0 0; color: var(--muted); font-size: 13.5px; max-width: 58ch; }
+.store-note code {
+  font: 500 12.5px/1 var(--mono);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+
 .steps { counter-reset: step; list-style: none; margin: 36px 0 0; padding: 0; }
 .steps li {
   counter-increment: step;
@@ -808,10 +876,9 @@ a { color: var(--teal); }
     <img class="mark" src="icon32.png" width="24" height="24" alt="" />
     <span class="wordmark">GlideLens</span>
     <nav class="masthead-links">
-      <a class="is-secondary" href="#install">Install</a>
       <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
       <a class="is-secondary" href="https://github.com/RushiPatel92/GlideLens">GitHub ↗</a>
-      <a class="is-primary" href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Add to Chrome ↗</a>
+      <a class="is-primary" href="#install">Install</a>
     </nav>
   </div>
 </header>
@@ -1189,17 +1256,27 @@ a { color: var(--teal); }
         browser-specific.
       </p>
 
+      <div class="stores" id="stores">
+        <div class="store-card" data-browser="chrome">
+          <p class="store-name">Google Chrome</p>
+          <p class="store-where">Chrome Web Store</p>
+          <a class="store-go" href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Add to Chrome</a>
+        </div>
+        <div class="store-card" data-browser="edge">
+          <p class="store-name">Microsoft Edge</p>
+          <p class="store-where">Microsoft Edge Add-ons</p>
+          <a class="store-go" href="https://microsoftedge.microsoft.com/addons/detail/glidelens/aoohpfoblgnnciiiplppjkjabhjgaghj">Add to Edge</a>
+        </div>
+      </div>
+
+      <p class="store-note">
+        Chromium browsers, version 111 or newer — from March 2023. The panels
+        colour themselves with <code>color-mix()</code>, so the manifest
+        declares that floor and the browser declines to install rather than
+        leaving you to discover it. There is no Firefox or Safari build.
+      </p>
+
       <ol class="steps">
-        <li>
-          <h3>Add it to your browser</h3>
-          <p>
-            <a href="https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck">Chrome Web Store</a> or
-            <a href="https://microsoftedge.microsoft.com/addons/detail/glidelens/aoohpfoblgnnciiiplppjkjabhjgaghj">Edge Add-ons</a>, whichever you use. Needs
-            Chrome 111 or Edge 111, from March 2023 — the panels colour
-            themselves with <code>color-mix()</code>, so the manifest declares
-            that floor rather than letting you discover it.
-          </p>
-        </li>
         <li>
           <h3>Pin it</h3>
           <p>
@@ -2184,6 +2261,32 @@ a { color: var(--teal); }
 
   find.addEventListener("input", render);
   render();
+})();
+/* ---------------------------------------------------------------------------
+   Mark whichever store card matches the visitor's browser. Edge's UA contains
+   both "Edg/" and "Chrome/", so Edge has to be tested first or every Edge user
+   is told they are on Chrome. Opera and Brave also carry "Chrome/"; Opera is
+   excluded by "OPR/", Brave is deliberately not, because Brave installs from
+   the Chrome Web Store and the Chrome card is the right answer for it.
+
+   Anything else (Firefox, Safari) matches nothing and no pill appears, which
+   is honest: there is no build for them.
+   --------------------------------------------------------------------------- */
+(function () {
+  var ua = navigator.userAgent || "";
+  var mine = /Edg\//.test(ua) ? "edge"
+           : (/Chrome\//.test(ua) && !/OPR\//.test(ua)) ? "chrome"
+           : null;
+  if (!mine) return;
+
+  var card = document.querySelector('.store-card[data-browser="' + mine + '"]');
+  if (!card) return;
+
+  card.classList.add("is-yours");
+  var pill = document.createElement("span");
+  pill.className = "store-you";
+  pill.textContent = "Your browser";
+  card.appendChild(pill);
 })();
 </script>
 
