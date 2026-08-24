@@ -2990,23 +2990,147 @@ function mapPortalVariableAnchors() {
   return { foundForm: variables.length > 0, variables };
 }
 
+/* ---------------------------------------------------------------------------
+   Debug Timeline frame targeting.
+
+   `executeScript({ allFrames: true })` does not merely fail on a frame it
+   cannot inject into — it HANGS, resolving and rejecting never. Measured on a
+   bare `/incident.do` form, which carries two frames ServiceNow creates for
+   itself: `templateIframe` at about:blank, and one with an empty URL. Targeting
+   `frameIds: [0]` on the same page settles in 0ms; `allFrames: true` was still
+   pending after 20 seconds.
+
+   That is the whole of the "Stop does nothing" bug. The service worker awaited
+   a promise that never settled, so it never called sendResponse, so the palette
+   sat open with the recorder still running and no error to show — a rejection
+   would at least have raised a toast.
+
+   It also explains why Start looked fine: at Start time the page has only its
+   main frame, and ServiceNow adds the template frames afterwards. Start's own
+   allFrames call has nothing to hang on yet.
+
+   So: Start records which frames actually began recording, and Stop injects
+   into exactly those, one at a time. A frame that has since gone away or hangs
+   contributes nothing instead of taking the whole stop down with it. Every
+   injection is time-boxed, so the UI can never again be left waiting forever.
+   --------------------------------------------------------------------------- */
+const TIMELINE_INJECT_TIMEOUT_MS = 5000;
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(label + " timed out after " + ms + "ms")),
+        ms
+      );
+    }),
+  ]);
+}
+
+// storage.session, not a module variable: the MV3 worker can be torn down
+// between starting and stopping a recording, which would lose the frame list
+// exactly when Stop needs it.
+const timelineFramesKey = (tabId) => "debugTimelineFrames:" + tabId;
+
+function rememberRecordingFrames(tabId, frameIds) {
+  const item = {};
+  item[timelineFramesKey(tabId)] = frameIds;
+  return chrome.storage.session.set(item).catch(() => {});
+}
+
+function readRecordingFrames(tabId) {
+  const key = timelineFramesKey(tabId);
+  return chrome.storage.session
+    .get(key)
+    .then((bag) => (bag && Array.isArray(bag[key]) ? bag[key] : null))
+    .catch(() => null);
+}
+
+function forgetRecordingFrames(tabId) {
+  return chrome.storage.session.remove(timelineFramesKey(tabId)).catch(() => {});
+}
+
+function injectTimelineFunc(tabId, target, func, label) {
+  return withTimeout(
+    chrome.scripting.executeScript({ target, world: "MAIN", func }),
+    TIMELINE_INJECT_TIMEOUT_MS,
+    label
+  );
+}
+
+// Start in every frame, but never wait forever for one. If allFrames hangs we
+// still get a recording in the main frame rather than none at all.
+function startTimelineInFrames(tabId) {
+  return injectTimelineFunc(
+    tabId,
+    { tabId, allFrames: true },
+    startDebugTimelineInPage,
+    "start (all frames)"
+  ).catch(() =>
+    injectTimelineFunc(
+      tabId,
+      { tabId, frameIds: [0] },
+      startDebugTimelineInPage,
+      "start (main frame)"
+    )
+  );
+}
+
+// Stop only the frames that started, one injection each, so a single bad frame
+// cannot hang or reject the whole stop.
+function stopTimelineInFrames(tabId) {
+  return readRecordingFrames(tabId).then((frameIds) => {
+    if (!frameIds || !frameIds.length) {
+      return injectTimelineFunc(
+        tabId,
+        { tabId, allFrames: true },
+        stopDebugTimelineInPage,
+        "stop (all frames)"
+      ).catch(() =>
+        injectTimelineFunc(
+          tabId,
+          { tabId, frameIds: [0] },
+          stopDebugTimelineInPage,
+          "stop (main frame)"
+        )
+      );
+    }
+    return Promise.all(
+      frameIds.map((frameId) =>
+        injectTimelineFunc(
+          tabId,
+          { tabId, frameIds: [frameId] },
+          stopDebugTimelineInPage,
+          "stop (frame " + frameId + ")"
+        ).catch(() => [])
+      )
+    ).then((perFrame) => {
+      // Cleared only now: clearing before the read would send the next stop
+      // down the allFrames path this whole change exists to avoid.
+      forgetRecordingFrames(tabId);
+      return [].concat.apply([], perFrame);
+    });
+  });
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "OPEN_URL" && msg.url) {
     chrome.tabs.create({ url: msg.url });
   }
   if (msg && msg.type === "START_DEBUG_TIMELINE" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: startDebugTimelineInPage,
-    }).then((results) => {
+    startTimelineInFrames(sender.tab.id).then((results) => {
       const frames = results
         .map((item) => ({
           frameId: item.frameId,
           result: item && item.result,
         }))
         .filter((item) => item.result && item.result.ok);
+      // Stop injects into exactly these, rather than asking for allFrames again
+      // and hanging on a frame ServiceNow added in the meantime.
+      rememberRecordingFrames(sender.tab.id, frames.map((item) => item.frameId));
       sendResponse({
         ok: frames.length > 0,
         frameCount: frames.length,
@@ -3023,11 +3147,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "STOP_DEBUG_TIMELINE" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: stopDebugTimelineInPage,
-    }).then((results) => {
+    stopTimelineInFrames(sender.tab.id).then((results) => {
       const frames = results
         .map((item) => ({
           frameId: item.frameId,
