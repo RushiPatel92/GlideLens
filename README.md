@@ -29,7 +29,7 @@ walkthrough.
 
 ## Install
 
-**[Add GlideLens to Chrome →](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
+**[Add GlideLens to Chrome](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)**
 
 That is the whole install. Chrome keeps it up to date on its own, so there is
 nothing to re-download when a new version ships.
