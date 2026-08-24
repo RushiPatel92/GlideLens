@@ -360,6 +360,47 @@ MV3 at all.
   staleness check gates the rebuild. Workspace forms are deliberately excluded —
   `getWorkspaceFields()` walks every element in every shadow root.
 
+## Releasing (two stores, keep them level)
+
+GlideLens ships to **both** the Chrome Web Store and Edge Add-ons. A release is
+not done when Chrome is done. Two listings drift unless something forces them
+level, and this section is that something.
+
+Store listing URLs:
+- Chrome: `https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck`
+- Edge: submitted 2026-08-24, in certification. Add the URL here on approval,
+  and point the README's Edge paragraph at it.
+
+Per release:
+1. Bump `version` in `manifest.json` and add the `CHANGELOG.md` entry.
+2. `node package.mjs` — the guards are derived from source, so a file that
+   Chrome has to load but is missing from `SHIP` fails the build by name.
+3. Load the built zip unpacked and exercise it on a real instance. The store
+   artifact is not the working copy; test what actually ships.
+4. Upload the **same zip** to both stores. Nothing is browser-specific — Edge is
+   Chromium-based and runs the package unchanged.
+5. Expect very different review times: Chrome answered in under 24 hours,
+   Edge quotes up to seven business days.
+
+Three things that catch people out, all learned the hard way:
+
+- **The Edge listing's short description is read-only and comes from the
+  manifest `description` field.** Editing that field silently rewrites the Edge
+  subtitle. Chrome's short description is separate free text, so the two do not
+  match by default and that was accepted deliberately — do not "fix" the
+  mismatch without meaning to.
+- **A reviewer PDI must stay awake for the whole review window.** It idles to a
+  502, and a week-long Edge review is a lot of idling. The dedicated reviewer
+  account gets deactivated once the review closes.
+- **Edge's "Notes for certification" box caps at 2000 characters**, which
+  Microsoft does not document, and it silently truncates. It is also where test
+  credentials go, because Edge has no separate fields for them.
+
+Submission answers, reviewer notes and screenshots live in `plans/`
+(gitignored, local-only): `cws-dashboard-answers.md` for Chrome,
+`edge-submission-steps.md` for Edge. Do not re-derive the trader-status or
+permission-justification wording; it is written up there.
+
 ## Roadmap
 Background Script runner, Table API record search, GlideRecord snippet
 generator, and toggle persistence for Workspace forms.
