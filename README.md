@@ -4,8 +4,7 @@ A lens on ServiceNow forms, catalogs and code: code search, catalog debugging,
 translation inheritance, form tracing. A Manifest V3 Chrome extension in plain
 JavaScript, with zero runtime dependencies and zero build step.
 
-[![Add to Chrome](https://img.shields.io/badge/Add_to_Chrome-1f9c92?style=for-the-badge&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)
-[![See what it does](https://img.shields.io/badge/See_what_it_does-1b1d22?style=for-the-badge&logo=readthedocs&logoColor=31d4c4)](https://rushipatel92.github.io/GlideLens/)
+[![Add to Chrome](https://img.shields.io/badge/Add_to_Chrome-1f9c92?style=for-the-badge&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck)&nbsp;&nbsp;&nbsp;[![See what it does](https://img.shields.io/badge/See_what_it_does-1b1d22?style=for-the-badge&logo=readthedocs&logoColor=31d4c4)](https://rushipatel92.github.io/GlideLens/)
 
 The site is a feature tour with a working command palette; this README stays
 the reference.
