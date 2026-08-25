@@ -2990,32 +2990,205 @@ function mapPortalVariableAnchors() {
   return { foundForm: variables.length > 0, variables };
 }
 
+/* ---------------------------------------------------------------------------
+   Debug Timeline frame targeting.
+
+   `executeScript({ allFrames: true })` does not merely fail on a frame it
+   cannot inject into — it HANGS, resolving and rejecting never. Measured on a
+   bare `/incident.do` form, which carries two frames ServiceNow creates for
+   itself: `templateIframe` at about:blank, and one with an empty URL. Targeting
+   a known frame id on the same page settles immediately; `allFrames: true` was
+   still pending after 20 seconds.
+
+   That is the whole of the "Stop does nothing" bug. The service worker awaited
+   a promise that never settled, so it never called sendResponse, so the palette
+   sat open with the recorder still running and no error to show — a rejection
+   would at least have raised a toast.
+
+   Falling back to frame 0 is not enough: in the Next Experience classic shell,
+   frame 0 owns the palette while `gsft_main` owns `g_form` and the form DOM.
+   Recording only frame 0 therefore produces a plausible-looking trace with
+   just the synthetic Start and Stop entries.
+
+   Content scripts already run in every eligible ServiceNow frame. Start asks
+   those scripts to announce their frame ids, then injects into each responder
+   individually. Stop targets exactly the frames that actually began recording.
+   A helper frame that cannot host the content script is never targeted, and a
+   frame that has since died or hangs contributes nothing instead of taking the
+   whole operation down. Every injection is still time-boxed.
+   --------------------------------------------------------------------------- */
+const TIMELINE_INJECT_TIMEOUT_MS = 5000;
+const TIMELINE_DISCOVERY_WAIT_MS = 150;
+const timelineFrameDiscoveries = new Map();
+let timelineDiscoverySequence = 0;
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(label + " timed out after " + ms + "ms")),
+        ms
+      );
+    }),
+  ]);
+}
+
+// storage.session, not a module variable: the MV3 worker can be torn down
+// between starting and stopping a recording, which would lose the frame list
+// exactly when Stop needs it.
+const timelineFramesKey = (tabId) => "debugTimelineFrames:" + tabId;
+
+function rememberRecordingFrames(tabId, frameIds) {
+  const item = {};
+  item[timelineFramesKey(tabId)] = frameIds;
+  return chrome.storage.session.set(item).catch(() => {});
+}
+
+function readRecordingFrames(tabId) {
+  const key = timelineFramesKey(tabId);
+  return chrome.storage.session
+    .get(key)
+    .then((bag) => (bag && Array.isArray(bag[key]) ? bag[key] : null))
+    .catch(() => null);
+}
+
+function forgetRecordingFrames(tabId) {
+  return chrome.storage.session.remove(timelineFramesKey(tabId)).catch(() => {});
+}
+
+function injectTimelineFunc(tabId, target, func, label) {
+  return withTimeout(
+    chrome.scripting.executeScript({ target, world: "MAIN", func }),
+    TIMELINE_INJECT_TIMEOUT_MS,
+    label
+  );
+}
+
+function registerTimelineFrame(requestId, sender) {
+  const discovery = timelineFrameDiscoveries.get(requestId);
+  if (
+    !discovery ||
+    !sender ||
+    !sender.tab ||
+    sender.tab.id !== discovery.tabId ||
+    !Number.isInteger(sender.frameId)
+  ) {
+    return false;
+  }
+  discovery.frameIds.add(sender.frameId);
+  return true;
+}
+
+function discoverTimelineFrames(tabId) {
+  const requestId =
+    "timeline:" + tabId + ":" + Date.now() + ":" + (++timelineDiscoverySequence);
+  const discovery = { tabId, frameIds: new Set() };
+  timelineFrameDiscoveries.set(requestId, discovery);
+
+  // tabs.sendMessage without a frameId broadcasts to every content-script
+  // frame. Each receiver sends DEBUG_TIMELINE_FRAME_AVAILABLE back so the
+  // service worker can collect every sender.frameId rather than just the first
+  // response Chrome chooses for this broadcast.
+  return chrome.tabs
+    .sendMessage(tabId, { type: "DISCOVER_DEBUG_TIMELINE_FRAME", requestId })
+    .catch(() => {})
+    .then(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(resolve, TIMELINE_DISCOVERY_WAIT_MS);
+        })
+    )
+    .then(() => {
+      timelineFrameDiscoveries.delete(requestId);
+      const frameIds = Array.from(discovery.frameIds);
+      // Frame 0 should normally have answered. Keep it as a safe fallback for
+      // a page where content-script delivery was briefly unavailable.
+      if (!frameIds.length) frameIds.push(0);
+      return frameIds.sort((a, b) => a - b);
+    });
+}
+
+function injectTimelineInFrames(tabId, frameIds, func, action) {
+  return Promise.all(
+    frameIds.map((frameId) =>
+      injectTimelineFunc(
+        tabId,
+        { tabId, frameIds: [frameId] },
+        func,
+        action + " (frame " + frameId + ")"
+      ).catch(() => [])
+    )
+  ).then((perFrame) => [].concat.apply([], perFrame));
+}
+
+function startTimelineInFrames(tabId) {
+  return discoverTimelineFrames(tabId).then((frameIds) =>
+    injectTimelineInFrames(tabId, frameIds, startDebugTimelineInPage, "start")
+  );
+}
+
+// Stop only the frames that started, one injection each, so a single bad frame
+// cannot hang or reject the whole stop.
+function stopTimelineInFrames(tabId) {
+  return readRecordingFrames(tabId).then((frameIds) => {
+    if (!frameIds || !frameIds.length) {
+      return discoverTimelineFrames(tabId).then((discoveredFrameIds) =>
+        injectTimelineInFrames(
+          tabId,
+          discoveredFrameIds,
+          stopDebugTimelineInPage,
+          "stop"
+        )
+      );
+    }
+    return injectTimelineInFrames(
+      tabId,
+      frameIds,
+      stopDebugTimelineInPage,
+      "stop"
+    ).then((results) => {
+      // Cleared only now: clearing before the read would send the next stop
+      // through discovery without knowing which frames originally started.
+      forgetRecordingFrames(tabId);
+      return results;
+    });
+  });
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === "DEBUG_TIMELINE_FRAME_AVAILABLE" && msg.requestId) {
+    registerTimelineFrame(msg.requestId, sender);
+  }
   if (msg && msg.type === "OPEN_URL" && msg.url) {
     chrome.tabs.create({ url: msg.url });
   }
   if (msg && msg.type === "START_DEBUG_TIMELINE" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: startDebugTimelineInPage,
-    }).then((results) => {
+    startTimelineInFrames(sender.tab.id).then((results) => {
       const frames = results
         .map((item) => ({
           frameId: item.frameId,
           result: item && item.result,
         }))
         .filter((item) => item.result && item.result.ok);
-      sendResponse({
-        ok: frames.length > 0,
-        frameCount: frames.length,
-        alreadyActive: frames.length > 0 && frames.every((item) => item.result.alreadyActive),
-        startedAt: frames.reduce(
-          (earliest, item) =>
-            !earliest || item.result.startedAt < earliest ? item.result.startedAt : earliest,
-          0
-        ),
+      // Stop injects into exactly these, rather than asking for allFrames again
+      // and hanging on a frame ServiceNow added in the meantime.
+      return rememberRecordingFrames(
+        sender.tab.id,
+        frames.map((item) => item.frameId)
+      ).then(() => {
+        sendResponse({
+          ok: frames.length > 0,
+          frameCount: frames.length,
+          alreadyActive: frames.length > 0 && frames.every((item) => item.result.alreadyActive),
+          startedAt: frames.reduce(
+            (earliest, item) =>
+              !earliest || item.result.startedAt < earliest ? item.result.startedAt : earliest,
+            0
+          ),
+        });
       });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
@@ -3023,11 +3196,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "STOP_DEBUG_TIMELINE" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: stopDebugTimelineInPage,
-    }).then((results) => {
+    stopTimelineInFrames(sender.tab.id).then((results) => {
       const frames = results
         .map((item) => ({
           frameId: item.frameId,
