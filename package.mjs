@@ -83,12 +83,15 @@ const SHIP = [
 /*
  * Must never ship. The allowlist already excludes these — this is a second,
  * independent assertion against the actual archive contents, because the cost
- * of being wrong is publishing internal notes to the world. CLAUDE.md in
- * particular names a private repository.
+ * of being wrong is publishing development instructions or private working
+ * notes in the store artifact.
  */
 const MUST_NOT_SHIP = [
   /^CLAUDE\.md$/i,
   /^AGENTS\.md$/i,
+  /^ARCHITECTURE\.md$/i,
+  /^DEVELOPMENT\.md$/i,
+  /^RELEASING\.md$/i,
   /^README\.md$/i,
   /^CHANGELOG\.md$/i,
   /^package\.mjs$/i,

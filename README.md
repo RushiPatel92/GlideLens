@@ -240,7 +240,7 @@ Explorer, and Flow Designer.
 - Load unpacked as above; after editing, click **reload** on the extension card,
   and refresh the ServiceNow tab for content-script changes.
 - There is no build step for development. The GitHub **Code → Download ZIP**
-  route described above ships every repo file (`README.md`, `CLAUDE.md`,
+  route described above ships every repo file (engineering docs, tests,
   `.github/`); Chrome ignores the ones it does not recognise.
 - A store-ready artifact is a different thing and *is* built: `node package.mjs`
   writes `dist/glidelens-<version>.zip` from an explicit allowlist, so none of
@@ -253,8 +253,9 @@ Explorer, and Flow Designer.
   tokens as [`popup.css`](popup.css). Screenshots and clips belong on GitHub's
   attachment CDN rather than committed here, so the install download stays small.
 
-See [CLAUDE.md](CLAUDE.md) for architecture notes (the two JS worlds, frames,
-and message flow).
+See [DEVELOPMENT.md](DEVELOPMENT.md) for local testing and packaging, and
+[ARCHITECTURE.md](ARCHITECTURE.md) for the two JavaScript worlds, frames,
+message flow, and feature invariants.
 
 ---
 
