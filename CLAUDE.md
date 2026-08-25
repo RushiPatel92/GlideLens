@@ -316,6 +316,21 @@ MV3 at all.
   1 is never assumed complete.
 
 ## Conventions & constraints
+- **IMPORTANT — Client confidentiality is absolute. Never write a real client
+  or customer name, tenant or instance name, hostname, company-specific
+  identifier, account name, internal URL, or other identifying customer detail
+  anywhere in this repository's work.** This applies even to gitignored/local
+  notes and includes files, plans, branches, commits, tags, PR titles/bodies/
+  comments, issues, release notes, store submissions, screenshots, logs,
+  traces, fixtures, and test data. Information seen in a browser, tool output,
+  pasted trace, or user message remains confidential even when the user does
+  not repeat that instruction. Use anonymous descriptions such as "customer
+  instance", "test instance", or "framed classic form"; use synthetic data and
+  reserved examples such as `example.service-now.com`. Before every push, PR,
+  issue, release, or other shared artifact, scan the staged diff, commits being
+  published, branch name, and all accompanying text for identifiers. If an
+  identifier might be customer-specific, omit or anonymise it; never repeat it
+  merely because it appeared in the debugging context.
 - **IMPORTANT — Never delete a branch from GitHub or any Git remote.** Remote
   branches must remain intact after merges and during cleanup. Cleanup may
   delete a local branch only; it must never use `git push --delete`, GitHub's
