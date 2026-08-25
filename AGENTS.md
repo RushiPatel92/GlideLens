@@ -1,7 +1,8 @@
 # Agent Instructions
 
 Before making changes in this repository, read `CLAUDE.md` for the project
-context, architecture, run/debug loop, constraints, and roadmap.
+constraints and its routing to task-specific documentation.
 
-Treat `CLAUDE.md` as the source of truth for project-specific guidance. Keep
-new changes aligned with its notes unless the user explicitly asks otherwise.
+Treat `CLAUDE.md` as the entry point and source of truth for project-specific
+guidance. Read the documents it selects for the task and keep new changes
+aligned with them unless the user explicitly asks otherwise.
