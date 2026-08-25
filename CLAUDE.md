@@ -351,6 +351,10 @@ MV3 at all.
   alone is not completion. Stop after pushing the feature branch only when the
   user explicitly says "push branch only" or otherwise asks not to merge.
   Always preserve the remote feature branch.
+- The repository owner has given standing approval to use GitHub's admin bypass
+  when it is needed to merge an explicitly authorized pull request. This does
+  not replace the separate publish authorization above and does not authorize
+  bypassing failed validation.
 - When Codex materially contributes to a commit, add the official Git trailer
   `Co-authored-by: Codex <noreply@openai.com>` to the commit message so GitHub
   attributes Codex as a co-author and repository contributor.
