@@ -2699,6 +2699,16 @@ function buildCommands() {
       },
     },
     {
+      id: "record-search",
+      name: "Search records…",
+      keywords: [
+        "record", "search", "find", "table api", "sys_id", "number",
+        "name", "email", "incident", "catalog item",
+      ],
+      group: "Record",
+      run: openRecordSearch,
+    },
+    {
       id: "open-playbook-executions",
       name: "Open playbook executions",
       keywords: ["playbook", "execution", "executions", "process automation", "pad", "sys_pd_context", "input_record"],
@@ -2829,6 +2839,46 @@ function buildCommands() {
     })),
   ];
   return cmds;
+}
+
+/* =====================================================================
+ * RECORD SEARCH
+ *
+ * The engine and panel are lazy because record lookup is occasional and needs
+ * its own UI with separate table and term inputs. Reads use the single
+ * token-bearing-frame transport in background.js, never the all-frame helper.
+ * ===================================================================== */
+
+let recordSearchSession = null;
+
+async function ensureRecordSearchLoaded() {
+  if (globalThis.SNRecordSearch && globalThis.SNRecordSearchUI) return true;
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_RECORD_SEARCH" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load Record Search.");
+  }
+  return Boolean(globalThis.SNRecordSearch && globalThis.SNRecordSearchUI);
+}
+
+async function openRecordSearch() {
+  await ensureRecordSearchLoaded();
+  const engine = globalThis.SNRecordSearch;
+  const ui = globalThis.SNRecordSearchUI;
+  if (!recordSearchSession) recordSearchSession = engine.createSessionTracker();
+
+  ui.open({
+    onCancel: () => recordSearchSession.cancel(),
+    onSearch: async (input) => {
+      const parsed = engine.parseSearch(input && input.table, input && input.term);
+      if (!parsed.ok) throw new Error(parsed.error);
+      const sessionId = recordSearchSession.next();
+      const isStale = () => !recordSearchSession.isCurrent(sessionId);
+      return engine.runSearch(parsed, {
+        origin: location.origin,
+        shouldStop: isStale,
+      });
+    },
+  });
 }
 
 /* =====================================================================

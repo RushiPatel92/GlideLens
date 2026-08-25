@@ -71,6 +71,8 @@ const SHIP = [
   "catalog_insight_ui.js",
   "code_search.js",
   "code_search_ui.js",
+  "record_search.js",
+  "record_search_ui.js",
   "popup.html",
   "popup.js",
   "popup.css",

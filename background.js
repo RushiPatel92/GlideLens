@@ -1,6 +1,6 @@
 /*
  * background.js — MV3 service worker.
- * Owns the token-bearing Table API reads, lazy Code Search injection, and
+ * Owns token-bearing Table API reads, lazy Code/Record Search injection, and
  * OPEN_URL. Good place to later add: context menus, cross-tab state, alarms.
  *
  * There is no `chrome.commands.onCommand` listener any more: the only
@@ -237,6 +237,13 @@ async function codeSearchFrameGet(tabId, func, request, what, isRetry) {
 }
 
 function codeSearchTableGet(tabId, request) {
+  return codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table);
+}
+
+/* Record Search has the same bounded, repeated-read shape as Code Search, so
+ * it shares the resolved token-bearing frame instead of fanning metadata and
+ * result requests out across every ServiceNow frame. */
+function recordSearchTableGet(tabId, request) {
   return codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table);
 }
 
@@ -3331,6 +3338,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "INJECT_RECORD_SEARCH" && sender.tab) {
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["record_search.js", "record_search_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "SN_RECORD_SEARCH_GET" && sender.tab) {
+    recordSearchTableGet(sender.tab.id, {
+      table: msg.table,
+      query: msg.query,
+      fields: msg.fields,
+      limit: msg.limit,
+      options: msg.options || {},
+    })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, status: 0, error: String(error) }));
     return true;
   }
   if (msg && msg.type === "SN_CODE_SEARCH_GET" && sender.tab) {

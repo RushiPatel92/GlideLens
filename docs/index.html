@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GlideLens — a lens on ServiceNow forms, catalogs and code</title>
-<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and translation records." />
+<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, code search across 14 sources, catalog debugging, a form Debug Timeline, and translation records." />
 
 <!-- Served from /docs, so the site root is this folder — icons are copied in
      beside this file rather than referenced out of ../icons. -->
@@ -901,8 +901,8 @@ a { color: var(--teal); }
       </h1>
 
       <p class="hero-sub rise" style="animation-delay: 120ms">
-        A command palette over the platform you already work in. Search the
-        script the instance's own index can't see, read
+        A command palette over the platform you already work in. Find a record,
+        search the script the instance's own index can't see, read
         <strong>what actually runs</strong> on a catalog item, and replay a form
         interaction after it has happened.
       </p>
@@ -941,6 +941,40 @@ a { color: var(--teal); }
     <div class="wrap">
 
       <!-- 1 -->
+      <article class="feature" id="record-search">
+        <div class="feature-rail">
+          <p class="eyebrow">Records</p>
+          <dl>
+            <dt>Searches</dt>
+            <dd class="plain">one table at a time</dd>
+            <dt>Returns</dt>
+            <dd class="plain">20 verified results</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Find the record, skip the list-page detour</h2>
+          <p>
+            Enter a technical table name and a number, name, email, short
+            description, or exact sys_id. GlideLens reads that instance's table
+            dictionary first and searches only fields it confirmed exist — no
+            guessed column silently turning into an unfiltered request.
+          </p>
+          <p>
+            Only the sys_id and a small set of summary fields come back. Every
+            text result is checked against the complete term in the browser,
+            nothing is stored, and choosing a row opens the normal ServiceNow
+            form.
+          </p>
+          <div class="tags">
+            <span class="tag">schema-confirmed fields</span>
+            <span class="tag">exact sys_id</span>
+            <span class="tag">20-result cap</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- 2 -->
       <article class="feature" id="code-search">
         <div class="feature-rail">
           <p class="eyebrow">Search</p>
@@ -1378,6 +1412,7 @@ a { color: var(--teal); }
     { group: "Catalog",   name: "Toggle variable insight icons",       key: "Alt+dbl",     go: "#variable-icons" },
     { group: "Catalog",   name: "Show variable values",                key: "",            go: "#variable-values" },
     { group: "Catalog",   name: "Prefill variables from ticket…",      key: "",            go: "#install" },
+    { group: "Record",    name: "Search records…",                     key: "",            go: "#record-search" },
     { group: "Record",    name: "Copy sys_id",                         key: "",            go: "#install" },
     { group: "Record",    name: "Open playbook executions",            key: "",            go: "#install" },
     { group: "Record",    name: "Open customer updates by sys_id…",    key: "",            go: "#install" },

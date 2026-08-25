@@ -42,6 +42,34 @@ Code Search uses dedicated request routes:
 Do not route Code Search through a handler that fans requests out to every
 frame; doing so multiplies every source query on classic pages.
 
+Record Search follows the same single-frame rule through
+`SN_RECORD_SEARCH_GET`. Its metadata and result reads are bounded but repeated,
+so they must not use the all-frame `SN_TABLE_GET` path either.
+
+## Record Search
+
+Record Search performs read-only Table API lookup against one explicit table.
+The user supplies the technical table name and either text or an exact
+32-character `sys_id`.
+
+Text search never guesses columns. It walks `sys_db_object.super_class`, reads
+the hierarchy's `sys_dictionary` rows, and selects at most six confirmed text
+fields: explicit display fields first, followed by confirmed conventional
+summary fields such as number, name, short description, username, and email.
+
+Only a query-safe anchor reaches the encoded query. Every returned row is then
+checked for the user's complete case-insensitive term in the retrieved summary
+values. Invalid or unexpected metadata field names are rejected rather than
+sent to ServiceNow.
+
+The server returns at most 50 candidate rows and the panel shows at most 20
+verified results. Only `sys_id` and the selected summaries are retrieved; full
+record contents are neither requested nor stored. Exact `sys_id` lookup can
+fall back to `sys_id` alone when dictionary metadata is unreadable.
+
+Table metadata caches only in page memory. A newer search or a closed panel
+invalidates older work so stale results cannot replace the current search.
+
 ## Translation icons
 
 Classic labels can receive two translation actions:

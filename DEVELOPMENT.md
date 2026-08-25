@@ -25,7 +25,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/record_search.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
 ```
 
 The suites cover:
@@ -35,6 +35,9 @@ The suites cover:
 - `code_search_api.test.js` — the instance Code Search endpoint, coverage map,
   ignored table scope, saturation, and adapter merging.
 - `code_search_ui.test.js` — result identity and separate match/record counts.
+- `record_search.test.js` — table/field safety, hierarchy-driven summaries,
+  complete-term verification, result caps, exact sys_id fallback, and stale
+  search cancellation.
 - `debug_timeline.test.js` — reversible MAIN-world recording, including all
   GlideAjax entry points.
 - `debug_timeline_frames.test.js` — discovery and injection across concrete
@@ -98,7 +101,10 @@ Previously verified assumptions include the `cat_item`/`catalog_item` split,
 the `IO:` prefix on `catalog_ui_policy_action.catalog_variable`,
 `super_class.name` dot-walking to a string, the two-hop
 `sc_item_option.item_option_new.*` chain, and the defining-table inheritance
-walk. Reverify when platform behavior or the queried schema changes.
+walk. Record Search also confirmed that `sys_dictionary.display` and `active`
+are readable, display fields can be defined on a parent table, and some tables
+have no explicit display row and therefore need confirmed summary-field
+fallbacks. Reverify when platform behavior or the queried schema changes.
 
 ## Repository map
 
@@ -111,6 +117,8 @@ walk. Reverify when platform behavior or the queried schema changes.
 - `popup.html`, `popup.js`, `popup.css` — toolbar popup.
 - `code_search.js`, `code_search_ui.js` — lazily injected Code Search engine
   and results panel.
+- `record_search.js`, `record_search_ui.js` — lazily injected metadata-driven
+  Record Search engine and read-only results panel.
 - `debug_timeline_main.js`, `debug_timeline_ui.js` — MAIN-world recorder and
   isolated-world results UI.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including

@@ -17,6 +17,8 @@ walkthrough.
 - Instance info at a glance in the toolbar popup.
 - A `\` **command palette** on any ServiceNow tab for navigation, record
   helpers, and toggles.
+- Read-only **record search** by table, using verified summary fields or an
+  exact `sys_id` without downloading whole records.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
 - **Translation icons** on classic form labels, resolving inherited fields.
@@ -207,10 +209,24 @@ retry that source when it reports **Capped**.
 
 | Command | Description |
 | --- | --- |
+| Search records… | Search one table by its schema-confirmed display and summary fields, or look up an exact `sys_id`. Shows at most 20 verified, read-only results and opens the selected record. |
 | Copy sys_id | Copy the current record's `sys_id` to the clipboard. |
 | Open playbook executions | Open Process Automation playbook executions for the current record. |
 | Open current playbook customer updates | On a playbook (process definition) page, open the related `sys_update_xml` customer updates. |
 | Open customer updates by sys_id… | Enter a record sys_id or ServiceNow URL to open its customer updates. |
+
+#### Record search
+
+Choose **Search records…**, enter a technical table name such as `incident`,
+then enter a number, name, email, short description, or exact 32-character
+`sys_id`. GlideLens reads the table hierarchy and dictionary first, so only
+fields confirmed on that instance enter the query.
+
+Text searches send a safe fragment to ServiceNow and verify the complete term
+again in the returned summary values before showing a row. At most 20 results
+are displayed. Only `sys_id` and up to six summary fields are retrieved; full
+record contents are not downloaded or stored. Selecting a result opens the
+normal ServiceNow form.
 
 **Catalog**
 

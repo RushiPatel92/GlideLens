@@ -87,6 +87,5 @@ translation and dictionary inheritance, code search, and form introspection.
 Do not propose an update-set switcher, impersonation, or per-environment
 favicon/instance badges; snUtils already covers them.
 
-Current roadmap candidates are a Background Script runner, Table API record
-search, a GlideRecord snippet generator, and toggle persistence for Workspace
-forms.
+Current roadmap candidates are a Background Script runner, a GlideRecord
+snippet generator, and toggle persistence for Workspace forms.
