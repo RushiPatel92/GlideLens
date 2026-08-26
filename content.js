@@ -2586,6 +2586,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }).catch(() => {});
     sendResponse({ ok: true });
   }
+  if (msg && msg.type === "DISCOVER_SEARCH_FRAME" && msg.requestId) {
+    chrome.runtime.sendMessage({
+      type: "SEARCH_FRAME_AVAILABLE",
+      requestId: msg.requestId,
+    }).catch(() => {});
+    sendResponse({ ok: true });
+  }
   if (msg && msg.type === "PREFILL_PROGRESS") {
     if (window === window.top) showToast(msg.message || "Filling portal form...", false, 6000);
   }
@@ -2697,6 +2704,16 @@ function buildCommands() {
           showToast("No record sys_id found", true);
         }
       },
+    },
+    {
+      id: "record-search",
+      name: "Search records…",
+      keywords: [
+        "record", "search", "find", "table api", "sys_id", "number",
+        "name", "email", "incident", "catalog item",
+      ],
+      group: "Record",
+      run: openRecordSearch,
     },
     {
       id: "open-playbook-executions",
@@ -2829,6 +2846,69 @@ function buildCommands() {
     })),
   ];
   return cmds;
+}
+
+/* =====================================================================
+ * RECORD SEARCH
+ *
+ * The engine and panel are lazy because record lookup is occasional and needs
+ * its own UI with separate table and term inputs. Reads use the single
+ * token-bearing-frame transport in background.js, never the all-frame helper.
+ * ===================================================================== */
+
+let recordSearchSession = null;
+
+async function ensureRecordSearchLoaded() {
+  if (globalThis.SNRecordSearch && globalThis.SNRecordSearchUI) return true;
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_RECORD_SEARCH" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load Record Search.");
+  }
+  return Boolean(globalThis.SNRecordSearch && globalThis.SNRecordSearchUI);
+}
+
+async function openRecordSearch() {
+  await ensureRecordSearchLoaded();
+  const engine = globalThis.SNRecordSearch;
+  const ui = globalThis.SNRecordSearchUI;
+  if (!recordSearchSession) recordSearchSession = engine.createSessionTracker();
+
+  /* URL-only detection is deliberately conservative. The candidate is still
+   * resolved through sys_db_object before it becomes selectable; no workspace
+   * route discovery or guessed schema is involved. */
+  const pageContext = recordContextFromText(location.href);
+  const initialTable = pageContext.table && /^[a-z][a-z0-9_]*$/.test(pageContext.table)
+    ? pageContext.table.toLowerCase()
+    : null;
+
+  const runCurrent = async (operation) => {
+    const sessionId = recordSearchSession.next();
+    const isStale = () => !recordSearchSession.isCurrent(sessionId);
+    return operation(isStale);
+  };
+
+  ui.open({
+    initialTable,
+    onCancel: () => recordSearchSession.cancel(),
+    onFindTables: (input) => runCurrent(() => engine.findTables(input)),
+    onResolveTable: (table) => runCurrent((isStale) => engine.resolveTableInfo(table, {
+      origin: location.origin,
+      shouldStop: isStale,
+    })),
+    onSearch: async (input) => {
+      const parsed = engine.parseSearch(input && input.table, input && input.term);
+      if (!parsed.ok) {
+        const error = new Error(parsed.error);
+        error.code = parsed.code || "validation";
+        throw error;
+      }
+      return runCurrent((isStale) => engine.runSearch(parsed, {
+        origin: location.origin,
+        shouldStop: isStale,
+        fields: input && input.fields,
+      }));
+    },
+  });
 }
 
 /* =====================================================================

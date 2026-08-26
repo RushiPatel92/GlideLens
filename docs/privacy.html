@@ -156,16 +156,16 @@ main.wrap { padding-top: 40px; }
       values on catalog forms</td>
     </tr>
     <tr>
-      <td>Records from your instance's Table API — dictionary entries, catalog
-      variables, client scripts, UI policies, script source, attachment
-      filenames</td>
-      <td>Code search, catalog debugging, translation lookups and variable
-      prefill. These are ordinary API reads on your session</td>
+      <td>Records from your instance's Table API — dictionary entries, the
+      summary fields you choose to search, catalog variables, client scripts,
+      UI policies, script source, attachment filenames</td>
+      <td>Record search, code search, catalog debugging, translation lookups and
+      variable prefill. These are ordinary API reads on your session</td>
     </tr>
     <tr>
       <td>The current tab's URL, table name and record sys_id</td>
-      <td>To work out which record you are on, for "Copy sys_id" and the
-      record-scoped commands</td>
+      <td>To work out which record you are on, for Record Search preselection,
+      "Copy sys_id", and the record-scoped commands</td>
     </tr>
     <tr>
       <td>Your username and display name, and the instance's node and version</td>
@@ -238,8 +238,8 @@ main.wrap { padding-top: 40px; }
   precise about the difference.</p>
 
   <p><strong>It never writes to your ServiceNow records and never submits a
-  form.</strong> Code search, catalog insight, variable values, translations and
-  Debug Timeline only read.</p>
+  form.</strong> Record search, code search, catalog insight, variable values,
+  translations and Debug Timeline only read.</p>
 
   <p><strong>Prefill changes unsaved fields on the catalog form in front of
   you</strong>, which is the entire point of it — it copies values from a ticket
@@ -256,7 +256,7 @@ main.wrap { padding-top: 40px; }
         <td>The only sites the extension runs on at all</td></tr>
     <tr><td><code>scripting</code></td>
         <td>Reading page globals like <code>g_form</code>, and injecting the code
-        search panel only when you first use it</td></tr>
+        search panels only when you first use them</td></tr>
     <tr><td><code>storage</code></td>
         <td>The three local items listed above</td></tr>
     <tr><td><code>clipboardWrite</code></td>

@@ -10,6 +10,22 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## Unreleased
+
+### Added
+- **Record Search table and field selection.** A bounded, keyboard-accessible
+  table combobox searches labels and technical names, safely detected current
+  tables can be preselected, and a live-dictionary field control makes the
+  searched fields explicit. Known-table presets are intersected with verified
+  fields and never automatically include sensitive value/body/HTML content.
+- **Record Search result actions.** Each verified result can copy its `sys_id`
+  or URL, and the verified result set can open as a normal platform list.
+
+### Changed
+- **Record Search errors now distinguish validation, access, schema, no-match,
+  and transient failures**, and table suggestions and result rows support full
+  arrow-key, Home/End, Enter, and Escape navigation.
+
 ## [0.11.1] - 2026-08-23
 
 ### Added

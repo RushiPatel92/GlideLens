@@ -42,6 +42,65 @@ Code Search uses dedicated request routes:
 Do not route Code Search through a handler that fans requests out to every
 frame; doing so multiplies every source query on classic pages.
 
+Token-frame discovery also never injects with `allFrames`. Content scripts
+announce their concrete eligible frame IDs, then the worker probes those frames
+individually with a short timeout and caches the first one that exposes `g_ck`.
+This prevents an uninjectionable helper frame from blocking every search read.
+
+Record Search follows the same single-frame rule through
+`SN_RECORD_SEARCH_GET`. Its metadata and result reads are bounded but repeated,
+so they must not use the all-frame `SN_TABLE_GET` path either.
+
+## Record Search
+
+Record Search performs read-only Table API lookup against one verified table.
+Its combobox sends query-safe contains needles, including a complete label
+phrase and underscore-normalized technical-name form for clean multi-word
+input. User-facing table labels are read from table-level `sys_documentation`
+rows, with `sys_db_object.label` as an access fallback; technical names come
+from `sys_db_object`. The label and technical-name queries receive separate
+bounded 50-row candidate windows so one cannot crowd out the other. Results are
+merged, verified, relevance-ranked, and the scrollable combobox returns at most
+50; the feature never downloads the full table catalog.
+A returned suggestion must also contain that anchor in its label or name, so an
+ignored server condition cannot populate the combobox with unrelated tables.
+A table parsed conservatively from the current URL can be offered initially,
+but it still has to resolve through live metadata before use. Workspace opening
+and workspace discovery are intentionally outside this feature.
+
+Text search never guesses columns. It walks `sys_db_object.super_class`, reads
+the hierarchy's bounded `sys_dictionary` rows, and exposes the confirmed text
+fields in a selector. Known-table presets are preferences intersected with
+those live rows, followed by confirmed generic display/summary fallbacks. At
+most six fields can be selected. HTML/script types are excluded; value, body,
+content, credential, and similar fields are never selected automatically. The
+`sys_properties` preset explicitly excludes `value`.
+
+Record Search reads time out instead of leaving the panel busy indefinitely.
+The broad optional dictionary read has a shorter timeout and may degrade to the
+separately verified display and preset fields rather than block table selection.
+
+Only a query-safe anchor reaches the encoded query. Every returned row is then
+checked for the user's complete case-insensitive term in the retrieved summary
+values. Invalid or unexpected metadata field names are rejected rather than
+sent to ServiceNow.
+
+The server returns at most 50 candidate rows and the panel shows at most 20
+verified results. Only `sys_id` and the selected summaries are retrieved; full
+record contents are neither requested nor stored. Exact `sys_id` lookup can
+fall back to `sys_id` alone when dictionary metadata is unreadable.
+
+Verified record results sort by match quality (exact value, prefix, word-start,
+then contains), followed by the first displayed field and `sys_id`. The results
+status names this order so it is not mistaken for an instance-defined sort.
+
+Result rows provide form opening plus Copy sys_id and Copy URL actions. The
+panel can open only the verified result sys_ids as a normal platform list; it
+does not replay the broader server prefilter or open a Workspace route.
+
+Table metadata caches only in page memory. A newer search or a closed panel
+invalidates older work so stale results cannot replace the current search.
+
 ## Translation icons
 
 Classic labels can receive two translation actions:

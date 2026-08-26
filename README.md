@@ -17,6 +17,8 @@ walkthrough.
 - Instance info at a glance in the toolbar popup.
 - A `\` **command palette** on any ServiceNow tab for navigation, record
   helpers, and toggles.
+- Read-only **record search** by table, using verified summary fields or an
+  exact `sys_id` without downloading whole records.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
 - **Translation icons** on classic form labels, resolving inherited fields.
@@ -207,10 +209,32 @@ retry that source when it reports **Capped**.
 
 | Command | Description |
 | --- | --- |
+| Search records… | Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
 | Copy sys_id | Copy the current record's `sys_id` to the clipboard. |
 | Open playbook executions | Open Process Automation playbook executions for the current record. |
 | Open current playbook customer updates | On a playbook (process definition) page, open the related `sys_update_xml` customer updates. |
 | Open customer updates by sys_id… | Enter a record sys_id or ServiceNow URL to open its customer updates. |
+
+#### Record search
+
+Choose **Search records…** and type part of a table label or technical name.
+The bounded combobox shows up to 12 matching tables without loading the whole
+table catalog. When the current URL safely identifies a table, GlideLens
+preselects it after verifying it against live metadata.
+
+The field control shows exactly which live dictionary-confirmed fields will be
+searched. Known tables receive useful presets, intersected with the live
+dictionary; other tables use safe display and summary fallbacks. Up to six can
+be selected. Sensitive value/body fields are never selected automatically,
+HTML/script types are excluded, and the System Properties preset never selects
+`value`.
+
+Text searches send a safe fragment to ServiceNow and verify the complete term
+again in the returned summary values before showing a row. At most 20 results
+are displayed. Only `sys_id` and the selected fields are retrieved; full record
+contents and search history are not downloaded or stored. Results can open the
+normal form, copy their `sys_id` or URL, or open the verified sys_ids together
+as a normal platform list. Workspace opening remains future work.
 
 **Catalog**
 
