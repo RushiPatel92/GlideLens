@@ -209,7 +209,7 @@ retry that source when it reports **Capped**.
 
 | Command | Description |
 | --- | --- |
-| Search records… | Search one table by its schema-confirmed display and summary fields, or look up an exact `sys_id`. Shows at most 20 verified, read-only results and opens the selected record. |
+| Search records… | Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
 | Copy sys_id | Copy the current record's `sys_id` to the clipboard. |
 | Open playbook executions | Open Process Automation playbook executions for the current record. |
 | Open current playbook customer updates | On a playbook (process definition) page, open the related `sys_update_xml` customer updates. |
@@ -217,16 +217,24 @@ retry that source when it reports **Capped**.
 
 #### Record search
 
-Choose **Search records…**, enter a technical table name such as `incident`,
-then enter a number, name, email, short description, or exact 32-character
-`sys_id`. GlideLens reads the table hierarchy and dictionary first, so only
-fields confirmed on that instance enter the query.
+Choose **Search records…** and type part of a table label or technical name.
+The bounded combobox shows up to 12 matching tables without loading the whole
+table catalog. When the current URL safely identifies a table, GlideLens
+preselects it after verifying it against live metadata.
+
+The field control shows exactly which live dictionary-confirmed fields will be
+searched. Known tables receive useful presets, intersected with the live
+dictionary; other tables use safe display and summary fallbacks. Up to six can
+be selected. Sensitive value/body fields are never selected automatically,
+HTML/script types are excluded, and the System Properties preset never selects
+`value`.
 
 Text searches send a safe fragment to ServiceNow and verify the complete term
 again in the returned summary values before showing a row. At most 20 results
-are displayed. Only `sys_id` and up to six summary fields are retrieved; full
-record contents are not downloaded or stored. Selecting a result opens the
-normal ServiceNow form.
+are displayed. Only `sys_id` and the selected fields are retrieved; full record
+contents and search history are not downloaded or stored. Results can open the
+normal form, copy their `sys_id` or URL, or open the verified sys_ids together
+as a normal platform list. Workspace opening remains future work.
 
 **Catalog**
 

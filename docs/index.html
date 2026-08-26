@@ -954,19 +954,21 @@ a { color: var(--teal); }
         <div class="feature-body">
           <h2>Find the record, skip the list-page detour</h2>
           <p>
-            Enter a technical table name and a number, name, email, short
-            description, or exact sys_id. GlideLens reads that instance's table
-            dictionary first and searches only fields it confirmed exist — no
-            guessed column silently turning into an unfiltered request.
+            Find a table by label or technical name without loading the full
+            table catalog. GlideLens can preselect the current page's verified
+            table, then shows exactly which live dictionary-confirmed fields it
+            will search — no guessed column silently becoming an unfiltered read.
           </p>
           <p>
-            Only the sys_id and a small set of summary fields come back. Every
-            text result is checked against the complete term in the browser,
-            nothing is stored, and choosing a row opens the normal ServiceNow
-            form.
+            Only the sys_id and up to six selected fields come back. Safe presets
+            are intersected with the live dictionary and sensitive value/body
+            fields are not automatic. Every text result is checked against the
+            complete term in the browser; copy an ID or URL, open the form, or
+            open only the verified set as a platform list.
           </p>
           <div class="tags">
             <span class="tag">schema-confirmed fields</span>
+            <span class="tag">table combobox</span>
             <span class="tag">exact sys_id</span>
             <span class="tag">20-result cap</span>
             <span class="tag is-ok">read-only</span>

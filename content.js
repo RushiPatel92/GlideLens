@@ -2866,17 +2866,40 @@ async function openRecordSearch() {
   const ui = globalThis.SNRecordSearchUI;
   if (!recordSearchSession) recordSearchSession = engine.createSessionTracker();
 
+  /* URL-only detection is deliberately conservative. The candidate is still
+   * resolved through sys_db_object before it becomes selectable; no workspace
+   * route discovery or guessed schema is involved. */
+  const pageContext = recordContextFromText(location.href);
+  const initialTable = pageContext.table && /^[a-z][a-z0-9_]*$/.test(pageContext.table)
+    ? pageContext.table.toLowerCase()
+    : null;
+
+  const runCurrent = async (operation) => {
+    const sessionId = recordSearchSession.next();
+    const isStale = () => !recordSearchSession.isCurrent(sessionId);
+    return operation(isStale);
+  };
+
   ui.open({
+    initialTable,
     onCancel: () => recordSearchSession.cancel(),
+    onFindTables: (input) => runCurrent(() => engine.findTables(input)),
+    onResolveTable: (table) => runCurrent((isStale) => engine.resolveTableInfo(table, {
+      origin: location.origin,
+      shouldStop: isStale,
+    })),
     onSearch: async (input) => {
       const parsed = engine.parseSearch(input && input.table, input && input.term);
-      if (!parsed.ok) throw new Error(parsed.error);
-      const sessionId = recordSearchSession.next();
-      const isStale = () => !recordSearchSession.isCurrent(sessionId);
-      return engine.runSearch(parsed, {
+      if (!parsed.ok) {
+        const error = new Error(parsed.error);
+        error.code = parsed.code || "validation";
+        throw error;
+      }
+      return runCurrent((isStale) => engine.runSearch(parsed, {
         origin: location.origin,
         shouldStop: isStale,
-      });
+        fields: input && input.fields,
+      }));
     },
   });
 }

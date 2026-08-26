@@ -35,8 +35,9 @@ The suites cover:
 - `code_search_api.test.js` — the instance Code Search endpoint, coverage map,
   ignored table scope, saturation, and adapter merging.
 - `code_search_ui.test.js` — result identity and separate match/record counts.
-- `record_search.test.js` — table/field safety, hierarchy-driven summaries,
-  complete-term verification, result caps, exact sys_id fallback, and stale
+- `record_search.test.js` — bounded table lookup, table/field safety, live
+  preset intersection, explicit field selection, complete-term verification,
+  result actions/caps, error categories, exact sys_id fallback, and stale
   search cancellation.
 - `debug_timeline.test.js` — reversible MAIN-world recording, including all
   GlideAjax entry points.
@@ -101,10 +102,14 @@ Previously verified assumptions include the `cat_item`/`catalog_item` split,
 the `IO:` prefix on `catalog_ui_policy_action.catalog_variable`,
 `super_class.name` dot-walking to a string, the two-hop
 `sc_item_option.item_option_new.*` chain, and the defining-table inheritance
-walk. Record Search also confirmed that `sys_dictionary.display` and `active`
-are readable, display fields can be defined on a parent table, and some tables
-have no explicit display row and therefore need confirmed summary-field
-fallbacks. Reverify when platform behavior or the queried schema changes.
+walk. Record Search also confirmed that bounded `nameLIKE...^ORlabelLIKE...`
+reads on `sys_db_object` return both table labels and technical names, that
+`sys_dictionary.display` and `active` are readable, and that display fields can
+be defined on a parent table. Some tables have no explicit display row and need
+confirmed summary-field fallbacks. Known preset candidates for task, user,
+group, configuration-item, and system-property tables were checked as live
+dictionary rows; `sys_properties.value` is readable but intentionally never a
+default. Reverify when platform behavior or the queried schema changes.
 
 ## Repository map
 

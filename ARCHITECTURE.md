@@ -48,14 +48,22 @@ so they must not use the all-frame `SN_TABLE_GET` path either.
 
 ## Record Search
 
-Record Search performs read-only Table API lookup against one explicit table.
-The user supplies the technical table name and either text or an exact
-32-character `sys_id`.
+Record Search performs read-only Table API lookup against one verified table.
+Its combobox sends a query-safe anchor to `sys_db_object` and returns at most 12
+matching labels and technical names; it never downloads the full table catalog.
+A returned suggestion must also contain that anchor in its label or name, so an
+ignored server condition cannot populate the combobox with unrelated tables.
+A table parsed conservatively from the current URL can be offered initially,
+but it still has to resolve through live metadata before use. Workspace opening
+and workspace discovery are intentionally outside this feature.
 
 Text search never guesses columns. It walks `sys_db_object.super_class`, reads
-the hierarchy's `sys_dictionary` rows, and selects at most six confirmed text
-fields: explicit display fields first, followed by confirmed conventional
-summary fields such as number, name, short description, username, and email.
+the hierarchy's bounded `sys_dictionary` rows, and exposes the confirmed text
+fields in a selector. Known-table presets are preferences intersected with
+those live rows, followed by confirmed generic display/summary fallbacks. At
+most six fields can be selected. HTML/script types are excluded; value, body,
+content, credential, and similar fields are never selected automatically. The
+`sys_properties` preset explicitly excludes `value`.
 
 Only a query-safe anchor reaches the encoded query. Every returned row is then
 checked for the user's complete case-insensitive term in the retrieved summary
@@ -66,6 +74,10 @@ The server returns at most 50 candidate rows and the panel shows at most 20
 verified results. Only `sys_id` and the selected summaries are retrieved; full
 record contents are neither requested nor stored. Exact `sys_id` lookup can
 fall back to `sys_id` alone when dictionary metadata is unreadable.
+
+Result rows provide form opening plus Copy sys_id and Copy URL actions. The
+panel can open only the verified result sys_ids as a normal platform list; it
+does not replay the broader server prefilter or open a Workspace route.
 
 Table metadata caches only in page memory. A newer search or a closed panel
 invalidates older work so stale results cannot replace the current search.

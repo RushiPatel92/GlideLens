@@ -34,12 +34,52 @@ test("Record Search UI loads without a DOM until opened", () => {
   assert.strictEqual(typeof context.SNRecordSearchUI.open, "function");
 });
 
+test("Record Search UI retains table/result keyboard and copy/list actions", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "record_search_ui.js"), "utf8");
+  ["ArrowDown", "ArrowUp", "Home", "End", "Enter", "Escape"].forEach((key) => {
+    assert.ok(source.includes('event.key === "' + key + '"'), "missing " + key);
+  });
+  ["Copy sys_id", "Copy URL", "Open results in list"].forEach((label) => {
+    assert.ok(source.includes(label), "missing " + label);
+  });
+});
+
 test("table names are normalized and restricted to technical identifiers", () => {
   assert.strictEqual(RS.parseSearch(" Incident ", "INC0012345").table, "incident");
   assert.strictEqual(RS.parseSearch("x_scope_custom_table", "Example").ok, true);
   assert.strictEqual(RS.parseSearch("incident^active=true", "Example").ok, false);
   assert.strictEqual(RS.parseSearch("incident.do", "Example").ok, false);
   assert.strictEqual(RS.parseSearch("", "Example").ok, false);
+});
+
+test("table lookup requires a safe bounded anchor", () => {
+  assert.strictEqual(RS.extractTableLookupAnchor("i"), null);
+  assert.strictEqual(RS.extractTableLookupAnchor("Incident tables"), "Incident");
+  assert.strictEqual(RS.extractTableLookupAnchor("^^sys^db"), "sys");
+});
+
+test("table suggestions query a bounded match set and return label plus technical name", async () => {
+  const requests = [];
+  const results = await RS.findTables("incident^active=true", {
+    get: async (request) => {
+      requests.push(request);
+      return [
+        { name: "incident", label: "Incident" },
+        { name: "incident_task", label: "Incident Task" },
+        { name: "unrelated_table", label: "Unrelated" },
+        { name: "bad^table", label: "Unsafe" },
+      ];
+    },
+  });
+  assert.strictEqual(requests.length, 1);
+  assert.strictEqual(requests[0].table, "sys_db_object");
+  assert.strictEqual(requests[0].limit, RS.TABLE_SUGGESTION_LIMIT);
+  assert.strictEqual(requests[0].query, "nameLIKEincident^ORlabelLIKEincident^ORDERBYlabel^ORDERBYname");
+  assert.ok(!requests[0].query.includes("=true"));
+  assert.deepStrictEqual(own(results).map((item) => [item.label, item.name]), [
+    ["Incident", "incident"],
+    ["Incident Task", "incident_task"],
+  ]);
 });
 
 test("exact sys_id input is recognized without a text anchor", () => {
@@ -134,6 +174,92 @@ test("field discovery keeps only confirmed text summaries and prefers display fi
   ]);
 });
 
+test("known-table presets are intersected with live fields", () => {
+  const fields = [
+    { name: "number", label: "Number", autoSelectable: true },
+    { name: "short_description", label: "Short description", autoSelectable: true },
+  ];
+  const selected = RS.chooseDefaultFields(
+    "incident",
+    [{ name: "incident" }, { name: "task" }],
+    fields
+  );
+  assert.deepStrictEqual(own(selected).map((field) => field.name), [
+    "number",
+    "short_description",
+  ]);
+  assert.ok(!own(selected).some((field) => field.name === "description"));
+});
+
+test("system property value and body-like fields are never selected automatically", () => {
+  const fields = [
+    { name: "name", label: "Name", autoSelectable: true, display: false },
+    { name: "description", label: "Description", autoSelectable: true, display: false },
+    { name: "value", label: "Value", autoSelectable: false, display: true },
+    { name: "message_body", label: "Body", autoSelectable: false, display: false },
+  ];
+  const selected = RS.chooseDefaultFields(
+    "sys_properties",
+    [{ name: "sys_properties" }],
+    fields
+  );
+  assert.deepStrictEqual(own(selected).map((field) => field.name), ["name", "description"]);
+});
+
+test("field discovery excludes HTML types and marks value fields manual-only", async () => {
+  const hierarchy = [{ name: "example_record", label: "Example" }];
+  const fields = await RS.discoverFields(hierarchy, async () => [
+    {
+      name: "example_record",
+      element: "name",
+      column_label: "Name",
+      internal_type: "string",
+      display: "true",
+    },
+    {
+      name: "example_record",
+      element: "value",
+      column_label: "Value",
+      internal_type: "string",
+      display: "false",
+    },
+    {
+      name: "example_record",
+      element: "html_body",
+      column_label: "HTML body",
+      internal_type: "html",
+      display: "false",
+    },
+  ]);
+  assert.deepStrictEqual(own(fields).map((field) => field.name), ["name", "value"]);
+  assert.strictEqual(fields.find((field) => field.name === "value").autoSelectable, false);
+});
+
+test("field selection rejects stale or excessive names", () => {
+  const info = {
+    fields: [
+      { name: "name" },
+      { name: "number" },
+      { name: "title" },
+      { name: "email" },
+      { name: "user_name" },
+      { name: "short_description" },
+    ],
+    defaultFields: [{ name: "name" }],
+  };
+  assert.deepStrictEqual(
+    own(RS.selectVerifiedFields(info, ["number", "name"])).map((field) => field.name),
+    ["number", "name"]
+  );
+  assert.throws(() => RS.selectVerifiedFields(info, ["not_live"]), /live dictionary/);
+  assert.throws(
+    () => RS.selectVerifiedFields(info, [
+      "name", "number", "title", "email", "user_name", "short_description", "extra",
+    ]),
+    /no more than six/
+  );
+});
+
 function metadataGet(table, resultRows, requests) {
   return async (request) => {
     requests.push(request);
@@ -203,6 +329,29 @@ test("full user text is verified against returned fields before rendering", asyn
   assert.strictEqual(tableRequest.limit, RS.SERVER_LIMIT);
 });
 
+test("only the user's verified field selection enters the query and result summary", async () => {
+  const table = "example_selected_record";
+  const requests = [];
+  const parsed = RS.parseSearch(table, "example");
+  const result = await RS.runSearch(parsed, {
+    origin: "https://example.service-now.com/selected",
+    fields: ["email"],
+    get: metadataGet(table, [{
+      sys_id: "00000000000000000000000000000009",
+      number: "EXAMPLE009",
+      short_description: "Not selected",
+      email: "example@example.com",
+    }], requests),
+  });
+  const tableRequest = requests.find((request) => request.table === table);
+  assert.strictEqual(tableRequest.query, "emailLIKEexample");
+  assert.strictEqual(tableRequest.fields, "sys_id,email");
+  assert.deepStrictEqual(
+    own(result.results[0].values).map((item) => item.field),
+    ["email"]
+  );
+});
+
 test("visible results are capped at twenty", async () => {
   const table = "example_capped_record";
   const rows = Array.from({ length: 25 }, (_, index) => ({
@@ -256,4 +405,57 @@ test("a stale search stops before painting results", async () => {
   });
   assert.strictEqual(result.stale, true);
   assert.strictEqual(result.results.length, 0);
+});
+
+test("record and verified-result list URLs contain only validated identifiers", () => {
+  const one = {
+    table: "example_record",
+    sysId: "00000000000000000000000000000001",
+  };
+  assert.strictEqual(
+    RS.buildRecordUrl("https://example.service-now.com", one),
+    "https://example.service-now.com/example_record.do?sys_id=" + one.sysId
+  );
+  const listUrl = RS.buildResultListUrl("https://example.service-now.com", {
+    table: "example_record",
+    results: [
+      one,
+      { table: "example_record", sysId: "00000000000000000000000000000002" },
+      { table: "example_record", sysId: "not-a-sys-id" },
+    ],
+  });
+  assert.ok(listUrl.startsWith("https://example.service-now.com/example_record_list.do?"));
+  assert.ok(decodeURIComponent(listUrl).includes(
+    "sys_idIN00000000000000000000000000000001,00000000000000000000000000000002"
+  ));
+  assert.throws(
+    () => RS.buildResultListUrl("https://example.service-now.com", {
+      table: "example^record",
+      results: [one],
+    }),
+    /table name is not safe/
+  );
+});
+
+test("transport errors distinguish access, schema, and transient failures", async () => {
+  const context = loadScript("record_search.js");
+  context.chrome = {
+    runtime: {
+      sendMessage: async () => ({ ok: false, status: 403 }),
+    },
+  };
+  await assert.rejects(
+    () => context.SNRecordSearch.tableGet({ table: "sys_dictionary" }),
+    (error) => error.code === "access" && /table metadata/.test(error.message)
+  );
+  context.chrome.runtime.sendMessage = async () => ({ ok: false, status: 404 });
+  await assert.rejects(
+    () => context.SNRecordSearch.tableGet({ table: "example_record" }),
+    (error) => error.code === "schema" && /not found/.test(error.message)
+  );
+  context.chrome.runtime.sendMessage = async () => ({ ok: false, status: 503 });
+  await assert.rejects(
+    () => context.SNRecordSearch.tableGet({ table: "example_record" }),
+    (error) => error.code === "transient" && /Try again/.test(error.message)
+  );
 });
