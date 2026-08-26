@@ -166,6 +166,11 @@ async function codeSearchApiGetInPage(request) {
  * ===================================================================== */
 
 const codeSearchFrameByTab = new Map();
+const searchFrameResolutionByTab = new Map();
+const SEARCH_FRAME_PROBE_TIMEOUT_MS = 2000;
+const SEARCH_FRAME_DISCOVERY_WAIT_MS = 150;
+const searchFrameDiscoveries = new Map();
+let searchFrameDiscoverySequence = 0;
 
 function hasUserTokenInPage() {
   try {
@@ -175,26 +180,87 @@ function hasUserTokenInPage() {
   }
 }
 
-/*
- * The frame that can read g_ck. On classic UI that is usually the shell, but
- * on some pages only gsft_main has it, so it is discovered rather than assumed.
- * Frame 0 is the fallback: a wrong guess degrades to the 401 the caller already
- * reports, where returning nothing at all would look like an empty instance.
- */
-async function resolveTokenFrame(tabId) {
-  if (codeSearchFrameByTab.has(tabId)) return codeSearchFrameByTab.get(tabId);
-  let frameId = 0;
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
+function registerSearchFrame(requestId, sender) {
+  const discovery = searchFrameDiscoveries.get(requestId);
+  if (
+    !discovery ||
+    !sender ||
+    !sender.tab ||
+    sender.tab.id !== discovery.tabId ||
+    !Number.isInteger(sender.frameId)
+  ) {
+    return false;
+  }
+  discovery.frameIds.add(sender.frameId);
+  return true;
+}
+
+function discoverSearchFrames(tabId) {
+  const requestId =
+    "search:" + tabId + ":" + Date.now() + ":" + (++searchFrameDiscoverySequence);
+  const discovery = { tabId, frameIds: new Set() };
+  searchFrameDiscoveries.set(requestId, discovery);
+  return chrome.tabs
+    .sendMessage(tabId, { type: "DISCOVER_SEARCH_FRAME", requestId })
+    .catch(() => {})
+    .then(() => new Promise((resolve) => {
+      setTimeout(resolve, SEARCH_FRAME_DISCOVERY_WAIT_MS);
+    }))
+    .then(() => {
+      searchFrameDiscoveries.delete(requestId);
+      const frameIds = Array.from(discovery.frameIds).sort((a, b) => a - b);
+      if (!frameIds.length) frameIds.push(0);
+      return frameIds;
+    });
+}
+
+function probeTokenFrame(tabId, frameId) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), SEARCH_FRAME_PROBE_TIMEOUT_MS);
+    chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
       world: "MAIN",
       func: hasUserTokenInPage,
-    });
-    const withToken = results.filter((item) => item && item.result);
-    if (withToken.length) frameId = withToken[0].frameId;
-  } catch (e) {}
-  codeSearchFrameByTab.set(tabId, frameId);
-  return frameId;
+    }).then(
+      (results) => finish({
+        frameId,
+        hasToken: results.some((item) => item && item.result),
+      }),
+      () => finish(null)
+    );
+  });
+}
+
+/* Content scripts announce only concrete eligible frames. Probe those frames
+ * individually so an about:blank/helper frame cannot hang token discovery. */
+async function discoverTokenFrame(tabId) {
+  const frameIds = await discoverSearchFrames(tabId);
+  const probes = await Promise.all(
+    frameIds.map((frameId) => probeTokenFrame(tabId, frameId))
+  );
+  const withToken = probes.find((item) => item && item.hasToken);
+  return withToken ? withToken.frameId : 0;
+}
+
+async function resolveTokenFrame(tabId) {
+  if (codeSearchFrameByTab.has(tabId)) return codeSearchFrameByTab.get(tabId);
+  if (!searchFrameResolutionByTab.has(tabId)) {
+    searchFrameResolutionByTab.set(tabId, discoverTokenFrame(tabId));
+  }
+  try {
+    const frameId = await searchFrameResolutionByTab.get(tabId);
+    codeSearchFrameByTab.set(tabId, frameId);
+    return frameId;
+  } finally {
+    searchFrameResolutionByTab.delete(tabId);
+  }
 }
 
 /*
@@ -268,7 +334,10 @@ function codeSearchApiGet(tabId, request) {
   );
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => codeSearchFrameByTab.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  codeSearchFrameByTab.delete(tabId);
+  searchFrameResolutionByTab.delete(tabId);
+});
 
 async function fillPortalVariables(variables) {
   const result = {
@@ -3166,6 +3235,9 @@ function stopTimelineInFrames(tabId) {
 
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === "SEARCH_FRAME_AVAILABLE" && msg.requestId) {
+    registerSearchFrame(msg.requestId, sender);
+  }
   if (msg && msg.type === "DEBUG_TIMELINE_FRAME_AVAILABLE" && msg.requestId) {
     registerTimelineFrame(msg.requestId, sender);
   }

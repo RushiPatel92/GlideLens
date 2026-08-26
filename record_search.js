@@ -10,7 +10,10 @@
   const TABLE_LOOKUP_MIN_LENGTH = 2;
   const RESULT_LIMIT = 20;
   const SERVER_LIMIT = 50;
-  const TABLE_SUGGESTION_LIMIT = 12;
+  const TABLE_SUGGESTION_LIMIT = 50;
+  const TABLE_LOOKUP_CANDIDATE_LIMIT = 50;
+  const REQUEST_TIMEOUT_MS = 20000;
+  const OPTIONAL_DICTIONARY_TIMEOUT_MS = 8000;
   const MAX_HIERARCHY_DEPTH = 20;
   const MAX_SEARCH_FIELDS = 6;
   const MAX_DICTIONARY_FIELDS = 250;
@@ -97,6 +100,20 @@
     return best.length >= TABLE_LOOKUP_MIN_LENGTH ? best : null;
   }
 
+  function tableLookupNeedles(input) {
+    const text = String(input == null ? "" : input).trim();
+    const anchor = extractTableLookupAnchor(text);
+    if (!anchor) return null;
+    /* A clean multi-word label can be narrowed without allowing encoded-query
+     * syntax through. Search its label phrase and technical-name equivalent;
+     * inputs containing operators or punctuation keep the single safe anchor. */
+    if (/^[A-Za-z0-9_]+(?:\s+[A-Za-z0-9_]+)+$/.test(text)) {
+      const words = text.split(/\s+/);
+      return { label: words.join(" "), name: words.join("_") };
+    }
+    return { label: anchor, name: anchor };
+  }
+
   function parseSearch(tableInput, termInput) {
     const table = String(tableInput == null ? "" : tableInput).trim().toLowerCase();
     const term = String(termInput == null ? "" : termInput).trim();
@@ -175,7 +192,8 @@
       return "ServiceNow did not authorize this read. Refresh the page or sign in again.";
     }
     if (status === 403) {
-      return table === "sys_db_object" || table === "sys_dictionary"
+      return table === "sys_db_object" || table === "sys_dictionary" ||
+        table === "sys_documentation"
         ? "You do not have access to the table metadata needed for Record Search."
         : "You do not have read access to the selected table.";
     }
@@ -195,13 +213,33 @@
     if (!globalThis.chrome || !chrome.runtime || !chrome.runtime.sendMessage) {
       throw createError("transient", "Record Search transport is unavailable.");
     }
-    const response = await chrome.runtime.sendMessage({
-      type: "SN_RECORD_SEARCH_GET",
-      table: request.table,
-      query: request.query || "",
-      fields: request.fields || "",
-      limit: request.limit || SERVER_LIMIT,
-      options: request.options || {},
+    const response = await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      const timer = setTimeout(() => finish(
+        reject,
+        createError(
+          "transient",
+          "ServiceNow took too long to complete the read. Try again.",
+          0
+        )
+      ), request.timeoutMs || REQUEST_TIMEOUT_MS);
+      chrome.runtime.sendMessage({
+        type: "SN_RECORD_SEARCH_GET",
+        table: request.table,
+        query: request.query || "",
+        fields: request.fields || "",
+        limit: request.limit || SERVER_LIMIT,
+        options: request.options || {},
+      }).then(
+        (value) => finish(resolve, value),
+        (error) => finish(reject, error)
+      );
     });
     if (!response || !response.ok) {
       const status = (response && response.status) || 0;
@@ -225,28 +263,73 @@
     return { name, label: displayValue(row.label).trim() || name };
   }
 
+  function tableSuggestionRank(item, needles) {
+    const label = item.label.toLowerCase();
+    const name = item.name.toLowerCase();
+    const labelNeedle = needles.label.toLowerCase();
+    const nameNeedle = needles.name.toLowerCase();
+    if (label === labelNeedle) return 0;
+    if (name === nameNeedle) return 1;
+    if (label.startsWith(labelNeedle)) return 2;
+    if (name.startsWith(nameNeedle)) return 3;
+    if (label.includes(labelNeedle)) return 4;
+    if (name.includes(nameNeedle)) return 5;
+    return 6;
+  }
+
   async function findTables(input, options) {
     const opts = options || {};
     const get = opts.get || defaultTransport;
-    const anchor = extractTableLookupAnchor(input);
-    if (!anchor) return [];
-    const rows = await getRows(get, {
-      table: "sys_db_object",
-      query: "nameLIKE" + anchor + "^ORlabelLIKE" + anchor + "^ORDERBYlabel^ORDERBYname",
+    const needles = tableLookupNeedles(input);
+    if (!needles) return [];
+    const request = (table, query) => getRows(get, {
+      table,
+      query,
       fields: "name,label",
-      limit: TABLE_SUGGESTION_LIMIT,
+      limit: TABLE_LOOKUP_CANDIDATE_LIMIT,
       options: { displayAll: true, excludeRefLinks: true },
     });
+    /* Keep label and technical-name candidate windows independent. A broad
+     * technical-name match set must not crowd a useful label match out before
+     * client-side verification and ranking. */
+    const labelQuery =
+      "elementISEMPTY^labelLIKE" + needles.label + "^ORDERBYlabel^ORDERBYname";
+    const [labelRows, nameRows] = await Promise.all([
+      /* ServiceNow stores user-facing table labels as documentation records.
+       * Fall back to sys_db_object.label only when those rows are unreadable. */
+      request("sys_documentation", labelQuery).catch(() =>
+        request(
+          "sys_db_object",
+          "labelLIKE" + needles.label + "^ORDERBYlabel^ORDERBYname"
+        )
+      ),
+      request(
+        "sys_db_object",
+        "nameLIKE" + needles.name.toLowerCase() + "^ORDERBYname^ORDERBYlabel"
+      ),
+    ]);
     const seen = new Set();
-    const needle = anchor.toLowerCase();
-    return rows
+    const nameNeedle = needles.name.toLowerCase();
+    const labelNeedle = needles.label.toLowerCase();
+    const matches = labelRows.concat(nameRows)
       .map(normalizeTableRow)
       .filter((item) => item && (
-        item.name.toLowerCase().includes(needle) ||
-        item.label.toLowerCase().includes(needle)
+        item.name.toLowerCase().includes(nameNeedle) ||
+        item.label.toLowerCase().includes(labelNeedle)
       ))
       .filter((item) => !seen.has(item.name) && seen.add(item.name))
-      .slice(0, TABLE_SUGGESTION_LIMIT);
+      .sort((a, b) =>
+        tableSuggestionRank(a, needles) - tableSuggestionRank(b, needles) ||
+        a.label.length - b.label.length ||
+        a.label.localeCompare(b.label) ||
+        a.name.localeCompare(b.name)
+      );
+    const suggestions = matches.slice(0, TABLE_SUGGESTION_LIMIT);
+    suggestions.truncated =
+      labelRows.length >= TABLE_LOOKUP_CANDIDATE_LIMIT ||
+      nameRows.length >= TABLE_LOOKUP_CANDIDATE_LIMIT ||
+      matches.length > TABLE_SUGGESTION_LIMIT;
+    return suggestions;
   }
 
   async function readTableRow(table, get) {
@@ -324,20 +407,22 @@
     const hierarchyRank = new Map(names.map((name, index) => [name, index]));
     const base = "nameIN" + names.join(",");
     const candidates = presetCandidatesForHierarchy(hierarchy);
-    const request = (query, limit) => getRows(get, {
+    const request = (query, limit, timeoutMs) => getRows(get, {
       table: "sys_dictionary",
       query,
       fields: "name,element,column_label,internal_type,display",
       limit,
       options: { displayAll: true, excludeRefLinks: true },
+      timeoutMs,
     });
     const [displayRows, candidateRows, allRows] = await Promise.all([
       request(base + "^display=true^active=true", 100),
       request(base + "^elementIN" + candidates.join(",") + "^active=true", 100),
       request(
         base + "^active=true^elementISNOTEMPTY^ORDERBYcolumn_label",
-        MAX_DICTIONARY_FIELDS
-      ),
+        MAX_DICTIONARY_FIELDS,
+        OPTIONAL_DICTIONARY_TIMEOUT_MS
+      ).catch(() => []),
     ]);
     const normalized = displayRows.concat(candidateRows, allRows)
       .map((row) => normalizeDictionaryField(row, hierarchyRank))
@@ -447,6 +532,31 @@
     };
   }
 
+  function valueMatchRank(value, term) {
+    const text = String(value == null ? "" : value).toLowerCase();
+    const needle = String(term == null ? "" : term).toLowerCase();
+    if (!needle || !text.includes(needle)) return 4;
+    if (text === needle) return 0;
+    const index = text.indexOf(needle);
+    if (index === 0) return 1;
+    return /[a-z0-9_]/i.test(text[index - 1]) ? 3 : 2;
+  }
+
+  function sortVerifiedResults(results, term) {
+    return (results || []).slice().sort((a, b) => {
+      const rank = (result) => Math.min.apply(null,
+        (result.values || []).map((item) => valueMatchRank(item.value, term)).concat([4])
+      );
+      return rank(a) - rank(b) ||
+        String(a.title || a.sysId).localeCompare(
+          String(b.title || b.sysId),
+          undefined,
+          { numeric: true, sensitivity: "base" }
+        ) ||
+        String(a.sysId).localeCompare(String(b.sysId));
+    });
+  }
+
   async function runSearch(parsed, options) {
     if (!parsed || !parsed.ok) throw createError("validation", "Invalid record search.");
     const opts = options || {};
@@ -500,7 +610,10 @@
       .filter((row) => parsed.isSysId || verifyRow(row, selectedFields, parsed.term))
       .map((row) => normalizeResult(row, tableInfo, selectedFields))
       .filter(Boolean);
-    const results = verified.slice(0, RESULT_LIMIT);
+    const ordered = parsed.isSysId
+      ? verified
+      : sortVerifiedResults(verified, parsed.term);
+    const results = ordered.slice(0, RESULT_LIMIT);
     return {
       stale: false,
       table: tableInfo.table,
@@ -509,6 +622,9 @@
       fields: selectedFields,
       availableFields: tableInfo.fields,
       results,
+      sortLabel: parsed.isSysId || !selectedFields.length
+        ? ""
+        : "relevance, then " + selectedFields[0].label,
       truncated: rows.length >= SERVER_LIMIT || verified.length > RESULT_LIMIT,
       candidateCount: rows.length,
     };
@@ -539,6 +655,9 @@
     RESULT_LIMIT,
     SERVER_LIMIT,
     TABLE_SUGGESTION_LIMIT,
+    TABLE_LOOKUP_CANDIDATE_LIMIT,
+    REQUEST_TIMEOUT_MS,
+    OPTIONAL_DICTIONARY_TIMEOUT_MS,
     MAX_SEARCH_FIELDS,
     KNOWN_TABLE_PRESETS,
     GENERIC_FIELD_PRIORITY,
@@ -547,6 +666,8 @@
     displayValue,
     extractAnchor,
     extractTableLookupAnchor,
+    tableLookupNeedles,
+    tableSuggestionRank,
     parseSearch,
     buildSearchQuery,
     createSessionTracker,
@@ -558,6 +679,8 @@
     selectVerifiedFields,
     verifyRow,
     normalizeResult,
+    valueMatchRank,
+    sortVerifiedResults,
     runSearch,
     buildRecordUrl,
     buildResultListUrl,

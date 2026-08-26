@@ -53,14 +53,15 @@
     .table-menu{position:absolute;left:0;right:0;top:calc(100% + 5px);z-index:5;
       max-height:270px;overflow:auto;background:#171724;border:1px solid #565681;
       border-radius:8px;box-shadow:0 16px 38px rgba(0,0,0,.55);padding:5px}
-    .table-menu[hidden]{display:none}.table-option{display:flex;align-items:baseline;gap:9px;
-      width:100%;padding:8px 9px;border:1px solid transparent;border-radius:6px;
+    .table-menu[hidden]{display:none}.table-option{display:grid;grid-template-columns:minmax(0,1fr);
+      gap:3px;width:100%;padding:9px;border:1px solid transparent;border-radius:6px;
       background:transparent;color:#ececf7;text-align:left;cursor:pointer}
     .table-option:hover,.table-option.active{background:#2c2d49;border-color:#4d5079}
     .table-option.active{box-shadow:inset 3px 0 0 var(--teal)}
-    .table-label{font-size:12px;font-weight:650;min-width:0;overflow:hidden;
-      text-overflow:ellipsis;white-space:nowrap}.table-name{margin-left:auto;color:#9494af;
-      font:10px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap}
+    .table-label{font-size:12px;font-weight:650;min-width:0;line-height:1.35;
+      overflow-wrap:anywhere;white-space:normal}.table-name{min-width:0;color:#9494af;line-height:1.35;
+      font:10px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;
+      white-space:normal}
     .menu-message{padding:11px;color:#9999b1;font-size:11px;line-height:1.4}
     .search-btn,.toolbar button,.fields-button,.result-action{border:1px solid #5b5b86;
       background:#3f4067;color:#e6e6f5;border-radius:7px;padding:8px 13px;cursor:pointer;font-size:12px}
@@ -234,7 +235,9 @@
       renderTableOptions();
       setStatus(
         tableOptions.length
-          ? tableOptions.length + (tableOptions.length === 1 ? " matching table" : " matching tables") + " · choose one."
+          ? (tableOptions.truncated ? "Showing " : "") + tableOptions.length +
+            (tableOptions.length === 1 ? " matching table" : " matching tables") +
+            (tableOptions.truncated ? " · type more to narrow, or choose one." : " · choose one.")
           : "No matching readable tables were found.",
         tableOptions.length ? "" : "empty",
         false
@@ -480,9 +483,10 @@
     rows.textContent = "";
     const results = Array.isArray(result.results) ? result.results : [];
     const suffix = result.truncated ? " · showing the first 20 verified matches" : "";
+    const sortSuffix = result.sortLabel ? " · sorted by " + result.sortLabel : "";
     setStatus(
       results.length + (results.length === 1 ? " verified record" : " verified records") +
-        " in " + (result.tableLabel || result.table) + suffix,
+        " in " + (result.tableLabel || result.table) + sortSuffix + suffix,
       results.length ? "" : "empty",
       false
     );

@@ -2586,6 +2586,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }).catch(() => {});
     sendResponse({ ok: true });
   }
+  if (msg && msg.type === "DISCOVER_SEARCH_FRAME" && msg.requestId) {
+    chrome.runtime.sendMessage({
+      type: "SEARCH_FRAME_AVAILABLE",
+      requestId: msg.requestId,
+    }).catch(() => {});
+    sendResponse({ ok: true });
+  }
   if (msg && msg.type === "PREFILL_PROGRESS") {
     if (window === window.top) showToast(msg.message || "Filling portal form...", false, 6000);
   }

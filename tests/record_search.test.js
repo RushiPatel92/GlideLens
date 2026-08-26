@@ -12,7 +12,7 @@ const vm = require("node:vm");
 
 function loadScript(name) {
   const file = path.join(__dirname, "..", name);
-  const context = { globalThis: null };
+  const context = { globalThis: null, setTimeout, clearTimeout };
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
@@ -66,20 +66,120 @@ test("table suggestions query a bounded match set and return label plus technica
       return [
         { name: "incident", label: "Incident" },
         { name: "incident_task", label: "Incident Task" },
+        { name: "x_example_incident_archive", label: "Archived records" },
         { name: "unrelated_table", label: "Unrelated" },
         { name: "bad^table", label: "Unsafe" },
       ];
     },
   });
-  assert.strictEqual(requests.length, 1);
-  assert.strictEqual(requests[0].table, "sys_db_object");
-  assert.strictEqual(requests[0].limit, RS.TABLE_SUGGESTION_LIMIT);
-  assert.strictEqual(requests[0].query, "nameLIKEincident^ORlabelLIKEincident^ORDERBYlabel^ORDERBYname");
-  assert.ok(!requests[0].query.includes("=true"));
+  assert.strictEqual(requests.length, 2);
+  requests.forEach((request) => {
+    assert.strictEqual(request.limit, RS.TABLE_LOOKUP_CANDIDATE_LIMIT);
+    assert.ok(!request.query.includes("=true"));
+  });
+  assert.deepStrictEqual(requests.map((request) => [request.table, request.query]), [
+    ["sys_documentation", "elementISEMPTY^labelLIKEincident^ORDERBYlabel^ORDERBYname"],
+    ["sys_db_object", "nameLIKEincident^ORDERBYname^ORDERBYlabel"],
+  ]);
+  assert.deepStrictEqual(requests.map((request) => request.query), [
+    "elementISEMPTY^labelLIKEincident^ORDERBYlabel^ORDERBYname",
+    "nameLIKEincident^ORDERBYname^ORDERBYlabel",
+  ]);
   assert.deepStrictEqual(own(results).map((item) => [item.label, item.name]), [
     ["Incident", "incident"],
     ["Incident Task", "incident_task"],
+    ["Archived records", "x_example_incident_archive"],
   ]);
+});
+
+test("table suggestions show the label and technical name on separate full-width rows", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "record_search_ui.js"), "utf8");
+  assert.ok(source.includes(".table-option{display:grid;grid-template-columns:minmax(0,1fr)"));
+  assert.ok(source.includes("overflow-wrap:anywhere;white-space:normal}.table-name"));
+  assert.ok(source.includes("overflow-wrap:anywhere;\n      white-space:normal}"));
+});
+
+test("the record results UI explains its ordering", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "record_search_ui.js"), "utf8");
+  assert.ok(source.includes('" · sorted by " + result.sortLabel'));
+});
+
+test("verified record results sort by relevance then displayed title", () => {
+  const make = (sysId, title, value) => ({
+    sysId,
+    title,
+    values: [{ value }],
+  });
+  const results = RS.sortVerifiedResults([
+    make("00000000000000000000000000000005", "Gamma", "Showcase item"),
+    make("00000000000000000000000000000002", "Zeta", "case"),
+    make("00000000000000000000000000000004", "Delta", "Supplier case review"),
+    make("00000000000000000000000000000003", "Beta", "Case study"),
+    make("00000000000000000000000000000001", "Alpha", "Case"),
+  ], "case");
+  assert.deepStrictEqual(own(results).map((item) => item.title), [
+    "Alpha", "Zeta", "Beta", "Delta", "Gamma",
+  ]);
+});
+
+test("multi-word table lookup searches the complete label phrase and technical name", async () => {
+  const requests = [];
+  const results = await RS.findTables("Supplier case", {
+    get: async (request) => {
+      requests.push(request);
+      return [
+        { name: "sn_slm_case", label: "Supplier Case" },
+        { name: "sn_supplier_item", label: "Unrelated supplier item" },
+      ];
+    },
+  });
+  assert.deepStrictEqual(requests.map((request) => [request.table, request.query]), [
+    ["sys_documentation", "elementISEMPTY^labelLIKESupplier case^ORDERBYlabel^ORDERBYname"],
+    ["sys_db_object", "nameLIKEsupplier_case^ORDERBYname^ORDERBYlabel"],
+  ]);
+  assert.deepStrictEqual(own(results).map((item) => item.name), ["sn_slm_case"]);
+});
+
+test("separate candidate windows keep a label match ahead of crowded technical matches", async () => {
+  const results = await RS.findTables("supplier", {
+    get: async (request) => {
+      if (request.table === "sys_documentation") {
+        return [{ name: "sn_slm_case", label: "Supplier Case" }];
+      }
+      return Array.from({ length: request.limit }, (_, index) => ({
+        name: "sn_supplier_example_" + String(index).padStart(2, "0"),
+        label: "Example table " + index,
+      }));
+    },
+  });
+  assert.strictEqual(results[0].name, "sn_slm_case");
+  assert.strictEqual(results.truncated, true);
+});
+
+test("technical-name lookup recovers a documentation-backed table omitted by label search", async () => {
+  const results = await RS.findTables("Case", {
+    get: async (request) => {
+      if (request.table === "sys_documentation") return [];
+      assert.strictEqual(request.query, "nameLIKEcase^ORDERBYname^ORDERBYlabel");
+      return [{ name: "sn_slm_case", label: "Supplier Case" }];
+    },
+  });
+  assert.deepStrictEqual(own(results).map((item) => item.name), ["sn_slm_case"]);
+});
+
+test("table suggestions show up to fifty verified matches", async () => {
+  const results = await RS.findTables("match", {
+    get: async (request) => Array.from(
+      { length: request.limit },
+      (_, index) => ({
+        name: "x_example_" + String(index).padStart(2, "0") + "_match",
+        label: "Example table " + index,
+      })
+    ),
+  });
+  assert.strictEqual(results.length, RS.TABLE_SUGGESTION_LIMIT);
+  assert.ok(results.every((item) => item.name.includes("match")));
+  assert.strictEqual(results.truncated, true);
 });
 
 test("exact sys_id input is recognized without a text anchor", () => {
@@ -457,5 +557,40 @@ test("transport errors distinguish access, schema, and transient failures", asyn
   await assert.rejects(
     () => context.SNRecordSearch.tableGet({ table: "example_record" }),
     (error) => error.code === "transient" && /Try again/.test(error.message)
+  );
+});
+
+test("an optional broad dictionary failure keeps verified preset fields usable", async () => {
+  const hierarchy = [{ name: "task", label: "Task" }];
+  const fields = await RS.discoverFields(hierarchy, async (request) => {
+    if (request.query.includes("elementISNOTEMPTY")) {
+      assert.strictEqual(request.timeoutMs, RS.OPTIONAL_DICTIONARY_TIMEOUT_MS);
+      throw new Error("Synthetic broad dictionary timeout");
+    }
+    if (request.query.includes("display=true")) return [];
+    return [{
+      name: "task",
+      element: "number",
+      column_label: "Number",
+      internal_type: "string",
+      display: "false",
+    }];
+  });
+  assert.deepStrictEqual(own(fields).map((field) => field.name), ["number"]);
+});
+
+test("a metadata request times out instead of leaving Record Search spinning", async () => {
+  const context = loadScript("record_search.js");
+  context.chrome = {
+    runtime: {
+      sendMessage: () => new Promise(() => {}),
+    },
+  };
+  await assert.rejects(
+    () => context.SNRecordSearch.tableGet({
+      table: "sys_db_object",
+      timeoutMs: 5,
+    }),
+    (error) => error.code === "transient" && /too long/.test(error.message)
   );
 });
