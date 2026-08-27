@@ -646,7 +646,7 @@
         <section class="panel" role="dialog" aria-label="Code search results">
           <header class="header">
             <div class="heading">
-              <h2>Code search <span class="term"></span></h2>
+              <h2>Code Search <span class="term"></span></h2>
               <p class="subtitle">
                 Configuration source the platform's own code search does not
                 reach — reference qualifiers, catalog variables, transform maps

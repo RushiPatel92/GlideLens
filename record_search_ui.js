@@ -647,7 +647,7 @@
         <section class="panel" role="dialog" aria-modal="true" aria-label="Record search">
           <header class="header">
             <div class="heading">
-              <h2>Search records</h2>
+              <h2>Record Lens</h2>
               <p class="subtitle">Choose a verified table and fields. GlideLens reads only bounded summaries and opens results in ServiceNow.</p>
             </div>
             <button class="close" type="button" aria-label="Close">✕ Esc</button>
