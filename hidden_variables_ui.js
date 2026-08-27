@@ -1,5 +1,5 @@
 /*
- * Isolated-world UI for the "Show variable values" command.
+ * Isolated-world UI for the "Variable Values" command.
  * Loaded before content.js so the command-palette action can call the
  * public API. Read-only inspector — never modifies the live form.
  * Lists every catalog variable with its value; visibility (hidden/visible)
@@ -286,7 +286,7 @@
     const result = lastResult || { rows: [] };
     const rows = filteredRows();
     const lines = [
-      "GlideLens — Portal Variable Values",
+      "GlideLens — Variable Values",
       "Read-only inspector; does not modify the live form.",
       "Rows: " + String(rows.length) + " of " + String((result.rows || []).length),
       "",

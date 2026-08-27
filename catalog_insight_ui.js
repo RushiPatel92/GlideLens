@@ -1,5 +1,5 @@
 /*
- * Isolated-world UI for the "What affects this catalog item" command.
+ * Isolated-world UI for the "Catalog Logic" command.
  * Loaded before content.js so the command-palette action can call the
  * public API. Read-only: lists the catalog client scripts and catalog UI
  * policies that target the current catalog item (and its variable sets),
@@ -574,7 +574,7 @@
   const resultsAsText = () => {
     const rows = filteredRows();
     const lines = [
-      "GlideLens — What affects this catalog item",
+      "GlideLens — Catalog Logic",
       "Read-only; catalog client scripts and UI policies targeting this item.",
       (lastResult && lastResult.itemName ? "Item: " + lastResult.itemName : ""),
       "Rows: " + rows.length + " of " + allRows().length,
@@ -657,7 +657,7 @@
         <section class="panel" role="dialog" aria-modal="true" aria-labelledby="snh-catalog-insight-title">
           <header class="header">
             <div class="heading">
-              <h2 id="snh-catalog-insight-title">What affects this catalog item</h2>
+              <h2 id="snh-catalog-insight-title">Catalog Logic</h2>
               <div class="subtitle">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Click a row to open the record. Read-only — nothing here runs or edits the logic.</div>
             </div>
             <button class="close" type="button">Close</button>

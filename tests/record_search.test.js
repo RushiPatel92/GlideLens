@@ -96,7 +96,7 @@ test("table suggestions show the label and technical name on separate full-width
   const source = fs.readFileSync(path.join(__dirname, "..", "record_search_ui.js"), "utf8");
   assert.ok(source.includes(".table-option{display:grid;grid-template-columns:minmax(0,1fr)"));
   assert.ok(source.includes("overflow-wrap:anywhere;white-space:normal}.table-name"));
-  assert.ok(source.includes("overflow-wrap:anywhere;\n      white-space:normal}"));
+  assert.match(source, /overflow-wrap:anywhere;\r?\n      white-space:normal}/);
 });
 
 test("the record results UI explains its ordering", () => {

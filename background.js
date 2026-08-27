@@ -3233,7 +3233,26 @@ function stopTimelineInFrames(tabId) {
   });
 }
 
+function openUrlTabOptions(url, sender) {
+  const options = { url, active: true };
+  const sourceTab = sender && sender.tab;
+  if (!sourceTab) return options;
+
+  if (Number.isInteger(sourceTab.windowId)) {
+    options.windowId = sourceTab.windowId;
+  }
+  if (Number.isInteger(sourceTab.index) && sourceTab.index >= 0) {
+    options.index = sourceTab.index + 1;
+  }
+  if (Number.isInteger(sourceTab.id)) {
+    options.openerTabId = sourceTab.id;
+  }
+  return options;
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
+// Keep the destination beside the ServiceNow tab that initiated the command,
+// rather than appending it to the end of whichever window is currently active.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "SEARCH_FRAME_AVAILABLE" && msg.requestId) {
     registerSearchFrame(msg.requestId, sender);
@@ -3242,7 +3261,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     registerTimelineFrame(msg.requestId, sender);
   }
   if (msg && msg.type === "OPEN_URL" && msg.url) {
-    chrome.tabs.create({ url: msg.url });
+    chrome.tabs.create(openUrlTabOptions(msg.url, sender));
   }
   if (msg && msg.type === "START_DEBUG_TIMELINE" && sender.tab) {
     startTimelineInFrames(sender.tab.id).then((results) => {

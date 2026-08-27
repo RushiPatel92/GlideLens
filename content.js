@@ -106,11 +106,11 @@ window.addEventListener("message", (event) => {
 
   if (msg.source === SNH_PREFILL_PROGRESS_SOURCE) {
     if (window === window.top) {
-      showToast(msg.message || "Filling portal form...", false, 6000);
+      showToast(msg.message || "Filling portal form…", false, 6000);
     } else {
       chrome.runtime.sendMessage({
         type: "PREFILL_PROGRESS",
-        message: msg.message || "Filling portal form...",
+        message: msg.message || "Filling portal form…",
       });
     }
   }
@@ -141,7 +141,13 @@ function recordContextFromText(text) {
 
     const classic = value.match(/\/([a-z][a-z0-9_]*)\.do(?:[?#]|$)/i);
     const sysId = sysIdFromText(value);
-    if (classic) return { table: classic[1], sysId };
+    if (classic) {
+      const routeTable = classic[1];
+      const table = routeTable.toLowerCase().endsWith("_list")
+        ? routeTable.slice(0, -"_list".length)
+        : routeTable;
+      return { table, sysId };
+    }
   }
   return { table: null, sysId: sysIdFromText(text) };
 }
@@ -814,7 +820,7 @@ async function resolveAttachmentDisplayValues(variables, onProgress) {
   });
   if (!ids.length) return;
 
-  if (onProgress) onProgress("Resolving attachment names...");
+  if (onProgress) onProgress("Resolving attachment names…");
 
   try {
     const rows = await snGetMany(
@@ -1039,7 +1045,7 @@ async function applyVariableSetPlacementOrder(variables, catalogItemSysId, onPro
     )
   );
   if (!setIds.length) return;
-  if (onProgress) onProgress("Resolving variable set placement order...");
+  if (onProgress) onProgress("Resolving variable set placement order…");
 
   try {
     const rows = await snGetMany(
@@ -1109,7 +1115,7 @@ async function fetchSourceVariables(source, onProgress) {
 
   if (source.mode === "catalog" && source.requestItemId) {
     try {
-      if (onProgress) onProgress("Reading catalog variables...");
+      if (onProgress) onProgress("Reading catalog variables…");
       const catalog = await fetchCatalogVariables(source.requestItemId);
       skipped += catalog.skipped;
       catalog.variables.forEach((variable, name) => variables.set(name, variable));
@@ -1119,7 +1125,7 @@ async function fetchSourceVariables(source, onProgress) {
   }
 
   try {
-    if (onProgress) onProgress("Reading producer variables...");
+    if (onProgress) onProgress("Reading producer variables…");
     const producer = await fetchProducerVariables(source);
     skipped += producer.skipped;
     if (producer.queryUsed) source.producerAnswerQuery = producer.queryUsed;
@@ -1133,7 +1139,7 @@ async function fetchSourceVariables(source, onProgress) {
   try {
     const parents = candidateMultiRowParents(source, variables);
     if (parents.ids.length) {
-      if (onProgress) onProgress("Reading multi-row variable sets...");
+      if (onProgress) onProgress("Reading multi-row variable sets…");
       const mrvs = await fetchMultiRowAnswerRows(parents.ids);
       if (mrvs.queryUsed) source.multiRowAnswerQuery = mrvs.queryUsed;
       addMultiRowVariablesFromAnswerRows(variables, mrvs.rows, parents.parentById);
@@ -1161,7 +1167,7 @@ async function prefillPortalVariablesFromTicket(input) {
     return;
   }
 
-  showToast("Reading variables...", false, 6000);
+  showToast("Reading variables…", false, 6000);
   try {
     const source = await resolveVariableSource(value);
     const sourceResult = await fetchSourceVariables(source, (message) => showToast(message, false, 6000));
@@ -1183,7 +1189,7 @@ async function prefillPortalVariablesFromTicket(input) {
       return;
     }
 
-    showToast("Found " + variables.length + " variables. Filling portal form...", false, 6000);
+    showToast("Found " + variables.length + " variables. Filling portal form…", false, 6000);
     await new Promise((resolve) => setTimeout(resolve, 75));
     const resp = await chrome.runtime.sendMessage({
       type: "FILL_PORTAL_VARIABLES",
@@ -1484,7 +1490,7 @@ async function showHiddenPortalVariables() {
     return;
   }
 
-  showToast("Reading variable definitions...", false, 6000);
+  showToast("Reading variable definitions…", false, 6000);
   try {
     const { variables: definitions, setCount } = await fetchCatalogItemVariableDefinitions(
       catalogItemSysId
@@ -1494,7 +1500,7 @@ async function showHiddenPortalVariables() {
       return;
     }
 
-    showToast("Checking " + definitions.length + " variables...", false, 6000);
+    showToast("Checking " + definitions.length + " variables…", false, 6000);
     const resp = await chrome.runtime.sendMessage({
       type: "GET_HIDDEN_PORTAL_VARIABLES",
       catalogItemSysId,
@@ -1790,7 +1796,7 @@ async function showCatalogInsight() {
     return;
   }
 
-  showToast("Reading catalog client scripts and UI policies...", false, 6000);
+  showToast("Reading catalog client scripts and UI policies…", false, 6000);
   try {
     const { rows, setCount, setIds } = await fetchCatalogAffectingLogic(catalogItemSysId);
     let itemName = "";
@@ -2003,7 +2009,7 @@ async function toggleVariableInsightIcons(force) {
 
   try {
     if (!SNH.varInsightData || SNH.varInsightData.itemSysId !== catalogItemSysId) {
-      showToast("Reading catalog client scripts and UI policies...", false, 6000);
+      showToast("Reading catalog client scripts and UI policies…", false, 6000);
       const data = await fetchCatalogAffectingLogic(catalogItemSysId);
       let itemName = "";
       try {
@@ -2214,7 +2220,9 @@ async function openCurrentRecordPlaybookExecutions() {
   if (!isSysId(sysId)) {
     showArgInput({
       id: "open-playbook-executions-by-sysid",
-      name: "Open playbook executions",
+      label: "Playbooks",
+      description: "Open playbook executions for this record…",
+      inputLabel: "Record sys_id or URL",
       placeholder: "record sys_id or ServiceNow record URL",
       keepOpen: true,
       run: openPlaybookExecutionsBySysId,
@@ -2594,7 +2602,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
   }
   if (msg && msg.type === "PREFILL_PROGRESS") {
-    if (window === window.top) showToast(msg.message || "Filling portal form...", false, 6000);
+    if (window === window.top) showToast(msg.message || "Filling portal form…", false, 6000);
   }
   return true;
 });
@@ -2644,7 +2652,8 @@ function buildCommands() {
   const cmds = [
     {
       id: "toggle-translations",
-      name: "Toggle translation icons",
+      label: "Translations",
+      description: "Show or hide field translation controls",
       keywords: ["globe", "i18n", "l10n", "translate", "sys_documentation", "sys_translated_text"],
       group: "Tools",
       run: () => broadcastFrameCommand("TOGGLE_TRANSLATIONS"),
@@ -2652,7 +2661,9 @@ function buildCommands() {
     ...(debugTimelineRecording
       ? [{
           id: "stop-debug-timeline",
-          name: "Stop and view debug timeline",
+          favoriteKey: "debug-timeline",
+          label: "Debug Timeline",
+          description: "Stop recording and view captured activity",
           keywords: ["debug", "timeline", "trace", "record", "g_form", "glideajax", "error"],
           group: "Tools",
           keepOpen: true,
@@ -2666,7 +2677,9 @@ function buildCommands() {
         }]
       : [{
           id: "start-debug-timeline",
-          name: "Start debug timeline",
+          favoriteKey: "debug-timeline",
+          label: "Debug Timeline",
+          description: "Start recording form activity, GlideAjax calls, and errors",
           keywords: ["debug", "timeline", "trace", "record", "g_form", "glideajax", "error"],
           group: "Tools",
           keepOpen: true,
@@ -2674,7 +2687,7 @@ function buildCommands() {
             if (!debugTimeline || typeof debugTimeline.start !== "function") {
               throw new Error("Debug Timeline UI is unavailable.");
             }
-            showToast("Starting Debug Timeline...", false, 6000);
+            showToast("Starting Debug Timeline…", false, 6000);
             const response = await debugTimeline.start();
             showToast(
               "Recording across " + (response.frameCount || 1) + " frame" +
@@ -2687,7 +2700,8 @@ function buildCommands() {
         }]),
     {
       id: "copy-sysid",
-      name: "Copy sys_id",
+      label: "sys_id",
+      description: "Copy the current record sys_id",
       keywords: ["copy", "sys_id", "record", "id", "guid"],
       group: "Record",
       keepOpen: true,
@@ -2707,7 +2721,8 @@ function buildCommands() {
     },
     {
       id: "record-search",
-      name: "Search records…",
+      label: "Record Lens",
+      description: "Search verified records across readable tables…",
       keywords: [
         "record", "search", "find", "table api", "sys_id", "number",
         "name", "email", "incident", "catalog item",
@@ -2717,7 +2732,8 @@ function buildCommands() {
     },
     {
       id: "open-playbook-executions",
-      name: "Open playbook executions",
+      label: "Playbooks",
+      description: "Open playbook executions for this record…",
       keywords: ["playbook", "execution", "executions", "process automation", "pad", "sys_pd_context", "input_record"],
       group: "Record",
       keepOpen: true,
@@ -2726,7 +2742,8 @@ function buildCommands() {
     ...(isPlaybookDefinitionPage
       ? [{
           id: "open-current-playbook-customer-updates",
-          name: "Open current playbook customer updates",
+          label: "Playbook Updates",
+          description: "Open captured updates for this playbook activity",
           keywords: ["playbook", "customer update", "update xml", "sys_update_xml", "process definition"],
           group: "Record",
           keepOpen: true,
@@ -2735,20 +2752,24 @@ function buildCommands() {
       : []),
     {
       id: "open-customer-updates-by-sysid",
-      name: "Open customer updates by sys_id...",
+      label: "Customer Updates",
+      description: "Open captured customer updates by sys_id…",
       keywords: ["customer update", "update xml", "sys_update_xml", "sys_id", "record"],
       group: "Record",
       input: true,
+      inputLabel: "Record sys_id or URL",
       placeholder: "record sys_id or ServiceNow record URL",
       keepOpen: true,
       run: openCustomerUpdatesBySysId,
     },
     {
       id: "prefill-variables",
-      name: "Prefill variables from ticket...",
+      label: "Variable Prefill",
+      description: "Copy catalog-variable values from another ticket…",
       keywords: ["variable", "prefill", "copy", "ritm", "sctask", "req", "catalog", "portal", "clone"],
       group: "Catalog",
       input: true,
+      inputLabel: "Source ticket or sys_id",
       placeholder: "RITM/SCTASK/REQ/task number or submitted record sys_id",
       keepOpen: true,
       run: prefillPortalVariablesFromTicket,
@@ -2760,7 +2781,8 @@ function buildCommands() {
     // GET_PORTAL_VARIABLE_DEBUG handler stay for debugging prefill by hand.
     {
       id: "show-variable-values",
-      name: "Show variable values",
+      label: "Variable Values",
+      description: "Inspect current catalog-variable values",
       keywords: ["variable", "value", "values", "form", "hidden", "catalog", "ui policy", "client script", "variable set", "sc_cat_item"],
       group: "Catalog",
       keepOpen: true,
@@ -2768,7 +2790,8 @@ function buildCommands() {
     },
     {
       id: "catalog-affecting-logic",
-      name: "What affects this catalog item",
+      label: "Catalog Logic",
+      description: "Inspect catalog client scripts and UI policies",
       keywords: ["catalog", "client script", "ui policy", "onchange", "onload", "onsubmit", "affects", "debug", "logic", "catalog_script_client", "catalog_ui_policy"],
       group: "Catalog",
       keepOpen: true,
@@ -2776,7 +2799,8 @@ function buildCommands() {
     },
     {
       id: "toggle-variable-insight",
-      name: "Toggle variable insight icons",
+      label: "Variable Insight",
+      description: "Show or hide per-variable insight icons",
       keywords: ["variable", "icon", "client script", "ui policy", "onchange", "action", "affects", "catalog", "insight", "double click", "alt"],
       group: "Catalog",
       hint: "Alt+double-click",
@@ -2785,7 +2809,8 @@ function buildCommands() {
     },
     {
       id: "code-search",
-      name: "Search code…",
+      label: "Code Search",
+      description: "Search verified code and configuration…",
       keywords: [
         "code", "search", "grep", "find", "source", "script", "ref qual",
         "reference qualifier", "dictionary", "transform", "variable",
@@ -2793,6 +2818,7 @@ function buildCommands() {
       ],
       group: "Tools",
       input: true,
+      inputLabel: "Search term",
       placeholder: "text to find; optional table:<name>",
       /* No keepOpen: the palette closes on Enter and the search runs on into
        * its own panel, rather than sitting on top of the results. */
@@ -2804,7 +2830,8 @@ function buildCommands() {
     },
     {
       id: "refresh-code-search-coverage",
-      name: "Recheck what code search can reach",
+      label: "Search Sources",
+      description: "Refresh available Code Search sources",
       keywords: [
         "code search", "coverage", "index", "sources", "stale", "cache",
         "refresh", "recheck", "search group", "sn_codesearch", "missing hits",
@@ -2815,10 +2842,12 @@ function buildCommands() {
     },
     {
       id: "open-table-list",
-      name: "Open table list…",
+      label: "Table List",
+      description: "Open a list for a named table…",
       keywords: ["navigate", "jump", "list", "table", "open"],
       group: "Navigate",
       input: true,
+      inputLabel: "Table name",
       placeholder: "table name (e.g. incident)",
       run: (arg) => {
         if (!arg) return;
@@ -2827,10 +2856,12 @@ function buildCommands() {
     },
     {
       id: "open-table-new",
-      name: "Open new record…",
+      label: "New Record",
+      description: "Open a new record form for a named table…",
       keywords: ["new", "create", "insert", "table"],
       group: "Navigate",
       input: true,
+      inputLabel: "Table name",
       placeholder: "table name (e.g. incident)",
       run: (arg) => {
         if (!arg) return;
@@ -2839,13 +2870,14 @@ function buildCommands() {
     },
     ...DEV_LINKS.map(([label, path]) => ({
       id: "devlink-" + path,
-      name: label,
+      label,
+      description: "Open " + label,
       keywords: [label.toLowerCase(), "dev", "link"],
       group: "Dev Links",
       run: () => navTo(path),
     })),
   ];
-  return cmds;
+  return validatePaletteCommands(cmds);
 }
 
 /* =====================================================================
@@ -3071,6 +3103,86 @@ async function refreshCodeSearchCoverage() {
   }
 }
 
+const PALETTE_GROUP_ORDER = [
+  "Favorite",
+  "Tools",
+  "Record",
+  "Catalog",
+  "Navigate",
+  "Dev Links",
+];
+
+function paletteFavoriteKey(cmd) {
+  return cmd && (cmd.favoriteKey || cmd.id);
+}
+
+function normalizePaletteFavoriteKey(value) {
+  if (value === "start-debug-timeline" || value === "stop-debug-timeline") {
+    return "debug-timeline";
+  }
+  return value;
+}
+
+function validatePaletteCommands(cmds) {
+  const labels = new Map();
+  for (const cmd of cmds) {
+    const label = String(cmd && cmd.label || "").trim();
+    const description = String(cmd && cmd.description || "").trim();
+    if (!cmd || !cmd.id || !label || !description) {
+      throw new Error("Every palette command needs an id, label, and description.");
+    }
+    if (cmd.input && !String(cmd.inputLabel || "").trim()) {
+      throw new Error("Input command " + cmd.id + " needs an explicit inputLabel.");
+    }
+    const key = label.toLowerCase();
+    if (labels.has(key)) {
+      throw new Error(
+        "Duplicate palette label \"" + label + "\" on " + labels.get(key) + " and " + cmd.id + "."
+      );
+    }
+    labels.set(key, cmd.id);
+  }
+  return cmds;
+}
+
+function orderPaletteCommands(cmds) {
+  const ranks = new Map(PALETTE_GROUP_ORDER.map((group, index) => [group, index]));
+  return cmds
+    .map((cmd, index) => ({ cmd, index }))
+    .sort((left, right) => {
+      const leftRank = ranks.has(left.cmd.group) ? ranks.get(left.cmd.group) : ranks.size;
+      const rightRank = ranks.has(right.cmd.group) ? ranks.get(right.cmd.group) : ranks.size;
+      return leftRank - rightRank || left.index - right.index;
+    })
+    .map((entry) => entry.cmd);
+}
+
+function paletteCommandMatches(cmd, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  return [cmd.label, cmd.description, ...(cmd.keywords || [])]
+    .some((value) => String(value || "").toLowerCase().includes(q));
+}
+
+function preparePaletteCommands(cmds, query, favoriteKey) {
+  const q = String(query || "").trim().toLowerCase();
+  const matches = orderPaletteCommands(cmds.filter((cmd) => paletteCommandMatches(cmd, q)));
+  if (!q && favoriteKey) {
+    const favorite = cmds.find((cmd) => paletteFavoriteKey(cmd) === favoriteKey);
+    if (favorite) {
+      return [
+        Object.assign({}, favorite, { group: "Favorite" }),
+        ...matches.filter((cmd) => paletteFavoriteKey(cmd) !== favoriteKey),
+      ];
+    }
+  }
+  return matches;
+}
+
+function paletteOptionId(cmd) {
+  return "snh-command-option-" + String(cmd.id).replace(/[^a-z0-9_-]+/gi, "-");
+}
+
 /* ---- Palette state ---- */
 let paletteHost = null;
 let paletteShadow = null;
@@ -3078,6 +3190,8 @@ let paletteInput = null;
 let paletteList = null;
 let paletteToast = null;
 let paletteCount = null;
+let paletteFavoriteButton = null;
+let paletteActiveShortcut = null;
 let palettePreviousFocus = null;
 let palettePosition = null;
 let paletteDragCleanup = null;
@@ -3115,7 +3229,7 @@ const PALETTE_CSS = `
     align-items:flex-start;justify-content:center;padding:clamp(48px,10vh,112px) 16px 24px;
   }
   #box{
-    background:var(--palette-bg);border:1px solid var(--palette-border);border-radius:12px;
+    position:relative;background:var(--palette-bg);border:1px solid var(--palette-border);border-radius:12px;
     width:600px;max-width:calc(100vw - 20px);
     box-shadow:0 28px 80px rgba(0,0,0,.65);overflow:hidden;
   }
@@ -3165,16 +3279,18 @@ const PALETTE_CSS = `
   }
   .group-label{
     display:flex;align-items:center;gap:11px;
-    color:color-mix(in srgb, var(--teal) 74%, #d2d6e2);font-size:10px;font-weight:800;
+    color:color-mix(in srgb, var(--teal) 74%, #d2d6e2);font-size:11px;font-weight:800;
     letter-spacing:.14em;text-transform:uppercase;padding:13px 10px 6px;
   }
   .group-label::after{
     content:"";flex:1;height:1px;
     background:linear-gradient(90deg, color-mix(in srgb, var(--teal) 34%, transparent), transparent);
   }
+  .command-group{display:block}
+  .cmd-row{display:block}
   .cmd{
-    position:relative;display:flex;align-items:center;min-height:38px;padding:8px 11px;
-    cursor:pointer;gap:12px;color:var(--palette-body);font-size:13px;border:1px solid transparent;
+    position:relative;display:flex;align-items:center;height:42px;padding:4px 58px 4px 10px;
+    cursor:pointer;color:var(--palette-body);font-size:13px;border:1px solid transparent;
     border-radius:7px;transition:background .08s,border-color .08s,color .08s;
   }
   .cmd.active{
@@ -3183,20 +3299,28 @@ const PALETTE_CSS = `
     color:#fff;box-shadow:inset 3px 0 0 var(--palette-accent);
   }
   .cmd:hover:not(.active){background:var(--palette-hover)}
-  .cmd-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .cmd-hint{
-    color:var(--palette-muted);font-size:10px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
-    white-space:nowrap;
+  .cmd-content{
+    display:grid;grid-template-columns:minmax(94px,132px) minmax(0,1fr);
+    align-items:center;gap:10px;width:100%;min-width:0;
   }
-  .cmd-favorite{
-    display:inline-flex;align-items:center;justify-content:center;flex:0 0 26px;width:26px;height:26px;
-    border:1px solid transparent;border-radius:6px;background:transparent;color:var(--palette-muted);
-    cursor:pointer;font-size:16px;line-height:1;transition:background .08s,border-color .08s,color .08s;
+  .cmd-label{
+    display:block;justify-self:start;width:max-content;max-width:100%;min-width:0;
+    padding:3px 7px;border:1px solid #4d5570;border-radius:5px;
+    background:#2b3041;color:#f2f5ff;font-size:11px;font-weight:700;line-height:15px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:left;
   }
-  .cmd-favorite:hover,.cmd-favorite:focus{
-    background:var(--palette-hover);border-color:var(--palette-border);color:var(--palette-favorite);outline:none;
+  .cmd.active .cmd-label{
+    border-color:color-mix(in srgb, var(--teal) 58%, #4d5570);
+    background:color-mix(in srgb, var(--teal) 13%, #2b3041);color:#fff;
   }
-  .cmd-favorite.active{color:var(--palette-favorite)}
+  .cmd-description{
+    min-width:0;color:var(--palette-secondary);font-size:12px;line-height:15px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .cmd.active .cmd-description{
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+    white-space:normal;color:#f4f7ff;overflow:hidden;
+  }
   .cmd-input-row{
     display:flex;flex-direction:column;align-items:stretch;padding:14px 16px 16px;
     border-top:1px solid var(--palette-border-subtle);gap:8px;
@@ -3219,6 +3343,22 @@ const PALETTE_CSS = `
     min-height:38px;padding:8px 16px;border-top:1px solid var(--palette-border-subtle);
     color:var(--palette-muted);font-size:11px;
   }
+  #active-shortcut{
+    color:var(--palette-secondary);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  #favorite-command{
+    position:absolute;z-index:4;right:25px;display:inline-flex;align-items:center;justify-content:center;
+    width:28px;height:28px;transform:translateY(-50%);border:1px solid transparent;border-radius:6px;
+    background:color-mix(in srgb, var(--palette-raised) 88%, transparent);color:var(--palette-muted);
+    cursor:pointer;font-size:17px;line-height:1;
+  }
+  #favorite-command:hover,#favorite-command:focus{
+    border-color:var(--palette-favorite);color:var(--palette-favorite);outline:none;
+  }
+  #favorite-command[aria-pressed="true"]{color:var(--palette-favorite)}
+  #favorite-command:disabled{opacity:.45;cursor:default;border-color:var(--palette-border);color:var(--palette-muted)}
+  #favorite-command[hidden]{display:none}
   #key-help{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
   #key-help span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
   kbd{
@@ -3231,6 +3371,7 @@ const PALETTE_CSS = `
     #palette-footer{align-items:flex-start;flex-direction:column;gap:6px}
     #key-help{justify-content:flex-start}
     #results{max-height:58vh}
+    .cmd-content{grid-template-columns:minmax(86px,108px) minmax(0,1fr);gap:7px}
   }
 `;
 
@@ -3302,7 +3443,11 @@ function loadPaletteFavorite(callback) {
   storage.get(PALETTE_FAVORITE_STORAGE_KEY, (result) => {
     if (!chrome.runtime.lastError) {
       const value = result && result[PALETTE_FAVORITE_STORAGE_KEY];
-      paletteFavoriteCommandId = typeof value === "string" ? value : null;
+      const stored = typeof value === "string" ? value : null;
+      paletteFavoriteCommandId = normalizePaletteFavoriteKey(stored);
+      if (stored && stored !== paletteFavoriteCommandId) {
+        savePaletteFavorite(paletteFavoriteCommandId);
+      }
     }
     callback();
   });
@@ -3321,43 +3466,76 @@ function savePaletteFavorite(commandId) {
 }
 
 function commandsForPalette(cmds, query) {
-  const q = query.trim().toLowerCase();
-  const matches = q
-    ? cmds.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          (c.keywords || []).some((k) => k.includes(q))
-      )
-    : cmds;
-
-  if (!q && paletteFavoriteCommandId) {
-    const favorite = cmds.find((cmd) => cmd.id === paletteFavoriteCommandId);
-    if (favorite) {
-      return [
-        Object.assign({}, favorite, { group: "Favorite" }),
-        ...matches.filter((cmd) => cmd.id !== paletteFavoriteCommandId),
-      ];
-    }
-  }
-
-  return matches;
+  return preparePaletteCommands(cmds, query, paletteFavoriteCommandId);
 }
 
 function toggleFavoriteCommand(cmd) {
   if (!cmd || !cmd.id) return;
-  const isFavorite = paletteFavoriteCommandId === cmd.id;
-  paletteFavoriteCommandId = isFavorite ? null : cmd.id;
+  const commandKey = paletteFavoriteKey(cmd);
+  const isFavorite = paletteFavoriteCommandId === commandKey;
+  paletteFavoriteCommandId = isFavorite ? null : commandKey;
   savePaletteFavorite(paletteFavoriteCommandId);
-  activeIndex =
-    paletteFavoriteCommandId && paletteInput && !paletteInput.value.trim()
-      ? 0
-      : activeIndex;
   renderResults(paletteInput ? paletteInput.value : "");
+  const nextIndex = filteredCmds.findIndex(
+    (candidate) => paletteFavoriteKey(candidate) === commandKey
+  );
+  if (nextIndex >= 0) {
+    activeIndex = nextIndex;
+    highlightActive();
+  }
   showToast(
     paletteFavoriteCommandId
-      ? "Default command set: " + cmd.name
-      : "Default command cleared"
+      ? "Favorite command set: " + cmd.label
+      : "Favorite command cleared"
   );
+}
+
+function updateActivePaletteControls() {
+  const cmd = filteredCmds[activeIndex] || null;
+  if (paletteInput) {
+    if (cmd) paletteInput.setAttribute("aria-activedescendant", paletteOptionId(cmd));
+    else paletteInput.removeAttribute("aria-activedescendant");
+  }
+  if (paletteFavoriteButton) {
+    const isFavorite = Boolean(
+      cmd && paletteFavoriteCommandId === paletteFavoriteKey(cmd)
+    );
+    paletteFavoriteButton.disabled = !cmd;
+    paletteFavoriteButton.textContent = isFavorite ? "★" : "☆";
+    paletteFavoriteButton.title = isFavorite ? "Clear favorite command" : "Favorite command";
+    paletteFavoriteButton.setAttribute("aria-pressed", isFavorite ? "true" : "false");
+    paletteFavoriteButton.setAttribute(
+      "aria-label",
+      cmd
+        ? (isFavorite ? "Clear favorite command " : "Favorite command ") + cmd.label
+        : "Favorite command"
+    );
+    positionPaletteFavoriteButton();
+  }
+  if (paletteActiveShortcut) {
+    paletteActiveShortcut.textContent = cmd && cmd.hint ? "Shortcut: " + cmd.hint : "";
+    paletteActiveShortcut.hidden = !(cmd && cmd.hint);
+  }
+}
+
+function positionPaletteFavoriteButton() {
+  if (!paletteFavoriteButton || !paletteList || !paletteShadow) return;
+  const active = paletteList.querySelector(".cmd.active");
+  const box = paletteShadow.getElementById("box");
+  if (!active || !box) {
+    paletteFavoriteButton.hidden = true;
+    return;
+  }
+
+  const activeRect = active.getBoundingClientRect();
+  const listRect = paletteList.getBoundingClientRect();
+  const boxRect = box.getBoundingClientRect();
+  const visible = activeRect.bottom > listRect.top && activeRect.top < listRect.bottom;
+  paletteFavoriteButton.hidden = !visible;
+  if (visible) {
+    paletteFavoriteButton.style.top =
+      (activeRect.top - boxRect.top + activeRect.height / 2) + "px";
+  }
 }
 
 function renderResults(query) {
@@ -3371,8 +3549,11 @@ function renderResults(query) {
     paletteList.innerHTML = '<div id="empty">No commands match</div>';
     activeIndex = 0;
     if (paletteCount) paletteCount.textContent = "0 commands";
+    updateActivePaletteControls();
     return;
   }
+
+  activeIndex = Math.min(activeIndex, filteredCmds.length - 1);
 
   if (paletteCount) {
     paletteCount.textContent =
@@ -3380,52 +3561,54 @@ function renderResults(query) {
   }
 
   let lastGroup = null;
+  let groupElement = null;
   filteredCmds.forEach((cmd, i) => {
     if (cmd.group && cmd.group !== lastGroup) {
+      groupElement = document.createElement("div");
+      groupElement.className = "command-group";
+      groupElement.setAttribute("role", "group");
       const gl = document.createElement("div");
       gl.className = "group-label";
+      gl.id = "snh-command-group-" + String(cmd.group).toLowerCase().replace(/[^a-z0-9]+/g, "-");
       gl.textContent = cmd.group;
-      paletteList.appendChild(gl);
+      groupElement.setAttribute("aria-labelledby", gl.id);
+      groupElement.appendChild(gl);
+      paletteList.appendChild(groupElement);
       lastGroup = cmd.group;
     }
+    const row = document.createElement("div");
+    row.className = "cmd-row";
     const el = document.createElement("div");
     el.className = "cmd" + (i === activeIndex ? " active" : "");
+    el.id = paletteOptionId(cmd);
     el.dataset.idx = i;
     el.setAttribute("role", "option");
     el.setAttribute("aria-selected", i === activeIndex ? "true" : "false");
-    const name = document.createElement("span");
-    name.className = "cmd-name";
-    name.textContent = cmd.name;
-    el.appendChild(name);
-    if (cmd.hint) {
-      const hint = document.createElement("span");
-      hint.className = "cmd-hint";
-      hint.textContent = cmd.hint;
-      el.appendChild(hint);
-    }
-    const favorite = document.createElement("button");
-    const isFavorite = paletteFavoriteCommandId === cmd.id;
-    favorite.type = "button";
-    favorite.className = "cmd-favorite" + (isFavorite ? " active" : "");
-    favorite.textContent = isFavorite ? "\u2605" : "\u2606";
-    favorite.title = isFavorite ? "Clear default command" : "Set as default command";
-    favorite.setAttribute("aria-label", favorite.title);
-    favorite.setAttribute("aria-pressed", isFavorite ? "true" : "false");
-    favorite.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleFavoriteCommand(cmd);
-    });
-    el.appendChild(favorite);
+    const content = document.createElement("span");
+    content.className = "cmd-content";
+    const label = document.createElement("span");
+    const labelId = el.id + "-label";
+    label.id = labelId;
+    label.className = "cmd-label";
+    label.textContent = cmd.label;
+    const description = document.createElement("span");
+    const descriptionId = el.id + "-description";
+    description.id = descriptionId;
+    description.className = "cmd-description";
+    description.textContent = cmd.description;
+    el.setAttribute("aria-labelledby", labelId + " " + descriptionId);
+    content.appendChild(label);
+    content.appendChild(description);
+    el.appendChild(content);
     el.addEventListener("mouseenter", () => {
       activeIndex = i;
       highlightActive();
     });
     el.addEventListener("click", () => selectCommand(filteredCmds[i]));
-    paletteList.appendChild(el);
+    row.appendChild(el);
+    (groupElement || paletteList).appendChild(row);
   });
 
-  activeIndex = Math.min(activeIndex, filteredCmds.length - 1);
   highlightActive();
 }
 
@@ -3438,6 +3621,7 @@ function highlightActive() {
   });
   const active = paletteList.querySelector(".cmd.active");
   if (active) active.scrollIntoView({ block: "nearest" });
+  updateActivePaletteControls();
 }
 
 function selectCommand(cmd) {
@@ -3459,22 +3643,27 @@ function showArgInput(cmd) {
   const shadow = paletteShadow;
   // Hide results, show arg input row
   paletteList.style.display = "none";
-  let row = shadow.getElementById("arg-row");
+  const existingRow = shadow.getElementById("arg-row");
+  if (existingRow) existingRow.remove();
   const box = shadow.getElementById("box");
   const toast = shadow.getElementById("toast");
   if (!box || !toast) return;
 
-  if (!row) {
-    row = document.createElement("div");
-    row.id = "arg-row";
-    row.className = "cmd-input-row";
-    row.innerHTML =
-      `<span class="cmd-input-label">${cmd.name.replace("…", "")}:</span>` +
-      `<input id="arg-input" placeholder="${cmd.placeholder || ""}" autocomplete="off" spellcheck="false" />`;
-    box.insertBefore(row, toast);
-  }
-  const argInput = shadow.getElementById("arg-input");
-  if (!argInput) return;
+  const row = document.createElement("div");
+  row.id = "arg-row";
+  row.className = "cmd-input-row";
+  const inputLabel = document.createElement("label");
+  inputLabel.className = "cmd-input-label";
+  inputLabel.htmlFor = "arg-input";
+  inputLabel.textContent = cmd.inputLabel;
+  const argInput = document.createElement("input");
+  argInput.id = "arg-input";
+  argInput.placeholder = cmd.placeholder || "";
+  argInput.autocomplete = "off";
+  argInput.spellcheck = false;
+  row.appendChild(inputLabel);
+  row.appendChild(argInput);
+  box.insertBefore(row, toast);
 
   argInput.value = "";
   argInput.focus();
@@ -3626,6 +3815,22 @@ function makePaletteDraggable(box, handle) {
   };
 }
 
+function trapPaletteFocus(event) {
+  if (event.key !== "Tab" || !paletteShadow) return;
+  const focusable = Array.from(
+    paletteShadow.querySelectorAll('input:not([disabled]),button:not([disabled]),[tabindex]:not([tabindex="-1"])')
+  ).filter((element) => !element.hidden);
+  if (!focusable.length) return;
+
+  const current = paletteShadow.activeElement;
+  const currentIndex = focusable.indexOf(current);
+  const nextIndex = event.shiftKey
+    ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+    : (currentIndex < 0 || currentIndex === focusable.length - 1 ? 0 : currentIndex + 1);
+  event.preventDefault();
+  focusable[nextIndex].focus();
+}
+
 function openPalette() {
   if (paletteHost) {
     paletteInput && paletteInput.focus();
@@ -3654,12 +3859,14 @@ function openPalette() {
           <span id="shortcut-key" aria-label="Backslash shortcut">\\</span>
         </div>
         <div id="search-wrap">
-          <input id="search" aria-label="Search commands" placeholder="Search commands…" autocomplete="off" spellcheck="false" />
+          <input id="search" role="combobox" aria-label="Search commands" aria-autocomplete="list" aria-controls="results" aria-expanded="true" placeholder="Search commands…" autocomplete="off" spellcheck="false" />
           <span id="kbd-hint">Type to filter</span>
         </div>
         <div id="results" role="listbox" aria-label="Available commands"></div>
+        <button id="favorite-command" type="button" aria-pressed="false" hidden>☆</button>
         <div id="toast"></div>
         <div id="palette-footer">
+          <span id="active-shortcut" hidden></span>
           <span id="result-count" aria-live="polite"></span>
           <div id="key-help" aria-label="Keyboard controls">
             <span><kbd>Up / Down</kbd> Navigate</span>
@@ -3675,6 +3882,8 @@ function openPalette() {
   paletteList  = paletteShadow.getElementById("results");
   paletteToast = paletteShadow.getElementById("toast");
   paletteCount = paletteShadow.getElementById("result-count");
+  paletteFavoriteButton = paletteShadow.getElementById("favorite-command");
+  paletteActiveShortcut = paletteShadow.getElementById("active-shortcut");
   const paletteBox = paletteShadow.getElementById("box");
   const paletteHead = paletteShadow.getElementById("palette-head");
   paletteDragCleanup = makePaletteDraggable(paletteBox, paletteHead);
@@ -3710,10 +3919,29 @@ function openPalette() {
     } else if (e.key === "Enter") {
       e.preventDefault();
       selectCommand(filteredCmds[activeIndex]);
-    } else if (e.key === "Escape") {
-      closePalette();
     }
   });
+
+  if (paletteFavoriteButton) {
+    paletteFavoriteButton.addEventListener("click", () => {
+      toggleFavoriteCommand(filteredCmds[activeIndex]);
+    });
+  }
+
+  if (paletteList) {
+    paletteList.addEventListener("scroll", positionPaletteFavoriteButton, { passive: true });
+  }
+
+  if (paletteBox) {
+    paletteBox.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closePalette();
+        return;
+      }
+      trapPaletteFocus(event);
+    });
+  }
 
   const overlay = paletteShadow.getElementById("overlay");
   if (overlay) overlay.addEventListener("click", (e) => {
@@ -3732,6 +3960,8 @@ function closePalette() {
     paletteList = null;
     paletteToast = null;
     paletteCount = null;
+    paletteFavoriteButton = null;
+    paletteActiveShortcut = null;
     activeInputCmd = null;
     if (palettePreviousFocus && typeof palettePreviousFocus.focus === "function") {
       try {
