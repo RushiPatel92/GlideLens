@@ -32,6 +32,7 @@ When the user asks to deploy, publish, or "commit and push" a feature branch:
 3. Open a pull request to `main`.
 4. Wait for validation, then merge and verify the pull request.
 5. Fetch, switch to local `main`, and fast-forward it.
+6. Tag the release on `main`, then push the tag. See "Tagging" below.
 
 A branch push alone is complete only when the user explicitly requests "push
 branch only" or asks not to merge. Remote feature branches must remain intact.
@@ -43,6 +44,32 @@ When an agent materially contributed, include the official commit trailer:
 ```text
 Co-authored-by: Codex <noreply@openai.com>
 ```
+
+## Tagging
+
+Every released version gets an annotated tag named `v<version>`, placed on the
+merge commit that brought the release into `main` -- not on the feature
+branch's version-bump commit:
+
+```text
+git tag -a v<version>
+git push origin v<version>
+```
+
+The message is a summary line, then prose explaining what changed and why.
+Run `git tag -l --format='%(contents)' v0.11.1` to see the house style.
+
+A tag is what makes a shipped version recoverable later. `git diff
+v0.11.0..v0.11.1` answers "what changed between these two releases" in one
+command, and a store reviewer question can be answered against the exact code
+that shipped. A tag is also what a GitHub Release is built on, though pushing
+one does not publish a Release by itself -- that is a separate step, and this
+project has not been using it. Skipping a tag leaves a
+permanent hole: 0.11.0 and 0.11.1 shipped untagged because this document had no
+tagging step, and both had to be backfilled on 2026-08-28.
+
+Pushing a tag is publication. It needs the same explicit authorization as a
+push or a merge, and a pushed tag is not to be deleted or moved.
 
 ## Store submission
 
