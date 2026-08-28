@@ -24,11 +24,22 @@ reconstructed version by version.
   Every one of them now discovers concrete frames from content-script
   announcements and injects into each frame individually with its own timeout,
   so a frame that hangs costs its own result and nothing else.
-- **The popup reported no ServiceNow context on framed classic forms.** Its
-  probe was time-boxed rather than fixed, so on exactly the pages that carry
-  `about:blank` helper frames it timed out and rendered "No ServiceNow context
-  found on this tab". It now asks the worker for the discovered frame list and
-  probes those frames.
+- **The popup could report no ServiceNow context at all.** Its probe was
+  time-boxed rather than fixed, so whenever the all-frames injection hung it
+  resolved empty and rendered "No ServiceNow context found on this tab" rather
+  than hanging — a wrong answer instead of no answer. It now asks the worker for
+  the discovered frame list and probes those frames. Latent rather than
+  observed: see the reproduction note below.
+
+Reproduction note: `allFrames: true` was measured still pending at 20 seconds
+on a classic form on 2026-08-24, and that hang is what the 0.11.1 Debug Timeline
+"Stop does nothing" fix addressed. A sweep on 2026-08-28 — four page types
+(classic form, classic list, Next Experience shell, portal catalog item) by five
+injection delays — did not reproduce it: every call resolved. The hang is
+therefore conditional on frame state rather than on page shape. These changes
+remove a real but intermittent unbounded failure mode; they are not expected to
+change day-to-day behaviour, and the browser checks pass identically before and
+after.
 
 ### Changed
 - Each injection carries a ceiling sized for what it actually does, rather than
@@ -41,6 +52,13 @@ reconstructed version by version.
   now one shared implementation with one `DISCOVER_FRAME`/`FRAME_AVAILABLE`
   message pair instead of two. Discovered frame lists are cached per tab for a
   few seconds so a burst of reads pays the discovery wait once.
+- Reads now reach only frames that actually host a content script. The manifest
+  sets `all_frames` without `match_about_blank`, so that means real
+  `service-now.com` frames and not `about:blank` helper frames. Excluding those
+  is the point — they are what hangs — but it does narrow coverage: a page that
+  put real form content in an `about:blank` frame would now be missed rather
+  than read. No ServiceNow page is known to do so, and the shipped Debug Timeline
+  fix has made the same trade since 0.11.1.
 
 ## [0.12.0] - 2026-08-27
 
