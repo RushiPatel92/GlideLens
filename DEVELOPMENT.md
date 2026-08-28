@@ -25,7 +25,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
 ```
 
 The suites cover:
@@ -35,6 +35,12 @@ The suites cover:
 - `code_search_api.test.js` — the instance Code Search endpoint, coverage map,
   ignored table scope, saturation, and adapter merging.
 - `code_search_ui.test.js` — result identity and separate match/record counts.
+- `frame_discovery.test.js` — the shared frame discovery and per-frame
+  injection every worker read now uses: announcement collection, the frame-0
+  fallback, cross-tab announcement rejection, and the regressions that matter —
+  a frame that never settles, one that rejects, and all of them hanging at once
+  must each leave the read answering rather than pending. Also the per-tab
+  frame-list cache and its expiry.
 - `search_transport_frames.test.js` — safe token-frame discovery without
   `allFrames`, including hung-frame isolation and per-tab caching.
 - `record_search.test.js` — bounded table lookup, table/field safety, live

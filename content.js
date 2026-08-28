@@ -2583,20 +2583,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Only the top frame owns the palette to avoid duplicate overlays.
     if (window === window.top) togglePalette();
   }
-  if (msg && msg.type === "DISCOVER_DEBUG_TIMELINE_FRAME" && msg.requestId) {
+  if (msg && msg.type === "DISCOVER_FRAME" && msg.requestId) {
     // The service worker cannot safely use executeScript({ allFrames: true }):
     // one uninjectionable ServiceNow helper frame can leave that promise
     // pending forever. Content scripts already run in every eligible frame, so
     // announce this frame back and let the worker target each responder by id.
     chrome.runtime.sendMessage({
-      type: "DEBUG_TIMELINE_FRAME_AVAILABLE",
-      requestId: msg.requestId,
-    }).catch(() => {});
-    sendResponse({ ok: true });
-  }
-  if (msg && msg.type === "DISCOVER_SEARCH_FRAME" && msg.requestId) {
-    chrome.runtime.sendMessage({
-      type: "SEARCH_FRAME_AVAILABLE",
+      type: "FRAME_AVAILABLE",
       requestId: msg.requestId,
     }).catch(() => {});
     sendResponse({ ok: true });

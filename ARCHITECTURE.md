@@ -31,6 +31,9 @@ top frame or broadcast expensive work indiscriminately.
   Chrome's default placement rather than passing a guess to `tabs.create`.
 - `content.js` Table API reads use `snGetMany`/`snGet`, which delegate to the
   service worker and a MAIN-world request so `X-UserToken` can come from `g_ck`.
+  The content-script side awaits `sendMessage` with no timeout of its own, so a
+  worker handler that never answers strands the caller — every worker read must
+  therefore be time-bounded per frame.
 
 Never fetch the Table API directly from an isolated content script. Although
 the session cookie may accompany a same-origin request, the CSRF token does
@@ -47,14 +50,22 @@ Code Search uses dedicated request routes:
 Do not route Code Search through a handler that fans requests out to every
 frame; doing so multiplies every source query on classic pages.
 
-Token-frame discovery also never injects with `allFrames`. Content scripts
-announce their concrete eligible frame IDs, then the worker probes those frames
-individually with a short timeout and caches the first one that exposes `g_ck`.
-This prevents an uninjectionable helper frame from blocking every search read.
+No worker path injects with `allFrames`. `executeScript({ allFrames: true })`
+does not fail on a frame it cannot inject into — it never settles at all, so a
+`.catch()` is not a timeout and a handler awaiting it never reaches
+`sendResponse`. One shared discovery replaced it: content scripts answer a
+`DISCOVER_FRAME` broadcast with `FRAME_AVAILABLE`, the worker collects each
+`sender.frameId`, and every injection then targets one concrete frame with its
+own timeout. A frame that hangs costs its own result and nothing else.
+
+Discovered frame lists are cached per tab for a few seconds, because one user
+action can issue a dozen reads and each discovery costs a fixed wait. Token-frame
+resolution layers on top: it probes the discovered frames individually and caches
+the first that exposes `g_ck`.
 
 Record Lens follows the same single-frame rule through
 `SN_RECORD_SEARCH_GET`. Its metadata and result reads are bounded but repeated,
-so they must not use the all-frame `SN_TABLE_GET` path either.
+so they must not use the fan-out `SN_TABLE_GET` path either.
 
 ## Command palette
 
@@ -252,8 +263,8 @@ does not reliably delegate to `getXML`.
 
 When delegation does occur, the per-instance `glideAjaxOwnedElsewhere` flag
 keeps the inner call silent so one request is not recorded twice. Frame
-discovery uses announced concrete frame IDs because injecting into every frame
-can hang on `about:blank` helper frames.
+discovery uses the shared announced frame IDs because injecting into every
+frame can hang on `about:blank` helper frames.
 
 ## Code Search
 

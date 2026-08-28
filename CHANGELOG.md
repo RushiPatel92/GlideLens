@@ -10,6 +10,32 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Fixed
+- **Reads can no longer hang forever on a helper frame.** `executeScript({
+  allFrames: true })` does not fail on a frame it cannot inject into — it never
+  settles, so a `.catch()` never runs and a handler awaiting it never calls
+  `sendResponse`. Content scripts await those replies without a timeout, so the
+  feature simply stopped with no error to show. This was already fixed for Debug
+  Timeline's Stop in 0.11.1; the same trap still sat under every Table API read
+  (`SN_TABLE_GET`, and so Catalog Logic, Variable Values, Translations and
+  Variable Insight), `sys_id` extraction, and all four portal prefill routes.
+  Every one of them now discovers concrete frames from content-script
+  announcements and injects into each frame individually with its own timeout,
+  so a frame that hangs costs its own result and nothing else.
+- **The popup reported no ServiceNow context on framed classic forms.** Its
+  probe was time-boxed rather than fixed, so on exactly the pages that carry
+  `about:blank` helper frames it timed out and rendered "No ServiceNow context
+  found on this tab". It now asks the worker for the discovered frame list and
+  probes those frames.
+
+### Changed
+- Debug Timeline and search frame discovery were near-identical copies; they are
+  now one shared implementation with one `DISCOVER_FRAME`/`FRAME_AVAILABLE`
+  message pair instead of two. Discovered frame lists are cached per tab for a
+  few seconds so a burst of reads pays the discovery wait once.
+
 ## [0.12.0] - 2026-08-27
 
 ### Added
