@@ -58,6 +58,13 @@ does not fail on a frame it cannot inject into — it never settles at all, so a
 `sender.frameId`, and every injection then targets one concrete frame with its
 own timeout. A frame that hangs costs its own result and nothing else.
 
+Those ceilings exist only to turn "never settles" into "eventually errors", so
+each is sized well above what its operation really takes: the 5s default suits a
+synchronous DOM read, but a Table API read waits on the instance and portal
+prefill runs several passes with a GlideAjax settle wait on each. Do not put a
+new caller on the default without checking what it waits for — a ceiling near
+the expected duration trades the hang for a spurious failure.
+
 Discovered frame lists are cached per tab for a few seconds, because one user
 action can issue a dozen reads and each discovery costs a fixed wait. Token-frame
 resolution layers on top: it probes the discovered frames individually and caches

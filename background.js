@@ -180,7 +180,18 @@ async function codeSearchApiGetInPage(request) {
  * ===================================================================== */
 
 const FRAME_DISCOVERY_WAIT_MS = 150;
+/*
+ * These ceilings exist only to turn "never settles" into "eventually errors",
+ * so each one sits comfortably above what its operation really takes. Setting
+ * them near the expected duration would trade a hang for a spurious failure.
+ *
+ * The default suits a synchronous DOM read or patch. A Table API read waits on
+ * the instance, and portal prefill runs up to three passes over every variable
+ * with a GlideAjax settle wait on each — neither belongs under the default.
+ */
 const FRAME_INJECT_TIMEOUT_MS = 5000;
+const PAGE_READ_TIMEOUT_MS = 30000;
+const PORTAL_FILL_TIMEOUT_MS = 120000;
 /* Discovery costs a fixed wait, and a single user action can issue a dozen
  * reads. Cache the frame list briefly so a burst pays that wait once. Kept
  * short because the alternative to noticing a new frame late is a
@@ -274,12 +285,12 @@ function runFrameDiscovery(tabId, purpose) {
     });
 }
 
-function injectInFrame(tabId, frameId, injection, label) {
+function injectInFrame(tabId, frameId, injection, label, timeoutMs) {
   return withTimeout(
     chrome.scripting.executeScript(
       Object.assign({ target: { tabId, frameIds: [frameId] } }, injection)
     ),
-    FRAME_INJECT_TIMEOUT_MS,
+    timeoutMs || FRAME_INJECT_TIMEOUT_MS,
     label + " (frame " + frameId + ")"
   );
 }
@@ -289,11 +300,13 @@ function injectInFrame(tabId, frameId, injection, label) {
  * times out, rejects, or returns nothing contributes no results instead of
  * taking the whole operation down with it.
  */
-function injectInDiscoveredFrames(tabId, injection, label) {
+function injectInDiscoveredFrames(tabId, injection, label, timeoutMs) {
   return discoverContentFrames(tabId, label).then((frameIds) =>
     Promise.all(
       frameIds.map((frameId) =>
-        injectInFrame(tabId, frameId, injection, label).catch(() => [])
+        injectInFrame(tabId, frameId, injection, label, timeoutMs).catch(
+          () => []
+        )
       )
     ).then((perFrame) => [].concat.apply([], perFrame))
   );
@@ -304,11 +317,12 @@ function injectInDiscoveredFrames(tabId, injection, label) {
  * Returns the per-frame `result` values with empty frames dropped, which is the
  * shape every caller already reduced raw `executeScript` results to.
  */
-function readFromPageFrames(tabId, func, args, label) {
+function readFromPageFrames(tabId, func, args, label, timeoutMs) {
   return injectInDiscoveredFrames(
     tabId,
     { world: "MAIN", func, args: args || [] },
-    label
+    label,
+    timeoutMs
   ).then((results) =>
     results.map((item) => item && item.result).filter(Boolean)
   );
@@ -3438,7 +3452,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sender.tab.id,
       tableApiGetInPage,
       [request],
-      "read " + request.table
+      "read " + request.table,
+      PAGE_READ_TIMEOUT_MS
     ).then((responses) => {
       const ok = responses.find((item) => item.ok);
       if (ok) {
@@ -3531,7 +3546,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sender.tab.id,
       fillPortalVariables,
       [variables],
-      "fill portal variables"
+      "fill portal variables",
+      PORTAL_FILL_TIMEOUT_MS
     ).then((frameResults) => {
       const found = frameResults
         .filter((item) => item.foundForm)

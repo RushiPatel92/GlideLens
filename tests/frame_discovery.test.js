@@ -43,6 +43,9 @@ function loadSharedFrameHelpers(options) {
         const frameId = injection.target.frameIds[0];
         if (opts.hungFrame === frameId) return new Promise(() => {});
         if (opts.rejectingFrame === frameId) throw new Error("frame gone");
+        if (opts.slowFrame === frameId) {
+          await new Promise((resolve) => setTimeout(resolve, opts.slowMs || 60));
+        }
         return [{ frameId, result: { frameId, ok: true } }];
       },
     },
@@ -141,6 +144,34 @@ test("every frame hanging yields an empty read rather than a hang", async () => 
     await api.readFromPageFrames(41, function reader() {}, [], "read"),
     []
   );
+});
+
+/*
+ * A ceiling near the expected duration would trade the hang for a spurious
+ * failure — a Table API read waits on the instance, and prefill runs three
+ * passes with settle waits — so callers can raise it.
+ */
+test("a slow frame is dropped at the default ceiling but kept at a raised one", async () => {
+  const slow = { frameIds: [0, 7], slowFrame: 7, slowMs: 60 };
+
+  const atDefault = loadSharedFrameHelpers(slow);
+  assert.deepStrictEqual(
+    await atDefault.api.readFromPageFrames(41, function reader() {}, [], "read"),
+    [{ frameId: 0, ok: true }]
+  );
+
+  const raised = loadSharedFrameHelpers(slow);
+  const results = await raised.api.readFromPageFrames(
+    41,
+    function reader() {},
+    [],
+    "read",
+    500
+  );
+  assert.deepStrictEqual(results, [
+    { frameId: 0, ok: true },
+    { frameId: 7, ok: true },
+  ]);
 });
 
 test("a burst of reads discovers once and reuses the cached frame list", async () => {

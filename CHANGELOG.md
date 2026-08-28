@@ -31,6 +31,12 @@ reconstructed version by version.
   probes those frames.
 
 ### Changed
+- Each injection carries a ceiling sized for what it actually does, rather than
+  one blanket value: 5s for a synchronous DOM read or patch, 30s for a Table API
+  read that waits on the instance, and 120s for portal prefill, which runs up to
+  three passes over every variable with a GlideAjax settle wait on each. The
+  ceilings exist to turn "never settles" into "eventually errors", so a ceiling
+  near the expected duration would only trade the hang for a spurious failure.
 - Debug Timeline and search frame discovery were near-identical copies; they are
   now one shared implementation with one `DISCOVER_FRAME`/`FRAME_AVAILABLE`
   message pair instead of two. Discovered frame lists are cached per tab for a
