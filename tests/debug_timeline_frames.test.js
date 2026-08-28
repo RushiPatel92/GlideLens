@@ -53,6 +53,7 @@ function loadFrameHelpers() {
           });
         });
       },
+      onUpdated: { addListener: () => {} },
     },
     scripting: {
       executeScript: async (injection) => {
@@ -126,6 +127,20 @@ test("stop reuses only the frame ids that successfully started", async () => {
   assert.deepStrictEqual(results.map((item) => item.frameId), [0, 7]);
   // Stop must not have to rediscover when it already knows the frames.
   assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 0);
+});
+
+/*
+ * Start is one-shot and context-sensitive: a frame list taken seconds ago may
+ * predate gsft_main. It must never come from the shared cache, or Start records
+ * fewer frames than the page has and Stop inherits the omission.
+ */
+test("start always discovers fresh rather than reusing a cached list", async () => {
+  const { api, calls } = loadFrameHelpers();
+
+  await api.startTimelineInFrames(41);
+  await api.startTimelineInFrames(41);
+
+  assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 2);
 });
 
 test("stop falls back to discovery when the frame list was lost", async () => {

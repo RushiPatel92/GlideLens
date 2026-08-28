@@ -39,8 +39,10 @@ The suites cover:
   injection every worker read now uses: announcement collection, the frame-0
   fallback, cross-tab announcement rejection, and the regressions that matter —
   a frame that never settles, one that rejects, and all of them hanging at once
-  must each leave the read answering rather than pending. Also the per-tab
-  frame-list cache and its expiry.
+  must each leave the read answering rather than pending, with the failed frames
+  reported rather than dropped. Also that discovery is fresh unless the caller
+  opts into the cache, that the cache expires and is dropped on navigation, and
+  that an `accept` predicate resolves a read without waiting for a hung sibling.
 - `search_transport_frames.test.js` — safe token-frame discovery without
   `allFrames`, including hung-frame isolation and per-tab caching.
 - `record_search.test.js` — bounded table lookup, table/field safety, live

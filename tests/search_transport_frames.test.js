@@ -48,6 +48,7 @@ function loadSearchFrameHelpers(options) {
           });
         });
       },
+      onUpdated: { addListener: () => {} },
     },
     scripting: {
       executeScript: async ({ target }) => {

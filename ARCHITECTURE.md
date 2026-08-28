@@ -60,15 +60,33 @@ own timeout. A frame that hangs costs its own result and nothing else.
 
 Those ceilings exist only to turn "never settles" into "eventually errors", so
 each is sized well above what its operation really takes: the 5s default suits a
-synchronous DOM read, but a Table API read waits on the instance and portal
-prefill runs several passes with a GlideAjax settle wait on each. Do not put a
-new caller on the default without checking what it waits for — a ceiling near
-the expected duration trades the hang for a spurious failure.
+synchronous DOM read, and a Table API read gets 30s because it waits on the
+instance. Do not put a new caller on the default without checking what it waits
+for — a ceiling near the expected duration trades the hang for a spurious
+failure.
 
-Discovered frame lists are cached per tab for a few seconds, because one user
-action can issue a dozen reads and each discovery costs a fixed wait. Token-frame
-resolution layers on top: it probes the discovered frames individually and caches
-the first that exposes `g_ck`.
+Prefill gets no fixed ceiling, because it has no bounded runtime and because
+`Promise.race` does not cancel `executeScript`: abandoning a fill leaves it
+typing into the form while the caller believes nothing happened, and a retry
+would overlap it. It is bound by inactivity instead, using the progress message
+the fill already emits per variable as a heartbeat, and a stall is reported as
+"may still be running" rather than as an empty result. Any future long-running
+mutation needs the same treatment, not a bigger number.
+
+Caching a discovered frame list is **opt-in**, and only `SN_TABLE_GET` opts in:
+one user action can issue a dozen reads and each discovery costs a fixed wait. A
+cached list is a stale list, so anything one-shot, context-sensitive, or mutating
+— Debug Timeline start, prefill, `sys_id`, the popup probe — must discover
+fresh, or it acts on a frame list that predates the frame it needed. The cache is
+dropped when a load starts in that tab. Token-frame resolution layers on top: it
+probes the discovered frames individually and caches the first that exposes
+`g_ck`.
+
+Reads resolve `{ results, failures }`. A frame that timed out or threw is
+recorded rather than dropped, because "no form on this page" and "no frame ever
+answered" are different answers and callers have to tell them apart. Reads may
+also pass an `accept` predicate to resolve at the first frame that answers;
+without one, a hung sibling holds a successful read for the whole ceiling.
 
 Record Lens follows the same single-frame rule through
 `SN_RECORD_SEARCH_GET`. Its metadata and result reads are bounded but repeated,

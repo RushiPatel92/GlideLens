@@ -24,12 +24,13 @@ reconstructed version by version.
   Every one of them now discovers concrete frames from content-script
   announcements and injects into each frame individually with its own timeout,
   so a frame that hangs costs its own result and nothing else.
-- **The popup could report no ServiceNow context at all.** Its probe was
-  time-boxed rather than fixed, so whenever the all-frames injection hung it
-  resolved empty and rendered "No ServiceNow context found on this tab" rather
-  than hanging — a wrong answer instead of no answer. It now asks the worker for
-  the discovered frame list and probes those frames. Latent rather than
-  observed: see the reproduction note below.
+- **The popup could silently drop the form and user details it exists to
+  show.** Its probe was time-boxed rather than fixed, so whenever the all-frames
+  injection hung it resolved empty; the popup then fell back to `{ found: true }`
+  and rendered only the instance and build information, with nothing to say the
+  page probe had failed. It now asks the worker for the discovered frame list
+  and probes those frames. Latent rather than observed: see the reproduction
+  note below.
 
 Reproduction note: `allFrames: true` was measured still pending at 20 seconds
 on a classic form on 2026-08-24, and that hang is what the 0.11.1 Debug Timeline
@@ -44,14 +45,34 @@ after.
 ### Changed
 - Each injection carries a ceiling sized for what it actually does, rather than
   one blanket value: 5s for a synchronous DOM read or patch, 30s for a Table API
-  read that waits on the instance, and 120s for portal prefill, which runs up to
-  three passes over every variable with a GlideAjax settle wait on each. The
-  ceilings exist to turn "never settles" into "eventually errors", so a ceiling
-  near the expected duration would only trade the hang for a spurious failure.
+  read that waits on the instance. The ceilings exist to turn "never settles"
+  into "eventually errors", so a ceiling near the expected duration would only
+  trade the hang for a spurious failure.
+- **Prefill gets no fixed ceiling at all**, because it has no bounded runtime:
+  each variable can cost a 400ms settle delay plus a GlideAjax wait of up to 2s
+  across up to three passes, so twenty repeatedly-changed variables can honestly
+  run for minutes. And `Promise.race` does not cancel `executeScript` — a fixed
+  ceiling would abandon a fill still typing into the form while telling the
+  caller no form was found, so a retry would overlap the first fill. It is bound
+  by inactivity instead: the fill already emits a progress message per variable,
+  each refreshes the deadline, and a stall reports that the fill **may still be
+  running** rather than that nothing happened.
+- Reads report which frames failed. Every timeout and rejection used to collapse
+  to an empty result, so "no form on this page" and "no frame ever answered"
+  were indistinguishable; reads now resolve `{ results, failures }` and callers
+  surface the difference.
+- Reads can stop at the first frame that answers. Waiting for every frame made a
+  read cost the slowest one, so a single hung sibling would hold a successful
+  200ms Table API read for the full 30s ceiling.
 - Debug Timeline and search frame discovery were near-identical copies; they are
   now one shared implementation with one `DISCOVER_FRAME`/`FRAME_AVAILABLE`
-  message pair instead of two. Discovered frame lists are cached per tab for a
-  few seconds so a burst of reads pays the discovery wait once.
+  message pair instead of two. Caching the discovered frame list is opt-in and
+  used only by `SN_TABLE_GET`, where a burst of repeated reads should not pay
+  the discovery wait each time. A cached list is a stale list — a frame created
+  after it was taken is invisible until it expires — so one-shot,
+  context-sensitive, and mutating operations (Debug Timeline start, prefill,
+  `sys_id`, the popup probe) always discover fresh. The cache is also dropped
+  as soon as a load starts in that tab.
 - Reads now reach only frames that actually host a content script. The manifest
   sets `all_frames` without `match_about_blank`, so that means real
   `service-now.com` frames and not `about:blank` helper frames. Excluding those

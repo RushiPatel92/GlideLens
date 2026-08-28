@@ -105,14 +105,16 @@ window.addEventListener("message", (event) => {
   }
 
   if (msg.source === SNH_PREFILL_PROGRESS_SOURCE) {
-    if (window === window.top) {
-      showToast(msg.message || "Filling portal form…", false, 6000);
-    } else {
-      chrome.runtime.sendMessage({
-        type: "PREFILL_PROGRESS",
-        message: msg.message || "Filling portal form…",
-      });
-    }
+    const progress = msg.message || "Filling portal form…";
+    if (window === window.top) showToast(progress, false, 6000);
+    /* The worker uses these as the liveness heartbeat for the fill it is
+     * awaiting, so it has to hear from the top frame too — not only from a
+     * sub-frame that needs its toast relayed. `relay` says which is which. */
+    chrome.runtime.sendMessage({
+      type: "PREFILL_PROGRESS",
+      message: progress,
+      relay: window !== window.top,
+    }).catch(() => {});
   }
 });
 
