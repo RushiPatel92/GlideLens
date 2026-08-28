@@ -25,7 +25,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
 ```
 
 The suites cover:
@@ -41,6 +41,20 @@ The suites cover:
   preset intersection, explicit field selection, complete-term verification,
   result actions/caps, error categories, exact sys_id fallback, and stale
   search cancellation.
+- `command_palette.test.js` — the pure palette model: label/description
+  matching, relevance ranking (every built-in command must rank first for its
+  own exact label, and groups must stay contiguous),
+  the accepted unique built-in labels, declared group order, the
+  single-appearance favourite, the stable Debug Timeline favourite key across
+  Start/Stop, rejection of duplicate labels and implicit input labels, and
+  source assertions for the listbox, `aria-activedescendant`, focus trap, and
+  shared panel headings.
+- `content_context.test.js` — conservative table and sys_id detection from page
+  URLs, including the classic `*_list.do` suffix strip, classic record routes,
+  Workspace routes, and encoded URLs.
+- `open_url.test.js` — `OPEN_URL` tab placement beside the originating tab, and
+  the fallback to Chrome's default placement when tab context is missing or
+  invalid.
 - `debug_timeline.test.js` — reversible MAIN-world recording, including all
   GlideAjax entry points.
 - `debug_timeline_frames.test.js` — discovery and injection across concrete
@@ -104,7 +118,7 @@ Previously verified assumptions include the `cat_item`/`catalog_item` split,
 the `IO:` prefix on `catalog_ui_policy_action.catalog_variable`,
 `super_class.name` dot-walking to a string, the two-hop
 `sc_item_option.item_option_new.*` chain, and the defining-table inheritance
-walk. Record Search uses bounded technical-name reads on `sys_db_object` and
+walk. Record Lens uses bounded technical-name reads on `sys_db_object` and
 table-level `sys_documentation` rows for user-facing labels. It also confirmed that
 `sys_dictionary.display` and `active` are readable, and that display fields can
 be defined on a parent table. Some tables have no explicit display row and need
@@ -125,7 +139,8 @@ default. Reverify when platform behavior or the queried schema changes.
 - `code_search.js`, `code_search_ui.js` — lazily injected Code Search engine
   and results panel.
 - `record_search.js`, `record_search_ui.js` — lazily injected metadata-driven
-  Record Search engine and read-only results panel.
+  Record Lens engine and read-only results panel (the files keep the older
+  Record Search names).
 - `debug_timeline_main.js`, `debug_timeline_ui.js` — MAIN-world recorder and
   isolated-world results UI.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including
@@ -141,9 +156,17 @@ GitHub Pages serves `docs/` from `main`. It is hand-written and reuses the
 popup's design tokens. Assets must live inside `docs/`; parent-relative assets
 are outside the Pages root.
 
-The landing page's command list mirrors `content.js`. Its Code Search, Catalog
-Insight, Variable Values, and Debug Timeline demonstrations must match their
-real panels. Read the source rather than recreating panel behavior from memory,
+The landing page's command list mirrors `content.js`, including each command's
+label and its action description. Its Record Lens, Code Search, Catalog Logic,
+Variable Values, and Debug Timeline demonstrations must match their real panels,
+down to the panel headings.
+
+The Record Lens demo additionally copies two engine rules verbatim rather than
+approximating them, because they are the point of the feature: the known-table
+presets that choose default fields, and `SENSITIVE_AUTO_FIELD_PATTERN`, which
+keeps value/body/content/script/password-like fields out of the automatic
+selection. If either changes in `record_search.js`, change the demo too —
+`sys_properties.value` showing as "manual only" is the visible proof. Read the source rather than recreating panel behavior from memory,
 including grouping, search fields, counts, buckets, and category labels.
 Change a panel and its demonstration in the same change.
 

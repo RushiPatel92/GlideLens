@@ -187,17 +187,47 @@ a { color: var(--teal); }
   text-transform: uppercase;
   color: var(--muted);
 }
+/* Two columns — a compact label pill and its action description — mirroring
+   .cmd-label / .cmd-description in content.js. Rows keep a fixed height so the
+   active row's second description line cannot make the list jump. */
 .palette-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(94px, 132px) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
+  gap: 10px;
+  height: 42px;
+  padding: 4px 10px;
   border-radius: 7px;
   border-left: 2px solid transparent;
   cursor: pointer;
   font-size: 14.5px;
 }
-.palette-row .cmd-name { flex: 1; min-width: 0; }
+.palette-row .cmd-name {
+  justify-self: start;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid #4d5570;
+  border-radius: 5px;
+  background: #2b3041;
+  color: #f2f5ff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-row .cmd-desc {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .palette-row .cmd-key {
   font: 500 11.5px/1 var(--mono);
   color: var(--muted);
@@ -209,6 +239,19 @@ a { color: var(--teal); }
 .palette-row.is-active {
   background: color-mix(in srgb, var(--teal) 13%, transparent);
   border-left-color: var(--teal);
+}
+.palette-row.is-active .cmd-name {
+  border-color: color-mix(in srgb, var(--teal) 58%, #4d5570);
+  background: color-mix(in srgb, var(--teal) 13%, #2b3041);
+  color: #fff;
+}
+.palette-row.is-active .cmd-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow: hidden;
+  color: var(--text);
 }
 .palette-row.is-active .cmd-key { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
 .palette-empty { padding: 26px 12px; text-align: center; color: var(--muted); font-size: 14px; }
@@ -840,6 +883,169 @@ a { color: var(--teal); }
 
 .dm-empty { padding: 28px 15px; text-align: center; color: #85859f; font-size: 12.5px; }
 
+/* --- Record Lens (record_search_ui.js) ---------------------------------
+   The real panel is a search form, not a filter list, so it needs its own
+   controls: a bounded table combobox, an explicit field picker, then results.
+   Class names mirror the panel's own (.row-top/.values/.row-actions) so the
+   two stay comparable when either changes. */
+.dm-rl-form { padding: 11px 15px; border-bottom: 1px solid #2e2e4e; }
+.dm-rl-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) auto;
+  align-items: end;
+  gap: 9px;
+}
+.dm-rl-lab { display: block; font-size: 10.5px; letter-spacing: .04em; color: #9d9dba; margin-bottom: 4px; }
+.dm-rl-in {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid #575780;
+  border-radius: 6px;
+  background: #313150;
+  color: #f0f0fa;
+  font: 400 12px/1.4 var(--sans);
+}
+.dm-rl-in:focus { outline: none; border-color: var(--teal); background: #37375a; }
+.dm-rl-in::placeholder { color: #a4a4be; }
+.dm-rl-combo { position: relative; }
+.dm-rl-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 190px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid #575780;
+  border-radius: 7px;
+  background: #262640;
+  box-shadow: 0 12px 28px #0009;
+}
+.dm-rl-menu[hidden] { display: none; }
+.dm-rl-opt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #dedeee;
+  font: 400 12px/1.4 var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.dm-rl-opt:hover, .dm-rl-opt.active { background: color-mix(in srgb, var(--teal) 18%, #32335a); }
+.dm-rl-opt .dm-rl-tname { margin-left: auto; font: 10.5px var(--mono); color: #8f8faa; }
+.dm-rl-msg { padding: 8px 9px; font-size: 11.5px; color: #85859f; }
+.dm-rl-go {
+  padding: 7px 15px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--pink, #ff6fae);
+  color: #2a0d1b;
+  font: 600 12px/1.4 var(--sans);
+  cursor: pointer;
+}
+.dm-rl-go:hover { filter: brightness(1.08); }
+
+.dm-rl-fieldline { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 9px; }
+.dm-rl-fieldpick { position: relative; }
+.dm-rl-fbtn {
+  padding: 5px 10px;
+  border: 1px solid #4a4b78;
+  border-radius: 6px;
+  background: #32335a;
+  color: #cfcfe4;
+  font: 500 11.5px/1.4 var(--sans);
+  cursor: pointer;
+}
+.dm-rl-fbtn:hover { background: #4a4b78; color: #fff; }
+.dm-rl-fmenu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 268px;
+  max-height: 210px;
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid #575780;
+  border-radius: 7px;
+  background: #262640;
+  box-shadow: 0 12px 28px #0009;
+}
+.dm-rl-fmenu[hidden] { display: none; }
+.dm-rl-fopt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dm-rl-fopt:hover { background: #32335a; }
+.dm-rl-fopt .dm-rl-ftech { margin-left: auto; font: 10.5px var(--mono); color: #8f8faa; }
+.dm-rl-manual {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #4a3a2a;
+  color: #e0c187;
+  font: 500 9.5px/1.5 var(--sans);
+}
+.dm-rl-summary { font-size: 11.5px; color: #9d9dba; }
+.dm-rl-summary .dm-rl-tsel { color: #85859f; }
+.dm-rl-summary strong { color: #cfcfe4; font-weight: 600; }
+
+.dm-rl-status {
+  padding: 8px 15px;
+  border-bottom: 1px solid #2e2e4e;
+  background: #212134;
+  font-size: 11.5px;
+  color: #9d9dba;
+}
+.dm-rl-status.is-empty { color: #e0c187; }
+.dm-rl-status.is-ok { color: #7fded2; }
+
+.dm-rl-row { padding: 10px 15px; border-bottom: 1px solid #23233a; cursor: default; }
+.dm-rl-row:hover { background: #26264080; }
+.dm-rl-top { display: flex; align-items: baseline; gap: 9px; }
+.dm-rl-title { font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
+.dm-rl-sysid { margin-left: auto; font: 10.5px var(--mono); color: #7d7d95; }
+.dm-rl-values { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; font-size: 11.5px; color: #b9b9d4; }
+.dm-rl-values .dm-rl-vlab { color: #85859f; }
+.dm-rl-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.dm-rl-act {
+  padding: 3px 8px;
+  border: 1px solid #4a4b78;
+  border-radius: 5px;
+  background: #2b2b48;
+  color: #cfcfe4;
+  font: 500 11px/1.4 var(--sans);
+  cursor: pointer;
+}
+.dm-rl-act:hover { background: #4a4b78; color: #fff; }
+
+.dm-rl-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 15px;
+  border-top: 1px solid #2e2e4e;
+  background: #1a1a2a;
+  font-size: 11px;
+  color: #6e6e88;
+}
+.dm-rl-bar .dm-rl-open { margin-left: auto; }
+.dm-rl-open[disabled] { opacity: .45; cursor: default; }
+.dm-rl-open[disabled]:hover { background: #2b2b48; color: #cfcfe4; }
+
+
 .dm-foot {
   padding: 8px 15px;
   border-top: 1px solid #2e2e4e;
@@ -850,6 +1056,11 @@ a { color: var(--teal); }
 
 @media (max-width: 620px) {
   .dm-crow, .dm-vrow { grid-template-columns: 1fr; gap: 5px; }
+  .dm-rl-main { grid-template-columns: 1fr; align-items: stretch; }
+  .dm-rl-go { width: 100%; }
+  .dm-rl-fmenu { width: 100%; }
+  .dm-rl-sysid { margin-left: 0; }
+  .dm-rl-top { flex-wrap: wrap; gap: 2px 9px; }
   .dm-meta { justify-content: flex-start; }
   .dm-find { margin-left: 0; }
   .dm-ev-main { grid-template-columns: 60px 72px minmax(0, 1fr); }
@@ -919,6 +1130,9 @@ a { color: var(--teal); }
             autocomplete="off"
             spellcheck="false"
             aria-label="Filter commands"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="true"
             aria-controls="paletteList"
           />
         </div>
@@ -952,12 +1166,13 @@ a { color: var(--teal); }
           </dl>
         </div>
         <div class="feature-body">
-          <h2>Find the record, skip the list-page detour</h2>
+          <h2>Record Lens: find the record, skip the list-page detour</h2>
           <p>
             Find a table by label or technical name without loading the full
             table catalog. GlideLens can preselect the current page's verified
-            table, then shows exactly which live dictionary-confirmed fields it
-            will search — no guessed column silently becoming an unfiltered read.
+            table — including on a classic <code>*_list.do</code> list page — then
+            shows exactly which live dictionary-confirmed fields it will search:
+            no guessed column silently becoming an unfiltered read.
           </p>
           <p>
             Only the sys_id and up to six selected fields come back. Safe presets
@@ -972,6 +1187,47 @@ a { color: var(--teal); }
             <span class="tag">exact sys_id</span>
             <span class="tag">20-result cap</span>
             <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Search <em>laptop</em> on Incident, or switch to the User table and search <em>rossi</em>. Searching <em>rossi</em> on Incident finds nothing until you add <em>Caller</em> under <em>2 fields</em> — that is the point: only the fields you select are searched.</p>
+            <div class="dm" id="dmRl">
+              <div class="dm-head">
+                <h3 class="dm-title">Record Lens</h3>
+                <p class="dm-sub">Choose a verified table and fields. GlideLens reads only bounded summaries and opens results in ServiceNow.</p>
+              </div>
+              <div class="dm-rl-form">
+                <div class="dm-rl-main">
+                  <div class="dm-rl-combo">
+                    <label class="dm-rl-lab" for="dmrlTable">Table</label>
+                    <input class="dm-rl-in" id="dmrlTable" type="text"
+                      role="combobox" aria-autocomplete="list" aria-expanded="false"
+                      aria-controls="dmrlTableMenu"
+                      placeholder="Search table label or name" autocomplete="off" spellcheck="false" />
+                    <div class="dm-rl-menu" id="dmrlTableMenu" role="listbox" aria-label="Matching tables" hidden></div>
+                  </div>
+                  <div>
+                    <label class="dm-rl-lab" for="dmrlTerm">Text or sys_id</label>
+                    <input class="dm-rl-in" id="dmrlTerm" type="text"
+                      placeholder="number, name, email, or exact sys_id" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <button class="dm-rl-go" id="dmrlGo" type="button">Search</button>
+                </div>
+                <div class="dm-rl-fieldline">
+                  <div class="dm-rl-fieldpick">
+                    <button class="dm-rl-fbtn" id="dmrlFields" type="button"
+                      aria-haspopup="listbox" aria-expanded="false" disabled>0 fields</button>
+                    <div class="dm-rl-fmenu" id="dmrlFieldMenu" role="listbox" aria-multiselectable="true" hidden></div>
+                  </div>
+                  <div class="dm-rl-summary" id="dmrlSummary">Choose a table to load verified fields.</div>
+                </div>
+              </div>
+              <div class="dm-rl-status" id="dmrlStatus" role="status" aria-live="polite">Search for a table to begin.</div>
+              <div class="dm-rows" id="dmrlRows"></div>
+              <div class="dm-rl-bar">
+                <span>Read-only · at most 20 verified results · no record or search history is stored</span>
+                <button class="dm-rl-act dm-rl-open" id="dmrlOpenList" type="button" disabled>Open results in list</button>
+              </div>
+            </div>
           </div>
         </div>
       </article>
@@ -1022,7 +1278,7 @@ a { color: var(--teal); }
             <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Collapse a group, open the drawer, or filter for <em>AccessHelper</em>.</p>
             <div class="dm" id="dmSearch">
               <div class="dm-head">
-                <h3 class="dm-title">Code search <span>getUserGroups</span></h3>
+                <h3 class="dm-title">Code Search <span>getUserGroups</span></h3>
                 <p class="dm-sub">Verified matches only. Every field was checked against your term in the browser before it was shown.</p>
               </div>
               <div class="dm-sum">
@@ -1061,7 +1317,7 @@ a { color: var(--teal); }
           </dl>
         </div>
         <div class="feature-body">
-          <h2>What affects this catalog item</h2>
+          <h2>Catalog Logic: what actually affects this item</h2>
           <p>
             Open a catalog item and get every client script and UI policy bound to
             it or its variable sets, grouped by the variable they watch. Rows that
@@ -1079,7 +1335,7 @@ a { color: var(--teal); }
             <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em>, <em>Active only</em>, or search <em>laptop_model</em>.</p>
             <div class="dm" id="dmCat">
               <div class="dm-head">
-                <h3 class="dm-title">What affects this catalog item</h3>
+                <h3 class="dm-title">Catalog Logic</h3>
                 <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
               </div>
               <div class="dm-sum">
@@ -1150,7 +1406,7 @@ a { color: var(--teal); }
           </dl>
         </div>
         <div class="feature-body">
-          <h2>Show variable values</h2>
+          <h2>Variable Values, including the ones you cannot see</h2>
           <p>
             Every variable on the item with its current value, variable sets
             included — and crucially <strong>the ones you cannot see</strong>.
@@ -1382,7 +1638,7 @@ a { color: var(--teal); }
 
 <footer class="wrap">
   <div class="colophon">
-    <span class="ver">v0.11.1</span>
+    <span class="ver">v0.12.0</span>
     <a href="https://github.com/RushiPatel92/GlideLens/blob/main/CHANGELOG.md">Changelog</a>
     <a href="https://github.com/RushiPatel92/GlideLens/issues">Report an issue</a>
     <a href="privacy.html">Privacy</a>
@@ -1403,24 +1659,39 @@ a { color: var(--teal); }
 (function () {
   "use strict";
 
-  /* Names kept in step with the real palette in content.js. If a command is
-     renamed there, rename it here — a demo that lies is worse than no demo. */
-  var COMMANDS = [
-    { group: "Tools",     name: "Search code…",                        key: "",            go: "#code-search" },
-    { group: "Tools",     name: "Recheck what code search can reach",   key: "",            go: "#code-search" },
-    { group: "Tools",     name: "Toggle translation icons",            key: "",            go: "#translations" },
-    { group: "Tools",     name: "Start debug timeline",                key: "",            go: "#debug-timeline" },
-    { group: "Catalog",   name: "What affects this catalog item",      key: "",            go: "#catalog-insight" },
-    { group: "Catalog",   name: "Toggle variable insight icons",       key: "Alt+dbl",     go: "#variable-icons" },
-    { group: "Catalog",   name: "Show variable values",                key: "",            go: "#variable-values" },
-    { group: "Catalog",   name: "Prefill variables from ticket…",      key: "",            go: "#install" },
-    { group: "Record",    name: "Search records…",                     key: "",            go: "#record-search" },
-    { group: "Record",    name: "Copy sys_id",                         key: "",            go: "#install" },
-    { group: "Record",    name: "Open playbook executions",            key: "",            go: "#install" },
-    { group: "Record",    name: "Open customer updates by sys_id…",    key: "",            go: "#install" },
-    { group: "Navigate",  name: "Open table list…",                    key: "",            go: "#install" },
-    { group: "Navigate",  name: "Open new record…",                    key: "",            go: "#install" }
+  /* Labels, descriptions, group order and Dev Links kept in step with
+     buildCommands() and PALETTE_GROUP_ORDER in content.js. If a command is
+     renamed or redescribed there, change it here — a demo that lies is worse
+     than no demo. Groups are listed in the real order: Tools, Record, Catalog,
+     Navigate, Dev Links. (The extension puts a favourited command in a
+     Favorite group above them all; favourites are not part of this demo.) */
+  /* Mirrors PALETTE_GROUP_ORDER in content.js, minus Favorite (not demoed). */
+  var GROUP_ORDER = ["Tools", "Record", "Catalog", "Navigate", "Dev Links"];
+
+  var DEV_LINKS = [
+    "Background Scripts", "Script Includes", "Business Rules", "Client Scripts",
+    "UI Actions", "System Logs", "Update Sets", "Scheduled Jobs", "Fix Scripts",
+    "Sys Properties", "REST Explorer", "Flow Designer"
   ];
+
+  var COMMANDS = [
+    { group: "Tools",    name: "Translations",     desc: "Show or hide field translation controls",                    key: "",        go: "#translations" },
+    { group: "Tools",    name: "Debug Timeline",   desc: "Start recording form activity, GlideAjax calls, and errors", key: "",        go: "#debug-timeline" },
+    { group: "Tools",    name: "Code Search",      desc: "Search verified code and configuration…",                    key: "",        go: "#code-search" },
+    { group: "Tools",    name: "Search Sources",   desc: "Refresh available Code Search sources",                      key: "",        go: "#code-search" },
+    { group: "Record",   name: "sys_id",           desc: "Copy the current record sys_id",                             key: "",        go: "#install" },
+    { group: "Record",   name: "Record Lens",      desc: "Search verified records across readable tables…",             key: "",        go: "#record-search" },
+    { group: "Record",   name: "Playbooks",        desc: "Open playbook executions for this record…",                   key: "",        go: "#install" },
+    { group: "Record",   name: "Customer Updates", desc: "Open captured customer updates by sys_id…",                   key: "",        go: "#install" },
+    { group: "Catalog",  name: "Variable Prefill", desc: "Copy catalog-variable values from another ticket…",           key: "",        go: "#install" },
+    { group: "Catalog",  name: "Variable Values",  desc: "Inspect current catalog-variable values",                    key: "",        go: "#variable-values" },
+    { group: "Catalog",  name: "Catalog Logic",    desc: "Inspect catalog client scripts and UI policies",             key: "",        go: "#catalog-insight" },
+    { group: "Catalog",  name: "Variable Insight", desc: "Show or hide per-variable insight icons",                    key: "Alt+dbl", go: "#variable-icons" },
+    { group: "Navigate", name: "Table List",       desc: "Open a list for a named table…",                              key: "",        go: "#install" },
+    { group: "Navigate", name: "New Record",       desc: "Open a new record form for a named table…",                   key: "",        go: "#install" }
+  ].concat(DEV_LINKS.map(function (label) {
+    return { group: "Dev Links", name: label, desc: "Open " + label, key: "", go: "#install" };
+  }));
 
   var input = document.getElementById("paletteInput");
   var list = document.getElementById("paletteList");
@@ -1429,14 +1700,62 @@ a { color: var(--teal); }
   var visible = [];
   var active = 0;
 
+  /* The extension matches label, description and a per-command keyword list.
+     There are no keywords here, so this filters on what the row shows. Group
+     names are deliberately NOT searched: content.js does not search them, and
+     a demo that lies is worse than no demo. */
   function matches(cmd, q) {
     if (!q) return true;
-    return (cmd.name + " " + cmd.group).toLowerCase().indexOf(q) !== -1;
+    return (cmd.name + " " + cmd.desc).toLowerCase().indexOf(q) !== -1;
+  }
+
+  /* Mirrors paletteMatchTier() in content.js; lowest wins. A command's whole
+     label can appear inside ANOTHER command's description -- "Variable Values"
+     sits inside Variable Prefill's "Copy catalog-variable values from another
+     ticket" -- so a label match must outrank a description match, or Enter
+     runs the wrong command. */
+  function tierFor(cmd, q) {
+    var label = cmd.name.toLowerCase();
+    if (label === q) return 0;
+    if (label.indexOf(q) === 0) return 1;
+    if (label.indexOf(q) !== -1) return 2;
+    return 3;
+  }
+
+  /* Mirrors orderPaletteCommands(): rank each GROUP by its best-matching
+     member, break ties on the declared group order, then sort within a group
+     by tier and declaration order. Groups must stay CONTIGUOUS -- render()
+     opens a header whenever cmd.group changes, so interleaving groups by
+     relevance would print a header twice. An empty query skips tiering, so
+     the unfiltered palette keeps its declared order exactly. */
+  function orderCommands(cmds, q) {
+    var own = Object.prototype.hasOwnProperty;
+    var entries = cmds.map(function (cmd, index) {
+      return { cmd: cmd, index: index, tier: q ? tierFor(cmd, q) : 0 };
+    });
+
+    var best = {};
+    entries.forEach(function (entry) {
+      var group = entry.cmd.group;
+      if (!own.call(best, group) || entry.tier < best[group]) best[group] = entry.tier;
+    });
+
+    function groupRank(cmd) {
+      var at = GROUP_ORDER.indexOf(cmd.group);
+      return at === -1 ? GROUP_ORDER.length : at;
+    }
+
+    return entries.sort(function (left, right) {
+      return best[left.cmd.group] - best[right.cmd.group] ||
+        groupRank(left.cmd) - groupRank(right.cmd) ||
+        left.tier - right.tier ||
+        left.index - right.index;
+    }).map(function (entry) { return entry.cmd; });
   }
 
   function render() {
     var q = input.value.trim().toLowerCase();
-    visible = COMMANDS.filter(function (c) { return matches(c, q); });
+    visible = orderCommands(COMMANDS.filter(function (c) { return matches(c, q); }), q);
     if (active >= visible.length) active = Math.max(0, visible.length - 1);
 
     list.textContent = "";
@@ -1446,6 +1765,7 @@ a { color: var(--teal); }
       empty.className = "palette-empty";
       empty.textContent = "No command matches “" + input.value.trim() + "”.";
       list.appendChild(empty);
+      input.removeAttribute("aria-activedescendant");
       return;
     }
 
@@ -1455,13 +1775,14 @@ a { color: var(--teal); }
         lastGroup = cmd.group;
         var head = document.createElement("li");
         head.className = "palette-group";
-        head.setAttribute("aria-hidden", "true");
+        head.setAttribute("role", "presentation");
         head.textContent = cmd.group;
         list.appendChild(head);
       }
 
       var row = document.createElement("li");
       row.className = "palette-row" + (i === active ? " is-active" : "");
+      row.id = "palette-option-" + i;
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", i === active ? "true" : "false");
 
@@ -1469,6 +1790,11 @@ a { color: var(--teal); }
       name.className = "cmd-name";
       name.textContent = cmd.name;
       row.appendChild(name);
+
+      var desc = document.createElement("span");
+      desc.className = "cmd-desc";
+      desc.textContent = cmd.desc;
+      row.appendChild(desc);
 
       if (cmd.key) {
         var key = document.createElement("span");
@@ -1481,6 +1807,8 @@ a { color: var(--teal); }
       row.addEventListener("click", function () { run(cmd); });
       list.appendChild(row);
     });
+
+    paint();
   }
 
   /* Repaint selection only — cheaper than rebuilding, and keeps hover smooth. */
@@ -1491,6 +1819,8 @@ a { color: var(--teal); }
       rows[i].classList.toggle("is-active", on);
       rows[i].setAttribute("aria-selected", on ? "true" : "false");
     }
+    if (rows[active]) input.setAttribute("aria-activedescendant", rows[active].id);
+    else input.removeAttribute("aria-activedescendant");
   }
 
   function scrollActiveIntoView() {
@@ -1778,7 +2108,7 @@ a { color: var(--teal); }
 })();
 
 /* ---------------------------------------------------------------------------
-   Demo 2 — "What affects this catalog item".
+   Demo 2 — "Catalog Logic".
 
    The four controls are the real ones: kind filter, active-only, group by
    variable, and free text. Grouping follows the extension's own rule — onLoad
@@ -2005,7 +2335,7 @@ a { color: var(--teal); }
 })();
 
 /* ---------------------------------------------------------------------------
-   Demo 3 — "Show variable values".
+   Demo 3 — "Variable Values".
 
    Buckets and their labels come from BUCKET_LABELS in hidden_variables_ui.js.
    "Hidden" is the row's own hidden flag, not a bucket name: Hidden-type,
@@ -2332,6 +2662,475 @@ a { color: var(--teal); }
   pill.className = "store-you";
   pill.textContent = "Your browser";
   card.appendChild(pill);
+})();
+
+/* ---------------------------------------------------------------------------
+   Demo 5 — "Record Lens" (record_search_ui.js + record_search.js).
+
+   Mirrors the real panel: a bounded table combobox that matches on label AND
+   technical name, an explicit field picker capped at six with sensitive fields
+   marked "manual only", and results that are re-verified against the complete
+   term before they render. All data is fabricated.
+
+   Two rules copied from the engine rather than approximated, because they are
+   the point of the feature:
+     - KNOWN_TABLE_PRESETS choose the default fields, intersected with the
+       fields this table actually has.
+     - SENSITIVE_AUTO_FIELD_PATTERN never auto-selects value/body/content/
+       script/password-ish fields. sys_properties.value is the visible proof.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  var root = document.getElementById("dmRl");
+  if (!root) return;
+
+  /* Straight from record_search.js. Keep in step if it changes there. */
+  var SENSITIVE = /(^|_)(value|body|html|content|script|password|passwd|secret|token|credential|api_key)($|_)/i;
+  var PRESETS = {
+    incident: ["number", "short_description"],
+    change_request: ["number", "short_description"],
+    sc_req_item: ["number", "short_description"],
+    sys_user: ["user_name", "name", "first_name", "last_name", "email"],
+    cmdb_ci: ["name", "asset_tag", "serial_number", "short_description"],
+    sys_properties: ["name", "description"]
+  };
+  var MAX_FIELDS = 6;
+  var RESULT_LIMIT = 20;
+
+  function f(name, label, type) {
+    return { name: name, label: label, auto: !SENSITIVE.test(name) && !/journal|password/i.test(type || "") };
+  }
+
+  var TABLES = [
+    {
+      name: "incident", label: "Incident",
+      fields: [f("number", "Number"), f("short_description", "Short description"),
+        f("description", "Description"), f("caller_id", "Caller"),
+        f("assignment_group", "Assignment group"),
+        f("work_notes", "Work notes", "journal_input"), f("close_notes", "Close notes")],
+      rows: [
+        { sysId: "a41f2b7c9d4e4c8ab1f0e6d3c2b5a904", number: "INC0010042",
+          short_description: "Laptop will not boot after the overnight patch",
+          description: "Reported after the Tuesday maintenance window. Fans spin, no POST.",
+          caller_id: "Marco Rossi", assignment_group: "Service Desk",
+          work_notes: "Swapped the RAM module; still no POST.", close_notes: "" },
+        { sysId: "c07d9e1a6b3f45219c8d2e7f0a1b4c63", number: "INC0009871",
+          short_description: "Replacement laptop for new starter",
+          description: "Standard build required before the start date.",
+          caller_id: "Dan Okoro", assignment_group: "End User Compute",
+          work_notes: "", close_notes: "Issued from the spare pool." },
+        { sysId: "5e2a8f4b7c1d40e39a6b5c8d2f1e0937", number: "INC0009644",
+          short_description: "Docking station not detecting the second monitor",
+          description: "Second display stays blank on the dock but works direct.",
+          caller_id: "Marco Rossi", assignment_group: "End User Compute",
+          work_notes: "Firmware update pending.", close_notes: "" }
+      ]
+    },
+    {
+      name: "sys_user", label: "User",
+      fields: [f("user_name", "User ID"), f("name", "Name"), f("first_name", "First name"),
+        f("last_name", "Last name"), f("email", "Email"), f("phone", "Phone"),
+        f("user_password", "Password", "password")],
+      rows: [
+        { sysId: "9b1c4d7e2a5f48c0b3d6e9f1a2c5b807", user_name: "marco.rossi",
+          name: "Marco Rossi", first_name: "Marco", last_name: "Rossi",
+          email: "marco.rossi@example.com", phone: "+44 20 7946 0102", user_password: "" },
+        { sysId: "3f8e5d2c9b6a41d78e0f3a1b4c7d2e59", user_name: "dan.okoro",
+          name: "Dan Okoro", first_name: "Dan", last_name: "Okoro",
+          email: "dan.okoro@example.com", phone: "+44 20 7946 0187", user_password: "" }
+      ]
+    },
+    {
+      name: "change_request", label: "Change Request",
+      fields: [f("number", "Number"), f("short_description", "Short description"),
+        f("description", "Description"), f("assignment_group", "Assignment group")],
+      rows: [
+        { sysId: "7c3b9a1f5e8d42069b4c7e0a3d6f1b28", number: "CHG0030118",
+          short_description: "Database failover rehearsal",
+          description: "Quarterly rehearsal of the standby failover runbook.",
+          assignment_group: "Platform Engineering" }
+      ]
+    },
+    {
+      name: "sys_properties", label: "System Property",
+      fields: [f("name", "Name"), f("description", "Description"), f("value", "Value")],
+      rows: [
+        { sysId: "1a4d7b0c3e6f4928d5b8c1e4f7a0b36c",
+          name: "glide.ui.list.refresh_interval",
+          description: "Seconds between automatic list refreshes.", value: "30" },
+        { sysId: "6d9f2c5b8a1e40739c2d5f8b1a4e7c03",
+          name: "glide.ui.forms.hide_empty_related_lists",
+          description: "Hides related lists that contain no rows.", value: "true" }
+      ]
+    }
+  ];
+
+  var tableInput = document.getElementById("dmrlTable");
+  var tableMenu = document.getElementById("dmrlTableMenu");
+  var termInput = document.getElementById("dmrlTerm");
+  var goBtn = document.getElementById("dmrlGo");
+  var fieldsBtn = document.getElementById("dmrlFields");
+  var fieldMenu = document.getElementById("dmrlFieldMenu");
+  var summary = document.getElementById("dmrlSummary");
+  var statusEl = document.getElementById("dmrlStatus");
+  var rowsEl = document.getElementById("dmrlRows");
+  var openListBtn = document.getElementById("dmrlOpenList");
+
+  var selectedTable = null;
+  var selected = [];          // field names
+  var activeOpt = -1;
+  var lastResults = [];
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = "dm-rl-status" + (kind ? " is-" + kind : "");
+  }
+
+  function empty(title, hint) {
+    rowsEl.textContent = "";
+    var box = document.createElement("div");
+    box.className = "dm-empty";
+    var strong = document.createElement("div");
+    strong.textContent = title;
+    var small = document.createElement("div");
+    small.style.cssText = "margin-top:5px;font-size:11.5px;color:#6e6e88";
+    small.textContent = hint;
+    box.appendChild(strong);
+    box.appendChild(small);
+    rowsEl.appendChild(box);
+  }
+
+  /* Bounded: matches label OR technical name, exactly as findTables does. */
+  function matchTables(q) {
+    var needle = q.trim().toLowerCase();
+    if (needle.length < 2) return [];
+    return TABLES.filter(function (t) {
+      return t.label.toLowerCase().indexOf(needle) !== -1 ||
+             t.name.toLowerCase().indexOf(needle) !== -1;
+    });
+  }
+
+  function renderTableMenu(list) {
+    tableMenu.textContent = "";
+    if (!list.length) {
+      var msg = document.createElement("div");
+      msg.className = "dm-rl-msg";
+      msg.textContent = tableInput.value.trim().length < 2
+        ? "Type two characters to query a bounded set of matching table labels and names."
+        : "No matching readable tables.";
+      tableMenu.appendChild(msg);
+    } else {
+      list.forEach(function (t, i) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "dm-rl-opt" + (i === activeOpt ? " active" : "");
+        b.setAttribute("role", "option");
+        b.setAttribute("aria-selected", i === activeOpt ? "true" : "false");
+        var lab = document.createElement("span");
+        lab.textContent = t.label;
+        var nm = document.createElement("span");
+        nm.className = "dm-rl-tname";
+        nm.textContent = t.name;
+        b.appendChild(lab);
+        b.appendChild(nm);
+        b.addEventListener("mouseenter", function () { activeOpt = i; paintOpts(); });
+        b.addEventListener("click", function () { selectTable(t); });
+        tableMenu.appendChild(b);
+      });
+    }
+    tableMenu.hidden = false;
+    tableInput.setAttribute("aria-expanded", "true");
+  }
+
+  function paintOpts() {
+    var opts = tableMenu.querySelectorAll(".dm-rl-opt");
+    for (var i = 0; i < opts.length; i++) {
+      opts[i].classList.toggle("active", i === activeOpt);
+      opts[i].setAttribute("aria-selected", i === activeOpt ? "true" : "false");
+    }
+  }
+
+  function closeTableMenu() {
+    tableMenu.hidden = true;
+    tableInput.setAttribute("aria-expanded", "false");
+  }
+
+  /* Preset intersected with this table's real fields, sensitive fields excluded, capped. */
+  function defaultFields(t) {
+    var preset = PRESETS[t.name] || [];
+    var have = {};
+    t.fields.forEach(function (fl) { have[fl.name] = fl; });
+    var chosen = preset
+      .map(function (n) { return have[n]; })
+      .filter(function (fl) { return fl && fl.auto; });
+    if (!chosen.length) chosen = t.fields.filter(function (fl) { return fl.auto; });
+    return chosen.slice(0, MAX_FIELDS).map(function (fl) { return fl.name; });
+  }
+
+  function selectTable(t) {
+    selectedTable = t;
+    selected = defaultFields(t);
+    tableInput.value = t.name;
+    closeTableMenu();
+    renderFieldMenu();
+    updateSummary();
+    lastResults = [];
+    updateOpenList();
+    setStatus("Ready · " + t.label + " (" + t.name + ") · " + selected.length + " fields selected");
+    empty("Find a record without loading a full table list.",
+      "Enter a term to search the selected fields, or paste an exact sys_id.");
+  }
+
+  function renderFieldMenu() {
+    fieldMenu.textContent = "";
+    if (!selectedTable) return;
+    selectedTable.fields.forEach(function (fl) {
+      var lab = document.createElement("label");
+      lab.className = "dm-rl-fopt";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = selected.indexOf(fl.name) !== -1;
+      var title = document.createElement("span");
+      title.textContent = fl.label;
+      if (!fl.auto) {
+        var m = document.createElement("span");
+        m.className = "dm-rl-manual";
+        m.textContent = "manual only";
+        title.appendChild(document.createTextNode(" "));
+        title.appendChild(m);
+      }
+      var tech = document.createElement("span");
+      tech.className = "dm-rl-ftech";
+      tech.textContent = fl.name;
+      cb.addEventListener("change", function () {
+        if (cb.checked) {
+          if (selected.length >= MAX_FIELDS) {
+            cb.checked = false;
+            setStatus("Select no more than six fields.", "empty");
+            return;
+          }
+          selected.push(fl.name);
+        } else {
+          selected = selected.filter(function (n) { return n !== fl.name; });
+        }
+        lastResults = [];
+        updateOpenList();
+        updateSummary();
+      });
+      lab.appendChild(cb);
+      lab.appendChild(title);
+      lab.appendChild(tech);
+      fieldMenu.appendChild(lab);
+    });
+  }
+
+  function updateSummary() {
+    fieldsBtn.disabled = !selectedTable;
+    fieldsBtn.textContent = selected.length + (selected.length === 1 ? " field" : " fields");
+    summary.textContent = "";
+    if (!selectedTable) {
+      summary.textContent = "Choose a table to load verified fields.";
+      return;
+    }
+    var byName = {};
+    selectedTable.fields.forEach(function (fl) { byName[fl.name] = fl; });
+    var t = document.createElement("span");
+    t.className = "dm-rl-tsel";
+    t.textContent = selectedTable.label + " (" + selectedTable.name + ") · ";
+    var strong = document.createElement("strong");
+    strong.textContent = selected.length
+      ? "Searching: " + selected.map(function (n) {
+          return byName[n].label + " [" + n + "]";
+        }).join(", ")
+      : "No fields selected";
+    summary.appendChild(t);
+    summary.appendChild(strong);
+  }
+
+  function updateOpenList() {
+    openListBtn.disabled = !lastResults.length;
+    openListBtn.textContent = lastResults.length
+      ? "Open " + lastResults.length + " in list"
+      : "Open results in list";
+  }
+
+  function search() {
+    if (!selectedTable) {
+      setStatus("Choose a verified table before searching.", "empty");
+      return;
+    }
+    var term = termInput.value.trim();
+    if (!term) {
+      setStatus("Enter a search term or an exact sys_id.", "empty");
+      return;
+    }
+    if (!selected.length && !/^[0-9a-f]{32}$/i.test(term)) {
+      setStatus("Select at least one verified field to search.", "empty");
+      return;
+    }
+
+    var isSysId = /^[0-9a-f]{32}$/i.test(term);
+    var needle = term.toLowerCase();
+
+    /* The verification step: a row only renders if the COMPLETE term is present
+       in one of the selected summary values. The server prefilter is broader. */
+    var hits = selectedTable.rows.filter(function (r) {
+      if (isSysId) return r.sysId.toLowerCase() === needle;
+      return selected.some(function (n) {
+        return String(r[n] || "").toLowerCase().indexOf(needle) !== -1;
+      });
+    }).slice(0, RESULT_LIMIT);
+
+    lastResults = hits;
+    updateOpenList();
+    render(hits, isSysId);
+  }
+
+  function render(hits, isSysId) {
+    rowsEl.textContent = "";
+    var byName = {};
+    selectedTable.fields.forEach(function (fl) { byName[fl.name] = fl; });
+
+    var sortSuffix = isSysId || !selected.length
+      ? ""
+      : " · sorted by relevance, then " + byName[selected[0]].label;
+    setStatus(hits.length + (hits.length === 1 ? " verified record" : " verified records") +
+      " in " + selectedTable.label + sortSuffix, hits.length ? "ok" : "empty");
+
+    if (!hits.length) {
+      empty("No verified matches in the selected fields.",
+        "Try another term, select different verified fields, or use an exact sys_id.");
+      return;
+    }
+
+    hits.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "dm-rl-row";
+
+      var top = document.createElement("div");
+      top.className = "dm-rl-top";
+      var title = document.createElement("span");
+      title.className = "dm-rl-title";
+      var titleText = String(r[selected[0]] || r.sysId);
+      title.textContent = titleText;
+      var sid = document.createElement("span");
+      sid.className = "dm-rl-sysid";
+      sid.textContent = r.sysId;
+      top.appendChild(title);
+      top.appendChild(sid);
+      row.appendChild(top);
+
+      var vals = document.createElement("div");
+      vals.className = "dm-rl-values";
+      selected.forEach(function (n, i) {
+        var v = String(r[n] || "");
+        if (!v || (i === 0 && v === titleText)) return;
+        var span = document.createElement("span");
+        var lab = document.createElement("span");
+        lab.className = "dm-rl-vlab";
+        lab.textContent = byName[n].label + ": ";
+        span.appendChild(lab);
+        span.appendChild(document.createTextNode(v));
+        vals.appendChild(span);
+      });
+      if (vals.childNodes.length) row.appendChild(vals);
+
+      var acts = document.createElement("div");
+      acts.className = "dm-rl-acts";
+      [["Open record", function () {
+        setStatus("Opens " + selectedTable.name + ".do in ServiceNow — inert in this demo.");
+      }], ["Copy sys_id", function () { copy(r.sysId, "sys_id"); }],
+        ["Copy URL", function () {
+          copy("https://example.service-now.com/" + selectedTable.name + ".do?sys_id=" + r.sysId, "Record URL");
+        }]].forEach(function (pair) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "dm-rl-act";
+        b.textContent = pair[0];
+        b.addEventListener("click", pair[1]);
+        acts.appendChild(b);
+      });
+      row.appendChild(acts);
+      rowsEl.appendChild(row);
+    });
+  }
+
+  function copy(text, label) {
+    var done = function () { setStatus(label + " copied to the clipboard.", "ok"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {
+        setStatus("Clipboard access was blocked.", "empty");
+      });
+    } else {
+      setStatus("Clipboard access was blocked.", "empty");
+    }
+  }
+
+  tableInput.addEventListener("input", function () {
+    if (selectedTable && tableInput.value.trim() !== selectedTable.name) {
+      selectedTable = null;
+      selected = [];
+      lastResults = [];
+      updateSummary();
+      updateOpenList();
+      setStatus("Search for a table to begin.");
+    }
+    activeOpt = -1;
+    renderTableMenu(matchTables(tableInput.value));
+  });
+  tableInput.addEventListener("focus", function () {
+    if (tableInput.value.trim().length >= 2) renderTableMenu(matchTables(tableInput.value));
+  });
+  tableInput.addEventListener("keydown", function (e) {
+    var list = matchTables(tableInput.value);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (tableMenu.hidden) renderTableMenu(list);
+      if (!list.length) return;
+      activeOpt = (activeOpt + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
+      paintOpts();
+    } else if (e.key === "Home" || e.key === "End") {
+      if (tableMenu.hidden || !list.length) return;
+      e.preventDefault();
+      activeOpt = e.key === "Home" ? 0 : list.length - 1;
+      paintOpts();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (!tableMenu.hidden && activeOpt >= 0 && list[activeOpt]) selectTable(list[activeOpt]);
+      else if (selectedTable) search();
+    } else if (e.key === "Escape") {
+      closeTableMenu();
+    }
+  });
+
+  fieldsBtn.addEventListener("click", function () {
+    var open = fieldMenu.hidden;
+    fieldMenu.hidden = !open;
+    fieldsBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+
+  termInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); search(); }
+  });
+  goBtn.addEventListener("click", search);
+  openListBtn.addEventListener("click", function () {
+    setStatus("Opens the " + lastResults.length +
+      " verified sys_ids as a platform list — inert in this demo.");
+  });
+
+  root.addEventListener("click", function (e) {
+    if (!e.target.closest(".dm-rl-combo")) closeTableMenu();
+    if (!e.target.closest(".dm-rl-fieldpick")) {
+      fieldMenu.hidden = true;
+      fieldsBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  /* Start on Incident, the way a classic incident page would preselect it. */
+  selectTable(TABLES[0]);
+  termInput.value = "laptop";
+  search();
 })();
 </script>
 

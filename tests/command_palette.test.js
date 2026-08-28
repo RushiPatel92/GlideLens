@@ -107,6 +107,104 @@ test("groups render in the declared order while preserving order within a group"
   );
 });
 
+test("a command's own exact label makes it the active row", () => {
+  /*
+   * Descriptions are searched too, so a complete label can match a DIFFERENT
+   * command through that command's description. Before relevance tiers, typing
+   * "Variable Values" made Variable Prefill row 0 -- its description contains
+   * "catalog-variable values" and it is declared first -- so Enter ran the
+   * wrong command. Every built-in must win on its own name.
+   */
+  const builtIns = loadBuiltCommands();
+
+  for (const cmd of builtIns) {
+    const prepared = palette.preparePaletteCommands(builtIns, cmd.label, null);
+    assert.ok(prepared.length > 0, `"${cmd.label}" matched nothing`);
+    assert.strictEqual(
+      prepared[0].id,
+      cmd.id,
+      `typing "${cmd.label}" makes "${prepared[0].label}" the active row, not "${cmd.label}"`
+    );
+  }
+});
+
+test("a label match outranks a description match", () => {
+  const commands = [
+    command({
+      id: "prefill",
+      label: "Variable Prefill",
+      description: "Copy catalog-variable values from another ticket",
+      group: "Catalog",
+    }),
+    command({
+      id: "values",
+      label: "Variable Values",
+      description: "Inspect current catalog-variable values",
+      group: "Catalog",
+    }),
+  ];
+
+  assert.deepStrictEqual(
+    palette.preparePaletteCommands(commands, "Variable Values", null).map((item) => item.id),
+    ["values", "prefill"]
+  );
+});
+
+test("an exact label in a later group still ranks first, and groups stay whole", () => {
+  /*
+   * The group carrying the best match leads, but groups must stay contiguous:
+   * the renderer opens a header whenever cmd.group changes, so a group split in
+   * two renders its header twice.
+   */
+  const commands = [
+    command({ id: "catalog", label: "Catalog Logic", group: "Catalog",
+      description: "Inspect catalog client scripts and UI policies" }),
+    command({ id: "tool", label: "Client Tools", group: "Tools",
+      description: "Unrelated client scripts helper" }),
+    command({ id: "devlink", label: "Client Scripts", group: "Dev Links",
+      description: "Open the client scripts list" }),
+    // Dev Links needs a SECOND member, one that matches only by description
+    // (tier 3) while its sibling matches exactly (tier 0). A flat relevance
+    // sort would put every other group's tier-3 command between the two and
+    // split Dev Links in half; ranking whole groups keeps them adjacent.
+    // Without this command the contiguity assertion below cannot fail,
+    // because one command per group is contiguous under any ordering.
+    command({ id: "devlink-2", label: "Business Rules", group: "Dev Links",
+      description: "Open business rules, not client scripts" }),
+  ];
+
+  const prepared = palette.preparePaletteCommands(commands, "Client Scripts", null);
+  assert.strictEqual(prepared[0].id, "devlink");
+  assert.deepStrictEqual(
+    prepared.map((item) => item.id),
+    ["devlink", "devlink-2", "tool", "catalog"],
+    "Dev Links leads as a whole group, then Tools and Catalog by declared order"
+  );
+
+  // A group is contiguous when its first appearance is where its run starts,
+  // so the count of runs equals the count of distinct groups.
+  const groups = prepared.map((item) => item.group);
+  const runs = groups.filter((group, index) => index === 0 || group !== groups[index - 1]);
+  assert.deepStrictEqual(
+    runs,
+    [...new Set(groups)],
+    "a group split into two runs renders its header twice"
+  );
+});
+
+test("an empty query keeps the declared order untouched", () => {
+  const commands = [
+    command({ id: "tool-a", label: "Zebra", group: "Tools" }),
+    command({ id: "tool-b", label: "Alpha", group: "Tools" }),
+    command({ id: "record", label: "Record A", group: "Record" }),
+  ];
+
+  assert.deepStrictEqual(
+    palette.preparePaletteCommands(commands, "", null).map((item) => item.id),
+    ["tool-a", "tool-b", "record"]
+  );
+});
+
 test("a favorite appears once at the top in its own group", () => {
   const commands = [
     command({ id: "one", label: "One", group: "Record" }),

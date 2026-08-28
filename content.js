@@ -3145,15 +3145,55 @@ function validatePaletteCommands(cmds) {
   return cmds;
 }
 
-function orderPaletteCommands(cmds) {
+/*
+ * How well a command answers the query, lowest is best.
+ *
+ * Descriptions and keywords are searched as well as labels, so a command's own
+ * complete label can also match some OTHER command through that command's
+ * description. Without this, ordering was declaration order alone, and typing
+ * "Variable Values" made Variable Prefill the active row -- its description
+ * reads "Copy catalog-variable values from another ticket", which contains the
+ * whole query, and it is declared first. Enter then ran the wrong command.
+ * A label match must outrank a description or keyword match.
+ */
+function paletteMatchTier(cmd, query) {
+  const label = String(cmd && cmd.label || "").toLowerCase();
+  if (label === query) return 0;
+  if (label.startsWith(query)) return 1;
+  if (label.includes(query)) return 2;
+  return 3;
+}
+
+/*
+ * Groups must stay CONTIGUOUS: the renderer opens a new group header whenever
+ * cmd.group changes as it walks this list, so interleaving groups by relevance
+ * would repeat headers. Rank each group by its best-matching member, keep the
+ * declared PALETTE_GROUP_ORDER as the tiebreak between equally good groups, and
+ * sort within a group by tier and then declaration order.
+ */
+function orderPaletteCommands(cmds, query) {
+  const q = String(query || "").trim().toLowerCase();
   const ranks = new Map(PALETTE_GROUP_ORDER.map((group, index) => [group, index]));
-  return cmds
-    .map((cmd, index) => ({ cmd, index }))
-    .sort((left, right) => {
-      const leftRank = ranks.has(left.cmd.group) ? ranks.get(left.cmd.group) : ranks.size;
-      const rightRank = ranks.has(right.cmd.group) ? ranks.get(right.cmd.group) : ranks.size;
-      return leftRank - rightRank || left.index - right.index;
-    })
+  const groupRank = (cmd) => (ranks.has(cmd.group) ? ranks.get(cmd.group) : ranks.size);
+  const entries = cmds.map((cmd, index) => ({
+    cmd,
+    index,
+    tier: q ? paletteMatchTier(cmd, q) : 0,
+  }));
+
+  const bestTier = new Map();
+  for (const entry of entries) {
+    const current = bestTier.get(entry.cmd.group);
+    if (current === undefined || entry.tier < current) bestTier.set(entry.cmd.group, entry.tier);
+  }
+
+  return entries
+    .sort((left, right) => (
+      bestTier.get(left.cmd.group) - bestTier.get(right.cmd.group) ||
+      groupRank(left.cmd) - groupRank(right.cmd) ||
+      left.tier - right.tier ||
+      left.index - right.index
+    ))
     .map((entry) => entry.cmd);
 }
 
@@ -3166,7 +3206,7 @@ function paletteCommandMatches(cmd, query) {
 
 function preparePaletteCommands(cmds, query, favoriteKey) {
   const q = String(query || "").trim().toLowerCase();
-  const matches = orderPaletteCommands(cmds.filter((cmd) => paletteCommandMatches(cmd, q)));
+  const matches = orderPaletteCommands(cmds.filter((cmd) => paletteCommandMatches(cmd, q)), q);
   if (!q && favoriteKey) {
     const favorite = cmds.find((cmd) => paletteFavoriteKey(cmd) === favoriteKey);
     if (favorite) {

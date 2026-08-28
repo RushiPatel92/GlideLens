@@ -16,9 +16,10 @@ walkthrough.
 
 - Instance info at a glance in the toolbar popup.
 - A `\` **command palette** on any ServiceNow tab for navigation, record
-  helpers, and toggles.
-- Read-only **record search** by table, using verified summary fields or an
-  exact `sys_id` without downloading whole records.
+  helpers, and toggles — short labels with a description beside each one, both
+  searchable, keyboard-driven, and with one command favouritable to the top.
+- **Record Lens**: read-only record search by table, using verified summary
+  fields or an exact `sys_id` without downloading whole records.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
 - **Translation icons** on classic form labels, resolving inherited fields.
@@ -141,29 +142,62 @@ changed in each release.
 | --- | --- |
 | `Ctrl+Shift+K` (`Cmd+Shift+K` on Mac) | Open the toolbar popup |
 | `\` (backslash) | Open the command palette on the current ServiceNow tab |
-| `Alt`+double-click | Toggle variable insight icons on a Service Portal catalog form |
+| `Alt`+double-click | Toggle the Variable Insight icons on a Service Portal catalog form |
 
 If a shortcut does nothing, another browser feature may have claimed it — rebind
 it at `chrome://extensions/shortcuts` (or `edge://extensions/shortcuts`).
 
 The popup shows detected instance information. Almost all actions live in the
-`\` command palette — start typing to filter, use arrow keys and `Enter` to run,
-and `Esc` to close. Some commands accept an argument in an inline input field.
+`\` command palette.
+
+Every command has a short **label** and a one-line **description**, and typing
+matches both — `Code Search` and `configuration` reach the same command, so you
+do not have to remember which word the command was named after. A label match
+ranks above a description match, so typing a command's name always selects that
+command. Commands are grouped in a fixed order: Favorite, Tools, Record,
+Catalog, Navigate, Dev Links; the group holding the best match leads.
+
+| Key | In the palette |
+| --- | --- |
+| Typing | Filters on label, description, and each command's keywords; label matches rank first |
+| `Up` / `Down` | Move the selection; the active command's description expands to two lines without the row changing height |
+| `Enter` | Run the active command, or open its inline input if it needs an argument |
+| `Tab` / `Shift+Tab` | Cycle the palette's own controls — focus stays inside the palette while it is open |
+| `Esc` | Close the palette and return focus to wherever it was before you opened it (in an inline input, `Esc` returns to the command list) |
+
+The `☆` button beside the active command **favourites** it. A favourited
+command appears once at the top of the palette, in its own **Favorite** group,
+whenever the search box is empty. Debug Timeline keeps its favourite through
+Start and Stop — the two states share one stored key, so the favourite does not
+vanish the moment you start recording. Only one command can be favourited at a
+time; pressing the button again clears it.
+
+Commands that open something — a record, a list, a Dev Link — open the new tab
+**immediately to the right of the ServiceNow tab you ran the command from**, in
+that tab's own window, rather than appending it to the end of whichever window
+is currently active.
+
+Some commands accept an argument in an inline input field; the field is labelled
+with what it expects and is rebuilt each time, so a label or placeholder never
+carries over from the command you looked at before.
 
 ### Command palette commands
+
+The **Command** column is the label as it appears in the palette; the *italic*
+line is the description shown beside it.
 
 **Tools**
 
 | Command | Description |
 | --- | --- |
-| Toggle translation icons | Show/hide per-label icons: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
-| Start / Stop debug timeline | Record a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then view a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
-| Search code… | Search all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
-| Recheck what code search can reach | Re-read this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
+| Translations | *Show or hide field translation controls.* Per-label icons on classic forms: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
+| Debug Timeline | *Start recording form activity, GlideAjax calls, and errors* — and, while it is recording, *Stop recording and view captured activity.* Records a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then opens a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
+| Code Search | *Search verified code and configuration…* Searches all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
+| Search Sources | *Refresh available Code Search sources.* Re-reads this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
 
-#### Code search
+#### Code Search
 
-Open the palette, choose **Search code…**, and enter at least three letters,
+Open the palette, choose **Code Search**, and enter at least three letters,
 digits, or underscores from the text you want to find. Matching is
 case-insensitive. Examples:
 
@@ -196,8 +230,8 @@ results already loaded.
 
 What the instance can search is read once and cached for a week, so adding a
 table to a search group — or a new field appearing — would otherwise take up to
-seven days to show up in results. **Recheck what code search can reach** re-reads
-both immediately and says what moved: tables added, removed or re-tuned, the
+seven days to show up in results. **Search Sources** re-reads both
+immediately and says what moved: tables added, removed or re-tuned, the
 index appearing or disappearing, or nothing at all.
 
 Code search is read-only: it performs same-instance GETs and never
@@ -209,18 +243,28 @@ retry that source when it reports **Capped**.
 
 | Command | Description |
 | --- | --- |
-| Search records… | Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
-| Copy sys_id | Copy the current record's `sys_id` to the clipboard. |
-| Open playbook executions | Open Process Automation playbook executions for the current record. |
-| Open current playbook customer updates | On a playbook (process definition) page, open the related `sys_update_xml` customer updates. |
-| Open customer updates by sys_id… | Enter a record sys_id or ServiceNow URL to open its customer updates. |
+| sys_id | *Copy the current record sys_id.* Copies it to the clipboard. |
+| Record Lens | *Search verified records across readable tables…* Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
+| Playbooks | *Open playbook executions for this record…* Opens Process Automation playbook executions for the current record. |
+| Playbook Updates | *Open captured updates for this playbook activity.* Listed only on a playbook (process definition) page; opens the related `sys_update_xml` customer updates. |
+| Customer Updates | *Open captured customer updates by sys_id…* Enter a record sys_id or ServiceNow URL to open its customer updates. |
 
-#### Record search
+#### Record Lens
 
-Choose **Search records…** and type part of a table label or technical name.
-The bounded combobox shows up to 12 matching tables without loading the whole
-table catalog. When the current URL safely identifies a table, GlideLens
-preselects it after verifying it against live metadata.
+Choose **Record Lens** and type part of a table label or technical name. The
+bounded combobox scrolls up to 50 matching tables without loading the whole
+table catalog: user-facing labels come from table-level `sys_documentation` rows
+and technical names from `sys_db_object`, each with its own candidate window so
+one cannot crowd out the other.
+
+When the current URL safely identifies a table, GlideLens offers it as the
+starting selection — including on a classic `*_list.do` list page, where the
+`_list` suffix is stripped to give the underlying table. The candidate is still
+resolved against live `sys_db_object` metadata before it can be used, so a table
+that does not exist or cannot be read is never silently searched.
+
+Table suggestions and result rows are fully keyboard-navigable: arrow keys,
+`Home`/`End`, `Enter` to take the highlighted item, and `Esc` to dismiss.
 
 The field control shows exactly which live dictionary-confirmed fields will be
 searched. Known tables receive useful presets, intersected with the live
@@ -234,23 +278,30 @@ again in the returned summary values before showing a row. At most 20 results
 are displayed. Only `sys_id` and the selected fields are retrieved; full record
 contents and search history are not downloaded or stored. Results can open the
 normal form, copy their `sys_id` or URL, or open the verified sys_ids together
-as a normal platform list. Workspace opening remains future work.
+as a normal platform list — the list contains only the results the panel
+verified, not the wider set the server prefiltered. Workspace opening remains
+future work.
+
+Failures are reported by kind rather than as one generic error: invalid input,
+access denied, unreadable schema, nothing matched, and transient/timed-out are
+distinguished, so a table you cannot read does not look like a table with no
+matching records.
 
 **Catalog**
 
 | Command | Description |
 | --- | --- |
-| Prefill variables from ticket… | Enter a RITM/SCTASK/REQ/task number (or submitted-record sys_id) to prefill portal catalog variables from that ticket. |
-| Show variable values | Read-only panel listing every variable on the current Service Portal catalog item with its best-effort value, including variable-set variables. Filter by hidden/visible; hidden covers Hidden-type, UI Policy/client-script, and not-rendered variables. |
-| What affects this catalog item | Read-only panel listing the catalog client scripts and catalog UI policies bound to the current item or its variable sets — type (onLoad/onChange/…), watched variable, active state, and which views they run on. Group onChange scripts by the variable they watch, see a ⚠ hint on rows that won't fire while ordering the item (inactive, or RITM/Task views only), and open the whole set as a platform list. Click a row to open the record. Nothing here runs or edits the logic. |
-| Toggle variable insight icons | Show/hide a per-variable icon on a Service Portal catalog form. Clicking an icon opens the panel above scoped to that one variable — the onChange scripts watching it and the UI policy actions targeting it (hides / mandatory / read-only / sets value) — with **Show all** to clear the scope. Also bound to `Alt`+double-click on the form. |
+| Variable Prefill | *Copy catalog-variable values from another ticket…* Enter a RITM/SCTASK/REQ/task number (or submitted-record sys_id) to prefill portal catalog variables from that ticket. |
+| Variable Values | *Inspect current catalog-variable values.* Read-only panel listing every variable on the current Service Portal catalog item with its best-effort value, including variable-set variables. Filter by hidden/visible; hidden covers Hidden-type, UI Policy/client-script, and not-rendered variables. |
+| Catalog Logic | *Inspect catalog client scripts and UI policies.* Read-only panel listing the catalog client scripts and catalog UI policies bound to the current item or its variable sets — type (onLoad/onChange/…), watched variable, active state, and which views they run on. Group onChange scripts by the variable they watch, see a ⚠ hint on rows that won't fire while ordering the item (inactive, or RITM/Task views only), and open the whole set as a platform list. Click a row to open the record. Nothing here runs or edits the logic. |
+| Variable Insight | *Show or hide per-variable insight icons.* A per-variable icon on a Service Portal catalog form. Clicking an icon opens the Catalog Logic panel scoped to that one variable — the onChange scripts watching it and the UI policy actions targeting it (hides / mandatory / read-only / sets value) — with **Show all** to clear the scope. Also bound to `Alt`+double-click on the form. |
 
 **Navigate**
 
 | Command | Description |
 | --- | --- |
-| Open table list… | Enter a table name (e.g. `incident`) to open its list view (`<table>_list.do`). |
-| Open new record… | Enter a table name to open a new record form (`<table>.do?sys_id=-1`). |
+| Table List | *Open a list for a named table…* Enter a table name (e.g. `incident`) to open its list view (`<table>_list.do`). |
+| New Record | *Open a new record form for a named table…* Enter a table name to open a new record form (`<table>.do?sys_id=-1`). |
 
 **Dev Links** — one-click navigation to common developer destinations:
 Background Scripts, Script Includes, Business Rules, Client Scripts, UI Actions,
