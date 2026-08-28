@@ -65,13 +65,21 @@ instance. Do not put a new caller on the default without checking what it waits
 for — a ceiling near the expected duration trades the hang for a spurious
 failure.
 
-Prefill gets no fixed ceiling, because it has no bounded runtime and because
-`Promise.race` does not cancel `executeScript`: abandoning a fill leaves it
-typing into the form while the caller believes nothing happened, and a retry
-would overlap it. It is bound by inactivity instead, using the progress message
-the fill already emits per variable as a heartbeat, and a stall is reported as
-"may still be running" rather than as an empty result. Any future long-running
-mutation needs the same treatment, not a bigger number.
+Prefill is bound by inactivity rather than by a runtime budget, with a
+ten-minute backstop for a page that emits progress forever. It has no bounded
+runtime, and `Promise.race` does not cancel `executeScript`: abandoning a fill
+leaves it typing into the form while the caller believes nothing happened, and a
+retry would overlap it. So the progress message the fill emits per variable is
+the heartbeat, a stall is reported as "may still be running" rather than as an
+empty result, and only one fill runs per tab — the lock held until the injection
+settles, not until the answer is sent. Any future long-running mutation needs
+the same treatment, not a bigger number.
+
+A read that got no usable answer while some frame never answered is
+**inconclusive**, not empty. A negative answer from one frame says nothing about
+a frame that timed out: the shell can report "no form here" while the frame
+holding the form never replies. Never let other frames' negative answers turn a
+timeout into a conclusive no.
 
 Caching a discovered frame list is **opt-in**, and only `SN_TABLE_GET` opts in:
 one user action can issue a dozen reads and each discovery costs a fixed wait. A

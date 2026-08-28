@@ -276,13 +276,30 @@ function discoverContentFrames(tabId, purpose, options) {
   const discovery = runFrameDiscovery(tabId, purpose);
   frameDiscoveryInFlight.set(tabId, discovery);
   return discovery
-    .finally(() => frameDiscoveryInFlight.delete(tabId))
+    .finally(() => {
+      /* Only ever clear our own entry. A navigation during this discovery
+       * replaces it, and an unconditional delete would drop the newer one. */
+      if (frameDiscoveryInFlight.get(tabId) === discovery) {
+        frameDiscoveryInFlight.delete(tabId);
+      }
+    })
     .then((frameIds) => frameIds.slice());
 }
+
+/*
+ * Nothing can stop a discovery already in flight, so it will still answer —
+ * with a frame list describing the page that has just been navigated away from.
+ * The generation counter is what makes that answer unusable: it is bumped here,
+ * and a discovery only writes to the cache if the generation it started under
+ * is still current.
+ */
+const frameGenerationByTab = new Map();
+const frameGeneration = (tabId) => frameGenerationByTab.get(tabId) || 0;
 
 function forgetFrameList(tabId) {
   frameListByTab.delete(tabId);
   frameDiscoveryInFlight.delete(tabId);
+  frameGenerationByTab.set(tabId, frameGeneration(tabId) + 1);
 }
 
 /*
@@ -291,10 +308,15 @@ function forgetFrameList(tabId) {
  * was cached for this tab describes a page that no longer exists.
  */
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo && changeInfo.status === "loading") forgetFrameList(tabId);
+  if (!changeInfo || changeInfo.status !== "loading") return;
+  forgetFrameList(tabId);
+  /* The page an abandoned fill was typing into is gone, which is what the
+   * "reload the form" message asks for, so the tab can accept a fill again. */
+  releasePrefillLock(tabId, null);
 });
 
 function runFrameDiscovery(tabId, purpose) {
+  const generation = frameGeneration(tabId);
   const requestId =
     (purpose || "frames") +
     ":" +
@@ -320,58 +342,106 @@ function runFrameDiscovery(tabId, purpose) {
       // Frame 0 should normally have answered. Keep it as a safe fallback for
       // a page where content-script delivery was briefly unavailable.
       if (!frameIds.length) frameIds.push(0);
-      frameListByTab.set(tabId, { frameIds: frameIds.slice(), at: Date.now() });
+      // Stale the moment the tab navigated: this list describes the old page.
+      if (frameGeneration(tabId) === generation) {
+        frameListByTab.set(tabId, { frameIds: frameIds.slice(), at: Date.now() });
+      }
       return frameIds;
     });
 }
 
 const PREFILL_STALLED = { stalled: true };
-const prefillActivityByTab = new Map();
+
+/*
+ * One record per running fill, and the watchdog closes over that record rather
+ * than over the tab. Keyed only by tab, a second fill would overwrite the first
+ * one's activity entry; whichever finished first would delete it, and the other
+ * watchdog would then see no entry, return without resolving, and leave its
+ * Promise.race pending forever if its injection was hung — reinstating exactly
+ * the forever-hang this whole change removes.
+ */
+const prefillOpByTab = new Map();
 
 function notePrefillActivity(tabId) {
-  if (prefillActivityByTab.has(tabId)) prefillActivityByTab.set(tabId, Date.now());
+  const op = prefillOpByTab.get(tabId);
+  if (op) op.lastActivityAt = Date.now();
 }
 
 /* Resolves only if the fill stops reporting progress, so Promise.race against
- * the fill itself leaves the fill free to take as long as it honestly needs. */
-function prefillWatchdog(tabId, startedAt) {
+ * the fill itself leaves the fill free to take as long as it honestly needs.
+ * The ten-minute backstop is not a runtime budget; it is protection against a
+ * page that keeps emitting progress forever. */
+function prefillWatchdog(op) {
   return new Promise((resolve) => {
     const tick = () => {
-      if (!prefillActivityByTab.has(tabId)) return; // the fill finished
-      const last = prefillActivityByTab.get(tabId) || startedAt;
-      if (Date.now() - last > PREFILL_IDLE_TIMEOUT_MS) return resolve(PREFILL_STALLED);
-      if (Date.now() - startedAt > PREFILL_CEILING_MS) return resolve(PREFILL_STALLED);
+      if (op.done) return; // this fill settled; nothing left to watch
+      if (Date.now() - op.lastActivityAt > PREFILL_IDLE_TIMEOUT_MS) {
+        return resolve(PREFILL_STALLED);
+      }
+      if (Date.now() - op.startedAt > PREFILL_CEILING_MS) {
+        return resolve(PREFILL_STALLED);
+      }
       setTimeout(tick, 1000);
     };
     setTimeout(tick, 1000);
   });
 }
 
+function releasePrefillLock(tabId, op) {
+  if (!op || prefillOpByTab.get(tabId) === op) prefillOpByTab.delete(tabId);
+}
+
 function fillPortalVariablesInFrames(tabId, variables) {
+  /*
+   * One fill per tab. The palette leaves its input open, so a second Enter can
+   * arrive while the first fill is still typing into the form — two fills
+   * racing on the same variables is its own hazard, quite apart from what
+   * concurrent watchdog state would do.
+   */
+  if (prefillOpByTab.has(tabId)) {
+    return Promise.resolve({
+      ok: false,
+      busy: true,
+      error: "A prefill is already running on this form. Wait for it to finish.",
+    });
+  }
+  const op = { startedAt: Date.now(), lastActivityAt: Date.now(), done: false };
+  prefillOpByTab.set(tabId, op);
+
   // Mutating and one-shot: never run it against a cached frame list.
-  return discoverContentFrames(tabId, "fill portal variables").then((frameIds) => {
-    const startedAt = Date.now();
-    prefillActivityByTab.set(tabId, startedAt);
-    const injection = {
-      world: "MAIN",
-      func: fillPortalVariables,
-      args: [variables],
-    };
-    const perFrame = Promise.all(
-      frameIds.map((frameId) =>
-        chrome.scripting
-          .executeScript(
-            Object.assign({ target: { tabId, frameIds: [frameId] } }, injection)
-          )
-          .then(
-            (results) => ({ frameId, ok: true, results: results || [] }),
-            (error) => ({ frameId, ok: false, error: errorText(error) })
-          )
-      )
-    );
-    return Promise.race([perFrame, prefillWatchdog(tabId, startedAt)]).then(
-      (outcome) => {
-        prefillActivityByTab.delete(tabId);
+  return discoverContentFrames(tabId, "fill portal variables").then(
+    (frameIds) => {
+      const injection = {
+        world: "MAIN",
+        func: fillPortalVariables,
+        args: [variables],
+      };
+      const perFrame = Promise.all(
+        frameIds.map((frameId) =>
+          chrome.scripting
+            .executeScript(
+              Object.assign({ target: { tabId, frameIds: [frameId] } }, injection)
+            )
+            .then(
+              (results) => ({ frameId, ok: true, results: results || [] }),
+              (error) => ({ frameId, ok: false, error: errorText(error) })
+            )
+        )
+      );
+      /*
+       * The lock is released when the INJECTION settles, not when we answer.
+       * An abandoned fill is still running, so holding the lock is what stops a
+       * retry overlapping it. If it never settles the lock outlives the answer
+       * on purpose, and is dropped by the reload our message asks for, or by
+       * the tab closing.
+       */
+      perFrame.then(
+        () => releasePrefillLock(tabId, op),
+        () => releasePrefillLock(tabId, op)
+      );
+
+      return Promise.race([perFrame, prefillWatchdog(op)]).then((outcome) => {
+        op.done = true;
         if (outcome === PREFILL_STALLED) {
           /* executeScript was never cancelled, so the fill may still be typing
            * into the form. Say so: a caller told "no form found" would retry
@@ -381,7 +451,7 @@ function fillPortalVariablesInFrames(tabId, variables) {
             stillRunning: true,
             error:
               "Prefill stopped reporting progress after " +
-              Math.round((Date.now() - startedAt) / 1000) +
+              Math.round((Date.now() - op.startedAt) / 1000) +
               "s and was abandoned. It may still be running on the page — " +
               "reload the form before trying again.",
           };
@@ -404,8 +474,17 @@ function fillPortalVariablesInFrames(tabId, variables) {
             const scoreB = (b.filled || 0) + (b.alreadySet || 0) + (b.skipped || 0);
             return scoreB - scoreA;
           })[0];
-        if (!found && failures.length && !frameResults.length) {
-          return { ok: false, error: noResultError(failures, "fill portal variables") };
+        /*
+         * A negative answer from one frame says nothing about a frame that
+         * never answered. The shell can report foundForm:false while the frame
+         * actually holding the form timed out, so "no form here" from the
+         * others must not be allowed to look like a conclusive no.
+         */
+        if (!found && failures.length) {
+          return {
+            ok: false,
+            error: inconclusiveError(failures, "fill portal variables"),
+          };
         }
         return {
           ok: true,
@@ -417,9 +496,13 @@ function fillPortalVariablesInFrames(tabId, variables) {
           fillLog: found && Array.isArray(found.fillLog) ? found.fillLog : [],
           total: variables.length,
         };
-      }
-    );
-  });
+      });
+    },
+    (error) => {
+      releasePrefillLock(tabId, op);
+      throw error;
+    }
+  );
 }
 
 function injectInFrame(tabId, frameId, injection, label, timeoutMs) {
@@ -511,6 +594,18 @@ function noResultError(failures, what) {
   return failures.length
     ? "No frame answered " + what + " (" + failures[0].error + ")"
     : "Couldn't " + what;
+}
+
+/*
+ * Used when a read got no accepted result AND some frame never answered. That
+ * is not a negative answer, it is the absence of one: the frame that timed out
+ * may be the very frame holding what was being looked for.
+ */
+function inconclusiveError(failures, what) {
+  return (
+    "Couldn't " + what + ": " + failures.length + " frame(s) never answered (" +
+    failures[0].error + "), so this is inconclusive rather than empty."
+  );
 }
 
 /* =====================================================================
@@ -663,7 +758,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   codeSearchFrameByTab.delete(tabId);
   searchFrameResolutionByTab.delete(tabId);
   forgetFrameList(tabId);
-  prefillActivityByTab.delete(tabId);
+  frameGenerationByTab.delete(tabId);
+  releasePrefillLock(tabId, null);
 });
 
 async function fillPortalVariables(variables) {
@@ -3728,8 +3824,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "GET_SYS_ID" && sender.tab) {
     readFromPageFrames(sender.tab.id, extractSysId, [], "read sys_id", {
       accept: (value) => /^[0-9a-f]{32}$/i.test(String(value)),
-    }).then(({ results }) => {
+    }).then(({ results, failures }) => {
       const found = results.find((id) => /^[0-9a-f]{32}$/i.test(String(id)));
+      if (!found && failures.length) {
+        /* The frame that never answered may be the one carrying the record. */
+        sendResponse({
+          ok: false,
+          sysId: null,
+          error: inconclusiveError(failures, "read sys_id"),
+        });
+        return;
+      }
       sendResponse({ ok: Boolean(found), sysId: found || null });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
@@ -3767,8 +3872,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const found = results
         .filter((item) => item.foundForm)
         .sort((a, b) => (b.variables.length || 0) - (a.variables.length || 0))[0];
-      if (!found && failures.length && !results.length) {
-        sendResponse({ ok: false, error: noResultError(failures, "map portal variables") });
+      if (!found && failures.length) {
+        sendResponse({
+          ok: false,
+          error: inconclusiveError(failures, "map portal variables"),
+        });
         return;
       }
       sendResponse({
@@ -3793,8 +3901,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const found = results
         .filter((item) => item.foundForm)
         .sort((a, b) => (b.matchedCount || 0) - (a.matchedCount || 0))[0];
-      if (!found && failures.length && !results.length) {
-        sendResponse({ ok: false, error: noResultError(failures, "inspect hidden variables") });
+      if (!found && failures.length) {
+        sendResponse({
+          ok: false,
+          error: inconclusiveError(failures, "inspect hidden variables"),
+        });
         return;
       }
       sendResponse({

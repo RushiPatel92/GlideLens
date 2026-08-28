@@ -48,15 +48,26 @@ after.
   read that waits on the instance. The ceilings exist to turn "never settles"
   into "eventually errors", so a ceiling near the expected duration would only
   trade the hang for a spurious failure.
-- **Prefill gets no fixed ceiling at all**, because it has no bounded runtime:
-  each variable can cost a 400ms settle delay plus a GlideAjax wait of up to 2s
-  across up to three passes, so twenty repeatedly-changed variables can honestly
-  run for minutes. And `Promise.race` does not cancel `executeScript` — a fixed
-  ceiling would abandon a fill still typing into the form while telling the
-  caller no form was found, so a retry would overlap the first fill. It is bound
-  by inactivity instead: the fill already emits a progress message per variable,
-  each refreshes the deadline, and a stall reports that the fill **may still be
-  running** rather than that nothing happened.
+- **Prefill is bound by inactivity rather than by a runtime budget**, with a
+  ten-minute safety backstop. It has no bounded runtime: each variable can cost
+  a 400ms settle delay plus a GlideAjax wait of up to 2s across up to three
+  passes, so twenty repeatedly-changed variables can honestly run for minutes.
+  And `Promise.race` does not cancel `executeScript` — a runtime ceiling would
+  abandon a fill still typing into the form while telling the caller no form was
+  found, so a retry would overlap the first fill. The fill already emits a
+  progress message per variable; each refreshes the deadline, and a stall
+  reports that the fill **may still be running** rather than that nothing
+  happened. The backstop only catches a page that emits progress forever.
+- Only one prefill runs per tab. The palette leaves its input open, so a second
+  Enter could previously start a fill racing the first on the same variables.
+  The lock is held until the injection itself settles, not until the answer is
+  sent, so an abandoned fill still blocks a retry until the page is reloaded.
+- Reads that get no usable answer while some frame never answered now report
+  that as inconclusive rather than empty. A negative answer from one frame says
+  nothing about a frame that timed out — the shell can report "no form here"
+  while the frame actually holding the form never replies — so `sys_id`,
+  prefill, variable mapping and hidden-variable inspection all distinguish the
+  two.
 - Reads report which frames failed. Every timeout and rejection used to collapse
   to an empty result, so "no form on this page" and "no frame ever answered"
   were indistinguishable; reads now resolve `{ results, failures }` and callers
@@ -72,7 +83,8 @@ after.
   after it was taken is invisible until it expires — so one-shot,
   context-sensitive, and mutating operations (Debug Timeline start, prefill,
   `sys_id`, the popup probe) always discover fresh. The cache is also dropped
-  as soon as a load starts in that tab.
+  as soon as a load starts in that tab, and a discovery already in flight when
+  that happens can no longer write its pre-navigation frame list back.
 - Reads now reach only frames that actually host a content script. The manifest
   sets `all_frames` without `match_about_blank`, so that means real
   `service-now.com` frames and not `about:blank` helper frames. Excluding those

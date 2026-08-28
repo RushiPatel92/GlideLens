@@ -63,6 +63,14 @@ function loadSharedFrameHelpers(options) {
     .replace(
       "const FRAME_LIST_TTL_MS = 3000;",
       "const FRAME_LIST_TTL_MS = " + (opts.ttlMs === undefined ? 3000 : opts.ttlMs) + ";"
+    )
+    .replace(
+      "const PREFILL_IDLE_TIMEOUT_MS = 20000;",
+      "const PREFILL_IDLE_TIMEOUT_MS = " + (opts.idleMs || 60) + ";"
+    )
+    .replace(
+      "const PREFILL_CEILING_MS = 600000;",
+      "const PREFILL_CEILING_MS = " + (opts.ceilingMs || 600000) + ";"
     );
 
   const factory = new Function(
@@ -70,7 +78,8 @@ function loadSharedFrameHelpers(options) {
     "fillPortalVariables",
     block +
       "\nreturn { registerContentFrame, discoverContentFrames, injectInFrame, " +
-      "injectInDiscoveredFrames, readFromPageFrames, forgetFrameList };"
+      "injectInDiscoveredFrames, readFromPageFrames, forgetFrameList, " +
+      "fillPortalVariablesInFrames, notePrefillActivity, prefillOpByTab };"
   );
   api = factory(chrome, function fill() {});
   return {
@@ -297,4 +306,129 @@ test("a caller cannot mutate the cached frame list", async () => {
     await api.discoverContentFrames(41, "test", { cache: true }),
     [0, 7]
   );
+});
+
+/*
+ * A discovery already in flight cannot be stopped, so it will still answer —
+ * with a frame list describing the page that was navigated away from. It must
+ * not be allowed to write that answer into the cache.
+ */
+test("a navigation during discovery does not repopulate the cache", async () => {
+  const { api, calls, navigate } = loadSharedFrameHelpers({ frameIds: [0, 7] });
+
+  const opts = { cache: true };
+  const inFlight = api.discoverContentFrames(41, "one", opts);
+  navigate(41);
+  await inFlight;
+
+  await api.readFromPageFrames(41, function reader() {}, [], "two", opts);
+
+  assert.strictEqual(
+    broadcasts(calls).length,
+    2,
+    "the pre-navigation list must not have been cached"
+  );
+});
+
+/* ---------------------------------------------------------------------------
+   Prefill: the busy lock, the per-operation watchdog, and inconclusive results
+   --------------------------------------------------------------------------- */
+
+test("a fill that completes reports what it filled and clears the lock", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0] });
+
+  const outcome = await api.fillPortalVariablesInFrames(41, ["a", "b"]);
+
+  assert.strictEqual(outcome.ok, true);
+  assert.strictEqual(outcome.total, 2);
+  assert.strictEqual(api.prefillOpByTab.has(41), false);
+});
+
+/*
+ * The palette leaves its input open, so a second Enter can arrive while the
+ * first fill is still typing into the form.
+ */
+test("a second prefill on the same tab is refused while the first runs", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0], hungFrame: 0, idleMs: 60 });
+
+  const first = api.fillPortalVariablesInFrames(41, ["a"]);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const second = await api.fillPortalVariablesInFrames(41, ["a"]);
+
+  assert.strictEqual(second.ok, false);
+  assert.strictEqual(second.busy, true);
+  assert.match(second.error, /already running/);
+
+  const stalled = await first;
+  assert.strictEqual(stalled.stillRunning, true);
+});
+
+test("a fill on another tab is not blocked by one already running", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0] });
+
+  const outcome = await Promise.all([
+    api.fillPortalVariablesInFrames(41, ["a"]),
+    api.fillPortalVariablesInFrames(42, ["a"]),
+  ]);
+
+  assert.deepStrictEqual(outcome.map((item) => item.ok), [true, true]);
+});
+
+/*
+ * The watchdog closes over its own operation record. Keyed only by tab, one
+ * fill finishing would delete the entry the other watchdog was reading, and
+ * that watchdog would then return without resolving — leaving a hung injection
+ * with neither side of its race able to settle, which is the forever-hang this
+ * whole change exists to remove.
+ */
+test("one tab's fill finishing cannot silence another tab's watchdog", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0], hungFrame: 0, idleMs: 60 });
+
+  const hung = api.fillPortalVariablesInFrames(41, ["a"]);
+  // A different tab's op completing removes its own entry, not this one's.
+  api.prefillOpByTab.set(99, { startedAt: Date.now(), lastActivityAt: Date.now(), done: false });
+  api.prefillOpByTab.delete(99);
+
+  const outcome = await hung;
+  assert.strictEqual(outcome.stillRunning, true);
+  assert.match(outcome.error, /may still be running/);
+});
+
+test("progress refreshes the deadline so a slow but live fill is not abandoned", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0], hungFrame: 0, idleMs: 120 });
+
+  const running = api.fillPortalVariablesInFrames(41, ["a"]);
+  // Four heartbeats across ~240ms, twice the idle timeout.
+  for (let i = 0; i < 4; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    api.notePrefillActivity(41);
+  }
+  const stillArmed = api.prefillOpByTab.has(41);
+
+  assert.strictEqual(stillArmed, true, "the fill should not have been abandoned yet");
+  const outcome = await running;
+  assert.strictEqual(outcome.stillRunning, true);
+});
+
+/*
+ * The shell can answer "no form here" while the frame actually holding the
+ * form never answers at all. That is an absence of an answer, not a negative
+ * one, and must not be reported as an empty result.
+ */
+test("a frame that never answered makes an empty fill inconclusive", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0, 7], rejectingFrame: 7 });
+
+  const outcome = await api.fillPortalVariablesInFrames(41, ["a"]);
+
+  assert.strictEqual(outcome.ok, false);
+  assert.match(outcome.error, /inconclusive/);
+});
+
+test("with every frame answering, no form found stays a conclusive answer", async () => {
+  const { api } = loadSharedFrameHelpers({ frameIds: [0, 7] });
+
+  const outcome = await api.fillPortalVariablesInFrames(41, ["a"]);
+
+  assert.strictEqual(outcome.ok, true);
+  assert.strictEqual(outcome.foundForm, false);
 });

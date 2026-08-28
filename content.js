@@ -24,6 +24,9 @@ const SNH = {
 };
 const SNH_FRAME_COMMAND_SOURCE = "SN_DEV_HELPER_FRAME_COMMAND";
 const SNH_PREFILL_PROGRESS_SOURCE = "SN_DEV_HELPER_PREFILL_PROGRESS";
+/* Deliberately far above the worker's own inactivity bound: this only catches
+ * a reply that never arrives at all, never a fill that is merely slow. */
+const PREFILL_REPLY_CEILING_MS = 900000;
 const WORKSPACE_FIELD_ATTRS = [
   "data-field-name",
   "data-fieldname",
@@ -1193,10 +1196,27 @@ async function prefillPortalVariablesFromTicket(input) {
 
     showToast("Found " + variables.length + " variables. Filling portal form…", false, 6000);
     await new Promise((resolve) => setTimeout(resolve, 75));
-    const resp = await chrome.runtime.sendMessage({
-      type: "FILL_PORTAL_VARIABLES",
-      variables,
-    });
+    /*
+     * The worker bounds the fill by inactivity, but nothing bounds this await
+     * if the worker itself is torn down mid-operation and the reply never
+     * arrives. A backstop well above any honest fill turns that into an error
+     * rather than a palette that never comes back.
+     */
+    const resp = await Promise.race([
+      chrome.runtime.sendMessage({ type: "FILL_PORTAL_VARIABLES", variables }),
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              error:
+                "Prefill did not report back. It may still be running — " +
+                "reload the form before trying again.",
+            }),
+          PREFILL_REPLY_CEILING_MS
+        )
+      ),
+    ]);
     SNH.lastPrefillResult = resp || null;
 
     if (!resp || !resp.ok) {
