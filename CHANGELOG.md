@@ -10,21 +10,98 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## Unreleased
+## [0.12.0] - 2026-08-27
 
 ### Added
-- **Record Search table and field selection.** A bounded, keyboard-accessible
-  table combobox searches labels and technical names, safely detected current
-  tables can be preselected, and a live-dictionary field control makes the
-  searched fields explicit. Known-table presets are intersected with verified
-  fields and never automatically include sensitive value/body/HTML content.
-- **Record Search result actions.** Each verified result can copy its `sys_id`
-  or URL, and the verified result set can open as a normal platform list.
+- **Record Lens** — the palette's record finder, renamed from "Search records…"
+  and given the panel heading to match. A bounded, keyboard-accessible combobox
+  finds a table by user-facing label or technical name without downloading the
+  table catalog, and the panel shows exactly which live dictionary-confirmed
+  fields it will search rather than guessing a column and silently returning an
+  unfiltered read.
+- **Verified field selection in Record Lens.** Known tables get presets, but a
+  preset is intersected with the table hierarchy's live `sys_dictionary` rows
+  before it is offered, so a field that does not exist on this instance is never
+  queried. At most six fields can be selected, HTML and script types are
+  excluded, value/body/content/credential-style fields are never selected
+  automatically, and the System Properties preset explicitly excludes `value`.
+- **Result actions.** Every verified result can copy its `sys_id` or its record
+  URL, and the verified set can be opened together as a normal platform list —
+  the list replays only the sys_ids that survived client-side verification, not
+  the broader server prefilter, so what opens is what the panel showed.
+- **Action descriptions in the command palette.** Every command now carries a
+  compact one- or two-word label and a separate description of what it does, and
+  both are searchable. "Code Search" and "Search verified code and
+  configuration…" find the same command, so a command no longer has to be
+  remembered by the exact phrasing of its name. Matches are ranked, so a label
+  match always beats a description or keyword match: typing a command's exact
+  name selects that command even when another command's description happens to
+  contain the same words. The group holding the best match leads, and groups
+  still render once each.
+- **A favourite command that survives state changes.** Debug Timeline is two
+  commands — Start and Stop — depending on whether it is recording. Favouriting
+  it used to save whichever one happened to be on screen, so the favourite
+  disappeared from the top of the palette the moment recording started or
+  stopped. Stateful commands now share a stable logical key, and an already
+  saved start/stop ID migrates to it on load.
 
 ### Changed
-- **Record Search errors now distinguish validation, access, schema, no-match,
-  and transient failures**, and table suggestions and result rows support full
-  arrow-key, Home/End, Enter, and Escape navigation.
+- **The palette's command labels are compact and unique.** Every visible label
+  is one or two words, and the palette refuses duplicates outright whenever it
+  builds its command list: two commands that can appear together may not rely
+  on their descriptions to tell them apart. Panel headings moved with them, so the palette and the panel it
+  opens now use one name — Record Lens, Code Search, Catalog Logic, Variable
+  Values, Debug Timeline.
+- **Groups render once, in a declared order.** Grouping was adjacency-based over
+  the command array, which returns to Tools after Catalog — so the Tools header
+  appeared twice, and filtering could repeat groups further. Order is now
+  explicit (Favorite, Tools, Record, Catalog, Navigate, Dev Links) and each group
+  is emitted once, with its members keeping their declared order inside it.
+- **The favourite control is beside the active command, not inside the option.**
+  A button nested inside a `role="option"` is not a valid listbox, and neither is
+  a shortcut chip. Favouriting is now a single button positioned against
+  whichever row is active, and the active command's shortcut hint moved to the
+  palette footer.
+- **GlideLens-opened tabs land beside the tab that opened them.** Opening a
+  record, a list, or a Dev Link appended the new tab to the end of whichever
+  window happened to be active. Destinations now open immediately after the
+  originating ServiceNow tab, in that tab's own window, with it set as the
+  opener — so the result of a command stays next to the page the command was run
+  from. A message without usable tab context falls back to Chrome's normal
+  placement rather than guessing.
+- **Record Lens errors distinguish validation, access, schema, no-match, and
+  transient failures**, so an unreadable table no longer looks the same as a
+  search that genuinely found nothing.
+- **The landing page gained a working Record Lens demo**, alongside the existing
+  Code Search, Catalog Logic, Variable Values and Debug Timeline ones. It runs
+  the real interaction on fabricated data — pick a table by label or technical
+  name, open the field picker, search, and get verified rows back — and it
+  copies the engine's own preset and sensitive-field rules rather than
+  approximating them, so `sys_properties.value` shows as "manual only" and stays
+  unselected. The page's palette, panel headings and command descriptions were
+  brought back into step with the extension at the same time.
+
+### Fixed
+- **Arrow keys, Home/End, Enter and Escape work throughout Record Lens.** Table
+  suggestions and result rows are both fully keyboard-navigable.
+- **The palette is a valid, announced listbox.** Options have stable IDs, the
+  focused search input points at the active one with `aria-activedescendant`, and
+  each option's accessible name is composed from its label and description — so
+  arrow navigation is announced rather than silently moving a highlight. Group
+  labels carry valid group semantics.
+- **Focus is trapped while the palette is open and restored when it closes.**
+  Tab and Shift+Tab cycle the palette's own controls instead of walking off into
+  the ServiceNow page behind it, and Escape returns focus to whatever held it
+  before the palette opened.
+- **The active row no longer resizes the list.** The active command's description
+  expands to two lines; rows keep a fixed height, so moving the selection does
+  not make the list or the viewport jump under the cursor.
+- **Record Lens preselects the right table on classic list pages.** A
+  `*_list.do` route was read as a table literally named `<table>_list`, which
+  resolves to nothing, so the one page where the table is least ambiguous
+  preselected nothing at all. The `_list` suffix is now stripped from classic
+  routes before the candidate is offered — and, as before, the candidate is still
+  resolved through live `sys_db_object` metadata before it can be used.
 
 ## [0.11.1] - 2026-08-23
 
@@ -408,6 +485,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.12.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.12.0
 [0.11.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.1
 [0.11.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.0
 [0.10.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.10.1

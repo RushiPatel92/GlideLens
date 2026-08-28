@@ -24,6 +24,11 @@ top frame or broadcast expensive work indiscriminately.
   are delivered to all frames and the frame containing the form does the work.
 - Content scripts ask the service worker to open tabs with the `OPEN_URL`
   message because content scripts cannot call `chrome.tabs.create`.
+  `openUrlTabOptions` derives the new tab's placement from `sender.tab` so the
+  destination opens in the originating tab's window, at its index plus one, with
+  it as `openerTabId`. Every one of those values is validated first: a missing
+  `sender.tab`, a non-integer id or window, or a negative index falls back to
+  Chrome's default placement rather than passing a guess to `tabs.create`.
 - `content.js` Table API reads use `snGetMany`/`snGet`, which delegate to the
   service worker and a MAIN-world request so `X-UserToken` can come from `g_ck`.
 
@@ -47,13 +52,87 @@ announce their concrete eligible frame IDs, then the worker probes those frames
 individually with a short timeout and caches the first one that exposes `g_ck`.
 This prevents an uninjectionable helper frame from blocking every search read.
 
-Record Search follows the same single-frame rule through
+Record Lens follows the same single-frame rule through
 `SN_RECORD_SEARCH_GET`. Its metadata and result reads are bounded but repeated,
 so they must not use the all-frame `SN_TABLE_GET` path either.
 
-## Record Search
+## Command palette
 
-Record Search performs read-only Table API lookup against one verified table.
+The palette is mounted only in the top frame, inside a closed shadow root. Every
+frame listens for a bare `\`; sub-frames route the trigger up through the
+service worker rather than mounting a second palette.
+
+`buildCommands()` returns the command list for the current page, so
+state-dependent entries (Debug Timeline Start versus Stop, playbook-only
+commands) are decided per open. It ends in `validatePaletteCommands`, which
+throws on a command missing an id, label, or description, on an `input` command
+without an explicit `inputLabel`, and on any duplicate visible label
+(case-insensitively). Two commands that can appear together must be
+distinguishable by label alone; a description may not be the only thing telling
+them apart.
+
+Presentation rules that must survive future commands:
+
+- **Labels are one or two words; the description carries the action.** Both are
+  searched, along with the legacy `keywords` array, so renaming a command does
+  not strand the term people already type.
+- **A label match outranks a description match.** Because descriptions and
+  keywords are searched too, a command's own complete label can also match some
+  *other* command through that command's description — "Variable Values" matches
+  Variable Prefill, whose description reads "Copy catalog-variable values from
+  another ticket". `paletteMatchTier` therefore scores exact label, label prefix,
+  label substring, then everything else, and `orderPaletteCommands` sorts by it.
+  Without this, ordering was declaration order alone and Enter ran the wrong
+  command. `tests/command_palette.test.js` asserts every built-in command ranks
+  first for its own label; keep that passing when adding commands.
+- **Grouping is declared, not adjacency-based.** `PALETTE_GROUP_ORDER` ranks
+  Favorite, Tools, Record, Catalog, Navigate, Dev Links, and
+  `orderPaletteCommands` sorts by that rank with a stable index tiebreak. The
+  command array itself returns to Tools after Catalog, so rendering group
+  headers as the array is walked repeats headers and breaks under filtering.
+  Do not reintroduce that. Relevance ranks whole groups rather than individual
+  rows across groups, for the same reason: the group holding the best match
+  leads, but its members stay together.
+- **A favourite is a logical key, not a command id.** `paletteFavoriteKey`
+  prefers `cmd.favoriteKey`, so Debug Timeline's Start and Stop commands share
+  one key and the favourite survives recording state changes.
+  `normalizePaletteFavoriteKey` migrates an already-stored `start-debug-timeline`
+  or `stop-debug-timeline` value on load and rewrites it. Give any future
+  stateful command the same treatment.
+- **The favourite appears once.** `preparePaletteCommands` clones the favourite
+  into the `Favorite` group and filters the original out of the rest, and only
+  while the query is empty.
+
+Accessibility invariants:
+
+- `#results` is the `listbox`; the search input is the `combobox` and points at
+  the active option with `aria-activedescendant`, so arrow navigation is
+  announced without moving DOM focus.
+- Options carry stable ids from `paletteOptionId` and take their accessible name
+  from their label and description elements via `aria-labelledby`.
+- **Nothing interactive goes inside an option.** The favourite control is a
+  single `<button>` positioned against whichever row is active, and the active
+  command's shortcut hint lives in the footer. A button nested in a
+  `role="option"` is not a valid listbox.
+- Group labels are wrapped in a `role="group"` element referenced by
+  `aria-labelledby` rather than being emitted as bare rows in the listbox.
+- `trapPaletteFocus` keeps Tab and Shift+Tab inside the palette, and
+  `closePalette` restores `palettePreviousFocus`. Escape closes from anywhere in
+  the dialog; inside an inline argument row it returns to the command list
+  instead.
+- `.cmd` has a fixed height and only the active row's description expands, to a
+  clamped two lines. Moving the selection must not resize rows, or the list
+  jumps under the pointer during arrow navigation.
+
+The inline argument row is rebuilt for each command rather than reused, so a
+label or placeholder cannot survive from the previously selected command.
+
+## Record Lens
+
+Record Lens is the palette label and panel heading for the Record Search
+feature; `record_search.js` and `record_search_ui.js` keep their file names.
+
+It performs read-only Table API lookup against one verified table.
 Its combobox sends query-safe contains needles, including a complete label
 phrase and underscore-normalized technical-name form for clean multi-word
 input. User-facing table labels are read from table-level `sys_documentation`
@@ -68,6 +147,16 @@ A table parsed conservatively from the current URL can be offered initially,
 but it still has to resolve through live metadata before use. Workspace opening
 and workspace discovery are intentionally outside this feature.
 
+`recordContextFromText` is that URL parser, and it is shared with sys_id
+lookup. It tries each of up to three decoded variants of the text, matches a
+Workspace `/now/…/record/<table>/<sys_id>` route first, then a classic
+`/<table>.do` route. A classic route ending in `_list` has that suffix stripped,
+because `<table>_list.do` is the list view of `<table>`, not a table named
+`<table>_list` — without that, the one page that names its table unambiguously
+preselected a table that resolves to nothing. Keep the parser conservative: it
+only ever produces a candidate, and `sys_db_object` still decides whether that
+candidate is real and readable.
+
 Text search never guesses columns. It walks `sys_db_object.super_class`, reads
 the hierarchy's bounded `sys_dictionary` rows, and exposes the confirmed text
 fields in a selector. Known-table presets are preferences intersected with
@@ -76,7 +165,7 @@ most six fields can be selected. HTML/script types are excluded; value, body,
 content, credential, and similar fields are never selected automatically. The
 `sys_properties` preset explicitly excludes `value`.
 
-Record Search reads time out instead of leaving the panel busy indefinitely.
+Record Lens reads time out instead of leaving the panel busy indefinitely.
 The broad optional dictionary read has a shorter timeout and may degrade to the
 separately verified display and preset fields rather than block table selection.
 
