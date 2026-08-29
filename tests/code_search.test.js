@@ -727,3 +727,87 @@ test("a sensitive hit is redacted on the way out of the search", async () => {
   assert.strictEqual(hit.redacted, true);
   assert.ok(JSON.stringify(hit).indexOf("sk-live-xyz") === -1);
 });
+
+/* ---------------------------------------------------------------------------
+ * Cache hygiene. Both instance caches were write-only: expiry made an entry
+ * stale but nothing ever removed it, so touching many instances grew the
+ * extension's local storage without bound.
+ * ------------------------------------------------------------------------ */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+test("an expired entry is pruned even when the cap is nowhere near", () => {
+  const now = 100 * DAY_MS;
+  const drop = CS.planCachePruning(
+    {
+      "snhCodeSearchProbe:https://a.service-now.com": { checkedAt: now - 1 * DAY_MS },
+      "snhCodeSearchProbe:https://b.service-now.com": { checkedAt: now - 8 * DAY_MS },
+      "snhCodeSearchCoverage:https://b.service-now.com": { checkedAt: now - 30 * DAY_MS },
+    },
+    now
+  );
+  assert.deepStrictEqual(own(drop).sort(), [
+    "snhCodeSearchCoverage:https://b.service-now.com",
+    "snhCodeSearchProbe:https://b.service-now.com",
+  ]);
+});
+
+test("unrelated storage keys are never touched", () => {
+  const now = 100 * DAY_MS;
+  const drop = CS.planCachePruning(
+    {
+      snhPaletteFavourite: { checkedAt: 0 },
+      snhSomethingElse: "kept",
+      "snhCodeSearchProbe:https://a.service-now.com": { checkedAt: now - 99 * DAY_MS },
+    },
+    now
+  );
+  assert.deepStrictEqual(own(drop), ["snhCodeSearchProbe:https://a.service-now.com"]);
+});
+
+test("an entry with no usable timestamp is dropped rather than kept for ever", () => {
+  const now = 100 * DAY_MS;
+  const drop = CS.planCachePruning(
+    {
+      "snhCodeSearchProbe:https://a.service-now.com": { checkedAt: "recently" },
+      "snhCodeSearchCoverage:https://a.service-now.com": null,
+    },
+    now
+  );
+  assert.strictEqual(drop.length, 2);
+});
+
+test("instances beyond the cap go by least recently checked, whole instance at a time", () => {
+  const now = 100 * DAY_MS;
+  const stored = {};
+  /* Five instances, all live, checked one hour apart. */
+  for (let i = 0; i < 5; i += 1) {
+    const origin = "https://i" + i + ".service-now.com";
+    stored["snhCodeSearchProbe:" + origin] = { checkedAt: now - i * 3600000 };
+    stored["snhCodeSearchCoverage:" + origin] = { checkedAt: now - i * 3600000 };
+  }
+  const drop = CS.planCachePruning(stored, now, 3);
+  assert.deepStrictEqual(own(drop).sort(), [
+    "snhCodeSearchCoverage:https://i3.service-now.com",
+    "snhCodeSearchCoverage:https://i4.service-now.com",
+    "snhCodeSearchProbe:https://i3.service-now.com",
+    "snhCodeSearchProbe:https://i4.service-now.com",
+  ]);
+});
+
+test("an instance kept under the cap keeps both of its entries", () => {
+  const now = 100 * DAY_MS;
+  const drop = CS.planCachePruning(
+    {
+      "snhCodeSearchProbe:https://keep.service-now.com": { checkedAt: now - 1000 },
+      "snhCodeSearchCoverage:https://keep.service-now.com": { checkedAt: now - 2000 },
+    },
+    now,
+    1
+  );
+  assert.deepStrictEqual(own(drop), []);
+});
+
+test("the shipped cap is a real number, so the default path is bounded", () => {
+  assert.ok(typeof CS.MAX_CACHED_INSTANCES === "number" && CS.MAX_CACHED_INSTANCES > 0);
+});

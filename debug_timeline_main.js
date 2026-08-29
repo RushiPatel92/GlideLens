@@ -8,12 +8,47 @@
 
 function startDebugTimelineInPage() {
   const stateKey = "__SN_DEV_HELPER_DEBUG_TIMELINE__";
+  /* A frame URL is recorded so a developer can tell which frame an event came
+   * from -- not to carry record data into a trace that gets pasted into an
+   * issue. ServiceNow keeps the interesting things in the query string:
+   * sysparm_query holds filter values, and sys_id names a record. Keep the
+   * origin, the path, and only the parameters that say which page is open;
+   * count the rest and drop them, so a reader can see that something was
+   * removed rather than wondering.
+   *
+   * Deliberately duplicated in the other entry point below: every function in
+   * this file is injected standalone by executeScript and cannot share a
+   * helper. If you change one copy, change the other. */
+  const safeFrameUrl = () => {
+    const KEEP = ["id", "table", "sysparm_view"];
+    try {
+      const url = new URL(location.href);
+      const kept = [];
+      let dropped = 0;
+      url.searchParams.forEach((value, key) => {
+        if (KEEP.indexOf(key) >= 0 && String(value).length <= 80) {
+          kept.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+        } else {
+          dropped += 1;
+        }
+      });
+      return (
+        url.origin +
+        url.pathname +
+        (kept.length ? "?" + kept.join("&") : "") +
+        (dropped ? " (" + dropped + " parameter" + (dropped === 1 ? "" : "s") + " removed)" : "")
+      );
+    } catch (e) {
+      return "";
+    }
+  };
+
   const existing = window[stateKey];
   if (existing && existing.active) {
     return {
       ok: true,
       alreadyActive: true,
-      frameUrl: location.href,
+      frameUrl: safeFrameUrl(),
       startedAt: existing.startedAt,
       capabilities: existing.capabilities,
     };
@@ -42,8 +77,10 @@ function startDebugTimelineInPage() {
   };
   window[stateKey] = state;
 
+  /* `sysparm_ck` and `g_ck` are ServiceNow's own session token under a name
+   * that matches none of the generic words, so they are named explicitly. */
   const sensitivePattern =
-    /(password|passwd|secret|token|credential|api[_-]?key|private[_-]?key|authorization)/i;
+    /(password|passwd|secret|token|credential|api[_-]?key|private[_-]?key|authorization|sysparm_ck|g_ck)/i;
 
   const truncate = (value, maxLength) => {
     const text = String(value == null ? "" : value);
@@ -107,7 +144,7 @@ function startDebugTimelineInPage() {
       summary: truncate(summary, 300),
       details: details || {},
       stack: stack || "",
-      frameUrl: location.href,
+      frameUrl: safeFrameUrl(),
     };
     state.events.push(event);
     if (state.events.length > state.maxEvents) state.events.shift();
@@ -450,6 +487,40 @@ function startDebugTimelineInPage() {
     return truncate(value, 4000);
   };
 
+  /* Mask the value in `key=value`, `key: value`, `"key": "value"` and
+   * `<key>value</key>` shapes when the key looks sensitive. Deliberately
+   * conservative: it never tries to understand the payload, it only refuses to
+   * carry the obvious secrets through verbatim. A missed shape is still
+   * truncated, and still only leaves the page when the user copies the trace. */
+  const SENSITIVE_KEY_SOURCE =
+    "[A-Za-z0-9_-]*(?:password|passwd|secret|token|credential|api[_-]?key|" +
+    "private[_-]?key|authorization|sysparm_ck|g_ck)[A-Za-z0-9_-]*";
+
+  const redactSensitiveText = (text) => {
+    const source = String(text == null ? "" : text);
+    if (!sensitivePattern.test(source)) return source;
+    const key = SENSITIVE_KEY_SOURCE;
+    return source
+      /* <token>value</token>, including <token attr="x">value</token> */
+      .replace(
+        new RegExp("(<(?:" + key + ")\\b[^>]*>)[^<]{1,4000}", "gi"),
+        "$1[REDACTED]"
+      )
+      /* "token": "value", 'token': value, token : value */
+      .replace(
+        new RegExp(
+          "([\"']?)(" + key + ")\\1(\\s*:\\s*)([\"']?)[^,;&\\r\\n\"']{1,4000}\\4",
+          "gi"
+        ),
+        "$1$2$1$3$4[REDACTED]$4"
+      )
+      /* token=value in a query-ish or form-ish body */
+      .replace(
+        new RegExp("(^|[^A-Za-z0-9_-])(" + key + ")=[^&;\\s]{1,4000}", "gi"),
+        "$1$2=[REDACTED]"
+      );
+  };
+
   const glideAjaxResponseInfo = (response) => {
     let answer;
     let status;
@@ -482,8 +553,14 @@ function startDebugTimelineInPage() {
         );
         result.format = "json";
       } catch (e) {
-        result.answer = truncate(answerText, 4000);
+        /* Not JSON, so there are no keys to walk -- and until now that meant no
+         * redaction at all. A processor answering with XML, HTML or a plain
+         * `name=value` body could put a token or a password straight into a
+         * trace the user then pastes into an issue. Mask the value half of any
+         * sensitive-looking pair before truncating. */
+        result.answer = truncate(redactSensitiveText(answerText), 4000);
         result.format = "text";
+        result.redacted = result.answer.indexOf("[REDACTED]") >= 0;
       }
     }
     return Object.keys(result).length ? result : null;
@@ -735,7 +812,7 @@ function startDebugTimelineInPage() {
     const result = {
       ok: true,
       active: false,
-      frameUrl: location.href,
+      frameUrl: safeFrameUrl(),
       startedAt: state.startedAt,
       stoppedAt: Date.now(),
       events: state.events.slice(),
@@ -749,7 +826,7 @@ function startDebugTimelineInPage() {
   return {
     ok: true,
     alreadyActive: false,
-    frameUrl: location.href,
+    frameUrl: safeFrameUrl(),
     startedAt: state.startedAt,
     capabilities: Object.assign({}, state.capabilities),
   };
@@ -757,12 +834,47 @@ function startDebugTimelineInPage() {
 
 function stopDebugTimelineInPage() {
   const stateKey = "__SN_DEV_HELPER_DEBUG_TIMELINE__";
+  /* A frame URL is recorded so a developer can tell which frame an event came
+   * from -- not to carry record data into a trace that gets pasted into an
+   * issue. ServiceNow keeps the interesting things in the query string:
+   * sysparm_query holds filter values, and sys_id names a record. Keep the
+   * origin, the path, and only the parameters that say which page is open;
+   * count the rest and drop them, so a reader can see that something was
+   * removed rather than wondering.
+   *
+   * Deliberately duplicated from the entry point above: every function in
+   * this file is injected standalone by executeScript and cannot share a
+   * helper. If you change one copy, change the other. */
+  const safeFrameUrl = () => {
+    const KEEP = ["id", "table", "sysparm_view"];
+    try {
+      const url = new URL(location.href);
+      const kept = [];
+      let dropped = 0;
+      url.searchParams.forEach((value, key) => {
+        if (KEEP.indexOf(key) >= 0 && String(value).length <= 80) {
+          kept.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+        } else {
+          dropped += 1;
+        }
+      });
+      return (
+        url.origin +
+        url.pathname +
+        (kept.length ? "?" + kept.join("&") : "") +
+        (dropped ? " (" + dropped + " parameter" + (dropped === 1 ? "" : "s") + " removed)" : "")
+      );
+    } catch (e) {
+      return "";
+    }
+  };
+
   const state = window[stateKey];
   if (!state || typeof state.stop !== "function") {
     return {
       ok: true,
       active: false,
-      frameUrl: location.href,
+      frameUrl: safeFrameUrl(),
       events: [],
       notRunning: true,
     };

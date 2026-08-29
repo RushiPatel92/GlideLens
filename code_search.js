@@ -845,6 +845,7 @@
         await chrome.storage.local.set({
           [key]: Object.assign({ version: PROBE_CACHE_VERSION }, fresh),
         });
+        await pruneInstanceCaches();
       } catch (e) {}
     }
     return fresh;
@@ -1092,6 +1093,77 @@
     return "snhCodeSearchCoverage:" + origin;
   }
 
+  /* ---------------------------------------------------------------------
+   * CACHE HYGIENE
+   *
+   * Both caches are keyed by instance origin and were only ever written. A
+   * consultant who touches thirty instances kept thirty entries for ever:
+   * expiry made them stale, nothing made them go away. Pruning runs on write,
+   * which under a seven-day TTL is at most once per instance per week.
+   * ------------------------------------------------------------------- */
+
+  const INSTANCE_CACHE_TTLS = {
+    "snhCodeSearchProbe:": PROBE_TTL_MS,
+    "snhCodeSearchCoverage:": COVERAGE_TTL_MS,
+  };
+  const MAX_CACHED_INSTANCES = 12;
+
+  /* Pure, so it can be tested without a storage area. Given everything stored,
+   * return the keys to remove: expired entries first, then whole instances
+   * beyond the cap, least recently checked going first. An entry with no
+   * usable checkedAt is dropped rather than kept for ever. */
+  function planCachePruning(stored, now, maxInstances) {
+    const cap =
+      typeof maxInstances === "number" && maxInstances >= 0
+        ? maxInstances
+        : MAX_CACHED_INSTANCES;
+    const prefixes = Object.keys(INSTANCE_CACHE_TTLS);
+    const drop = [];
+    const live = Object.create(null);
+
+    Object.keys(stored || {}).forEach((key) => {
+      let prefix = "";
+      prefixes.forEach((candidate) => {
+        if (!prefix && key.indexOf(candidate) === 0) prefix = candidate;
+      });
+      if (!prefix) return;
+
+      const entry = stored[key];
+      const checkedAt =
+        entry && typeof entry.checkedAt === "number" ? entry.checkedAt : 0;
+      if (!checkedAt || now - checkedAt >= INSTANCE_CACHE_TTLS[prefix]) {
+        drop.push(key);
+        return;
+      }
+
+      const origin = key.slice(prefix.length);
+      if (!live[origin]) live[origin] = { newest: 0, keys: [] };
+      live[origin].keys.push(key);
+      if (checkedAt > live[origin].newest) live[origin].newest = checkedAt;
+    });
+
+    Object.keys(live)
+      .map((origin) => live[origin])
+      .sort((a, b) => b.newest - a.newest)
+      .slice(cap)
+      .forEach((instance) => {
+        instance.keys.forEach((key) => drop.push(key));
+      });
+
+    return drop;
+  }
+
+  async function pruneInstanceCaches(now) {
+    try {
+      const stored = await chrome.storage.local.get(null);
+      const drop = planCachePruning(
+        stored,
+        typeof now === "number" ? now : Date.now()
+      );
+      if (drop.length) await chrome.storage.local.remove(drop);
+    } catch (e) {}
+  }
+
   function apiTransport(request) {
     return new Promise((resolve) => {
       let settled = false;
@@ -1228,6 +1300,7 @@
         await chrome.storage.local.set({
           [key]: Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh),
         });
+        await pruneInstanceCaches();
       } catch (e) {}
     }
     return fresh;
@@ -1760,6 +1833,8 @@
     resolveAncestry,
     probe,
     loadProbe,
+    planCachePruning,
+    MAX_CACHED_INSTANCES,
     peekCapabilities,
     summarizeCapabilities,
     describeCapabilityChange,

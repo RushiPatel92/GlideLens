@@ -3570,6 +3570,55 @@ function stopTimelineInFrames(tabId) {
   });
 }
 
+/*
+ * OPEN_URL is a privileged route: the worker can open a tab, a content script
+ * cannot. Every legitimate caller builds `location.origin + path`, so a
+ * destination that is not the sender's own ServiceNow origin did not come from
+ * one of our commands. Validate instead of trusting the string -- otherwise
+ * anything that reaches the message channel can make the extension open
+ * `javascript:`, `data:`, `file:`, or an off-instance page from a privileged
+ * context, which is exactly the shape of an extension-assisted phishing hop.
+ */
+const SN_TAB_HOST = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.service-now\.com$/i;
+const OPEN_URL_MAX_LENGTH = 4000;
+
+function serviceNowOrigin(value) {
+  if (typeof value !== "string" || !value) return "";
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_) {
+    return "";
+  }
+  if (parsed.protocol !== "https:") return "";
+  if (!SN_TAB_HOST.test(parsed.hostname)) return "";
+  return parsed.origin;
+}
+
+/* Returns a URL rebuilt from its parsed form, or null to open nothing. The
+ * rebuild matters: the string that arrives is never the string we hand to
+ * chrome.tabs.create. */
+function resolveOpenUrl(url, sender) {
+  if (typeof url !== "string" || url.length > OPEN_URL_MAX_LENGTH) return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    return null;
+  }
+  if (parsed.protocol !== "https:") return null;
+  if (!SN_TAB_HOST.test(parsed.hostname)) return null;
+
+  /* sender.origin is the sending frame's own origin. When it is a ServiceNow
+   * origin we hold the destination to it exactly; when it is missing we still
+   * require the ServiceNow host class established above. */
+  const senderOrigin =
+    serviceNowOrigin(sender && sender.origin) ||
+    serviceNowOrigin(sender && sender.tab && sender.tab.url);
+  if (senderOrigin && parsed.origin !== senderOrigin) return null;
+  return parsed.toString();
+}
+
 function openUrlTabOptions(url, sender) {
   const options = { url, active: true };
   const sourceTab = sender && sender.tab;
@@ -3595,7 +3644,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     registerContentFrame(msg.requestId, sender);
   }
   if (msg && msg.type === "OPEN_URL" && msg.url) {
-    chrome.tabs.create(openUrlTabOptions(msg.url, sender));
+    const safeUrl = resolveOpenUrl(msg.url, sender);
+    if (safeUrl) chrome.tabs.create(openUrlTabOptions(safeUrl, sender));
   }
   /* The popup is not a content script, so it cannot announce frames or be
    * announced to. It asks the worker for the same discovered list instead,
