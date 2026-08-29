@@ -33,6 +33,7 @@ When the user asks to deploy, publish, or "commit and push" a feature branch:
 4. Wait for validation, then merge and verify the pull request.
 5. Fetch, switch to local `main`, and fast-forward it.
 6. Tag the release on `main`, then push the tag. See "Tagging" below.
+7. Publish the GitHub Release for that tag. See "GitHub Releases" below.
 
 A branch push alone is complete only when the user explicitly requests "push
 branch only" or asks not to merge. Remote feature branches must remain intact.
@@ -63,13 +64,37 @@ A tag is what makes a shipped version recoverable later. `git diff
 v0.11.0..v0.11.1` answers "what changed between these two releases" in one
 command, and a store reviewer question can be answered against the exact code
 that shipped. A tag is also what a GitHub Release is built on, though pushing
-one does not publish a Release by itself -- that is a separate step, and this
-project has not been using it. Skipping a tag leaves a
-permanent hole: 0.11.0 and 0.11.1 shipped untagged because this document had no
-tagging step, and both had to be backfilled on 2026-08-28.
+one does not publish a Release by itself -- see "GitHub Releases" below.
+Skipping a tag leaves a permanent hole: 0.11.0 and 0.11.1 shipped untagged
+because this document had no tagging step, and both had to be backfilled on
+2026-08-28.
 
 Pushing a tag is publication. It needs the same explicit authorization as a
 push or a merge, and a pushed tag is not to be deleted or moved.
+
+## GitHub Releases
+
+Pushing a tag does not publish a Release. The repository front page sends a
+reader to the Releases page, so a missing Release leaves it advertising a
+version older than the one both stores are serving. Publish one for every tag:
+
+```text
+gh release create v<version> --title "<summary line>" --notes-file <file>
+```
+
+The title is the tag message's summary line. The body is the rest of that tag
+message, then a horizontal rule, then the two store links and a link to
+`CHANGELOG.md`. Run `gh release view v0.12.0 --json body -q .body` to see the
+house style.
+
+Do not attach the packaged ZIP. No release has carried one: the stores
+distribute the reviewed artifact, and a build offered here would be sideloaded
+without review and would go stale against both listings.
+
+Publishing a Release is publication. It needs the same explicit authorization
+as a push, a merge, or a tag. 0.13.0 was tagged, pushed and shipped to both
+stores on 2026-08-29 with no Release, because this document said Releases were
+not in use here.
 
 ## Store submission
 
