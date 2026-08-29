@@ -22,7 +22,7 @@ reconstructed version by version.
   checking what they have installed is most likely to look.
 
 ### Security
-- **`OPEN_URL` now validates where it is being sent.** A content script cannot
+- **`OPEN_URL` now validates where it is being sent, and fails closed.** A content script cannot
   open a tab, so it asks the service worker to; the worker passed the URL
   straight to `chrome.tabs.create` without looking at it. Every real caller
   builds `location.origin + path`, so the destination is now held to the
@@ -30,7 +30,9 @@ reconstructed version by version.
   `*.service-now.com` host, and is rebuilt from its parsed form rather than
   forwarded as the string that arrived. `javascript:`, `data:`, `file:`,
   lookalike hosts such as `evil-service-now.com`, and other instances are all
-  refused.
+  refused — as are embedded credentials, which `URL.origin` quietly drops (so an
+  origin check alone passes) while `toString()` keeps them, and a message with
+  no recognisable ServiceNow sender, which no genuine caller ever sends.
 - **Code Search and Record Search results moved into closed shadow roots.**
   Every other GlideLens panel already used one. While those two were open, page
   script could read and rewrite Table API results after they were rendered.
@@ -63,6 +65,17 @@ reconstructed version by version.
   into every ServiceNow tab, so a queue inside it would order one tab against
   itself while local storage is shared by the whole extension — two tabs could
   still interleave and delete each other's freshly written entries.
+
+### Changed
+- **Two palette descriptions dropped a trailing ellipsis.** The convention
+  reserves `…` for a command that needs further input before it can act. Record
+  Lens and Playbooks act immediately, so theirs were misleading; the Playbooks
+  prompt that appears when no record is in context keeps its ellipsis, because
+  there it is true. Mirrored in the README and the landing page.
+
+### Removed
+- **A dead `#toast` element left in the popup** when actions moved to the
+  command palette. Nothing had referenced it since.
 
 ### Fixed
 - **The content-script message listener stopped claiming replies it never

@@ -82,5 +82,4 @@ footer {
   justify-content: space-between;
   gap: 8px;
 }
-#toast { color: var(--ok); font-size: 12px; }
 .ext-version { color: var(--muted); font-size: 11px; margin-left: auto; }

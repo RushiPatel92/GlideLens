@@ -3609,13 +3609,22 @@ function resolveOpenUrl(url, sender) {
   if (parsed.protocol !== "https:") return null;
   if (!SN_TAB_HOST.test(parsed.hostname)) return null;
 
-  /* sender.origin is the sending frame's own origin. When it is a ServiceNow
-   * origin we hold the destination to it exactly; when it is missing we still
-   * require the ServiceNow host class established above. */
+  /* Embedded credentials survive into the opened tab: `origin` drops them, so
+   * an equality check below would pass, while `toString()` keeps them. A URL
+   * like https://user:pass@instance.service-now.com/ would be a credential
+   * prompt raised by the extension against a real host. No caller has ever
+   * needed them. */
+  if (parsed.username || parsed.password) return null;
+
+  /* Fail closed on the sender. sender.origin is the sending frame's own
+   * origin, and every one of these messages comes from a content script in a
+   * ServiceNow tab, so an absent or non-ServiceNow origin is not a caller we
+   * recognise -- it used to fall back to "any ServiceNow host will do", which
+   * is a weaker rule than the one all real callers already satisfy. */
   const senderOrigin =
     serviceNowOrigin(sender && sender.origin) ||
     serviceNowOrigin(sender && sender.tab && sender.tab.url);
-  if (senderOrigin && parsed.origin !== senderOrigin) return null;
+  if (!senderOrigin || parsed.origin !== senderOrigin) return null;
   return parsed.toString();
 }
 

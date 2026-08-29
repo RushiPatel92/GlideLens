@@ -2753,7 +2753,7 @@ function buildCommands() {
     {
       id: "record-search",
       label: "Record Lens",
-      description: "Search verified records across readable tables…",
+      description: "Search verified records across readable tables",
       keywords: [
         "record", "search", "find", "table api", "sys_id", "number",
         "name", "email", "incident", "catalog item",
@@ -2764,7 +2764,7 @@ function buildCommands() {
     {
       id: "open-playbook-executions",
       label: "Playbooks",
-      description: "Open playbook executions for this record…",
+      description: "Open playbook executions for this record",
       keywords: ["playbook", "execution", "executions", "process automation", "pad", "sys_pd_context", "input_record"],
       group: "Record",
       keepOpen: true,

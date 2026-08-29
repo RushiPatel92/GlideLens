@@ -392,3 +392,95 @@ test("every dimension is bounded, because this string lands in 1000 events", () 
 test("an unparseable location never throws into the recorder", () => {
   assert.strictEqual(safeFrameUrl("not a url"), "");
 });
+
+/* ---------------------------------------------------------------------------
+ * What a GlideAjax response is allowed to leave behind.
+ *
+ * An earlier version scrubbed non-JSON bodies with regexes. It ran in the
+ * page's MAIN world ahead of the application's own callback, cost 2.9 seconds
+ * on a 40KB answer, scaled quadratically, and still let
+ * `<input name="sysparm_ck" value="...">` and `user[password]=` through. The
+ * policy now is to capture less rather than scrub harder, and these tests pin
+ * that policy down so it cannot quietly regress into scrubbing again.
+ * ------------------------------------------------------------------------ */
+
+function loadResponseInfo() {
+  const src = fs
+    .readFileSync(path.join(__dirname, "..", "debug_timeline_main.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const slice = (from, to) => {
+    const start = src.indexOf(from);
+    const end = src.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, "not found: " + from);
+    return src.slice(start, end);
+  };
+  const body =
+    slice("  const sensitivePattern", "  const safeValue") +
+    slice("  const sanitizeGlideAjaxResponseValue", "  const patchGlideAjax");
+  return new Function(body + "\nreturn glideAjaxResponseInfo;")();
+}
+
+const responseInfo = loadResponseInfo();
+
+const xmlResponse = (answer) => ({
+  status: 200,
+  responseXML: {
+    documentElement: { getAttribute: (name) => (name === "answer" ? answer : null) },
+  },
+});
+
+test("a JSON answer keeps its shape and masks sensitive keys", () => {
+  const info = responseInfo(
+    xmlResponse(JSON.stringify({ name: "ok", user_token: "abc", nested: { password: "p" } }))
+  );
+  assert.strictEqual(info.format, "json");
+  assert.strictEqual(info.answer.name, "ok");
+  assert.strictEqual(info.answer.user_token, "[REDACTED]");
+  assert.strictEqual(info.answer.nested.password, "[REDACTED]");
+});
+
+test("ServiceNow's own session token is masked, though it matches no generic word", () => {
+  const info = responseInfo(xmlResponse(JSON.stringify({ sysparm_ck: "tok", g_ck: "tok2" })));
+  assert.strictEqual(info.answer.sysparm_ck, "[REDACTED]");
+  assert.strictEqual(info.answer.g_ck, "[REDACTED]");
+});
+
+test("an XML body is not retained at all", () => {
+  const body = "<response><api_key>SEKRIT</api_key></response>";
+  const info = responseInfo(xmlResponse(body));
+  assert.strictEqual(info.format, "text");
+  assert.strictEqual(info.bodyRetained, false);
+  assert.strictEqual(info.answer, undefined);
+  assert.strictEqual(JSON.stringify(info).indexOf("SEKRIT"), -1);
+  /* The size is still useful, and is not the payload. */
+  assert.strictEqual(info.answerLength, body.length);
+});
+
+test("a plain name=value body is not retained either", () => {
+  const info = responseInfo(xmlResponse("user=alice&password=hunter2"));
+  assert.strictEqual(info.format, "text");
+  assert.strictEqual(info.bodyRetained, false);
+  assert.strictEqual(JSON.stringify(info).indexOf("hunter2"), -1);
+});
+
+test("a text body carries no truncation flag, because nothing was kept to truncate", () => {
+  const info = responseInfo(xmlResponse("x".repeat(9000)));
+  assert.strictEqual(info.format, "text");
+  assert.ok(!("truncated" in info), "truncated should be absent for a discarded body");
+});
+
+test("an oversized answer is never parsed and never retained", () => {
+  const huge = JSON.stringify({ password: "p", filler: "y".repeat(250000) });
+  const started = Date.now();
+  const info = responseInfo(xmlResponse(huge));
+  assert.strictEqual(info.format, "oversized");
+  assert.strictEqual(info.bodyRetained, false);
+  assert.strictEqual(info.answer, undefined);
+  assert.strictEqual(info.answerLength, huge.length);
+  /* The point of the bound is that size costs nothing in the page. */
+  assert.ok(Date.now() - started < 250, "oversized handling should be near-instant");
+});
+
+test("a response with nothing to say records nothing", () => {
+  assert.strictEqual(responseInfo(null), null);
+});

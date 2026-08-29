@@ -112,12 +112,31 @@ test("another instance is refused even though it is a real ServiceNow host", () 
   );
 });
 
-test("without a sender origin the ServiceNow host class still gates it", () => {
-  assert.strictEqual(
-    resolveOpenUrl("https://example.service-now.com/incident.do", {}),
-    "https://example.service-now.com/incident.do"
-  );
+test("a message with no recognisable sender opens nothing", () => {
+  /* Fails closed. Every real caller is a content script in a ServiceNow tab,
+   * so an absent sender is not a caller we know -- it used to fall through to
+   * "any ServiceNow host will do", a weaker rule than all real callers meet. */
+  assert.strictEqual(resolveOpenUrl("https://example.service-now.com/incident.do", {}), null);
   assert.strictEqual(resolveOpenUrl("https://elsewhere.example/incident.do", {}), null);
+  assert.strictEqual(
+    resolveOpenUrl("https://example.service-now.com/incident.do", {
+      origin: "https://not-servicenow.example",
+    }),
+    null
+  );
+});
+
+test("embedded credentials are refused, origin equality notwithstanding", () => {
+  /* URL.origin drops credentials, so an origin check alone passes -- while
+   * toString() keeps them, carrying them into the opened tab. */
+  const sender = senderOn("https://example.service-now.com");
+  for (const url of [
+    "https://user:pass@example.service-now.com/incident.do",
+    "https://user@example.service-now.com/incident.do",
+    "https://:pass@example.service-now.com/incident.do",
+  ]) {
+    assert.strictEqual(resolveOpenUrl(url, sender), null, url);
+  }
 });
 
 test("a sender origin is used even when only the tab URL carries it", () => {
