@@ -27,10 +27,12 @@ body:
     attributes:
       label: GlideLens version
       description: |
-        Find it at `chrome://extensions` or `edge://extensions` — it is printed
-        under the GlideLens name. **Not** the "Version" shown in the GlideLens
-        popup; that one is your ServiceNow build, which is the next question.
-      placeholder: "0.12.0"
+        The GlideLens popup prints it in the bottom corner. On 0.12.0 and
+        earlier it is not shown there, so find it at `chrome://extensions` or
+        `edge://extensions` instead, printed under the GlideLens name. The
+        popup's `ServiceNow` row is your instance build, not this — that is the
+        last question on this form.
+      placeholder: "0.13.0"
     validations:
       required: true
 
@@ -132,7 +134,7 @@ body:
     id: servicenow-release
     attributes:
       label: ServiceNow release
-      description: Optional. The GlideLens popup shows it as "Version", or it is under System Diagnostics > Stats.
+      description: Optional. The GlideLens popup shows it as `ServiceNow`, or it is under System Diagnostics > Stats.
       placeholder: "Zurich"
     validations:
       required: false
