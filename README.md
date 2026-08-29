@@ -310,6 +310,33 @@ Explorer, and Flow Designer.
 
 ---
 
+## Reporting a problem
+
+Open an issue at
+<https://github.com/RushiPatel92/GlideLens/issues>. Choosing **Bug report**
+gives you a short form; its questions are the ones that would otherwise be
+asked in reply, so filling them in usually saves a round trip. The one that
+matters most is which kind of page you were on — classic form, classic list,
+Next Experience workspace or Service Portal — because each nests its frames
+differently and most faults turn out to belong to just one of them.
+
+GlideLens sends no usage or error data anywhere, by design. Nothing reaches the
+author unless someone types it into an issue, so a report really is the only
+signal there is.
+
+**Please redact before you post.** This tracker is public and permanently
+indexed, and GlideLens is used inside real customer instances. Remove instance
+names and URLs, company and customer names, record data and user names — from
+the text, from screenshots, and from any console output you paste. Console
+output in particular tends to carry the instance URL and record values.
+
+If you are reporting that something looks out of date, check the version at
+`chrome://extensions` or `edge://extensions` first: a copy loaded unpacked
+never updates itself, and store copies update on the browser's own schedule
+rather than the moment a release is published.
+
+---
+
 ## For developers
 
 - Load unpacked as above; after editing, click **reload** on the extension card,

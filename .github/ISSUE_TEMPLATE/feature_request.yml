@@ -1,0 +1,54 @@
+name: Feature or improvement
+description: Something GlideLens could do, or do better.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GlideLens deliberately covers the gaps left by snUtils rather than
+        competing with it. These are permanently out of scope, so please do not
+        request them: update-set switching, impersonation, and per-environment
+        favicons or instance badges. Anything that writes to or submits a form
+        is also out — GlideLens reads and explains, it does not change records.
+
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Please protect your employer and their customers
+      options:
+        - label: My description contains no instance names or URLs, company or customer names, record data, or user names — including in any screenshots.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to work out?
+      description: |
+        Describe the situation rather than the feature. "I need to know which
+        client script is clearing this variable, and I end up opening six
+        records to find it" tells us more than "add a script list".
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you want GlideLens to show or do?
+      description: A rough idea is fine. It does not need to be a design.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: context
+    attributes:
+      label: Where would you use it?
+      multiple: true
+      options:
+        - Classic form
+        - Classic list
+        - Next Experience / UI Builder workspace
+        - Service Portal or catalog item
+        - The popup
+        - Anywhere
+    validations:
+      required: false
