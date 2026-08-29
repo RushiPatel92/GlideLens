@@ -6,6 +6,24 @@
 const $ = (id) => document.getElementById(id);
 let ORIGIN = null;
 
+/*
+ * The extension version is shown nowhere else in the UI, so a user asked
+ * which version they are on has to go to the browser extensions page to
+ * find out -- and the instance build printed above is the number they
+ * reach for instead. Ours comes from the manifest, so it cannot drift.
+ */
+function renderExtensionVersion() {
+  const el = $("ext-version");
+  if (!el) return;
+  let version = "";
+  try {
+    version = (chrome.runtime.getManifest() || {}).version || "";
+  } catch (_) {
+    version = "";
+  }
+  el.textContent = version ? "GlideLens " + version : "";
+}
+
 function setStatus(text, cls) {
   const s = $("status");
   s.textContent = text;
@@ -52,7 +70,7 @@ function renderInfo(data) {
   add("Instance", ORIGIN ? ORIGIN.replace(/^https?:\/\//, "") : "");
   add("User", data.fullName ? `${data.fullName} (${data.userName})` : data.userName);
   add("Node",    data.node);
-  add("Version", data.version);
+  add("ServiceNow", data.version);
   add("Table",   data.table,  true);
   add("sys_id",  data.sysId,  true);
 
@@ -186,4 +204,9 @@ async function init() {
   if (!data.version || !data.node) fetchStats(data);
 }
 
-document.addEventListener("DOMContentLoaded", init);
+document.addEventListener("DOMContentLoaded", () => {
+  // Before init(), so the version still shows on a non-ServiceNow tab,
+  // which is exactly where someone checks what they have installed.
+  renderExtensionVersion();
+  init();
+});
