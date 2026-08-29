@@ -34,25 +34,33 @@ reconstructed version by version.
 - **Code Search and Record Search results moved into closed shadow roots.**
   Every other GlideLens panel already used one. While those two were open, page
   script could read and rewrite Table API results after they were rendered.
-- **Debug Timeline redacts non-JSON responses.** A GlideAjax answer that parsed
-  as JSON had its sensitive-looking keys masked; one that did not parse was
-  stored verbatim, so a processor answering with XML, HTML or a plain
-  `name=value` body could put a token straight into a trace. Those shapes are
-  now masked too, and ServiceNow's own session token (`sysparm_ck`, `g_ck`) is
-  named explicitly since it matches none of the generic words.
+- **Debug Timeline no longer keeps a non-JSON response body at all.** An answer
+  that parsed as JSON had its sensitive-looking keys masked; one that did not
+  parse was stored verbatim, so a processor replying with XML, HTML or a plain
+  `name=value` body could put a token straight into a trace. Rather than try to
+  scrub arbitrary text, the body is not retained: the status, shape and size are
+  recorded, and DevTools still has the payload in full for anyone who needs it.
+  A response too large to parse cheaply is not parsed at all. ServiceNow's own
+  session token (`sysparm_ck`, `g_ck`) is also named explicitly in the
+  sensitive-key list, since it matches none of the generic words.
 - **Recorded frame URLs keep the page, not the payload.** `location.href` was
-  stored whole, and ServiceNow puts the interesting things in the query string —
-  `sysparm_query` carries filter values, `sys_id` names a record. The origin,
-  the path and the parameters that identify which page is open are kept; the
-  rest are counted and dropped, so the trace says how many were removed.
+  stored whole, and ServiceNow hides record context in three different places:
+  `sysparm_query` and `sys_id` in the query string, `/record/<table>/<sys_id>`
+  in a Workspace path, and an entire encoded URL inside one segment of a Polaris
+  wrapper route. All three are stripped, and the result is bounded in every
+  dimension — segments, segment length, retained parameters, total length —
+  because this string is copied into as many as 1,000 events. The trace reports
+  how many parameters were removed.
 - **Copying a trace now takes two clicks.** The first arms the button and says
   what the trace contains; the second copies. Copying is the moment a recording
   stops being local, and it usually ends up in a ticket.
-- **Both instance caches are pruned.** Code Search's probe and coverage entries
-  are keyed by instance origin and were only ever written — expiry made them
+- **Both instance caches are pruned, one writer at a time.** Code Search's
+  probe and coverage entries are keyed by instance origin and were only ever written — expiry made them
   stale, nothing removed them — so a consultant who touches many instances grew
   local storage without bound. Expired entries and instances beyond a cap are
-  now dropped on write.
+  now dropped on write. The whole write-and-prune sequence is serialised: probe
+  and coverage load concurrently, and interleaving them could otherwise let one
+  pruner delete an entry the other had just refreshed.
 
 ### Fixed
 - **The content-script message listener stopped claiming replies it never

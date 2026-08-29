@@ -270,3 +270,96 @@ test("a throwing getXMLAnswer is reported and the error still propagates", () =>
   assert.equal(errors.length, 1);
   assert.match(errors[0].summary, /threw: processor unavailable/);
 });
+
+/* ---------------------------------------------------------------------------
+ * Frame URLs. A trace records which frame an event came from; it must not
+ * carry the record along with it. ServiceNow hides record context in three
+ * places, and only one of them is the query string.
+ * ------------------------------------------------------------------------ */
+
+function loadSafeFrameUrl() {
+  const src = fs
+    .readFileSync(path.join(__dirname, "..", "debug_timeline_main.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const start = src.indexOf("  const safeFrameUrl");
+  const end = src.indexOf("\n  };\n", start) + "\n  };\n".length;
+  assert.ok(start >= 0 && end > start, "safeFrameUrl not found");
+  const body = src.slice(start, end);
+  return (href) =>
+    new Function("location", body + "\nreturn safeFrameUrl;")({ href })();
+}
+
+const safeFrameUrl = loadSafeFrameUrl();
+const SYS_ID = "1a2b3c4d5e6f70819a2b3c4d5e6f7081";
+
+test("a classic form keeps the page and drops the record and the filter", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/incident.do?sys_id=" +
+      SYS_ID +
+      "&sysparm_query=assigned_to%3Djoe"
+  );
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+  assert.ok(out.indexOf("assigned_to") === -1, out);
+  assert.ok(out.indexOf("/incident.do") >= 0, out);
+  assert.ok(/2 parameters removed/.test(out), out);
+});
+
+test("a Workspace route carries its record in the path, and loses it", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/now/workspace/agent/record/incident/" + SYS_ID
+  );
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+  assert.ok(out.indexOf("/record/incident/<id>") >= 0, out);
+});
+
+test("an encoded Polaris target hides a whole URL in one segment", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/now/nav/ui/classic/params/target/incident.do%3Fsys_id%3D" +
+      SYS_ID +
+      "%26sysparm_query%3Dactive%3Dtrue"
+  );
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+  assert.ok(out.indexOf("sysparm_query") === -1, out);
+  assert.ok(out.indexOf("<target>") >= 0, out);
+});
+
+test("a portal page keeps which page it is and drops which record", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/sp?id=sc_cat_item&sys_id=" + SYS_ID
+  );
+  assert.ok(out.indexOf("id=sc_cat_item") >= 0, out);
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+});
+
+test("an id-shaped value is dropped even under an allowlisted key", () => {
+  const out = safeFrameUrl("https://x.service-now.com/sp?id=" + SYS_ID);
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+});
+
+test("every dimension is bounded, because this string lands in 1000 events", () => {
+  const long = safeFrameUrl(
+    "https://x.service-now.com/" + Array(40).fill("segment").join("/")
+  );
+  assert.ok(long.length <= 320, "length " + long.length);
+  const segments = long.split("/").slice(3);
+  assert.strictEqual(segments.filter((part) => part === "segment").length, 8, long);
+  assert.strictEqual(segments[segments.length - 1], "…", long);
+
+  const wide = safeFrameUrl(
+    "https://x.service-now.com/x?" +
+      Array(50)
+        .fill(0)
+        .map((_, i) => "id=v" + i)
+        .join("&")
+  );
+  assert.ok(wide.length <= 320, "length " + wide.length);
+
+  const deep = safeFrameUrl(
+    "https://x.service-now.com/" + "a".repeat(5000) + "?id=" + "b".repeat(5000)
+  );
+  assert.ok(deep.length <= 320, "length " + deep.length);
+});
+
+test("an unparseable location never throws into the recorder", () => {
+  assert.strictEqual(safeFrameUrl("not a url"), "");
+});

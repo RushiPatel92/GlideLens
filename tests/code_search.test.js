@@ -811,3 +811,40 @@ test("an instance kept under the cap keeps both of its entries", () => {
 test("the shipped cap is a real number, so the default path is bounded", () => {
   assert.ok(typeof CS.MAX_CACHED_INSTANCES === "number" && CS.MAX_CACHED_INSTANCES > 0);
 });
+
+test("cache maintenance is serialized, so an interleaved write is never pruned", async () => {
+  /* The defect this guards: two loaders each did set -> get-all -> plan ->
+   * remove. Without a lock, B's write lands inside A's snapshot gap and A then
+   * removes it. This storage double deliberately interleaves at every await. */
+  const store = {};
+  let inFlight = 0;
+  let maxConcurrent = 0;
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const section = async (label) => {
+    inFlight += 1;
+    maxConcurrent = Math.max(maxConcurrent, inFlight);
+    await tick();
+    store[label] = true;
+    await tick();
+    inFlight -= 1;
+  };
+
+  await Promise.all([
+    CS.withCacheLock(() => section("a")),
+    CS.withCacheLock(() => section("b")),
+    CS.withCacheLock(() => section("c")),
+  ]);
+
+  assert.strictEqual(maxConcurrent, 1, "sections overlapped");
+  assert.deepStrictEqual(Object.keys(store).sort(), ["a", "b", "c"]);
+});
+
+test("one failing cache section does not stall the queue behind it", async () => {
+  const done = [];
+  await CS.withCacheLock(() => Promise.reject(new Error("storage gone"))).catch(() => {});
+  await CS.withCacheLock(async () => {
+    done.push("after");
+  });
+  assert.deepStrictEqual(own(done), ["after"]);
+});

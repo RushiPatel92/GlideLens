@@ -9,35 +9,67 @@
 function startDebugTimelineInPage() {
   const stateKey = "__SN_DEV_HELPER_DEBUG_TIMELINE__";
   /* A frame URL is recorded so a developer can tell which frame an event came
-   * from -- not to carry record data into a trace that gets pasted into an
-   * issue. ServiceNow keeps the interesting things in the query string:
-   * sysparm_query holds filter values, and sys_id names a record. Keep the
-   * origin, the path, and only the parameters that say which page is open;
-   * count the rest and drop them, so a reader can see that something was
-   * removed rather than wondering.
+   * from -- not to carry record data into a trace. ServiceNow does not keep
+   * record context in the query string alone: a Workspace route puts it in the
+   * path (/record/incident/<32 hex>), and a Polaris wrapper can carry an entire
+   * encoded URL, query string included, inside one segment
+   * (/params/target/incident.do%3Fsys_id%3D...). Both are stripped, and the
+   * result is bounded in every dimension -- segments, segment length, retained
+   * parameters, total length -- because this string is copied into as many as
+   * 1,000 events.
    *
-   * Deliberately duplicated in the other entry point below: every function in
-   * this file is injected standalone by executeScript and cannot share a
-   * helper. If you change one copy, change the other. */
+   * Deliberately duplicated from the entry point above: every function in this file is
+   * injected standalone by executeScript and cannot share a helper. If you
+   * change one copy, change the other. */
   const safeFrameUrl = () => {
     const KEEP = ["id", "table", "sysparm_view"];
+    const MAX_SEGMENTS = 8;
+    const MAX_SEGMENT = 40;
+    const MAX_PARAMS = 4;
+    const MAX_VALUE = 80;
+    const MAX_TOTAL = 300;
+    const looksLikeId = (text) => /^[0-9a-f]{32}$/i.test(text);
+    const cutAt = (text, marker) => {
+      const at = text.toLowerCase().indexOf(marker);
+      return at >= 0 ? text.slice(0, at) : text;
+    };
+    const scrubSegment = (segment) => {
+      if (looksLikeId(segment)) return "<id>";
+      if (/%3[fd]/i.test(segment) || segment.indexOf("?") >= 0 || segment.indexOf("=") >= 0) {
+        const head = cutAt(cutAt(cutAt(segment, "%3f"), "?"), "%3d");
+        return head.slice(0, MAX_SEGMENT) + "<target>";
+      }
+      return segment.length > MAX_SEGMENT ? segment.slice(0, MAX_SEGMENT) + "…" : segment;
+    };
     try {
       const url = new URL(location.href);
+      const segments = url.pathname.split("/").filter(Boolean);
+      const path = "/" + segments.slice(0, MAX_SEGMENTS).map(scrubSegment).join("/");
       const kept = [];
       let dropped = 0;
       url.searchParams.forEach((value, key) => {
-        if (KEEP.indexOf(key) >= 0 && String(value).length <= 80) {
-          kept.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+        const text = String(value);
+        if (
+          kept.length < MAX_PARAMS &&
+          KEEP.indexOf(key) >= 0 &&
+          text.length <= MAX_VALUE &&
+          !looksLikeId(text)
+        ) {
+          kept.push(encodeURIComponent(key) + "=" + encodeURIComponent(text));
         } else {
           dropped += 1;
         }
       });
-      return (
+      let out =
         url.origin +
-        url.pathname +
-        (kept.length ? "?" + kept.join("&") : "") +
-        (dropped ? " (" + dropped + " parameter" + (dropped === 1 ? "" : "s") + " removed)" : "")
-      );
+        path +
+        (segments.length > MAX_SEGMENTS ? "/…" : "") +
+        (kept.length ? "?" + kept.join("&") : "");
+      if (out.length > MAX_TOTAL) out = out.slice(0, MAX_TOTAL) + "…";
+      if (dropped) {
+        out += " (" + dropped + " parameter" + (dropped === 1 ? "" : "s") + " removed)";
+      }
+      return out;
     } catch (e) {
       return "";
     }
@@ -487,39 +519,7 @@ function startDebugTimelineInPage() {
     return truncate(value, 4000);
   };
 
-  /* Mask the value in `key=value`, `key: value`, `"key": "value"` and
-   * `<key>value</key>` shapes when the key looks sensitive. Deliberately
-   * conservative: it never tries to understand the payload, it only refuses to
-   * carry the obvious secrets through verbatim. A missed shape is still
-   * truncated, and still only leaves the page when the user copies the trace. */
-  const SENSITIVE_KEY_SOURCE =
-    "[A-Za-z0-9_-]*(?:password|passwd|secret|token|credential|api[_-]?key|" +
-    "private[_-]?key|authorization|sysparm_ck|g_ck)[A-Za-z0-9_-]*";
-
-  const redactSensitiveText = (text) => {
-    const source = String(text == null ? "" : text);
-    if (!sensitivePattern.test(source)) return source;
-    const key = SENSITIVE_KEY_SOURCE;
-    return source
-      /* <token>value</token>, including <token attr="x">value</token> */
-      .replace(
-        new RegExp("(<(?:" + key + ")\\b[^>]*>)[^<]{1,4000}", "gi"),
-        "$1[REDACTED]"
-      )
-      /* "token": "value", 'token': value, token : value */
-      .replace(
-        new RegExp(
-          "([\"']?)(" + key + ")\\1(\\s*:\\s*)([\"']?)[^,;&\\r\\n\"']{1,4000}\\4",
-          "gi"
-        ),
-        "$1$2$1$3$4[REDACTED]$4"
-      )
-      /* token=value in a query-ish or form-ish body */
-      .replace(
-        new RegExp("(^|[^A-Za-z0-9_-])(" + key + ")=[^&;\\s]{1,4000}", "gi"),
-        "$1$2=[REDACTED]"
-      );
-  };
+  const MAX_PARSED_ANSWER = 200000;
 
   const glideAjaxResponseInfo = (response) => {
     let answer;
@@ -544,6 +544,14 @@ function startDebugTimelineInPage() {
     if (answer !== undefined && answer !== null) {
       const answerText = String(answer);
       result.answerLength = answerText.length;
+      /* Bound the work before doing any of it. JSON.parse is linear, but it
+       * still runs in the page ahead of the application's own callback, and a
+       * multi-megabyte answer is not worth a stutter on someone's form. */
+      if (answerText.length > MAX_PARSED_ANSWER) {
+        result.format = "oversized";
+        result.bodyRetained = false;
+        return result;
+      }
       result.truncated = answerText.length > 4000;
       try {
         result.answer = sanitizeGlideAjaxResponseValue(
@@ -553,14 +561,21 @@ function startDebugTimelineInPage() {
         );
         result.format = "json";
       } catch (e) {
-        /* Not JSON, so there are no keys to walk -- and until now that meant no
-         * redaction at all. A processor answering with XML, HTML or a plain
-         * `name=value` body could put a token or a password straight into a
-         * trace the user then pastes into an issue. Mask the value half of any
-         * sensitive-looking pair before truncating. */
-        result.answer = truncate(redactSensitiveText(answerText), 4000);
+        /* Not JSON, so there are no keys to walk and nothing reliable to redact.
+         * An earlier attempt scrubbed the raw text with regexes; it ran in the
+         * page's MAIN world before the application's own callback, cost 2.9
+         * seconds on a 40KB answer (quadratic, so worse above that), and still
+         * let `<input name="sysparm_ck" value="...">` and `user[password]=`
+         * through. Both halves of that are unacceptable: a visible freeze in a
+         * customer's form, and a leak advertised as redaction.
+         *
+         * So the body is not retained. What a developer actually needs from a
+         * non-JSON answer is that it happened, its shape and its size -- if the
+         * payload itself matters, DevTools has it in full and did not have to
+         * be made safe to share. */
         result.format = "text";
-        result.redacted = result.answer.indexOf("[REDACTED]") >= 0;
+        result.bodyRetained = false;
+        delete result.truncated;
       }
     }
     return Object.keys(result).length ? result : null;

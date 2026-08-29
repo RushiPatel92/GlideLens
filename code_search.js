@@ -842,10 +842,12 @@
      * freeze "we do not know" in place for seven days. */
     if (fresh.ok) {
       try {
-        await chrome.storage.local.set({
-          [key]: Object.assign({ version: PROBE_CACHE_VERSION }, fresh),
+        await withCacheLock(async () => {
+          await chrome.storage.local.set({
+            [key]: Object.assign({ version: PROBE_CACHE_VERSION }, fresh),
+          });
+          await pruneInstanceCaches();
         });
-        await pruneInstanceCaches();
       } catch (e) {}
     }
     return fresh;
@@ -1153,6 +1155,25 @@
     return drop;
   }
 
+  /* Probe and coverage load concurrently, and each did set -> get-all -> plan
+   * -> remove independently. One pruner could snapshot storage, the other
+   * loader could write a fresh entry into that gap, and the first pruner would
+   * then remove the key it never saw -- silently discarding a just-refreshed
+   * cache and making the next search repeat the expensive probe. Serialising
+   * the whole write-and-prune sequence removes the gap; there is at most one
+   * such sequence per instance per TTL, so the queue never becomes a
+   * bottleneck. */
+  let cacheMaintenance = Promise.resolve();
+
+  function withCacheLock(task) {
+    const run = cacheMaintenance.then(task, task);
+    cacheMaintenance = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
   async function pruneInstanceCaches(now) {
     try {
       const stored = await chrome.storage.local.get(null);
@@ -1297,10 +1318,12 @@
      * "Tier 1 unavailable" in place for a week. */
     if (fresh.ok) {
       try {
-        await chrome.storage.local.set({
-          [key]: Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh),
+        await withCacheLock(async () => {
+          await chrome.storage.local.set({
+            [key]: Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh),
+          });
+          await pruneInstanceCaches();
         });
-        await pruneInstanceCaches();
       } catch (e) {}
     }
     return fresh;
@@ -1834,6 +1857,7 @@
     probe,
     loadProbe,
     planCachePruning,
+    withCacheLock,
     MAX_CACHED_INSTANCES,
     peekCapabilities,
     summarizeCapabilities,
