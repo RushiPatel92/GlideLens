@@ -1,0 +1,138 @@
+name: Bug report
+description: A GlideLens panel or command did not do what it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. GlideLens collects no usage data of any kind,
+        so what you write here is genuinely the only information available —
+        the more of the boxes below you can fill in, the more likely this gets
+        fixed without a round of follow-up questions.
+
+  - type: checkboxes
+    id: confidentiality
+    attributes:
+      label: Please protect your employer and their customers
+      description: |
+        GlideLens runs inside real ServiceNow instances, and this issue tracker
+        is public and permanently indexed. Screenshots and console output are
+        the usual accidental leaks.
+      options:
+        - label: I have removed instance names and URLs, company and customer names, record data, user names, and anything else identifying — from the text, the screenshots, and any pasted console output.
+          required: true
+
+  - type: input
+    id: glidelens-version
+    attributes:
+      label: GlideLens version
+      description: |
+        Find it at `chrome://extensions` or `edge://extensions` — it is printed
+        under the GlideLens name. **Not** the "Version" shown in the GlideLens
+        popup; that one is your ServiceNow build, which is the next question.
+      placeholder: "0.12.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: How is it installed?
+      description: An unpacked copy never updates itself, so it can be many versions behind without any sign that it is.
+      options:
+        - Chrome Web Store
+        - Microsoft Edge Add-ons
+        - Loaded unpacked from a downloaded or cloned copy
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome
+        - Edge
+        - Another Chromium browser (Brave, Vivaldi, Opera, Arc)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: page-type
+    attributes:
+      label: What kind of page were you on?
+      description: |
+        This matters more than anything else here. GlideLens has to reach into
+        the frame holding your form, and each of these nests its frames
+        differently — most bugs turn out to be specific to one of them.
+      options:
+        - Classic form (the older UI, form inside a frame)
+        - Classic list
+        - Next Experience / UI Builder workspace
+        - Service Portal page or catalog item
+        - The catalog in the classic UI
+        - Only the GlideLens popup itself
+        - Something else — described below
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature
+    attributes:
+      label: Which part of GlideLens?
+      options:
+        - Command palette
+        - Record Lens
+        - Code Search
+        - Catalog Logic
+        - Variable Values
+        - Translations
+        - Variable Prefill
+        - Debug Timeline
+        - Copy sys_id
+        - The popup
+        - Something else — described below
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you do?
+      description: The steps that led to it, numbered if you can. "Opened the palette, ran Catalog Logic on a catalog item" is plenty.
+      placeholder: |
+        1. Opened a catalog item in the Service Portal
+        2. Pressed the GlideLens shortcut
+        3. Ran Catalog Logic
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: What did you expect, and what happened instead?
+      description: If a panel opened but stayed empty, or showed an error, say which — those are different faults.
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Anything red in the console?
+      description: |
+        Optional, and often decisive. Press F12, open the **Console** tab, redo
+        the steps, and copy any red lines. **Read them before pasting** — console
+        output frequently contains your instance URL and record data.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: servicenow-release
+    attributes:
+      label: ServiceNow release
+      description: Optional. The GlideLens popup shows it as "Version", or it is under System Diagnostics > Stats.
+      placeholder: "Zurich"
+    validations:
+      required: false

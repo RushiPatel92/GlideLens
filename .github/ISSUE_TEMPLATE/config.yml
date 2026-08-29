@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How a feature is meant to work
+    url: https://github.com/RushiPatel92/GlideLens#using-the-extension
+    about: The README documents every panel and command. Worth a look before reporting a bug — some behaviour is deliberate.
+  - name: What GlideLens does with your data
+    url: https://rushipatel92.github.io/GlideLens/privacy.html
+    about: It sends nothing anywhere. The privacy policy explains what is read and what is cached locally.
+  - name: Rate or review it in the Chrome Web Store
+    url: https://chromewebstore.google.com/detail/glidelens/bgjopdljfdgoamplbodfdaacjbgiopck
+    about: Reviews are welcome, but a store review cannot be replied to usefully. If something is broken, please open an issue instead so it can be fixed.
