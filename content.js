@@ -24,6 +24,9 @@ const SNH = {
 };
 const SNH_FRAME_COMMAND_SOURCE = "SN_DEV_HELPER_FRAME_COMMAND";
 const SNH_PREFILL_PROGRESS_SOURCE = "SN_DEV_HELPER_PREFILL_PROGRESS";
+/* Deliberately far above the worker's own inactivity bound: this only catches
+ * a reply that never arrives at all, never a fill that is merely slow. */
+const PREFILL_REPLY_CEILING_MS = 900000;
 const WORKSPACE_FIELD_ATTRS = [
   "data-field-name",
   "data-fieldname",
@@ -105,14 +108,16 @@ window.addEventListener("message", (event) => {
   }
 
   if (msg.source === SNH_PREFILL_PROGRESS_SOURCE) {
-    if (window === window.top) {
-      showToast(msg.message || "Filling portal form…", false, 6000);
-    } else {
-      chrome.runtime.sendMessage({
-        type: "PREFILL_PROGRESS",
-        message: msg.message || "Filling portal form…",
-      });
-    }
+    const progress = msg.message || "Filling portal form…";
+    if (window === window.top) showToast(progress, false, 6000);
+    /* The worker uses these as the liveness heartbeat for the fill it is
+     * awaiting, so it has to hear from the top frame too — not only from a
+     * sub-frame that needs its toast relayed. `relay` says which is which. */
+    chrome.runtime.sendMessage({
+      type: "PREFILL_PROGRESS",
+      message: progress,
+      relay: window !== window.top,
+    }).catch(() => {});
   }
 });
 
@@ -1191,10 +1196,27 @@ async function prefillPortalVariablesFromTicket(input) {
 
     showToast("Found " + variables.length + " variables. Filling portal form…", false, 6000);
     await new Promise((resolve) => setTimeout(resolve, 75));
-    const resp = await chrome.runtime.sendMessage({
-      type: "FILL_PORTAL_VARIABLES",
-      variables,
-    });
+    /*
+     * The worker bounds the fill by inactivity, but nothing bounds this await
+     * if the worker itself is torn down mid-operation and the reply never
+     * arrives. A backstop well above any honest fill turns that into an error
+     * rather than a palette that never comes back.
+     */
+    const resp = await Promise.race([
+      chrome.runtime.sendMessage({ type: "FILL_PORTAL_VARIABLES", variables }),
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              error:
+                "Prefill did not report back. It may still be running — " +
+                "reload the form before trying again.",
+            }),
+          PREFILL_REPLY_CEILING_MS
+        )
+      ),
+    ]);
     SNH.lastPrefillResult = resp || null;
 
     if (!resp || !resp.ok) {
@@ -2583,20 +2605,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Only the top frame owns the palette to avoid duplicate overlays.
     if (window === window.top) togglePalette();
   }
-  if (msg && msg.type === "DISCOVER_DEBUG_TIMELINE_FRAME" && msg.requestId) {
+  if (msg && msg.type === "DISCOVER_FRAME" && msg.requestId) {
     // The service worker cannot safely use executeScript({ allFrames: true }):
     // one uninjectionable ServiceNow helper frame can leave that promise
     // pending forever. Content scripts already run in every eligible frame, so
     // announce this frame back and let the worker target each responder by id.
     chrome.runtime.sendMessage({
-      type: "DEBUG_TIMELINE_FRAME_AVAILABLE",
-      requestId: msg.requestId,
-    }).catch(() => {});
-    sendResponse({ ok: true });
-  }
-  if (msg && msg.type === "DISCOVER_SEARCH_FRAME" && msg.requestId) {
-    chrome.runtime.sendMessage({
-      type: "SEARCH_FRAME_AVAILABLE",
+      type: "FRAME_AVAILABLE",
       requestId: msg.requestId,
     }).catch(() => {});
     sendResponse({ ok: true });

@@ -1,22 +1,42 @@
 /*
- * Tests for Debug Timeline frame discovery in background.js.
+ * Tests for Debug Timeline frame targeting in background.js.
  *
- * ServiceNow can carry about:blank helper frames that make
- * executeScript({ allFrames: true }) hang forever. The worker therefore asks
- * the extension's content scripts to announce their concrete frame ids and
- * injects into those frames one at a time.
+ * Recording spans frames, so this is the one caller that must reach all of
+ * them. It does that through the shared discovery (see frame_discovery.test.js)
+ * rather than executeScript({ allFrames: true }), which hangs forever on the
+ * about:blank helper frames ServiceNow puts on a classic form — the whole of
+ * the "Stop does nothing" bug.
  */
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
+function sliceBlock(source, startMarker, endMarker, label) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start);
+  assert.ok(start >= 0 && end > start, label + " not found");
+  return source.slice(start, end);
+}
+
 function loadFrameHelpers() {
   const file = path.join(__dirname, "..", "background.js");
   const source = fs.readFileSync(file, "utf8");
-  const start = source.indexOf("const TIMELINE_INJECT_TIMEOUT_MS");
-  const end = source.indexOf("// Content scripts can't call", start);
-  assert.ok(start >= 0 && end > start, "timeline helper block not found");
+
+  const sharedStart = source.indexOf("const FRAME_DISCOVERY_WAIT_MS");
+  const sharedMarker = source.indexOf("* CODE SEARCH TRANSPORT", sharedStart);
+  assert.ok(sharedStart >= 0 && sharedMarker > sharedStart, "shared block not found");
+  const shared = source
+    .slice(sharedStart, source.lastIndexOf("/*", sharedMarker))
+    .replace("const FRAME_DISCOVERY_WAIT_MS = 150;", "const FRAME_DISCOVERY_WAIT_MS = 1;")
+    .replace("const FRAME_INJECT_TIMEOUT_MS = 5000;", "const FRAME_INJECT_TIMEOUT_MS = 20;");
+
+  const timeline = sliceBlock(
+    source,
+    "const timelineFramesKey",
+    "function openUrlTabOptions",
+    "timeline helper block"
+  );
 
   const calls = [];
   let api;
@@ -25,16 +45,20 @@ function loadFrameHelpers() {
     tabs: {
       sendMessage: async (tabId, message) => {
         calls.push({ kind: "broadcast", tabId, message });
-        if (message.type === "DISCOVER_DEBUG_TIMELINE_FRAME") {
-          api.registerTimelineFrame(message.requestId, { tab: { id: tabId }, frameId: 7 });
-          api.registerTimelineFrame(message.requestId, { tab: { id: tabId }, frameId: 0 });
-        }
+        if (message.type !== "DISCOVER_FRAME") return;
+        [7, 0].forEach((frameId) => {
+          api.registerContentFrame(message.requestId, {
+            tab: { id: tabId },
+            frameId,
+          });
+        });
       },
+      onUpdated: { addListener: () => {} },
     },
     scripting: {
-      executeScript: async ({ target, func }) => {
-        calls.push({ kind: "inject", target, func });
-        const frameId = target.frameIds[0];
+      executeScript: async (injection) => {
+        calls.push({ kind: "inject", target: injection.target, func: injection.func });
+        const frameId = injection.target.frameIds[0];
         return [{ frameId, result: { ok: true, startedAt: 1000 + frameId } }];
       },
     },
@@ -53,8 +77,9 @@ function loadFrameHelpers() {
     "chrome",
     "startDebugTimelineInPage",
     "stopDebugTimelineInPage",
-    source.slice(start, end) +
-      "\nreturn { registerTimelineFrame, discoverTimelineFrames, " +
+    shared +
+      timeline +
+      "\nreturn { registerContentFrame, discoverContentFrames, " +
       "startTimelineInFrames, stopTimelineInFrames, rememberRecordingFrames };"
   );
   api = factory(chrome, function start() {}, function stop() {});
@@ -64,7 +89,7 @@ function loadFrameHelpers() {
 test("discovery collects every responding content-script frame", async () => {
   const { api, calls } = loadFrameHelpers();
 
-  const frameIds = await api.discoverTimelineFrames(41);
+  const frameIds = await api.discoverContentFrames(41, "timeline");
 
   assert.deepStrictEqual(frameIds, [0, 7]);
   assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 1);
@@ -100,25 +125,29 @@ test("stop reuses only the frame ids that successfully started", async () => {
     { tabId: 41, frameIds: [7] },
   ]);
   assert.deepStrictEqual(results.map((item) => item.frameId), [0, 7]);
+  // Stop must not have to rediscover when it already knows the frames.
+  assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 0);
 });
 
-test("a frame announcement cannot cross tabs or invent an invalid id", async () => {
-  const { api, chrome } = loadFrameHelpers();
-  let requestId;
-  chrome.tabs.sendMessage = async (_tabId, message) => {
-    requestId = message.requestId;
-    assert.strictEqual(
-      api.registerTimelineFrame(requestId, { tab: { id: 99 }, frameId: 3 }),
-      false
-    );
-    assert.strictEqual(
-      api.registerTimelineFrame(requestId, { tab: { id: 41 }, frameId: "3" }),
-      false
-    );
-  };
+/*
+ * Start is one-shot and context-sensitive: a frame list taken seconds ago may
+ * predate gsft_main. It must never come from the shared cache, or Start records
+ * fewer frames than the page has and Stop inherits the omission.
+ */
+test("start always discovers fresh rather than reusing a cached list", async () => {
+  const { api, calls } = loadFrameHelpers();
 
-  const frameIds = await api.discoverTimelineFrames(41);
+  await api.startTimelineInFrames(41);
+  await api.startTimelineInFrames(41);
 
-  assert.ok(requestId);
-  assert.deepStrictEqual(frameIds, [0]);
+  assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 2);
+});
+
+test("stop falls back to discovery when the frame list was lost", async () => {
+  const { api, calls } = loadFrameHelpers();
+
+  const results = await api.stopTimelineInFrames(41);
+
+  assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 1);
+  assert.deepStrictEqual(results.map((item) => item.frameId), [0, 7]);
 });

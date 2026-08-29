@@ -10,6 +10,89 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Fixed
+- **Reads can no longer hang forever on a helper frame.** `executeScript({
+  allFrames: true })` does not fail on a frame it cannot inject into — it never
+  settles, so a `.catch()` never runs and a handler awaiting it never calls
+  `sendResponse`. Content scripts await those replies without a timeout, so the
+  feature simply stopped with no error to show. This was already fixed for Debug
+  Timeline's Stop in 0.11.1; the same trap still sat under every Table API read
+  (`SN_TABLE_GET`, and so Catalog Logic, Variable Values, Translations and
+  Variable Insight), `sys_id` extraction, and all four portal prefill routes.
+  Every one of them now discovers concrete frames from content-script
+  announcements and injects into each frame individually with its own timeout,
+  so a frame that hangs costs its own result and nothing else.
+- **The popup could silently drop the form and user details it exists to
+  show.** Its probe was time-boxed rather than fixed, so whenever the all-frames
+  injection hung it resolved empty; the popup then fell back to `{ found: true }`
+  and rendered only the instance and build information, with nothing to say the
+  page probe had failed. It now asks the worker for the discovered frame list
+  and probes those frames. Latent rather than observed: see the reproduction
+  note below.
+
+Reproduction note: `allFrames: true` was measured still pending at 20 seconds
+on a classic form on 2026-08-24, and that hang is what the 0.11.1 Debug Timeline
+"Stop does nothing" fix addressed. A sweep on 2026-08-28 — four page types
+(classic form, classic list, Next Experience shell, portal catalog item) by five
+injection delays — did not reproduce it: every call resolved. The hang is
+therefore conditional on frame state rather than on page shape. These changes
+remove a real but intermittent unbounded failure mode; they are not expected to
+change day-to-day behaviour, and the browser checks pass identically before and
+after.
+
+### Changed
+- Each injection carries a ceiling sized for what it actually does, rather than
+  one blanket value: 5s for a synchronous DOM read or patch, 30s for a Table API
+  read that waits on the instance. The ceilings exist to turn "never settles"
+  into "eventually errors", so a ceiling near the expected duration would only
+  trade the hang for a spurious failure.
+- **Prefill is bound by inactivity rather than by a runtime budget**, with a
+  ten-minute safety backstop. It has no bounded runtime: each variable can cost
+  a 400ms settle delay plus a GlideAjax wait of up to 2s across up to three
+  passes, so twenty repeatedly-changed variables can honestly run for minutes.
+  And `Promise.race` does not cancel `executeScript` — a runtime ceiling would
+  abandon a fill still typing into the form while telling the caller no form was
+  found, so a retry would overlap the first fill. The fill already emits a
+  progress message per variable; each refreshes the deadline, and a stall
+  reports that the fill **may still be running** rather than that nothing
+  happened. The backstop only catches a page that emits progress forever.
+- Only one prefill runs per tab. The palette leaves its input open, so a second
+  Enter could previously start a fill racing the first on the same variables.
+  The lock is held until the injection itself settles, not until the answer is
+  sent, so an abandoned fill still blocks a retry until the page is reloaded.
+- Reads that get no usable answer while some frame never answered now report
+  that as inconclusive rather than empty. A negative answer from one frame says
+  nothing about a frame that timed out — the shell can report "no form here"
+  while the frame actually holding the form never replies — so `sys_id`,
+  prefill, variable mapping and hidden-variable inspection all distinguish the
+  two.
+- Reads report which frames failed. Every timeout and rejection used to collapse
+  to an empty result, so "no form on this page" and "no frame ever answered"
+  were indistinguishable; reads now resolve `{ results, failures }` and callers
+  surface the difference.
+- Reads can stop at the first frame that answers. Waiting for every frame made a
+  read cost the slowest one, so a single hung sibling would hold a successful
+  200ms Table API read for the full 30s ceiling.
+- Debug Timeline and search frame discovery were near-identical copies; they are
+  now one shared implementation with one `DISCOVER_FRAME`/`FRAME_AVAILABLE`
+  message pair instead of two. Caching the discovered frame list is opt-in and
+  used only by `SN_TABLE_GET`, where a burst of repeated reads should not pay
+  the discovery wait each time. A cached list is a stale list — a frame created
+  after it was taken is invisible until it expires — so one-shot,
+  context-sensitive, and mutating operations (Debug Timeline start, prefill,
+  `sys_id`, the popup probe) always discover fresh. The cache is also dropped
+  as soon as a load starts in that tab, and a discovery already in flight when
+  that happens can no longer write its pre-navigation frame list back.
+- Reads now reach only frames that actually host a content script. The manifest
+  sets `all_frames` without `match_about_blank`, so that means real
+  `service-now.com` frames and not `about:blank` helper frames. Excluding those
+  is the point — they are what hangs — but it does narrow coverage: a page that
+  put real form content in an `about:blank` frame would now be missed rather
+  than read. No ServiceNow page is known to do so, and the shipped Debug Timeline
+  fix has made the same trade since 0.11.1.
+
 ## [0.12.0] - 2026-08-27
 
 ### Added

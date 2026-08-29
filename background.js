@@ -32,18 +32,24 @@ function togglePaletteInTopFrame(tabId) {
   }).catch(() => {});
 }
 
-function postWindowMessageInAllFrames(tabId, type) {
+/* Nothing awaits this, so a hung frame cannot strand a caller here — but an
+ * all-frames injection that never settles still leaks a pending promise on
+ * every toggle, so it goes through the same per-frame path. */
+function postWindowMessageInFrames(tabId, type) {
   if (!tabId) return;
-  chrome.scripting.executeScript({
-    target: { tabId, allFrames: true },
-    func: (messageType) => {
-      window.postMessage(
-        { source: "SN_DEV_HELPER_FRAME_COMMAND", type: messageType },
-        location.origin
-      );
+  injectInDiscoveredFrames(
+    tabId,
+    {
+      func: (messageType) => {
+        window.postMessage(
+          { source: "SN_DEV_HELPER_FRAME_COMMAND", type: messageType },
+          location.origin
+        );
+      },
+      args: [type],
     },
-    args: [type],
-  }).catch(() => {});
+    "toggle broadcast"
+  ).catch(() => {});
 }
 
 function extractSysId() {
@@ -152,6 +158,457 @@ async function codeSearchApiGetInPage(request) {
 }
 
 /* =====================================================================
+ * FRAME DISCOVERY AND TARGETED INJECTION
+ *
+ * `executeScript({ allFrames: true })` does not merely fail on a frame it
+ * cannot inject into — it HANGS, resolving and rejecting never. Measured on a
+ * bare `/incident.do` form, which carries two frames ServiceNow creates for
+ * itself: `templateIframe` at about:blank, and one with an empty URL. Targeting
+ * a known frame id on the same page settles immediately; `allFrames: true` was
+ * still pending after 20 seconds.
+ *
+ * A `.catch()` is therefore not a timeout. Any all-frames caller that answers a
+ * content script through `sendResponse` can strand that caller for good, with
+ * no error to show — the whole of the "Stop does nothing" Debug Timeline bug,
+ * and the same trap sat under every Table API and portal-prefill read.
+ *
+ * The extension's own content scripts already run in every eligible frame, so
+ * they are the frame register. Broadcast a discovery request, collect the
+ * `sender.frameId` of each responder, then target those frames one at a time
+ * with a per-frame timeout. A helper frame that cannot host a content script is
+ * never targeted, and a frame that hangs anyway costs only its own result.
+ * ===================================================================== */
+
+const FRAME_DISCOVERY_WAIT_MS = 150;
+/*
+ * These ceilings exist only to turn "never settles" into "eventually errors",
+ * so each one sits comfortably above what its operation really takes. Setting
+ * them near the expected duration would trade a hang for a spurious failure.
+ *
+ * The default suits a synchronous DOM read or patch. A Table API read waits on
+ * the instance, and portal prefill runs up to three passes over every variable
+ * with a GlideAjax settle wait on each — neither belongs under the default.
+ */
+const FRAME_INJECT_TIMEOUT_MS = 5000;
+const PAGE_READ_TIMEOUT_MS = 30000;
+
+/*
+ * Prefill gets no fixed ceiling at all. It has no bounded runtime: each variable
+ * can cost a 400ms settle delay plus a GlideAjax wait of up to 2s, across up to
+ * three passes, so a form with twenty repeatedly-changed variables can honestly
+ * run for minutes. Worse, Promise.race does not cancel executeScript — a fixed
+ * ceiling would abandon a fill that is still typing into the page while telling
+ * the caller no form was found, and a retry would then overlap the first fill.
+ *
+ * Bound it by inactivity instead. The MAIN-world fill already emits a progress
+ * message per variable; each refreshes the deadline. Silence means stuck. The
+ * absolute ceiling is only a backstop against a page that emits progress
+ * forever, and either way the caller is told the fill MAY STILL BE RUNNING
+ * rather than that nothing happened.
+ */
+const PREFILL_IDLE_TIMEOUT_MS = 20000;
+const PREFILL_CEILING_MS = 600000;
+
+/*
+ * Discovery costs a fixed wait, and a burst of repeated reads should not pay it
+ * each time. But a cached list is a stale list: a frame created after it was
+ * taken is invisible until it expires. So caching is OPT-IN, and only reads
+ * that tolerate it ask for it. One-shot, context-sensitive, and mutating
+ * operations — Debug Timeline start, prefill, sys_id, the popup probe — always
+ * discover fresh.
+ */
+const FRAME_LIST_TTL_MS = 3000;
+const frameDiscoveries = new Map();
+const frameListByTab = new Map();
+const frameDiscoveryInFlight = new Map();
+let frameDiscoverySequence = 0;
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(label + " timed out after " + ms + "ms")),
+        ms
+      );
+    }),
+  ]);
+}
+
+/* Rejects an announcement naming another tab or a non-integer frame id, so a
+ * page cannot enrol frames the discovery did not ask about. */
+function registerContentFrame(requestId, sender) {
+  const discovery = frameDiscoveries.get(requestId);
+  if (
+    !discovery ||
+    !sender ||
+    !sender.tab ||
+    sender.tab.id !== discovery.tabId ||
+    !Number.isInteger(sender.frameId)
+  ) {
+    return false;
+  }
+  discovery.frameIds.add(sender.frameId);
+  return true;
+}
+
+/*
+ * tabs.sendMessage without a frameId broadcasts to every content-script frame.
+ * Each receiver answers with FRAME_AVAILABLE so the worker collects every
+ * sender.frameId, rather than only the single response Chrome picks to return
+ * for the broadcast. `purpose` labels the request id for debugging only.
+ */
+function discoverContentFrames(tabId, purpose, options) {
+  if (!options || !options.cache) {
+    // Fresh discovery. A caller that did not say its operation tolerates a
+    // stale frame list must not be given one.
+    return runFrameDiscovery(tabId, purpose).then((frameIds) => frameIds.slice());
+  }
+  const cached = frameListByTab.get(tabId);
+  if (cached && Date.now() - cached.at < FRAME_LIST_TTL_MS) {
+    return Promise.resolve(cached.frameIds.slice());
+  }
+  // Parallel reads on a cold tab would otherwise each broadcast and each pay
+  // the discovery wait; they share the first one instead.
+  const inFlight = frameDiscoveryInFlight.get(tabId);
+  if (inFlight) return inFlight.then((frameIds) => frameIds.slice());
+  const discovery = runFrameDiscovery(tabId, purpose);
+  frameDiscoveryInFlight.set(tabId, discovery);
+  return discovery
+    .finally(() => {
+      /* Only ever clear our own entry. A navigation during this discovery
+       * replaces it, and an unconditional delete would drop the newer one. */
+      if (frameDiscoveryInFlight.get(tabId) === discovery) {
+        frameDiscoveryInFlight.delete(tabId);
+      }
+    })
+    .then((frameIds) => frameIds.slice());
+}
+
+/*
+ * Nothing can stop a discovery already in flight, so it will still answer —
+ * with a frame list describing the page that has just been navigated away from.
+ * The generation counter is what makes that answer unusable: it is bumped here,
+ * and a discovery only writes to the cache if the generation it started under
+ * is still current.
+ */
+const frameGenerationByTab = new Map();
+const frameGeneration = (tabId) => frameGenerationByTab.get(tabId) || 0;
+
+function forgetFrameList(tabId) {
+  frameListByTab.delete(tabId);
+  frameDiscoveryInFlight.delete(tabId);
+  frameGenerationByTab.set(tabId, frameGeneration(tabId) + 1);
+}
+
+/*
+ * No "tabs" permission, so changeInfo carries status but not url — which is
+ * enough. A load starting means the frame tree is about to change, so whatever
+ * was cached for this tab describes a page that no longer exists.
+ */
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo || changeInfo.status !== "loading") return;
+  forgetFrameList(tabId);
+  /* The page an abandoned fill was typing into is gone, which is what the
+   * "reload the form" message asks for, so the tab can accept a fill again. */
+  releasePrefillLock(tabId, null);
+});
+
+function runFrameDiscovery(tabId, purpose) {
+  const generation = frameGeneration(tabId);
+  const requestId =
+    (purpose || "frames") +
+    ":" +
+    tabId +
+    ":" +
+    Date.now() +
+    ":" +
+    (++frameDiscoverySequence);
+  const discovery = { tabId, frameIds: new Set() };
+  frameDiscoveries.set(requestId, discovery);
+  return chrome.tabs
+    .sendMessage(tabId, { type: "DISCOVER_FRAME", requestId })
+    .catch(() => {})
+    .then(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(resolve, FRAME_DISCOVERY_WAIT_MS);
+        })
+    )
+    .then(() => {
+      frameDiscoveries.delete(requestId);
+      const frameIds = Array.from(discovery.frameIds).sort((a, b) => a - b);
+      // Frame 0 should normally have answered. Keep it as a safe fallback for
+      // a page where content-script delivery was briefly unavailable.
+      if (!frameIds.length) frameIds.push(0);
+      // Stale the moment the tab navigated: this list describes the old page.
+      if (frameGeneration(tabId) === generation) {
+        frameListByTab.set(tabId, { frameIds: frameIds.slice(), at: Date.now() });
+      }
+      return frameIds;
+    });
+}
+
+const PREFILL_STALLED = { stalled: true };
+
+/*
+ * One record per running fill, and the watchdog closes over that record rather
+ * than over the tab. Keyed only by tab, a second fill would overwrite the first
+ * one's activity entry; whichever finished first would delete it, and the other
+ * watchdog would then see no entry, return without resolving, and leave its
+ * Promise.race pending forever if its injection was hung — reinstating exactly
+ * the forever-hang this whole change removes.
+ */
+const prefillOpByTab = new Map();
+
+function notePrefillActivity(tabId) {
+  const op = prefillOpByTab.get(tabId);
+  if (op) op.lastActivityAt = Date.now();
+}
+
+/* Resolves only if the fill stops reporting progress, so Promise.race against
+ * the fill itself leaves the fill free to take as long as it honestly needs.
+ * The ten-minute backstop is not a runtime budget; it is protection against a
+ * page that keeps emitting progress forever. */
+function prefillWatchdog(op) {
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (op.done) return; // this fill settled; nothing left to watch
+      if (Date.now() - op.lastActivityAt > PREFILL_IDLE_TIMEOUT_MS) {
+        return resolve(PREFILL_STALLED);
+      }
+      if (Date.now() - op.startedAt > PREFILL_CEILING_MS) {
+        return resolve(PREFILL_STALLED);
+      }
+      setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 1000);
+  });
+}
+
+function releasePrefillLock(tabId, op) {
+  if (!op || prefillOpByTab.get(tabId) === op) prefillOpByTab.delete(tabId);
+}
+
+function fillPortalVariablesInFrames(tabId, variables) {
+  /*
+   * One fill per tab. The palette leaves its input open, so a second Enter can
+   * arrive while the first fill is still typing into the form — two fills
+   * racing on the same variables is its own hazard, quite apart from what
+   * concurrent watchdog state would do.
+   */
+  if (prefillOpByTab.has(tabId)) {
+    return Promise.resolve({
+      ok: false,
+      busy: true,
+      error: "A prefill is already running on this form. Wait for it to finish.",
+    });
+  }
+  const op = { startedAt: Date.now(), lastActivityAt: Date.now(), done: false };
+  prefillOpByTab.set(tabId, op);
+
+  // Mutating and one-shot: never run it against a cached frame list.
+  return discoverContentFrames(tabId, "fill portal variables").then(
+    (frameIds) => {
+      const injection = {
+        world: "MAIN",
+        func: fillPortalVariables,
+        args: [variables],
+      };
+      const perFrame = Promise.all(
+        frameIds.map((frameId) =>
+          chrome.scripting
+            .executeScript(
+              Object.assign({ target: { tabId, frameIds: [frameId] } }, injection)
+            )
+            .then(
+              (results) => ({ frameId, ok: true, results: results || [] }),
+              (error) => ({ frameId, ok: false, error: errorText(error) })
+            )
+        )
+      );
+      /*
+       * The lock is released when the INJECTION settles, not when we answer.
+       * An abandoned fill is still running, so holding the lock is what stops a
+       * retry overlapping it. If it never settles the lock outlives the answer
+       * on purpose, and is dropped by the reload our message asks for, or by
+       * the tab closing.
+       */
+      perFrame.then(
+        () => releasePrefillLock(tabId, op),
+        () => releasePrefillLock(tabId, op)
+      );
+
+      return Promise.race([perFrame, prefillWatchdog(op)]).then((outcome) => {
+        op.done = true;
+        if (outcome === PREFILL_STALLED) {
+          /* executeScript was never cancelled, so the fill may still be typing
+           * into the form. Say so: a caller told "no form found" would retry
+           * and overlap it. */
+          return {
+            ok: false,
+            stillRunning: true,
+            error:
+              "Prefill stopped reporting progress after " +
+              Math.round((Date.now() - op.startedAt) / 1000) +
+              "s and was abandoned. It may still be running on the page — " +
+              "reload the form before trying again.",
+          };
+        }
+        const frameResults = [];
+        const failures = [];
+        outcome.forEach((item) => {
+          if (!item.ok) {
+            failures.push({ frameId: item.frameId, error: item.error });
+            return;
+          }
+          item.results.forEach((entry) => {
+            if (entry && entry.result) frameResults.push(entry.result);
+          });
+        });
+        const found = frameResults
+          .filter((item) => item.foundForm)
+          .sort((a, b) => {
+            const scoreA = (a.filled || 0) + (a.alreadySet || 0) + (a.skipped || 0);
+            const scoreB = (b.filled || 0) + (b.alreadySet || 0) + (b.skipped || 0);
+            return scoreB - scoreA;
+          })[0];
+        /*
+         * A negative answer from one frame says nothing about a frame that
+         * never answered. The shell can report foundForm:false while the frame
+         * actually holding the form timed out, so "no form here" from the
+         * others must not be allowed to look like a conclusive no.
+         */
+        if (!found && failures.length) {
+          return {
+            ok: false,
+            error: inconclusiveError(failures, "fill portal variables"),
+          };
+        }
+        return {
+          ok: true,
+          foundForm: Boolean(found),
+          filled: found ? found.filled || 0 : 0,
+          alreadySet: found ? found.alreadySet || 0 : 0,
+          skipped: found ? found.skipped || 0 : 0,
+          unmatched: found ? found.unmatched || 0 : 0,
+          fillLog: found && Array.isArray(found.fillLog) ? found.fillLog : [],
+          total: variables.length,
+        };
+      });
+    },
+    (error) => {
+      releasePrefillLock(tabId, op);
+      throw error;
+    }
+  );
+}
+
+function injectInFrame(tabId, frameId, injection, label, timeoutMs) {
+  return withTimeout(
+    chrome.scripting.executeScript(
+      Object.assign({ target: { tabId, frameIds: [frameId] } }, injection)
+    ),
+    timeoutMs || FRAME_INJECT_TIMEOUT_MS,
+    label + " (frame " + frameId + ")"
+  );
+}
+
+/*
+ * Runs one injection in every discovered frame, independently, and reports what
+ * each frame did. A frame that times out or rejects is recorded rather than
+ * silently dropped: "no form on this page" and "the frame never answered" are
+ * different answers and the caller has to be able to tell them apart.
+ */
+function injectInDiscoveredFrames(tabId, injection, label, options) {
+  const opts = options || {};
+  return discoverContentFrames(tabId, label, opts).then((frameIds) =>
+    Promise.all(
+      frameIds.map((frameId) =>
+        injectInFrame(tabId, frameId, injection, label, opts.timeoutMs).then(
+          (results) => ({ frameId, ok: true, results: results || [] }),
+          (error) => ({ frameId, ok: false, error: errorText(error) })
+        )
+      )
+    )
+  );
+}
+
+function errorText(error) {
+  return String((error && error.message) || error);
+}
+
+/*
+ * The MAIN-world fan-out that replaced `allFrames: true` for the page readers.
+ * Resolves `{ results, failures }`: the per-frame return values, and the frames
+ * that timed out or threw.
+ *
+ * `accept` short-circuits. Without it, Promise.all makes every read cost the
+ * slowest frame — one hung sibling would hold a successful 200ms read for the
+ * whole 30s ceiling. With it, the first frame returning a value the caller
+ * approves resolves the read immediately.
+ */
+function readFromPageFrames(tabId, func, args, label, options) {
+  const opts = options || {};
+  const injection = { world: "MAIN", func, args: args || [] };
+  return discoverContentFrames(tabId, label, opts).then(
+    (frameIds) =>
+      new Promise((resolve) => {
+        const results = [];
+        const failures = [];
+        let outstanding = frameIds.length;
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolve({ results, failures });
+        };
+        if (!frameIds.length) return finish();
+        frameIds.forEach((frameId) => {
+          injectInFrame(tabId, frameId, injection, label, opts.timeoutMs)
+            .then(
+              (raw) => {
+                (raw || []).forEach((item) => {
+                  const value = item && item.result;
+                  if (value === undefined || value === null) return;
+                  results.push(value);
+                  if (opts.accept && opts.accept(value)) finish();
+                });
+              },
+              (error) => {
+                failures.push({ frameId, error: errorText(error) });
+              }
+            )
+            .then(() => {
+              outstanding--;
+              if (!outstanding) finish();
+            });
+        });
+      })
+  );
+}
+
+/* A read that found nothing must say whether any frame actually answered. */
+function noResultError(failures, what) {
+  return failures.length
+    ? "No frame answered " + what + " (" + failures[0].error + ")"
+    : "Couldn't " + what;
+}
+
+/*
+ * Used when a read got no accepted result AND some frame never answered. That
+ * is not a negative answer, it is the absence of one: the frame that timed out
+ * may be the very frame holding what was being looked for.
+ */
+function inconclusiveError(failures, what) {
+  return (
+    "Couldn't " + what + ": " + failures.length + " frame(s) never answered (" +
+    failures[0].error + "), so this is inconclusive rather than empty."
+  );
+}
+
+/* =====================================================================
  * CODE SEARCH TRANSPORT
  *
  * SN_TABLE_GET fans every read out to all frames and keeps whichever answers
@@ -168,9 +625,6 @@ async function codeSearchApiGetInPage(request) {
 const codeSearchFrameByTab = new Map();
 const searchFrameResolutionByTab = new Map();
 const SEARCH_FRAME_PROBE_TIMEOUT_MS = 2000;
-const SEARCH_FRAME_DISCOVERY_WAIT_MS = 150;
-const searchFrameDiscoveries = new Map();
-let searchFrameDiscoverySequence = 0;
 
 function hasUserTokenInPage() {
   try {
@@ -178,40 +632,6 @@ function hasUserTokenInPage() {
   } catch (e) {
     return false;
   }
-}
-
-function registerSearchFrame(requestId, sender) {
-  const discovery = searchFrameDiscoveries.get(requestId);
-  if (
-    !discovery ||
-    !sender ||
-    !sender.tab ||
-    sender.tab.id !== discovery.tabId ||
-    !Number.isInteger(sender.frameId)
-  ) {
-    return false;
-  }
-  discovery.frameIds.add(sender.frameId);
-  return true;
-}
-
-function discoverSearchFrames(tabId) {
-  const requestId =
-    "search:" + tabId + ":" + Date.now() + ":" + (++searchFrameDiscoverySequence);
-  const discovery = { tabId, frameIds: new Set() };
-  searchFrameDiscoveries.set(requestId, discovery);
-  return chrome.tabs
-    .sendMessage(tabId, { type: "DISCOVER_SEARCH_FRAME", requestId })
-    .catch(() => {})
-    .then(() => new Promise((resolve) => {
-      setTimeout(resolve, SEARCH_FRAME_DISCOVERY_WAIT_MS);
-    }))
-    .then(() => {
-      searchFrameDiscoveries.delete(requestId);
-      const frameIds = Array.from(discovery.frameIds).sort((a, b) => a - b);
-      if (!frameIds.length) frameIds.push(0);
-      return frameIds;
-    });
 }
 
 function probeTokenFrame(tabId, frameId) {
@@ -241,7 +661,7 @@ function probeTokenFrame(tabId, frameId) {
 /* Content scripts announce only concrete eligible frames. Probe those frames
  * individually so an about:blank/helper frame cannot hang token discovery. */
 async function discoverTokenFrame(tabId) {
-  const frameIds = await discoverSearchFrames(tabId);
+  const frameIds = await discoverContentFrames(tabId, "search");
   const probes = await Promise.all(
     frameIds.map((frameId) => probeTokenFrame(tabId, frameId))
   );
@@ -337,6 +757,9 @@ function codeSearchApiGet(tabId, request) {
 chrome.tabs.onRemoved.addListener((tabId) => {
   codeSearchFrameByTab.delete(tabId);
   searchFrameResolutionByTab.delete(tabId);
+  forgetFrameList(tabId);
+  frameGenerationByTab.delete(tabId);
+  releasePrefillLock(tabId, null);
 });
 
 async function fillPortalVariables(variables) {
@@ -3069,47 +3492,16 @@ function mapPortalVariableAnchors() {
 /* ---------------------------------------------------------------------------
    Debug Timeline frame targeting.
 
-   `executeScript({ allFrames: true })` does not merely fail on a frame it
-   cannot inject into — it HANGS, resolving and rejecting never. Measured on a
-   bare `/incident.do` form, which carries two frames ServiceNow creates for
-   itself: `templateIframe` at about:blank, and one with an empty URL. Targeting
-   a known frame id on the same page settles immediately; `allFrames: true` was
-   still pending after 20 seconds.
-
-   That is the whole of the "Stop does nothing" bug. The service worker awaited
-   a promise that never settled, so it never called sendResponse, so the palette
-   sat open with the recorder still running and no error to show — a rejection
-   would at least have raised a toast.
+   Recording spans frames, so this is the one caller that must reach all of
+   them rather than resolving a single frame. It uses the shared discovery
+   above: Start injects into each announced frame individually, and Stop
+   targets exactly the frames that reported starting.
 
    Falling back to frame 0 is not enough: in the Next Experience classic shell,
    frame 0 owns the palette while `gsft_main` owns `g_form` and the form DOM.
    Recording only frame 0 therefore produces a plausible-looking trace with
    just the synthetic Start and Stop entries.
-
-   Content scripts already run in every eligible ServiceNow frame. Start asks
-   those scripts to announce their frame ids, then injects into each responder
-   individually. Stop targets exactly the frames that actually began recording.
-   A helper frame that cannot host the content script is never targeted, and a
-   frame that has since died or hangs contributes nothing instead of taking the
-   whole operation down. Every injection is still time-boxed.
    --------------------------------------------------------------------------- */
-const TIMELINE_INJECT_TIMEOUT_MS = 5000;
-const TIMELINE_DISCOVERY_WAIT_MS = 150;
-const timelineFrameDiscoveries = new Map();
-let timelineDiscoverySequence = 0;
-
-function withTimeout(promise, ms, label) {
-  let timer;
-  return Promise.race([
-    promise.finally(() => clearTimeout(timer)),
-    new Promise((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(label + " timed out after " + ms + "ms")),
-        ms
-      );
-    }),
-  ]);
-}
 
 // storage.session, not a module variable: the MV3 worker can be torn down
 // between starting and stopping a recording, which would lose the frame list
@@ -3134,73 +3526,18 @@ function forgetRecordingFrames(tabId) {
   return chrome.storage.session.remove(timelineFramesKey(tabId)).catch(() => {});
 }
 
-function injectTimelineFunc(tabId, target, func, label) {
-  return withTimeout(
-    chrome.scripting.executeScript({ target, world: "MAIN", func }),
-    TIMELINE_INJECT_TIMEOUT_MS,
-    label
-  );
-}
-
-function registerTimelineFrame(requestId, sender) {
-  const discovery = timelineFrameDiscoveries.get(requestId);
-  if (
-    !discovery ||
-    !sender ||
-    !sender.tab ||
-    sender.tab.id !== discovery.tabId ||
-    !Number.isInteger(sender.frameId)
-  ) {
-    return false;
-  }
-  discovery.frameIds.add(sender.frameId);
-  return true;
-}
-
-function discoverTimelineFrames(tabId) {
-  const requestId =
-    "timeline:" + tabId + ":" + Date.now() + ":" + (++timelineDiscoverySequence);
-  const discovery = { tabId, frameIds: new Set() };
-  timelineFrameDiscoveries.set(requestId, discovery);
-
-  // tabs.sendMessage without a frameId broadcasts to every content-script
-  // frame. Each receiver sends DEBUG_TIMELINE_FRAME_AVAILABLE back so the
-  // service worker can collect every sender.frameId rather than just the first
-  // response Chrome chooses for this broadcast.
-  return chrome.tabs
-    .sendMessage(tabId, { type: "DISCOVER_DEBUG_TIMELINE_FRAME", requestId })
-    .catch(() => {})
-    .then(
-      () =>
-        new Promise((resolve) => {
-          setTimeout(resolve, TIMELINE_DISCOVERY_WAIT_MS);
-        })
-    )
-    .then(() => {
-      timelineFrameDiscoveries.delete(requestId);
-      const frameIds = Array.from(discovery.frameIds);
-      // Frame 0 should normally have answered. Keep it as a safe fallback for
-      // a page where content-script delivery was briefly unavailable.
-      if (!frameIds.length) frameIds.push(0);
-      return frameIds.sort((a, b) => a - b);
-    });
-}
-
 function injectTimelineInFrames(tabId, frameIds, func, action) {
   return Promise.all(
     frameIds.map((frameId) =>
-      injectTimelineFunc(
-        tabId,
-        { tabId, frameIds: [frameId] },
-        func,
-        action + " (frame " + frameId + ")"
-      ).catch(() => [])
+      injectInFrame(tabId, frameId, { world: "MAIN", func }, action).catch(
+        () => []
+      )
     )
   ).then((perFrame) => [].concat.apply([], perFrame));
 }
 
 function startTimelineInFrames(tabId) {
-  return discoverTimelineFrames(tabId).then((frameIds) =>
+  return discoverContentFrames(tabId, "timeline").then((frameIds) =>
     injectTimelineInFrames(tabId, frameIds, startDebugTimelineInPage, "start")
   );
 }
@@ -3210,7 +3547,7 @@ function startTimelineInFrames(tabId) {
 function stopTimelineInFrames(tabId) {
   return readRecordingFrames(tabId).then((frameIds) => {
     if (!frameIds || !frameIds.length) {
-      return discoverTimelineFrames(tabId).then((discoveredFrameIds) =>
+      return discoverContentFrames(tabId, "timeline").then((discoveredFrameIds) =>
         injectTimelineInFrames(
           tabId,
           discoveredFrameIds,
@@ -3254,14 +3591,20 @@ function openUrlTabOptions(url, sender) {
 // Keep the destination beside the ServiceNow tab that initiated the command,
 // rather than appending it to the end of whichever window is currently active.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "SEARCH_FRAME_AVAILABLE" && msg.requestId) {
-    registerSearchFrame(msg.requestId, sender);
-  }
-  if (msg && msg.type === "DEBUG_TIMELINE_FRAME_AVAILABLE" && msg.requestId) {
-    registerTimelineFrame(msg.requestId, sender);
+  if (msg && msg.type === "FRAME_AVAILABLE" && msg.requestId) {
+    registerContentFrame(msg.requestId, sender);
   }
   if (msg && msg.type === "OPEN_URL" && msg.url) {
     chrome.tabs.create(openUrlTabOptions(msg.url, sender));
+  }
+  /* The popup is not a content script, so it cannot announce frames or be
+   * announced to. It asks the worker for the same discovered list instead,
+   * rather than reaching for allFrames and hanging on a helper frame. */
+  if (msg && msg.type === "GET_TAB_FRAMES" && Number.isInteger(msg.tabId)) {
+    discoverContentFrames(msg.tabId, "popup")
+      .then((frameIds) => sendResponse({ ok: true, frameIds }))
+      .catch(() => sendResponse({ ok: false, frameIds: [0] }));
+    return true;
   }
   if (msg && msg.type === "START_DEBUG_TIMELINE" && sender.tab) {
     startTimelineInFrames(sender.tab.id).then((results) => {
@@ -3376,7 +3719,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       msg.type === "TOGGLE_TRANSLATIONS" ||
       msg.type === "TOGGLE_VARIABLE_INSIGHT")
   ) {
-    postWindowMessageInAllFrames(sender.tab.id, msg.type);
+    postWindowMessageInFrames(sender.tab.id, msg.type);
   }
   if (msg && msg.type === "SN_TABLE_GET" && sender.tab) {
     const request = {
@@ -3386,24 +3729,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       limit: msg.limit,
       options: msg.options || {},
     };
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: tableApiGetInPage,
-      args: [request],
-    }).then((results) => {
-      const responses = results
-        .map((item) => item && item.result)
-        .filter(Boolean);
-      const ok = responses.find((item) => item.ok);
+    readFromPageFrames(
+      sender.tab.id,
+      tableApiGetInPage,
+      [request],
+      "read " + request.table,
+      {
+        timeoutMs: PAGE_READ_TIMEOUT_MS,
+        /* Repeated reads across one user action, and a read cannot change the
+         * frame tree, so this is the one caller that tolerates a cached list. */
+        cache: true,
+        /* Stop as soon as a frame answers. Waiting for every frame would let
+         * one hung sibling hold a successful read for the full ceiling. */
+        accept: (value) => Boolean(value && value.ok),
+      }
+    ).then(({ results, failures }) => {
+      const ok = results.find((item) => item.ok);
       if (ok) {
         sendResponse({ ok: true, result: ok.result || [] });
         return;
       }
-      const error = responses.find((item) => !item.ok);
+      const error = results.find((item) => !item.ok);
       sendResponse({
         ok: false,
-        error: (error && error.error) || "Couldn't read " + request.table,
+        error:
+          (error && error.error) || noResultError(failures, "read " + request.table),
       });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
@@ -3472,14 +3822,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "GET_SYS_ID" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: extractSysId,
-    }).then((results) => {
-      const found = results
-        .map((item) => item && item.result)
-        .find((id) => id && /^[0-9a-f]{32}$/i.test(id));
+    readFromPageFrames(sender.tab.id, extractSysId, [], "read sys_id", {
+      accept: (value) => /^[0-9a-f]{32}$/i.test(String(value)),
+    }).then(({ results, failures }) => {
+      const found = results.find((id) => /^[0-9a-f]{32}$/i.test(String(id)));
+      if (!found && failures.length) {
+        /* The frame that never answered may be the one carrying the record. */
+        sendResponse({
+          ok: false,
+          sysId: null,
+          error: inconclusiveError(failures, "read sys_id"),
+        });
+        return;
+      }
       sendResponse({ ok: Boolean(found), sysId: found || null });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
@@ -3488,64 +3843,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === "FILL_PORTAL_VARIABLES" && sender.tab) {
     const variables = Array.isArray(msg.variables) ? msg.variables : [];
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: fillPortalVariables,
-      args: [variables],
-    }).then((results) => {
-      const frameResults = results
-        .map((item) => item && item.result)
-        .filter(Boolean);
-      const found = frameResults
-        .filter((item) => item.foundForm)
-        .sort((a, b) => {
-          const scoreA = (a.filled || 0) + (a.alreadySet || 0) + (a.skipped || 0);
-          const scoreB = (b.filled || 0) + (b.alreadySet || 0) + (b.skipped || 0);
-          return scoreB - scoreA;
-        })[0];
-      sendResponse({
-        ok: true,
-        foundForm: Boolean(found),
-        filled: found ? found.filled || 0 : 0,
-        alreadySet: found ? found.alreadySet || 0 : 0,
-        skipped: found ? found.skipped || 0 : 0,
-        unmatched: found ? found.unmatched || 0 : 0,
-        fillLog: found && Array.isArray(found.fillLog) ? found.fillLog : [],
-        total: variables.length,
-      });
-    }).catch((error) => {
-      sendResponse({ ok: false, error: String(error) });
-    });
+    fillPortalVariablesInFrames(sender.tab.id, variables)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
     return true;
   }
   if (msg && msg.type === "GET_PORTAL_VARIABLE_DEBUG" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: inspectPortalVariableDebug,
-    }).then((results) => {
-      sendResponse({
-        ok: true,
-        frames: results.map((item) => item && item.result).filter(Boolean),
-      });
+    readFromPageFrames(
+      sender.tab.id,
+      inspectPortalVariableDebug,
+      [],
+      "inspect portal variables"
+    ).then(({ results, failures }) => {
+      sendResponse({ ok: true, frames: results, unreachableFrames: failures });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
     });
     return true;
   }
   if (msg && msg.type === "MAP_PORTAL_VARIABLES" && sender.tab) {
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: mapPortalVariableAnchors,
-    }).then((results) => {
-      const frameResults = results
-        .map((item) => item && item.result)
-        .filter(Boolean);
-      const found = frameResults
+    readFromPageFrames(
+      sender.tab.id,
+      mapPortalVariableAnchors,
+      [],
+      "map portal variables",
+      { accept: (value) => Boolean(value && value.foundForm) }
+    ).then(({ results, failures }) => {
+      const found = results
         .filter((item) => item.foundForm)
         .sort((a, b) => (b.variables.length || 0) - (a.variables.length || 0))[0];
+      if (!found && failures.length) {
+        sendResponse({
+          ok: false,
+          error: inconclusiveError(failures, "map portal variables"),
+        });
+        return;
+      }
       sendResponse({
         ok: true,
         foundForm: Boolean(found),
@@ -3558,18 +3891,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === "GET_HIDDEN_PORTAL_VARIABLES" && sender.tab) {
     const variables = Array.isArray(msg.variables) ? msg.variables : [];
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id, allFrames: true },
-      world: "MAIN",
-      func: inspectHiddenPortalVariables,
-      args: [variables],
-    }).then((results) => {
-      const frameResults = results
-        .map((item) => item && item.result)
-        .filter(Boolean);
-      const found = frameResults
+    readFromPageFrames(
+      sender.tab.id,
+      inspectHiddenPortalVariables,
+      [variables],
+      "inspect hidden variables",
+      { accept: (value) => Boolean(value && value.foundForm) }
+    ).then(({ results, failures }) => {
+      const found = results
         .filter((item) => item.foundForm)
         .sort((a, b) => (b.matchedCount || 0) - (a.matchedCount || 0))[0];
+      if (!found && failures.length) {
+        sendResponse({
+          ok: false,
+          error: inconclusiveError(failures, "inspect hidden variables"),
+        });
+        return;
+      }
       sendResponse({
         ok: true,
         foundForm: Boolean(found),
@@ -3581,11 +3919,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "PREFILL_PROGRESS" && sender.tab) {
-    sendToTab(
-      sender.tab.id,
-      { type: "PREFILL_PROGRESS", message: msg.message || "Filling portal form..." },
-      { frameId: 0 }
-    );
+    // Doubles as the liveness heartbeat for a fill this worker is awaiting.
+    notePrefillActivity(sender.tab.id);
+    // The top frame toasts locally; only a sub-frame needs the relay.
+    if (msg.relay) {
+      sendToTab(
+        sender.tab.id,
+        { type: "PREFILL_PROGRESS", message: msg.message || "Filling portal form..." },
+        { frameId: 0 }
+      );
+    }
   }
   // A sub-frame (e.g. gsft_main) pressed the shortcut; relay to the whole
   // tab so the top frame's content script can toggle the palette.

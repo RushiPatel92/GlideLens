@@ -1,7 +1,11 @@
 /*
  * Tests for the shared Code/Record Search token-frame resolver.
- * ServiceNow helper frames can leave executeScript({ allFrames: true }) pending,
- * so discovery must use content-script announcements and targeted probes.
+ *
+ * Search does the opposite of Debug Timeline: rather than reaching every frame,
+ * it resolves the one token-bearing frame per tab and sends every read there.
+ * Discovery is still the shared content-script announcement (see
+ * frame_discovery.test.js), because a ServiceNow helper frame can leave
+ * executeScript({ allFrames: true }) pending forever.
  */
 const test = require("node:test");
 const assert = require("node:assert");
@@ -11,9 +15,23 @@ const path = require("node:path");
 function loadSearchFrameHelpers(options) {
   const file = path.join(__dirname, "..", "background.js");
   const source = fs.readFileSync(file, "utf8");
+
+  const sharedStart = source.indexOf("const FRAME_DISCOVERY_WAIT_MS");
+  const sharedMarker = source.indexOf("* CODE SEARCH TRANSPORT", sharedStart);
+  assert.ok(sharedStart >= 0 && sharedMarker > sharedStart, "shared block not found");
+  const shared = source
+    .slice(sharedStart, source.lastIndexOf("/*", sharedMarker))
+    .replace("const FRAME_DISCOVERY_WAIT_MS = 150;", "const FRAME_DISCOVERY_WAIT_MS = 1;");
+
   const start = source.indexOf("const codeSearchFrameByTab");
   const end = source.indexOf("function codeSearchTableGet", start);
   assert.ok(start >= 0 && end > start, "search frame helper block not found");
+  const searchBlock = source
+    .slice(start, end)
+    .replace(
+      "const SEARCH_FRAME_PROBE_TIMEOUT_MS = 2000;",
+      "const SEARCH_FRAME_PROBE_TIMEOUT_MS = 5;"
+    );
 
   const calls = [];
   let api;
@@ -22,10 +40,15 @@ function loadSearchFrameHelpers(options) {
     tabs: {
       sendMessage: async (tabId, message) => {
         calls.push({ kind: "broadcast", tabId, message });
+        if (message.type !== "DISCOVER_FRAME") return;
         (opts.frameIds || [0, 7]).forEach((frameId) => {
-          api.registerSearchFrame(message.requestId, { tab: { id: tabId }, frameId });
+          api.registerContentFrame(message.requestId, {
+            tab: { id: tabId },
+            frameId,
+          });
         });
       },
+      onUpdated: { addListener: () => {} },
     },
     scripting: {
       executeScript: async ({ target }) => {
@@ -36,22 +59,21 @@ function loadSearchFrameHelpers(options) {
       },
     },
   };
-  const block = source.slice(start, end)
-    .replace("const SEARCH_FRAME_PROBE_TIMEOUT_MS = 2000;", "const SEARCH_FRAME_PROBE_TIMEOUT_MS = 5;")
-    .replace("const SEARCH_FRAME_DISCOVERY_WAIT_MS = 150;", "const SEARCH_FRAME_DISCOVERY_WAIT_MS = 1;");
+
   const factory = new Function(
     "chrome",
-    "hasUserTokenInPage",
-    block + "\nreturn { registerSearchFrame, discoverSearchFrames, " +
+    shared +
+      searchBlock +
+      "\nreturn { registerContentFrame, discoverContentFrames, " +
       "probeTokenFrame, resolveTokenFrame };"
   );
-  api = factory(chrome, function hasToken() {});
+  api = factory(chrome);
   return { api, calls };
 }
 
 test("search frame discovery collects content-script responders", async () => {
   const { api, calls } = loadSearchFrameHelpers();
-  const frames = await api.discoverSearchFrames(41);
+  const frames = await api.discoverContentFrames(41, "search");
   assert.deepStrictEqual(frames, [0, 7]);
   assert.strictEqual(calls.filter((call) => call.kind === "broadcast").length, 1);
 });

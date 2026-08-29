@@ -33,7 +33,12 @@ function loadFill(win) {
   const src = fs.readFileSync(file, "utf8");
 
   const chromeStub = {
-    tabs: { onRemoved: { addListener() {} }, sendMessage() {}, query: async () => [] },
+    tabs: {
+      onRemoved: { addListener() {} },
+      onUpdated: { addListener() {} },
+      sendMessage() {},
+      query: async () => [],
+    },
     runtime: { onMessage: { addListener() {} }, getURL: (p) => p, lastError: null },
     scripting: { executeScript: async () => [] },
     commands: { onCommand: { addListener() {} } },

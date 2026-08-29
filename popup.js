@@ -104,18 +104,46 @@ async function getActiveTab() {
   return tab || null;
 }
 
+/*
+ * The worker owns frame discovery (see background.js): content scripts announce
+ * their frame ids because executeScript({ allFrames: true }) hangs forever on
+ * the about:blank helper frames a classic form carries. Time-boxing that call
+ * stopped the popup hanging but not the underlying problem — on a framed form
+ * the probe timed out and the popup reported no ServiceNow context at all.
+ */
+async function tabFrameIds(tabId) {
+  const resp = await withTimeout(
+    chrome.runtime.sendMessage({ type: "GET_TAB_FRAMES", tabId }).catch(() => null),
+    1500,
+    null
+  );
+  return resp && resp.ok && Array.isArray(resp.frameIds) && resp.frameIds.length
+    ? resp.frameIds
+    : [0];
+}
+
 async function runInPage(func, args, options) {
   const tab = (options && options.tab) || await getActiveTab();
   if (!tab) return { tab: null, results: [] };
   const timeoutMs = (options && options.timeoutMs) || 2500;
-  const injection = chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: true },
-    world: "MAIN",
-    func,
-    args: args || [],
-  }).catch(() => []);
-  const results = await withTimeout(injection, timeoutMs, []);
-  return { tab, results };
+  const frameIds = await tabFrameIds(tab.id);
+  // One injection per frame, each on its own timeout, so a frame that never
+  // settles costs only its own result.
+  const perFrame = await Promise.all(
+    frameIds.map((frameId) =>
+      withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id, frameIds: [frameId] },
+          world: "MAIN",
+          func,
+          args: args || [],
+        }).catch(() => []),
+        timeoutMs,
+        []
+      )
+    )
+  );
+  return { tab, results: [].concat.apply([], perFrame) };
 }
 
 function pickFrame(results) {
