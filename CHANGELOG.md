@@ -12,6 +12,15 @@ reconstructed version by version.
 
 ## [Unreleased]
 
+### Added
+- **The popup now prints which GlideLens version you are running.** It was
+  shown nowhere in the interface, so the only way to find it was the browser
+  extensions page -- and the popup already had a row labelled `Version`
+  holding the ServiceNow build, which is the number people reported instead.
+  That row is now labelled `ServiceNow`, and the extension version sits in the
+  popup footer. It renders on a non-ServiceNow tab too, which is where someone
+  checking what they have installed is most likely to look.
+
 ### Fixed
 - **Reads can no longer hang forever on a helper frame.** `executeScript({
   allFrames: true })` does not fail on a frame it cannot inject into — it never

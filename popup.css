@@ -74,5 +74,13 @@ header {
   white-space: nowrap;
 }
 
-footer { min-height: 18px; padding: 0 12px 10px; }
+footer {
+  min-height: 18px;
+  padding: 0 12px 10px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
 #toast { color: var(--ok); font-size: 12px; }
+.ext-version { color: var(--muted); font-size: 11px; margin-left: auto; }
