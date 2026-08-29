@@ -166,6 +166,11 @@
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
     .toolbar-note{font-size:11px;color:#67677e;flex:1}
+    .toolbar-note.caution{color:#e8b4c8}
+    .toolbar .primary.armed{
+      background:color-mix(in srgb, var(--pink) 96%, #3a2740);
+      border-color:#e8b4c8;
+    }
     .toolbar button{font-size:12px}
     .toolbar .primary{
       background:color-mix(in srgb, var(--pink) 82%, #3a2740);
@@ -542,7 +547,47 @@
     const copyButton = resultsShadow.querySelector("[data-action='copy']");
     if (closeButton) closeButton.addEventListener("click", closeResults);
     if (footerClose) footerClose.addEventListener("click", closeResults);
-    if (copyButton) copyButton.addEventListener("click", () => copyTrace().catch(() => {}));
+    /* Copying is the moment a trace stops being local. It holds field values,
+     * GlideAjax parameters and frame URLs from a real instance -- masked where
+     * they look like secrets, but not anonymised -- and it usually ends up in a
+     * ticket or a chat. So the first click arms and explains, the second
+     * copies. The note reverts on its own if the user thinks better of it. */
+    if (copyButton) {
+      const note = resultsShadow.querySelector(".toolbar-note");
+      const noteText = note ? note.textContent : "";
+      const defaultLabel = copyButton.textContent;
+      let armed = false;
+      let armedTimer = 0;
+
+      const disarm = () => {
+        armed = false;
+        if (armedTimer) clearTimeout(armedTimer);
+        armedTimer = 0;
+        copyButton.textContent = defaultLabel;
+        copyButton.classList.remove("armed");
+        if (note) {
+          note.textContent = noteText;
+          note.classList.remove("caution");
+        }
+      };
+
+      copyButton.addEventListener("click", () => {
+        if (!armed) {
+          armed = true;
+          copyButton.textContent = "Copy anyway";
+          copyButton.classList.add("armed");
+          if (note) {
+            note.textContent =
+              "This trace holds field values, GlideAjax parameters and page URLs from this instance. Review it before pasting anywhere shared.";
+            note.classList.add("caution");
+          }
+          armedTimer = setTimeout(disarm, 12000);
+          return;
+        }
+        disarm();
+        copyTrace().catch(() => {});
+      });
+    }
 
     const overlay = resultsShadow.querySelector(".overlay");
     if (overlay) {

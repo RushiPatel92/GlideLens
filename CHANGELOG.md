@@ -21,7 +21,69 @@ reconstructed version by version.
   popup footer. It renders on a non-ServiceNow tab too, which is where someone
   checking what they have installed is most likely to look.
 
+### Security
+- **`OPEN_URL` now validates where it is being sent, and fails closed.** A content script cannot
+  open a tab, so it asks the service worker to; the worker passed the URL
+  straight to `chrome.tabs.create` without looking at it. Every real caller
+  builds `location.origin + path`, so the destination is now held to the
+  sender's own ServiceNow origin, must be `https:`, must be a
+  `*.service-now.com` host, and is rebuilt from its parsed form rather than
+  forwarded as the string that arrived. `javascript:`, `data:`, `file:`,
+  lookalike hosts such as `evil-service-now.com`, and other instances are all
+  refused — as are embedded credentials, which `URL.origin` quietly drops (so an
+  origin check alone passes) while `toString()` keeps them, and a message with
+  no recognisable ServiceNow sender, which no genuine caller ever sends.
+- **Code Search and Record Search results moved into closed shadow roots.**
+  Every other GlideLens panel already used one. While those two were open, page
+  script could read and rewrite Table API results after they were rendered.
+- **Debug Timeline no longer keeps a non-JSON response body at all.** An answer
+  that parsed as JSON had its sensitive-looking keys masked; one that did not
+  parse was stored verbatim, so a processor replying with XML, HTML or a plain
+  `name=value` body could put a token straight into a trace. Rather than try to
+  scrub arbitrary text, the body is not retained: the status, shape and size are
+  recorded, and DevTools still has the payload in full for anyone who needs it.
+  A response too large to parse cheaply is not parsed at all. ServiceNow's own
+  session token (`sysparm_ck`, `g_ck`) is also named explicitly in the
+  sensitive-key list, since it matches none of the generic words.
+- **Recorded frame URLs keep the page, not the payload.** `location.href` was
+  stored whole, and ServiceNow hides record context in three different places:
+  `sysparm_query` and `sys_id` in the query string, `/record/<table>/<sys_id>`
+  in a Workspace path, and an entire encoded URL inside one segment of a Polaris
+  wrapper route. All three are stripped, and the result is bounded in every
+  dimension — segments, segment length, retained parameters, total length —
+  because this string is copied into as many as 1,000 events. The trace reports
+  how many parameters were removed.
+- **Copying a trace now takes two clicks.** The first arms the button and says
+  what the trace contains; the second copies. Copying is the moment a recording
+  stops being local, and it usually ends up in a ticket.
+- **Both instance caches are pruned, one writer at a time.** Code Search's
+  probe and coverage entries are keyed by instance origin and were only ever written — expiry made them
+  stale, nothing removed them — so a consultant who touches many instances grew
+  local storage without bound. Expired entries and instances beyond a cap are
+  now dropped on write, and the whole write-and-prune sequence is serialised in
+  the service worker. It has to be the worker: the search engine is injected
+  into every ServiceNow tab, so a queue inside it would order one tab against
+  itself while local storage is shared by the whole extension — two tabs could
+  still interleave and delete each other's freshly written entries.
+
+### Changed
+- **Two palette descriptions dropped a trailing ellipsis.** The convention
+  reserves `…` for a command that needs further input before it can act. Record
+  Lens and Playbooks act immediately, so theirs were misleading; the Playbooks
+  prompt that appears when no record is in context keeps its ellipsis, because
+  there it is true. Mirrored in the README and the landing page.
+
+### Removed
+- **A dead `#toast` element left in the popup** when actions moved to the
+  command palette. Nothing had referenced it since.
+
 ### Fixed
+- **The content-script message listener stopped claiming replies it never
+  sends.** It returned `true` unconditionally, which tells Chrome to hold the
+  message channel open for an asynchronous response; the branches that answer
+  do so synchronously, and the two that answered nothing at all left the
+  sender's promise unsettled until Chrome tore the port down. Every branch now
+  answers and the listener returns `false`.
 - **Reads can no longer hang forever on a helper frame.** `executeScript({
   allFrames: true })` does not fail on a frame it cannot inject into — it never
   settles, so a `.catch()` never runs and a handler awaiting it never calls

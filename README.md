@@ -244,8 +244,8 @@ retry that source when it reports **Capped**.
 | Command | Description |
 | --- | --- |
 | sys_id | *Copy the current record sys_id.* Copies it to the clipboard. |
-| Record Lens | *Search verified records across readable tables…* Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
-| Playbooks | *Open playbook executions for this record…* Opens Process Automation playbook executions for the current record. |
+| Record Lens | *Search verified records across readable tables* Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
+| Playbooks | *Open playbook executions for this record* Opens Process Automation playbook executions for the current record. |
 | Playbook Updates | *Open captured updates for this playbook activity.* Listed only on a playbook (process definition) page; opens the related `sys_update_xml` customer updates. |
 | Customer Updates | *Open captured customer updates by sys_id…* Enter a record sys_id or ServiceNow URL to open its customer updates. |
 

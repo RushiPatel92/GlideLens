@@ -2592,18 +2592,30 @@ function syncToggleObserver() {
   observeForReapply();
 }
 
+/*
+ * Every branch here answers synchronously, so this listener must not return
+ * true. `return true` means "a reply is coming later, hold the channel open",
+ * and for the branches that never reply it left the sender's promise unsettled
+ * until Chrome tore the port down. Answer in each branch, return false once.
+ */
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "TOGGLE_FIELD_NAMES") {
     const count = toggleFieldNames(msg.force);
     sendResponse({ ok: true, count, on: SNH.fieldNamesOn });
+    return false;
   }
   if (msg && msg.type === "TOGGLE_TRANSLATIONS") {
     const count = toggleTranslationIcons(msg.force);
     sendResponse({ ok: true, count, on: SNH.transIconsOn });
+    return false;
   }
   if (msg && msg.type === "TOGGLE_PALETTE") {
-    // Only the top frame owns the palette to avoid duplicate overlays.
-    if (window === window.top) togglePalette();
+    // Only the top frame owns the palette to avoid duplicate overlays. Every
+    // frame still answers, so the sender is never left waiting on a port.
+    const owned = window === window.top;
+    if (owned) togglePalette();
+    sendResponse({ ok: true, owned });
+    return false;
   }
   if (msg && msg.type === "DISCOVER_FRAME" && msg.requestId) {
     // The service worker cannot safely use executeScript({ allFrames: true }):
@@ -2615,11 +2627,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       requestId: msg.requestId,
     }).catch(() => {});
     sendResponse({ ok: true });
+    return false;
   }
   if (msg && msg.type === "PREFILL_PROGRESS") {
-    if (window === window.top) showToast(msg.message || "Filling portal form…", false, 6000);
+    const shown = window === window.top;
+    if (shown) showToast(msg.message || "Filling portal form…", false, 6000);
+    sendResponse({ ok: true, shown });
+    return false;
   }
-  return true;
+  return false;
 });
 
 function togglePalette() {
@@ -2737,7 +2753,7 @@ function buildCommands() {
     {
       id: "record-search",
       label: "Record Lens",
-      description: "Search verified records across readable tables…",
+      description: "Search verified records across readable tables",
       keywords: [
         "record", "search", "find", "table api", "sys_id", "number",
         "name", "email", "incident", "catalog item",
@@ -2748,7 +2764,7 @@ function buildCommands() {
     {
       id: "open-playbook-executions",
       label: "Playbooks",
-      description: "Open playbook executions for this record…",
+      description: "Open playbook executions for this record",
       keywords: ["playbook", "execution", "executions", "process automation", "pad", "sys_pd_context", "input_record"],
       group: "Record",
       keepOpen: true,

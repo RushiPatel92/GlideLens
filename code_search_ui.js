@@ -637,7 +637,9 @@
     close();
     host = document.createElement("div");
     host.id = "sn-dev-helper-code-search";
-    shadow = host.attachShadow({ mode: "open" });
+    /* Closed, like every other GlideLens panel: an open root lets page
+     * script read and rewrite results that came from the Table API. */
+    shadow = host.attachShadow({ mode: "closed" });
     document.documentElement.appendChild(host);
 
     shadow.innerHTML = `

@@ -270,3 +270,217 @@ test("a throwing getXMLAnswer is reported and the error still propagates", () =>
   assert.equal(errors.length, 1);
   assert.match(errors[0].summary, /threw: processor unavailable/);
 });
+
+/* ---------------------------------------------------------------------------
+ * Frame URLs. A trace records which frame an event came from; it must not
+ * carry the record along with it. ServiceNow hides record context in three
+ * places, and only one of them is the query string.
+ * ------------------------------------------------------------------------ */
+
+/* Both entry points in debug_timeline_main.js are injected standalone, so each
+ * carries its own copy of this helper. Load EVERY copy and run the suite
+ * against all of them. The first version of these tests read only the first
+ * occurrence, and the second copy silently kept an older, unbounded
+ * implementation while all 219 tests passed. */
+function loadSafeFrameUrlCopies() {
+  const src = fs
+    .readFileSync(path.join(__dirname, "..", "debug_timeline_main.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const END = "\n  };\n";
+  const bodies = [];
+  let at = src.indexOf("  const safeFrameUrl");
+  while (at >= 0) {
+    const end = src.indexOf(END, at) + END.length;
+    assert.ok(end > at, "unterminated safeFrameUrl");
+    bodies.push(src.slice(at, end));
+    at = src.indexOf("  const safeFrameUrl", end);
+  }
+  return bodies;
+}
+
+const safeFrameUrlCopies = loadSafeFrameUrlCopies();
+
+test("every entry point carries the same frame-URL helper", () => {
+  assert.strictEqual(safeFrameUrlCopies.length, 2, "expected one copy per entry point");
+  assert.strictEqual(
+    safeFrameUrlCopies[0],
+    safeFrameUrlCopies[1],
+    "the duplicated helpers have drifted apart"
+  );
+});
+
+/* Every assertion below runs against each copy and requires them to agree. */
+const safeFrameUrl = (href) => {
+  const results = safeFrameUrlCopies.map((body) =>
+    new Function("location", body + "\nreturn safeFrameUrl;")({ href })()
+  );
+  results.forEach((value, index) => {
+    assert.strictEqual(value, results[0], "copy " + index + " disagrees for " + href);
+  });
+  return results[0];
+};
+const SYS_ID = "1a2b3c4d5e6f70819a2b3c4d5e6f7081";
+
+test("a classic form keeps the page and drops the record and the filter", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/incident.do?sys_id=" +
+      SYS_ID +
+      "&sysparm_query=assigned_to%3Djoe"
+  );
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+  assert.ok(out.indexOf("assigned_to") === -1, out);
+  assert.ok(out.indexOf("/incident.do") >= 0, out);
+  assert.ok(/2 parameters removed/.test(out), out);
+});
+
+test("a Workspace route carries its record in the path, and loses it", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/now/workspace/agent/record/incident/" + SYS_ID
+  );
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+  assert.ok(out.indexOf("/record/incident/<id>") >= 0, out);
+});
+
+test("an encoded Polaris target hides a whole URL in one segment", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/now/nav/ui/classic/params/target/incident.do%3Fsys_id%3D" +
+      SYS_ID +
+      "%26sysparm_query%3Dactive%3Dtrue"
+  );
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+  assert.ok(out.indexOf("sysparm_query") === -1, out);
+  assert.ok(out.indexOf("<target>") >= 0, out);
+});
+
+test("a portal page keeps which page it is and drops which record", () => {
+  const out = safeFrameUrl(
+    "https://x.service-now.com/sp?id=sc_cat_item&sys_id=" + SYS_ID
+  );
+  assert.ok(out.indexOf("id=sc_cat_item") >= 0, out);
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+});
+
+test("an id-shaped value is dropped even under an allowlisted key", () => {
+  const out = safeFrameUrl("https://x.service-now.com/sp?id=" + SYS_ID);
+  assert.ok(out.indexOf(SYS_ID) === -1, out);
+});
+
+test("every dimension is bounded, because this string lands in 1000 events", () => {
+  const long = safeFrameUrl(
+    "https://x.service-now.com/" + Array(40).fill("segment").join("/")
+  );
+  assert.ok(long.length <= 320, "length " + long.length);
+  const segments = long.split("/").slice(3);
+  assert.strictEqual(segments.filter((part) => part === "segment").length, 8, long);
+  assert.strictEqual(segments[segments.length - 1], "…", long);
+
+  const wide = safeFrameUrl(
+    "https://x.service-now.com/x?" +
+      Array(50)
+        .fill(0)
+        .map((_, i) => "id=v" + i)
+        .join("&")
+  );
+  assert.ok(wide.length <= 320, "length " + wide.length);
+
+  const deep = safeFrameUrl(
+    "https://x.service-now.com/" + "a".repeat(5000) + "?id=" + "b".repeat(5000)
+  );
+  assert.ok(deep.length <= 320, "length " + deep.length);
+});
+
+test("an unparseable location never throws into the recorder", () => {
+  assert.strictEqual(safeFrameUrl("not a url"), "");
+});
+
+/* ---------------------------------------------------------------------------
+ * What a GlideAjax response is allowed to leave behind.
+ *
+ * An earlier version scrubbed non-JSON bodies with regexes. It ran in the
+ * page's MAIN world ahead of the application's own callback, cost 2.9 seconds
+ * on a 40KB answer, scaled quadratically, and still let
+ * `<input name="sysparm_ck" value="...">` and `user[password]=` through. The
+ * policy now is to capture less rather than scrub harder, and these tests pin
+ * that policy down so it cannot quietly regress into scrubbing again.
+ * ------------------------------------------------------------------------ */
+
+function loadResponseInfo() {
+  const src = fs
+    .readFileSync(path.join(__dirname, "..", "debug_timeline_main.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const slice = (from, to) => {
+    const start = src.indexOf(from);
+    const end = src.indexOf(to, start);
+    assert.ok(start >= 0 && end > start, "not found: " + from);
+    return src.slice(start, end);
+  };
+  const body =
+    slice("  const sensitivePattern", "  const safeValue") +
+    slice("  const sanitizeGlideAjaxResponseValue", "  const patchGlideAjax");
+  return new Function(body + "\nreturn glideAjaxResponseInfo;")();
+}
+
+const responseInfo = loadResponseInfo();
+
+const xmlResponse = (answer) => ({
+  status: 200,
+  responseXML: {
+    documentElement: { getAttribute: (name) => (name === "answer" ? answer : null) },
+  },
+});
+
+test("a JSON answer keeps its shape and masks sensitive keys", () => {
+  const info = responseInfo(
+    xmlResponse(JSON.stringify({ name: "ok", user_token: "abc", nested: { password: "p" } }))
+  );
+  assert.strictEqual(info.format, "json");
+  assert.strictEqual(info.answer.name, "ok");
+  assert.strictEqual(info.answer.user_token, "[REDACTED]");
+  assert.strictEqual(info.answer.nested.password, "[REDACTED]");
+});
+
+test("ServiceNow's own session token is masked, though it matches no generic word", () => {
+  const info = responseInfo(xmlResponse(JSON.stringify({ sysparm_ck: "tok", g_ck: "tok2" })));
+  assert.strictEqual(info.answer.sysparm_ck, "[REDACTED]");
+  assert.strictEqual(info.answer.g_ck, "[REDACTED]");
+});
+
+test("an XML body is not retained at all", () => {
+  const body = "<response><api_key>SEKRIT</api_key></response>";
+  const info = responseInfo(xmlResponse(body));
+  assert.strictEqual(info.format, "text");
+  assert.strictEqual(info.bodyRetained, false);
+  assert.strictEqual(info.answer, undefined);
+  assert.strictEqual(JSON.stringify(info).indexOf("SEKRIT"), -1);
+  /* The size is still useful, and is not the payload. */
+  assert.strictEqual(info.answerLength, body.length);
+});
+
+test("a plain name=value body is not retained either", () => {
+  const info = responseInfo(xmlResponse("user=alice&password=hunter2"));
+  assert.strictEqual(info.format, "text");
+  assert.strictEqual(info.bodyRetained, false);
+  assert.strictEqual(JSON.stringify(info).indexOf("hunter2"), -1);
+});
+
+test("a text body carries no truncation flag, because nothing was kept to truncate", () => {
+  const info = responseInfo(xmlResponse("x".repeat(9000)));
+  assert.strictEqual(info.format, "text");
+  assert.ok(!("truncated" in info), "truncated should be absent for a discarded body");
+});
+
+test("an oversized answer is never parsed and never retained", () => {
+  const huge = JSON.stringify({ password: "p", filler: "y".repeat(250000) });
+  const started = Date.now();
+  const info = responseInfo(xmlResponse(huge));
+  assert.strictEqual(info.format, "oversized");
+  assert.strictEqual(info.bodyRetained, false);
+  assert.strictEqual(info.answer, undefined);
+  assert.strictEqual(info.answerLength, huge.length);
+  /* The point of the bound is that size costs nothing in the page. */
+  assert.ok(Date.now() - started < 250, "oversized handling should be near-instant");
+});
+
+test("a response with nothing to say records nothing", () => {
+  assert.strictEqual(responseInfo(null), null);
+});

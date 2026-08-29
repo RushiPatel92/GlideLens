@@ -842,9 +842,10 @@
      * freeze "we do not know" in place for seven days. */
     if (fresh.ok) {
       try {
-        await chrome.storage.local.set({
-          [key]: Object.assign({ version: PROBE_CACHE_VERSION }, fresh),
-        });
+        await storeInstanceCacheEntry(
+          key,
+          Object.assign({ version: PROBE_CACHE_VERSION }, fresh)
+        );
       } catch (e) {}
     }
     return fresh;
@@ -1092,6 +1093,32 @@
     return "snhCodeSearchCoverage:" + origin;
   }
 
+  /* ---------------------------------------------------------------------
+   * CACHE HYGIENE
+   *
+   * Both caches are keyed by instance origin and were only ever written: a
+   * consultant who touches thirty instances kept thirty entries for ever,
+   * because expiry made them stale and nothing removed them.
+   *
+   * The write is delegated to the service worker rather than done here. This
+   * module is injected per tab, so a queue in this file serialises one tab
+   * against itself while chrome.storage.local is shared by the whole
+   * extension -- two tabs could still interleave and delete each other's fresh
+   * entries. The worker is the only owner every tab shares, so the policy and
+   * the queue both live there (see writeCodeSearchCacheEntry in background.js).
+   * A failed write costs one repeated probe, nothing more.
+   * ------------------------------------------------------------------- */
+
+  async function storeInstanceCacheEntry(key, entry) {
+    try {
+      await chrome.runtime.sendMessage({
+        type: "CODE_SEARCH_CACHE_SET",
+        key,
+        entry,
+      });
+    } catch (e) {}
+  }
+
   function apiTransport(request) {
     return new Promise((resolve) => {
       let settled = false;
@@ -1225,9 +1252,10 @@
      * "Tier 1 unavailable" in place for a week. */
     if (fresh.ok) {
       try {
-        await chrome.storage.local.set({
-          [key]: Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh),
-        });
+        await storeInstanceCacheEntry(
+          key,
+          Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh)
+        );
       } catch (e) {}
     }
     return fresh;

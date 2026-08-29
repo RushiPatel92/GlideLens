@@ -8,8 +8,10 @@ body:
         GlideLens deliberately covers the gaps left by snUtils rather than
         competing with it. These are permanently out of scope, so please do not
         request them: update-set switching, impersonation, and per-environment
-        favicons or instance badges. Anything that writes to or submits a form
-        is also out — GlideLens reads and explains, it does not change records.
+        favicons or instance badges. Anything that submits a form or writes a
+        record is also out — GlideLens reads and explains. (Filling values into
+        a form you are looking at, as Variable Prefill does, is fine; saving
+        them is yours to do.)
 
   - type: checkboxes
     id: confidentiality

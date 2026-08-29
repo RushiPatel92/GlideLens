@@ -727,3 +727,204 @@ test("a sensitive hit is redacted on the way out of the search", async () => {
   assert.strictEqual(hit.redacted, true);
   assert.ok(JSON.stringify(hit).indexOf("sk-live-xyz") === -1);
 });
+
+/* ---------------------------------------------------------------------------
+ * Cache hygiene. Both instance caches were write-only: expiry made an entry
+ * stale but nothing ever removed it, so touching many instances grew the
+ * extension's local storage without bound.
+ *
+ * The policy lives in background.js, not in code_search.js, and deliberately
+ * so: this engine is injected per tab, while chrome.storage.local is shared by
+ * the whole extension. A queue inside the engine would serialise one tab
+ * against itself and let two tabs delete each other's fresh entries. The worker
+ * is the only owner every tab shares. These tests therefore load the worker's
+ * implementation, which is the one that runs.
+ * ------------------------------------------------------------------------ */
+
+function loadFromBackground(startMarker, endMarker, returns) {
+  const source = fs
+    .readFileSync(path.join(__dirname, "..", "background.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start);
+  assert.ok(start >= 0 && end > start, "not found: " + startMarker);
+  return new Function(source.slice(start, end) + "\nreturn " + returns + ";")();
+}
+
+const planCachePruning = loadFromBackground(
+  "const CS_CACHE_TTL_MS",
+  "let codeSearchCacheQueue",
+  "planCodeSearchCachePruning"
+);
+
+const withCacheLock = loadFromBackground(
+  "let codeSearchCacheQueue",
+  "async function writeCodeSearchCacheEntry",
+  "withCodeSearchCacheLock"
+);
+
+const MAX_CACHED_INSTANCES = loadFromBackground(
+  "const CS_CACHE_TTL_MS",
+  "let codeSearchCacheQueue",
+  "CS_MAX_CACHED_INSTANCES"
+);
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+test("an expired entry is pruned even when the cap is nowhere near", () => {
+  const now = 100 * DAY_MS;
+  const drop = planCachePruning(
+    {
+      "snhCodeSearchProbe:https://a.service-now.com": { checkedAt: now - 1 * DAY_MS },
+      "snhCodeSearchProbe:https://b.service-now.com": { checkedAt: now - 8 * DAY_MS },
+      "snhCodeSearchCoverage:https://b.service-now.com": { checkedAt: now - 30 * DAY_MS },
+    },
+    now
+  );
+  assert.deepStrictEqual(own(drop).sort(), [
+    "snhCodeSearchCoverage:https://b.service-now.com",
+    "snhCodeSearchProbe:https://b.service-now.com",
+  ]);
+});
+
+test("unrelated storage keys are never touched", () => {
+  const now = 100 * DAY_MS;
+  const drop = planCachePruning(
+    {
+      snhPaletteFavourite: { checkedAt: 0 },
+      snhSomethingElse: "kept",
+      "snhCodeSearchProbe:https://a.service-now.com": { checkedAt: now - 99 * DAY_MS },
+    },
+    now
+  );
+  assert.deepStrictEqual(own(drop), ["snhCodeSearchProbe:https://a.service-now.com"]);
+});
+
+test("an entry with no usable timestamp is dropped rather than kept for ever", () => {
+  const now = 100 * DAY_MS;
+  const drop = planCachePruning(
+    {
+      "snhCodeSearchProbe:https://a.service-now.com": { checkedAt: "recently" },
+      "snhCodeSearchCoverage:https://a.service-now.com": null,
+    },
+    now
+  );
+  assert.strictEqual(drop.length, 2);
+});
+
+test("instances beyond the cap go by least recently checked, whole instance at a time", () => {
+  const now = 100 * DAY_MS;
+  const stored = {};
+  /* Five instances, all live, checked one hour apart. */
+  for (let i = 0; i < 5; i += 1) {
+    const origin = "https://i" + i + ".service-now.com";
+    stored["snhCodeSearchProbe:" + origin] = { checkedAt: now - i * 3600000 };
+    stored["snhCodeSearchCoverage:" + origin] = { checkedAt: now - i * 3600000 };
+  }
+  const drop = planCachePruning(stored, now, 3);
+  assert.deepStrictEqual(own(drop).sort(), [
+    "snhCodeSearchCoverage:https://i3.service-now.com",
+    "snhCodeSearchCoverage:https://i4.service-now.com",
+    "snhCodeSearchProbe:https://i3.service-now.com",
+    "snhCodeSearchProbe:https://i4.service-now.com",
+  ]);
+});
+
+test("an instance kept under the cap keeps both of its entries", () => {
+  const now = 100 * DAY_MS;
+  const drop = planCachePruning(
+    {
+      "snhCodeSearchProbe:https://keep.service-now.com": { checkedAt: now - 1000 },
+      "snhCodeSearchCoverage:https://keep.service-now.com": { checkedAt: now - 2000 },
+    },
+    now,
+    1
+  );
+  assert.deepStrictEqual(own(drop), []);
+});
+
+test("the shipped cap is a real number, so the default path is bounded", () => {
+  assert.ok(typeof MAX_CACHED_INSTANCES === "number" && MAX_CACHED_INSTANCES > 0);
+});
+
+test("the engine no longer owns cache policy, so it cannot drift from the worker", () => {
+  const engine = fs.readFileSync(path.join(__dirname, "..", "code_search.js"), "utf8");
+  assert.ok(
+    engine.indexOf("chrome.storage.local.set") === -1,
+    "code_search.js writes the cache directly again; the worker owns that write"
+  );
+  assert.ok(engine.indexOf("storeInstanceCacheEntry") >= 0);
+});
+
+test("cache maintenance is serialized, so an interleaved write is never pruned", async () => {
+  /* The defect this guards: two loaders each did set -> get-all -> plan ->
+   * remove. Without a lock, B's write lands inside A's snapshot gap and A then
+   * removes it. This storage double deliberately interleaves at every await. */
+  const store = {};
+  let inFlight = 0;
+  let maxConcurrent = 0;
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const section = async (label) => {
+    inFlight += 1;
+    maxConcurrent = Math.max(maxConcurrent, inFlight);
+    await tick();
+    store[label] = true;
+    await tick();
+    inFlight -= 1;
+  };
+
+  await Promise.all([
+    withCacheLock(() => section("a")),
+    withCacheLock(() => section("b")),
+    withCacheLock(() => section("c")),
+  ]);
+
+  assert.strictEqual(maxConcurrent, 1, "sections overlapped");
+  assert.deepStrictEqual(Object.keys(store).sort(), ["a", "b", "c"]);
+});
+
+test("one failing cache section does not stall the queue behind it", async () => {
+  const done = [];
+  await withCacheLock(() => Promise.reject(new Error("storage gone"))).catch(() => {});
+  await withCacheLock(async () => {
+    done.push("after");
+  });
+  assert.deepStrictEqual(own(done), ["after"]);
+});
+
+/* The cache key now arrives over a message channel, so it is input rather than
+ * a constant the engine built. The worker checks it the same way OPEN_URL
+ * checks a destination. */
+const cacheKeyPrefix = loadFromBackground(
+  "const SN_TAB_HOST",
+  "let codeSearchCacheQueue",
+  "codeSearchCacheKeyPrefix"
+);
+
+test("a well-formed cache key for a real instance is accepted", () => {
+  assert.strictEqual(
+    cacheKeyPrefix("snhCodeSearchProbe:https://example.service-now.com"),
+    "snhCodeSearchProbe:"
+  );
+  assert.strictEqual(
+    cacheKeyPrefix("snhCodeSearchCoverage:https://example.service-now.com"),
+    "snhCodeSearchCoverage:"
+  );
+});
+
+test("a cache key cannot claim an unexpected namespace or host", () => {
+  for (const key of [
+    "snhPaletteFavourite:https://example.service-now.com",
+    "snhCodeSearchProbe:https://evil.example",
+    "snhCodeSearchProbe:http://example.service-now.com",
+    "snhCodeSearchProbe:",
+    "snhCodeSearchProbe:not-a-url",
+    "",
+    null,
+    42,
+    "snhCodeSearchProbe:https://example.service-now.com/" + "a".repeat(400),
+  ]) {
+    assert.strictEqual(cacheKeyPrefix(key), "", String(key).slice(0, 60));
+  }
+});
