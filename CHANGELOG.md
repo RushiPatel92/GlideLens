@@ -58,9 +58,11 @@ reconstructed version by version.
   probe and coverage entries are keyed by instance origin and were only ever written — expiry made them
   stale, nothing removed them — so a consultant who touches many instances grew
   local storage without bound. Expired entries and instances beyond a cap are
-  now dropped on write. The whole write-and-prune sequence is serialised: probe
-  and coverage load concurrently, and interleaving them could otherwise let one
-  pruner delete an entry the other had just refreshed.
+  now dropped on write, and the whole write-and-prune sequence is serialised in
+  the service worker. It has to be the worker: the search engine is injected
+  into every ServiceNow tab, so a queue inside it would order one tab against
+  itself while local storage is shared by the whole extension — two tabs could
+  still interleave and delete each other's freshly written entries.
 
 ### Fixed
 - **The content-script message listener stopped claiming replies it never

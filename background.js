@@ -3619,6 +3619,127 @@ function resolveOpenUrl(url, sender) {
   return parsed.toString();
 }
 
+/*
+ * Code Search instance caches.
+ *
+ * code_search.js is injected into every ServiceNow tab, so each tab holds its
+ * own module instance -- but chrome.storage.local is shared by the whole
+ * extension. A queue inside the injected engine therefore serialises nothing
+ * that matters: two tabs could still interleave set -> snapshot -> remove and
+ * delete each other's freshly written entries, leaving the next search to
+ * repeat an expensive probe.
+ *
+ * The worker is the one component every tab shares, so it owns the write. The
+ * engine asks; this decides. Keeping the planner here as well as the queue
+ * means there is exactly one implementation of the policy -- a duplicated
+ * helper that drifts is a bug this project has already had once.
+ */
+
+const CS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CS_CACHE_PREFIXES = ["snhCodeSearchProbe:", "snhCodeSearchCoverage:"];
+const CS_MAX_CACHED_INSTANCES = 12;
+const CS_MAX_ENTRY_BYTES = 200000;
+
+/* A cache key is a fixed prefix plus the instance origin, and the origin is
+ * checked the same way OPEN_URL checks a destination: this arrives over a
+ * message channel, so it is input, not a constant. */
+function codeSearchCacheKeyPrefix(key) {
+  if (typeof key !== "string" || key.length > 300) return "";
+  let matched = "";
+  CS_CACHE_PREFIXES.forEach((prefix) => {
+    if (!matched && key.indexOf(prefix) === 0) matched = prefix;
+  });
+  if (!matched) return "";
+  return serviceNowOrigin(key.slice(matched.length)) ? matched : "";
+}
+
+/* Pure, so it can be tested without a storage area: given everything stored,
+ * return the keys to remove. Expired entries go first, then whole instances
+ * beyond the cap, least recently checked first. An entry with no usable
+ * checkedAt is dropped rather than kept for ever. */
+function planCodeSearchCachePruning(stored, now, maxInstances) {
+  const cap =
+    typeof maxInstances === "number" && maxInstances >= 0
+      ? maxInstances
+      : CS_MAX_CACHED_INSTANCES;
+  const drop = [];
+  const live = Object.create(null);
+
+  Object.keys(stored || {}).forEach((key) => {
+    let prefix = "";
+    CS_CACHE_PREFIXES.forEach((candidate) => {
+      if (!prefix && key.indexOf(candidate) === 0) prefix = candidate;
+    });
+    if (!prefix) return;
+
+    const entry = stored[key];
+    const checkedAt =
+      entry && typeof entry.checkedAt === "number" ? entry.checkedAt : 0;
+    if (!checkedAt || now - checkedAt >= CS_CACHE_TTL_MS) {
+      drop.push(key);
+      return;
+    }
+
+    const origin = key.slice(prefix.length);
+    if (!live[origin]) live[origin] = { newest: 0, keys: [] };
+    live[origin].keys.push(key);
+    if (checkedAt > live[origin].newest) live[origin].newest = checkedAt;
+  });
+
+  Object.keys(live)
+    .map((origin) => live[origin])
+    .sort((a, b) => b.newest - a.newest)
+    .slice(cap)
+    .forEach((instance) => {
+      instance.keys.forEach((key) => drop.push(key));
+    });
+
+  return drop;
+}
+
+let codeSearchCacheQueue = Promise.resolve();
+
+/* Every write and its pruning run as one uninterrupted section. There is at
+ * most one such section per instance per TTL, so the queue never becomes a
+ * bottleneck no matter how many tabs are open. */
+function withCodeSearchCacheLock(task) {
+  const run = codeSearchCacheQueue.then(task, task);
+  codeSearchCacheQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+async function writeCodeSearchCacheEntry(key, entry, now) {
+  if (!codeSearchCacheKeyPrefix(key)) return { ok: false, error: "bad key" };
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return { ok: false, error: "bad entry" };
+  }
+  let size = 0;
+  try {
+    size = JSON.stringify(entry).length;
+  } catch (e) {
+    return { ok: false, error: "unserializable entry" };
+  }
+  if (size > CS_MAX_ENTRY_BYTES) return { ok: false, error: "entry too large" };
+
+  return withCodeSearchCacheLock(async () => {
+    try {
+      await chrome.storage.local.set({ [key]: entry });
+      const stored = await chrome.storage.local.get(null);
+      const drop = planCodeSearchCachePruning(
+        stored,
+        typeof now === "number" ? now : Date.now()
+      );
+      if (drop.length) await chrome.storage.local.remove(drop);
+      return { ok: true, pruned: drop.length };
+    } catch (error) {
+      return { ok: false, error: String((error && error.message) || error) };
+    }
+  });
+}
+
 function openUrlTabOptions(url, sender) {
   const options = { url, active: true };
   const sourceTab = sender && sender.tab;
@@ -3642,6 +3763,12 @@ function openUrlTabOptions(url, sender) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "FRAME_AVAILABLE" && msg.requestId) {
     registerContentFrame(msg.requestId, sender);
+  }
+  if (msg && msg.type === "CODE_SEARCH_CACHE_SET" && sender.tab) {
+    writeCodeSearchCacheEntry(msg.key, msg.entry).then(sendResponse, () =>
+      sendResponse({ ok: false, error: "cache write failed" })
+    );
+    return true;
   }
   if (msg && msg.type === "OPEN_URL" && msg.url) {
     const safeUrl = resolveOpenUrl(msg.url, sender);

@@ -842,12 +842,10 @@
      * freeze "we do not know" in place for seven days. */
     if (fresh.ok) {
       try {
-        await withCacheLock(async () => {
-          await chrome.storage.local.set({
-            [key]: Object.assign({ version: PROBE_CACHE_VERSION }, fresh),
-          });
-          await pruneInstanceCaches();
-        });
+        await storeInstanceCacheEntry(
+          key,
+          Object.assign({ version: PROBE_CACHE_VERSION }, fresh)
+        );
       } catch (e) {}
     }
     return fresh;
@@ -1098,90 +1096,26 @@
   /* ---------------------------------------------------------------------
    * CACHE HYGIENE
    *
-   * Both caches are keyed by instance origin and were only ever written. A
-   * consultant who touches thirty instances kept thirty entries for ever:
-   * expiry made them stale, nothing made them go away. Pruning runs on write,
-   * which under a seven-day TTL is at most once per instance per week.
+   * Both caches are keyed by instance origin and were only ever written: a
+   * consultant who touches thirty instances kept thirty entries for ever,
+   * because expiry made them stale and nothing removed them.
+   *
+   * The write is delegated to the service worker rather than done here. This
+   * module is injected per tab, so a queue in this file serialises one tab
+   * against itself while chrome.storage.local is shared by the whole
+   * extension -- two tabs could still interleave and delete each other's fresh
+   * entries. The worker is the only owner every tab shares, so the policy and
+   * the queue both live there (see writeCodeSearchCacheEntry in background.js).
+   * A failed write costs one repeated probe, nothing more.
    * ------------------------------------------------------------------- */
 
-  const INSTANCE_CACHE_TTLS = {
-    "snhCodeSearchProbe:": PROBE_TTL_MS,
-    "snhCodeSearchCoverage:": COVERAGE_TTL_MS,
-  };
-  const MAX_CACHED_INSTANCES = 12;
-
-  /* Pure, so it can be tested without a storage area. Given everything stored,
-   * return the keys to remove: expired entries first, then whole instances
-   * beyond the cap, least recently checked going first. An entry with no
-   * usable checkedAt is dropped rather than kept for ever. */
-  function planCachePruning(stored, now, maxInstances) {
-    const cap =
-      typeof maxInstances === "number" && maxInstances >= 0
-        ? maxInstances
-        : MAX_CACHED_INSTANCES;
-    const prefixes = Object.keys(INSTANCE_CACHE_TTLS);
-    const drop = [];
-    const live = Object.create(null);
-
-    Object.keys(stored || {}).forEach((key) => {
-      let prefix = "";
-      prefixes.forEach((candidate) => {
-        if (!prefix && key.indexOf(candidate) === 0) prefix = candidate;
-      });
-      if (!prefix) return;
-
-      const entry = stored[key];
-      const checkedAt =
-        entry && typeof entry.checkedAt === "number" ? entry.checkedAt : 0;
-      if (!checkedAt || now - checkedAt >= INSTANCE_CACHE_TTLS[prefix]) {
-        drop.push(key);
-        return;
-      }
-
-      const origin = key.slice(prefix.length);
-      if (!live[origin]) live[origin] = { newest: 0, keys: [] };
-      live[origin].keys.push(key);
-      if (checkedAt > live[origin].newest) live[origin].newest = checkedAt;
-    });
-
-    Object.keys(live)
-      .map((origin) => live[origin])
-      .sort((a, b) => b.newest - a.newest)
-      .slice(cap)
-      .forEach((instance) => {
-        instance.keys.forEach((key) => drop.push(key));
-      });
-
-    return drop;
-  }
-
-  /* Probe and coverage load concurrently, and each did set -> get-all -> plan
-   * -> remove independently. One pruner could snapshot storage, the other
-   * loader could write a fresh entry into that gap, and the first pruner would
-   * then remove the key it never saw -- silently discarding a just-refreshed
-   * cache and making the next search repeat the expensive probe. Serialising
-   * the whole write-and-prune sequence removes the gap; there is at most one
-   * such sequence per instance per TTL, so the queue never becomes a
-   * bottleneck. */
-  let cacheMaintenance = Promise.resolve();
-
-  function withCacheLock(task) {
-    const run = cacheMaintenance.then(task, task);
-    cacheMaintenance = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return run;
-  }
-
-  async function pruneInstanceCaches(now) {
+  async function storeInstanceCacheEntry(key, entry) {
     try {
-      const stored = await chrome.storage.local.get(null);
-      const drop = planCachePruning(
-        stored,
-        typeof now === "number" ? now : Date.now()
-      );
-      if (drop.length) await chrome.storage.local.remove(drop);
+      await chrome.runtime.sendMessage({
+        type: "CODE_SEARCH_CACHE_SET",
+        key,
+        entry,
+      });
     } catch (e) {}
   }
 
@@ -1318,12 +1252,10 @@
      * "Tier 1 unavailable" in place for a week. */
     if (fresh.ok) {
       try {
-        await withCacheLock(async () => {
-          await chrome.storage.local.set({
-            [key]: Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh),
-          });
-          await pruneInstanceCaches();
-        });
+        await storeInstanceCacheEntry(
+          key,
+          Object.assign({ version: COVERAGE_CACHE_VERSION }, fresh)
+        );
       } catch (e) {}
     }
     return fresh;
@@ -1856,9 +1788,6 @@
     resolveAncestry,
     probe,
     loadProbe,
-    planCachePruning,
-    withCacheLock,
-    MAX_CACHED_INSTANCES,
     peekCapabilities,
     summarizeCapabilities,
     describeCapabilityChange,

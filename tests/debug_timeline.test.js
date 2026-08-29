@@ -277,19 +277,48 @@ test("a throwing getXMLAnswer is reported and the error still propagates", () =>
  * places, and only one of them is the query string.
  * ------------------------------------------------------------------------ */
 
-function loadSafeFrameUrl() {
+/* Both entry points in debug_timeline_main.js are injected standalone, so each
+ * carries its own copy of this helper. Load EVERY copy and run the suite
+ * against all of them. The first version of these tests read only the first
+ * occurrence, and the second copy silently kept an older, unbounded
+ * implementation while all 219 tests passed. */
+function loadSafeFrameUrlCopies() {
   const src = fs
     .readFileSync(path.join(__dirname, "..", "debug_timeline_main.js"), "utf8")
     .replace(/\r\n/g, "\n");
-  const start = src.indexOf("  const safeFrameUrl");
-  const end = src.indexOf("\n  };\n", start) + "\n  };\n".length;
-  assert.ok(start >= 0 && end > start, "safeFrameUrl not found");
-  const body = src.slice(start, end);
-  return (href) =>
-    new Function("location", body + "\nreturn safeFrameUrl;")({ href })();
+  const END = "\n  };\n";
+  const bodies = [];
+  let at = src.indexOf("  const safeFrameUrl");
+  while (at >= 0) {
+    const end = src.indexOf(END, at) + END.length;
+    assert.ok(end > at, "unterminated safeFrameUrl");
+    bodies.push(src.slice(at, end));
+    at = src.indexOf("  const safeFrameUrl", end);
+  }
+  return bodies;
 }
 
-const safeFrameUrl = loadSafeFrameUrl();
+const safeFrameUrlCopies = loadSafeFrameUrlCopies();
+
+test("every entry point carries the same frame-URL helper", () => {
+  assert.strictEqual(safeFrameUrlCopies.length, 2, "expected one copy per entry point");
+  assert.strictEqual(
+    safeFrameUrlCopies[0],
+    safeFrameUrlCopies[1],
+    "the duplicated helpers have drifted apart"
+  );
+});
+
+/* Every assertion below runs against each copy and requires them to agree. */
+const safeFrameUrl = (href) => {
+  const results = safeFrameUrlCopies.map((body) =>
+    new Function("location", body + "\nreturn safeFrameUrl;")({ href })()
+  );
+  results.forEach((value, index) => {
+    assert.strictEqual(value, results[0], "copy " + index + " disagrees for " + href);
+  });
+  return results[0];
+};
 const SYS_ID = "1a2b3c4d5e6f70819a2b3c4d5e6f7081";
 
 test("a classic form keeps the page and drops the record and the filter", () => {

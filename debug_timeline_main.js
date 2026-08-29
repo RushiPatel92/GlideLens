@@ -18,7 +18,7 @@ function startDebugTimelineInPage() {
    * parameters, total length -- because this string is copied into as many as
    * 1,000 events.
    *
-   * Deliberately duplicated from the entry point above: every function in this file is
+   * Deliberately duplicated in the other entry point below: every function in this file is
    * injected standalone by executeScript and cannot share a helper. If you
    * change one copy, change the other. */
   const safeFrameUrl = () => {
@@ -850,35 +850,67 @@ function startDebugTimelineInPage() {
 function stopDebugTimelineInPage() {
   const stateKey = "__SN_DEV_HELPER_DEBUG_TIMELINE__";
   /* A frame URL is recorded so a developer can tell which frame an event came
-   * from -- not to carry record data into a trace that gets pasted into an
-   * issue. ServiceNow keeps the interesting things in the query string:
-   * sysparm_query holds filter values, and sys_id names a record. Keep the
-   * origin, the path, and only the parameters that say which page is open;
-   * count the rest and drop them, so a reader can see that something was
-   * removed rather than wondering.
+   * from -- not to carry record data into a trace. ServiceNow does not keep
+   * record context in the query string alone: a Workspace route puts it in the
+   * path (/record/incident/<32 hex>), and a Polaris wrapper can carry an entire
+   * encoded URL, query string included, inside one segment
+   * (/params/target/incident.do%3Fsys_id%3D...). Both are stripped, and the
+   * result is bounded in every dimension -- segments, segment length, retained
+   * parameters, total length -- because this string is copied into as many as
+   * 1,000 events.
    *
-   * Deliberately duplicated from the entry point above: every function in
-   * this file is injected standalone by executeScript and cannot share a
-   * helper. If you change one copy, change the other. */
+   * Deliberately duplicated from the entry point above: every function in this file is
+   * injected standalone by executeScript and cannot share a helper. If you
+   * change one copy, change the other. */
   const safeFrameUrl = () => {
     const KEEP = ["id", "table", "sysparm_view"];
+    const MAX_SEGMENTS = 8;
+    const MAX_SEGMENT = 40;
+    const MAX_PARAMS = 4;
+    const MAX_VALUE = 80;
+    const MAX_TOTAL = 300;
+    const looksLikeId = (text) => /^[0-9a-f]{32}$/i.test(text);
+    const cutAt = (text, marker) => {
+      const at = text.toLowerCase().indexOf(marker);
+      return at >= 0 ? text.slice(0, at) : text;
+    };
+    const scrubSegment = (segment) => {
+      if (looksLikeId(segment)) return "<id>";
+      if (/%3[fd]/i.test(segment) || segment.indexOf("?") >= 0 || segment.indexOf("=") >= 0) {
+        const head = cutAt(cutAt(cutAt(segment, "%3f"), "?"), "%3d");
+        return head.slice(0, MAX_SEGMENT) + "<target>";
+      }
+      return segment.length > MAX_SEGMENT ? segment.slice(0, MAX_SEGMENT) + "…" : segment;
+    };
     try {
       const url = new URL(location.href);
+      const segments = url.pathname.split("/").filter(Boolean);
+      const path = "/" + segments.slice(0, MAX_SEGMENTS).map(scrubSegment).join("/");
       const kept = [];
       let dropped = 0;
       url.searchParams.forEach((value, key) => {
-        if (KEEP.indexOf(key) >= 0 && String(value).length <= 80) {
-          kept.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+        const text = String(value);
+        if (
+          kept.length < MAX_PARAMS &&
+          KEEP.indexOf(key) >= 0 &&
+          text.length <= MAX_VALUE &&
+          !looksLikeId(text)
+        ) {
+          kept.push(encodeURIComponent(key) + "=" + encodeURIComponent(text));
         } else {
           dropped += 1;
         }
       });
-      return (
+      let out =
         url.origin +
-        url.pathname +
-        (kept.length ? "?" + kept.join("&") : "") +
-        (dropped ? " (" + dropped + " parameter" + (dropped === 1 ? "" : "s") + " removed)" : "")
-      );
+        path +
+        (segments.length > MAX_SEGMENTS ? "/…" : "") +
+        (kept.length ? "?" + kept.join("&") : "");
+      if (out.length > MAX_TOTAL) out = out.slice(0, MAX_TOTAL) + "…";
+      if (dropped) {
+        out += " (" + dropped + " parameter" + (dropped === 1 ? "" : "s") + " removed)";
+      }
+      return out;
     } catch (e) {
       return "";
     }
