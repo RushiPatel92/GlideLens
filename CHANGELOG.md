@@ -10,7 +10,7 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## [Unreleased]
+## [0.13.0] - 2026-08-29
 
 ### Added
 - **The popup now prints which GlideLens version you are running.** It was
@@ -67,53 +67,6 @@ reconstructed version by version.
   still interleave and delete each other's freshly written entries.
 
 ### Changed
-- **Two palette descriptions dropped a trailing ellipsis.** The convention
-  reserves `…` for a command that needs further input before it can act. Record
-  Lens and Playbooks act immediately, so theirs were misleading; the Playbooks
-  prompt that appears when no record is in context keeps its ellipsis, because
-  there it is true. Mirrored in the README and the landing page.
-
-### Removed
-- **A dead `#toast` element left in the popup** when actions moved to the
-  command palette. Nothing had referenced it since.
-
-### Fixed
-- **The content-script message listener stopped claiming replies it never
-  sends.** It returned `true` unconditionally, which tells Chrome to hold the
-  message channel open for an asynchronous response; the branches that answer
-  do so synchronously, and the two that answered nothing at all left the
-  sender's promise unsettled until Chrome tore the port down. Every branch now
-  answers and the listener returns `false`.
-- **Reads can no longer hang forever on a helper frame.** `executeScript({
-  allFrames: true })` does not fail on a frame it cannot inject into — it never
-  settles, so a `.catch()` never runs and a handler awaiting it never calls
-  `sendResponse`. Content scripts await those replies without a timeout, so the
-  feature simply stopped with no error to show. This was already fixed for Debug
-  Timeline's Stop in 0.11.1; the same trap still sat under every Table API read
-  (`SN_TABLE_GET`, and so Catalog Logic, Variable Values, Translations and
-  Variable Insight), `sys_id` extraction, and all four portal prefill routes.
-  Every one of them now discovers concrete frames from content-script
-  announcements and injects into each frame individually with its own timeout,
-  so a frame that hangs costs its own result and nothing else.
-- **The popup could silently drop the form and user details it exists to
-  show.** Its probe was time-boxed rather than fixed, so whenever the all-frames
-  injection hung it resolved empty; the popup then fell back to `{ found: true }`
-  and rendered only the instance and build information, with nothing to say the
-  page probe had failed. It now asks the worker for the discovered frame list
-  and probes those frames. Latent rather than observed: see the reproduction
-  note below.
-
-Reproduction note: `allFrames: true` was measured still pending at 20 seconds
-on a classic form on 2026-08-24, and that hang is what the 0.11.1 Debug Timeline
-"Stop does nothing" fix addressed. A sweep on 2026-08-28 — four page types
-(classic form, classic list, Next Experience shell, portal catalog item) by five
-injection delays — did not reproduce it: every call resolved. The hang is
-therefore conditional on frame state rather than on page shape. These changes
-remove a real but intermittent unbounded failure mode; they are not expected to
-change day-to-day behaviour, and the browser checks pass identically before and
-after.
-
-### Changed
 - Each injection carries a ceiling sized for what it actually does, rather than
   one blanket value: 5s for a synchronous DOM read or patch, 30s for a Table API
   read that waits on the instance. The ceilings exist to turn "never settles"
@@ -163,6 +116,51 @@ after.
   put real form content in an `about:blank` frame would now be missed rather
   than read. No ServiceNow page is known to do so, and the shipped Debug Timeline
   fix has made the same trade since 0.11.1.
+- **Two palette descriptions dropped a trailing ellipsis.** The convention
+  reserves `…` for a command that needs further input before it can act. Record
+  Lens and Playbooks act immediately, so theirs were misleading; the Playbooks
+  prompt that appears when no record is in context keeps its ellipsis, because
+  there it is true. Mirrored in the README and the landing page.
+
+### Removed
+- **A dead `#toast` element left in the popup** when actions moved to the
+  command palette. Nothing had referenced it since.
+
+### Fixed
+- **The content-script message listener stopped claiming replies it never
+  sends.** It returned `true` unconditionally, which tells Chrome to hold the
+  message channel open for an asynchronous response; the branches that answer
+  do so synchronously, and the two that answered nothing at all left the
+  sender's promise unsettled until Chrome tore the port down. Every branch now
+  answers and the listener returns `false`.
+- **Reads can no longer hang forever on a helper frame.** `executeScript({
+  allFrames: true })` does not fail on a frame it cannot inject into — it never
+  settles, so a `.catch()` never runs and a handler awaiting it never calls
+  `sendResponse`. Content scripts await those replies without a timeout, so the
+  feature simply stopped with no error to show. This was already fixed for Debug
+  Timeline's Stop in 0.11.1; the same trap still sat under every Table API read
+  (`SN_TABLE_GET`, and so Catalog Logic, Variable Values, Translations and
+  Variable Insight), `sys_id` extraction, and all four portal prefill routes.
+  Every one of them now discovers concrete frames from content-script
+  announcements and injects into each frame individually with its own timeout,
+  so a frame that hangs costs its own result and nothing else.
+- **The popup could silently drop the form and user details it exists to
+  show.** Its probe was time-boxed rather than fixed, so whenever the all-frames
+  injection hung it resolved empty; the popup then fell back to `{ found: true }`
+  and rendered only the instance and build information, with nothing to say the
+  page probe had failed. It now asks the worker for the discovered frame list
+  and probes those frames. Latent rather than observed: see the reproduction
+  note below.
+
+Reproduction note: `allFrames: true` was measured still pending at 20 seconds
+on a classic form on 2026-08-24, and that hang is what the 0.11.1 Debug Timeline
+"Stop does nothing" fix addressed. A sweep on 2026-08-28 — four page types
+(classic form, classic list, Next Experience shell, portal catalog item) by five
+injection delays — did not reproduce it: every call resolved. The hang is
+therefore conditional on frame state rather than on page shape. These changes
+remove a real but intermittent unbounded failure mode; they are not expected to
+change day-to-day behaviour, and the browser checks pass identically before and
+after.
 
 ## [0.12.0] - 2026-08-27
 
@@ -639,6 +637,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.13.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.13.0
 [0.12.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.12.0
 [0.11.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.1
 [0.11.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.0

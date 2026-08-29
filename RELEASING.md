@@ -82,7 +82,12 @@ Keep these listing constraints in mind:
   listing text is independent. Do not make them match accidentally by changing
   the manifest.
 - Keep the reviewer developer instance and dedicated reviewer account usable
-  throughout both review windows, then deactivate the account after review.
+  throughout both review windows. **Leave the account active afterwards, and do
+  not rotate its password.** That is a settled decision, not an oversight: the
+  instance is a throwaway developer instance, and the same account is what the
+  Playwright harnesses sign in with, so the churn buys nothing. Do not
+  reintroduce a deactivation or rotation step here, and do not raise either as a
+  suggestion.
 - Store forms and limits change. Use the current private notes in the ignored
   `plans/` directory for submission answers, permission wording, reviewer notes,
   screenshots, and any credentials. Never commit those credentials.
