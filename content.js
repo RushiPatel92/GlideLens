@@ -1477,10 +1477,57 @@ const NATIVE_VARIABLE_TYPE_POLICIES = new Map([
   ["multi-row_variable_set", { disposition: "mrvs" }],
 ]);
 
+/*
+ * A multi-row variable set is exposed as ONE value holding every column of
+ * every row, and the columns inside that value are not represented the way the
+ * same type is represented as a standalone variable. So the type allowlist a
+ * surface proves for its ordinary variables says nothing about what is safe
+ * inside a set, and these are separate, per-surface lists.
+ *
+ * The distinction is not theoretical. A Date/Time column inside a set came
+ * back as "21-04-2026 07:13:37" while storage held "2026-04-21 14:13:37" —
+ * formatted to the user's date format and shifted into the session timezone,
+ * where the same type read as a standalone variable is raw canonical UTC.
+ * Comparing that set would have reported a difference in a record where none
+ * exists. Date and Date/Time columns are therefore excluded on every surface;
+ * a set containing one is listed with its stored rows and never compared.
+ *
+ * Everything listed below was observed raw inside the container, with the
+ * display labels appearing in the entry's parallel displayValue array instead:
+ * references as sys_ids against display names, choices as stored values
+ * against labels, attachments as attachment sys_ids against file names.
+ */
+const WORKSPACE_SOW_MRVS_COLUMN_TYPES = new Set(["5", "6", "8"]);
+const WORKSPACE_SUPPLIER_MRVS_COLUMN_TYPES = new Set([
+  "1", "2", "5", "6", "7", "8", "33",
+]);
+
 // Workspace values come from undocumented component state, so comparison is
 // independently positive-allowlisted per verified layer. Never inherit a
 // classic-comparable type merely because its stored representation is known.
+//
+// Type 1 (Yes/No) does not have one stored spelling. It holds "Yes"/"No" on
+// the configured instance and "true"/"false" on the stock one, which is
+// exactly why it is compared by boolean meaning rather than as a raw string:
+// that mode folds yes/no, true/false and 1/0 into the same two buckets on both
+// sides, and an empty value stays its own state. A raw comparison would report
+// a difference between spellings that mean the same thing.
+//
+// Type 18 (Lookup Select Box) is a choice pair, not a reference: its raw value
+// is the lookup table's value column, which was free text in 256 of 293 stored
+// rows on the configured instance, a sys_id in 28 and comma-bearing text in 9.
+// Validating it as a sys_id would have refused most real lookups.
+//
+// Type 33 (Attachment) is validated as a sys_id, which is what every observed
+// value was — the attachment's own record, against a file name in
+// displayValue. A multi-attachment value would fall outside that shape and
+// stay uncompared, which is the right direction to fail in.
+//
+// Type 34 is the multi-row variable set. Its live value is the whole set at
+// once, so it carries the same all-columns-safe precondition the classic path
+// applies, on top of this per-surface proof.
 const WORKSPACE_SOW_RITM_TYPE_POLICIES = new Map([
+  ["1", { disposition: "comparable", comparisonMode: "boolean", validator: "boolean-pair", layer: 1 }],
   ["2", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
   ["5", { disposition: "comparable", comparisonMode: "scalar", validator: "choice-pair", layer: 1 }],
   ["6", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
@@ -1488,9 +1535,17 @@ const WORKSPACE_SOW_RITM_TYPE_POLICIES = new Map([
   ["8", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
   ["9", { disposition: "comparable", comparisonMode: "date", validator: "date-pair", layer: 1 }],
   ["10", { disposition: "comparable", comparisonMode: "datetime", validator: "datetime-pair", layer: 1 }],
+  ["18", { disposition: "comparable", comparisonMode: "scalar", validator: "choice-pair", layer: 1 }],
   ["21", { disposition: "comparable", comparisonMode: "set", validator: "sys-id-list", layer: 1 }],
   ["26", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
   ["31", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
+  ["33", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
+  ["34", {
+    disposition: "mrvs",
+    validator: "mrvs-pair",
+    layer: 1,
+    columnTypes: WORKSPACE_SOW_MRVS_COLUMN_TYPES,
+  }],
 ]);
 
 /*
@@ -1502,15 +1557,17 @@ const WORKSPACE_SOW_RITM_TYPE_POLICIES = new Map([
  *
  * Deliberately absent, and why:
  *
- * - 9 and 31 had no stored example on either probed supplier record, so there
- *   is no evidence to allowlist from.
- * - 10 (Date/Time) is stored on the supplier case but was never rendered into
- *   the form, so the raw-to-display-to-zone representation proof — the thing
- *   that makes a Date/Time comparison safe — could not be run at all.
- * - 1, 18 and 33 compared exactly on both supplier records, but no Workspace
- *   surface enables them yet. Enabling a type here that SOW still refuses
- *   would make two surfaces disagree about the same type on the same
- *   evidence standard; they belong to a separate, cross-surface decision.
+ * - 9 and 31 had no stored example on any probed supplier record, so there is
+ *   no evidence to allowlist from.
+ *
+ * 10 (Date/Time) was withheld here for one release because the only supplier
+ * record that stored one never rendered it into the form, so the
+ * raw-to-display-to-zone proof could not run. A supplier task that does render
+ * one supplied it: raw "2026-08-23 17:51:39" against a display of
+ * "23-08-2026 10:51:39" under a session zone seven hours behind UTC and a
+ * dd-MM-yyyy user format — the same canonical-UTC-plus-formatted-display pair
+ * the SOW proof rests on, in a zone and format that would have exposed a
+ * substitution rather than hidden it.
  *
  * Two of the probed values did differ, and both were the comparison working:
  * a hidden Checkbox whose committed state was empty while storage held
@@ -1519,13 +1576,23 @@ const WORKSPACE_SOW_RITM_TYPE_POLICIES = new Map([
  * language. Neither is a representation defect, so neither type is withheld.
  */
 const WORKSPACE_SUPPLIER_TYPE_POLICIES = new Map([
+  ["1", { disposition: "comparable", comparisonMode: "boolean", validator: "boolean-pair", layer: 1 }],
   ["2", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
   ["5", { disposition: "comparable", comparisonMode: "scalar", validator: "choice-pair", layer: 1 }],
   ["6", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
   ["7", { disposition: "comparable", comparisonMode: "boolean", validator: "boolean-pair", layer: 1 }],
   ["8", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
+  ["10", { disposition: "comparable", comparisonMode: "datetime", validator: "datetime-pair", layer: 1 }],
+  ["18", { disposition: "comparable", comparisonMode: "scalar", validator: "choice-pair", layer: 1 }],
   ["21", { disposition: "comparable", comparisonMode: "set", validator: "sys-id-list", layer: 1 }],
   ["26", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
+  ["33", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
+  ["34", {
+    disposition: "mrvs",
+    validator: "mrvs-pair",
+    layer: 1,
+    columnTypes: WORKSPACE_SUPPLIER_MRVS_COLUMN_TYPES,
+  }],
 ]);
 
 // Keyed by the same "<experience path>:<table>" pair the router allowlists, so
@@ -1570,19 +1637,105 @@ function classifyNativeVariable(definition) {
   return nativeTypePolicy(def.type, def.typeDisplay);
 }
 
+// The canonical key a multi-row variable set is allowlisted under, whichever
+// spelling of the type the definition arrived with.
+const WORKSPACE_MRVS_POLICY_KEY = "34";
+
 function classifyWorkspaceVariable(definition, surfaceKey) {
   const nativePolicy = classifyNativeVariable(definition);
   if (
     nativePolicy.disposition === "secret" ||
-    nativePolicy.disposition === "structural" ||
-    nativePolicy.disposition === "mrvs"
+    nativePolicy.disposition === "structural"
   ) {
     return nativePolicy;
   }
   const policies = WORKSPACE_TYPE_POLICIES_BY_SURFACE.get(String(surfaceKey || ""));
+  // A multi-row set stays an MRVS row on every surface — it is always listed,
+  // and it keeps its own stored read. What the surface decides is only whether
+  // its live representation has been proven here, and so whether the row can
+  // be compared at all. A surface with no proof returns the bare mrvs
+  // disposition, which carries no validator and therefore never compares.
+  if (nativePolicy.disposition === "mrvs") {
+    const proven = policies && policies.get(WORKSPACE_MRVS_POLICY_KEY);
+    return proven && proven.disposition === "mrvs" ? proven : { disposition: "mrvs" };
+  }
   if (!policies) return { disposition: "denied" };
   const numericType = normalizeVariableType(definition && definition.type);
   return policies.get(numericType) || { disposition: "denied" };
+}
+
+/*
+ * One rule for "may this Workspace row's live value be read", shared by the
+ * request builder and the panel's candidate count. They used to state it
+ * twice, which meant a row could be requested but never counted as something
+ * the panel promised to check, or counted and never requested.
+ *
+ * A multi-row set is the reason the rule is not simply "comparable". Reading
+ * one returns the entire set — every column of every row in a single value —
+ * so three things must hold, not one: the surface has proven the container
+ * representation, the classic all-columns-safe precondition already passed,
+ * and every column's type is one this surface has verified the container's
+ * own rendering of. A set failing any of them is listed with its stored rows
+ * and never read.
+ */
+function workspaceLiveReadAllowed(definition, policy) {
+  const def = definition || {};
+  const rule = policy || {};
+  if (!def.name || !isSysId(def.questionId)) return false;
+  if (NATIVE_PROTOTYPE_COLLISION_NAMES.has(def.name)) return false;
+  if (rule.disposition === "comparable") return true;
+  if (rule.disposition === "mrvs") {
+    return Boolean(
+      rule.validator &&
+      rule.columnTypes &&
+      def.liveReadAllowed === true &&
+      Array.isArray(def.mrvsColumnTypes) &&
+      def.mrvsColumnTypes.length > 0 &&
+      def.mrvsColumnTypes.every(
+        (column) => column && rule.columnTypes.has(column.type)
+      )
+    );
+  }
+  return false;
+}
+
+/*
+ * Why a Workspace multi-row row was listed rather than compared. Each branch
+ * names a different fact, because they are different facts: a surface that
+ * never reads sets, a set whose columns the classic safety rule already
+ * refused, a set whose columns were never enumerated, and a set holding a
+ * column type whose in-container rendering this surface has not verified. The
+ * one thing none of them may say is that no live value was available — the
+ * form was never asked, so that would be a claim about the form.
+ */
+function workspaceMrvsNotReadReason(definition, policy) {
+  const def = definition || {};
+  const rule = policy || {};
+  if (!rule.validator || !rule.columnTypes) {
+    return "Multi-row variable sets are listed but not compared on this" +
+      " Workspace surface, so no live rows were read.";
+  }
+  if (def.liveReadAllowed !== true) {
+    return def.liveReadBlockedReason ||
+      "Live multi-row rows were not read because the set's columns could not" +
+      " all be verified as safe and comparable.";
+  }
+  if (!Array.isArray(def.mrvsColumnTypes) || !def.mrvsColumnTypes.length) {
+    return "The set's column definitions were not read, so no live rows were" +
+      " read.";
+  }
+  const unproven = [];
+  def.mrvsColumnTypes.forEach((column) => {
+    if (!column || rule.columnTypes.has(column.type)) return;
+    const label = String(column.label || column.type || "").trim() || "unknown";
+    if (unproven.indexOf(label) < 0) unproven.push(label);
+  });
+  if (unproven.length) {
+    return "No live rows were read: this Workspace surface has not verified" +
+      " how " + unproven.sort().join(", ") + " is represented inside a" +
+      " multi-row set.";
+  }
+  return "No live multi-row value was available.";
 }
 
 function normalizedNativeSet(value) {
@@ -1896,6 +2049,51 @@ function nativeMrvsColumnsSafe(rows, complete) {
   });
 }
 
+/* The column types a multi-row set is built from, in definition order and with
+ * their display labels, so a caller can decide whether every column's
+ * representation is one it has actually verified. Distinct from
+ * nativeMrvsColumnsSafe, which asks whether the columns are safe to read at
+ * all; this asks what is in there. */
+function nativeMrvsColumnTypes(rows) {
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    type: normalizeVariableType(snFieldValue(row, "type")),
+    label: snFieldDisplay(row, "type") || snFieldValue(row, "type"),
+  }));
+}
+
+/*
+ * Date and Date/Time columns inside a multi-row set, which no reader can
+ * compare.
+ *
+ * A standalone Date/Time variable reads back as raw canonical UTC and the
+ * comparison converts the stored value into the form's timezone to match it.
+ * The same type INSIDE a set does not: the whole set arrives as one value and
+ * the date cell inside it is already formatted to the user's date format and
+ * shifted into the session timezone. Measured on one record, the set held
+ * "21-04-2026 07:13:37" where storage held "2026-04-21 14:13:37" — a real
+ * record reported as differing when nothing about it had changed.
+ *
+ * Converting the cell back is not a fix: the set is compared as a whole, the
+ * stored cell's own type is known only from the set's column definitions, and
+ * a format that fails to parse would silently become a difference again. So a
+ * set holding one is listed with its stored rows and never compared, on every
+ * surface including the classic form.
+ */
+const NATIVE_MRVS_UNCOMPARABLE_COLUMN_TYPES = new Set(["9", "10"]);
+
+function nativeMrvsDateColumnLabels(definition) {
+  const columns = Array.isArray(definition && definition.mrvsColumnTypes)
+    ? definition.mrvsColumnTypes
+    : [];
+  const labels = [];
+  columns.forEach((column) => {
+    if (!column || !NATIVE_MRVS_UNCOMPARABLE_COLUMN_TYPES.has(column.type)) return;
+    const label = String(column.label || column.type || "").trim() || "a date column";
+    if (labels.indexOf(label) < 0) labels.push(label);
+  });
+  return labels.sort();
+}
+
 function applyNativeMrvsLiveReadPolicy(definitions, mrvsResult) {
   const result = mrvsResult || {};
   const metadataComplete =
@@ -1911,12 +2109,22 @@ function applyNativeMrvsLiveReadPolicy(definitions, mrvsResult) {
         !storedSet.indexIncomplete
       ))
     );
-    definition.liveReadAllowed = Boolean(
-      definition.mrvsColumnsSafe === true && storedMetadataSafe
-    );
-    definition.liveReadBlockedReason = definition.liveReadAllowed
-      ? ""
-      : "Live multi-row value was not read because its columns could not all be verified as safe and comparable.";
+    const columnsSafe = definition.mrvsColumnsSafe === true && storedMetadataSafe;
+    const dateColumns = nativeMrvsDateColumnLabels(definition);
+    definition.liveReadAllowed = Boolean(columnsSafe && !dateColumns.length);
+    if (definition.liveReadAllowed) {
+      definition.liveReadBlockedReason = "";
+    } else if (!columnsSafe) {
+      // Safety first: a column that could not be verified may be a secret, and
+      // that is a stronger reason to refuse than an uncomparable date.
+      definition.liveReadBlockedReason =
+        "Live multi-row value was not read because its columns could not all be verified as safe and comparable.";
+    } else {
+      definition.liveReadBlockedReason =
+        "No live rows were read: the form renders " + dateColumns.join(", ") +
+        " inside a set in the user's date format and timezone, which cannot be" +
+        " compared with the stored value.";
+    }
   });
 }
 
@@ -2036,6 +2244,7 @@ async function fetchNativeCatalogItemVariableDefinitions(catalogItemSysId) {
         mrvsColumnRows.get(info.id) || [],
         mrvsColumnReadComplete
       ),
+      mrvsColumnTypes: nativeMrvsColumnTypes(mrvsColumnRows.get(info.id) || []),
       sourceIndex: definitions.length,
     });
   });
@@ -2509,11 +2718,86 @@ function consolidateProducerAnswerDefinitions(answerDefinitions, setMeta) {
       questionId: info.id,
       hiddenType: false,
       isMrvs: true,
+      // Answers-only enumeration never reads the set's column definitions, so
+      // neither the safety rule nor the column types can be established here.
       mrvsColumnsSafe: false,
+      mrvsColumnTypes: null,
       sourceIndex: definitions.length,
     });
   });
   return definitions;
+}
+
+/*
+ * Reconcile the catalog item's definition list with the record's own answers.
+ *
+ * The item is enumerated at all because it lists variables this record never
+ * answered, which is worth showing. But an item's attached variable sets change
+ * over time, and a record answered before such a change holds answers against
+ * the OLD question rows while the item now defines new ones carrying the same
+ * names. Observed live: an item attaching a 2024 commodities set, while a 2025
+ * case answered — and the form still binds — a different set's questions of
+ * exactly those names.
+ *
+ * The catalog-derived definition is then wrong about this record in the one way
+ * that matters, its question id. Storage holds nothing under that id, so the
+ * row reads "no stored row exists" for a variable the record plainly answered;
+ * and the Workspace live read asks the form for an id the form does not have,
+ * which refuses the entire snapshot and empties the panel.
+ *
+ * The record's own answer is the better authority: it is this record's data,
+ * and it is the question the form is actually bound to. So where exactly one
+ * unanswered catalog definition and exactly one answer share a name, the answer
+ * wins, and the row says so.
+ *
+ * Deliberately narrow. A catalog definition whose own id IS answered is left
+ * alone, so a genuine duplicate name still reaches the duplicate-name guard
+ * instead of being silently resolved here. Multi-row parents are never
+ * substituted: they are keyed by variable set, not by an answer row.
+ */
+function reconcileProducerDefinitionsWithAnswers(definitions, answerDefinitions, setMeta) {
+  const list = Array.isArray(definitions) ? definitions : [];
+  const answers = Array.isArray(answerDefinitions) ? answerDefinitions : [];
+  const sets = setMeta || new Map();
+  const answeredIds = new Set(
+    answers.map((answer) => answer && answer.questionId).filter(isSysId)
+  );
+  const answersByName = new Map();
+  answers.forEach((answer) => {
+    if (!answer || !answer.name || !isSysId(answer.questionId)) return;
+    const info = sets.get(answer.variableSet);
+    if (info && info.isMrvs) return;
+    if (!answersByName.has(answer.name)) answersByName.set(answer.name, []);
+    answersByName.get(answer.name).push(answer);
+  });
+  const nameCounts = new Map();
+  list.forEach((definition) => {
+    if (!definition || !definition.name) return;
+    nameCounts.set(definition.name, (nameCounts.get(definition.name) || 0) + 1);
+  });
+
+  return list
+    .map((definition) => {
+      if (!definition || definition.isMrvs || !definition.name) return definition;
+      if (answeredIds.has(definition.questionId)) return definition;
+      if ((nameCounts.get(definition.name) || 0) !== 1) return definition;
+      const candidates = answersByName.get(definition.name) || [];
+      if (candidates.length !== 1) return definition;
+      const answer = candidates[0];
+      if (answer.questionId === definition.questionId) return definition;
+      const info = sets.get(answer.variableSet);
+      return Object.assign({}, answer, {
+        // The answer's own set, never the stale one the catalog list named.
+        setName: (info && info.title) || "",
+        sourceIndex: definition.sourceIndex,
+        definitionFromAnswer: true,
+      });
+    })
+    .filter((definition) => !(
+      definition &&
+      definition.definitionFromAnswer &&
+      isPanelOmittedVariableType(definition.type, definition.typeDisplay)
+    ));
 }
 
 /* Record-producer targets store answers directly in question_answer. The first
@@ -2625,6 +2909,14 @@ async function fetchNativeProducerRecordData(table, recordSysId) {
     mrvsSetIds = new Set(definitionResult.mrvsSetIds || []);
     definitionEnumerationStatus =
       definitionReadStatus === "truncated" ? "truncated" : "success";
+    // The item's list is authoritative about which variables exist; this
+    // record's answers are authoritative about which question each of its own
+    // values belongs to.
+    definitions = reconcileProducerDefinitionsWithAnswers(
+      definitions,
+      answerDefinitions,
+      setMeta
+    );
   }
 
   const definitionById = new Map();
@@ -2895,6 +3187,38 @@ function workspaceLiveValueForComparison(policy, live, timeZone) {
       ? { ok: true, value }
       : { ok: false, reason: "The live Workspace list representation could not be verified." };
   }
+  if (policy.validator === "mrvs-pair") {
+    // The Workspace form exposes a multi-row set as one container entry whose
+    // raw value is the JSON row array and whose displayValue is the SAME array
+    // with display labels substituted. Requiring both to parse as arrays of
+    // plain objects, of equal length, with identical column names row for row,
+    // is what separates that verified shape from any other JSON a future
+    // component might put behind this key. Only the raw array is compared.
+    const liveRows = parseNativeMrvsRows(value);
+    const displayRows = displayAvailable ? parseNativeMrvsRows(displayValue) : null;
+    const plainRows = (rows) =>
+      Array.isArray(rows) &&
+      rows.every((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+    if (
+      !plainRows(liveRows) ||
+      !plainRows(displayRows) ||
+      liveRows.length !== displayRows.length ||
+      liveRows.some((entry, index) => {
+        const liveKeys = Object.keys(entry).sort();
+        const displayKeys = Object.keys(displayRows[index]).sort();
+        return (
+          liveKeys.length !== displayKeys.length ||
+          liveKeys.some((key, keyIndex) => key !== displayKeys[keyIndex])
+        );
+      })
+    ) {
+      return {
+        ok: false,
+        reason: "The live Workspace multi-row representation could not be verified.",
+      };
+    }
+    return { ok: true, value };
+  }
   if (policy.validator === "date-pair") {
     if (value === "" && displayAvailable && displayValue === "") {
       return { ok: true, value: "" };
@@ -3014,12 +3338,11 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       gFormReportedVisible:
         live.gFormReportedVisible == null ? null : live.gFormReportedVisible,
     };
+    // Exactly the rows workspaceLiveValueRequests asked the form for, so the
+    // panel's "all N were checked" can never count a row no read covered.
     row.workspaceCandidate = Boolean(
       workspaceMode &&
-      policy.disposition === "comparable" &&
-      definition.name &&
-      isSysId(definition.questionId) &&
-      !NATIVE_PROTOTYPE_COLLISION_NAMES.has(definition.name) &&
+      workspaceLiveReadAllowed(definition, policy) &&
       !duplicateName &&
       !secret
     );
@@ -3081,6 +3404,12 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       } else if (mrvsSet && mrvsSet.indexIncomplete) {
         row.reason = "Stored rows are missing a row index, so they could not be" +
           " grouped and no comparison was run.";
+      } else if (workspaceMode && !workspaceLiveReadAllowed(definition, policy)) {
+        // Say what actually happened. This row's stored rows are real and its
+        // live rows were never asked for, so anything that sounds like an
+        // absent or unreadable live value would be a claim about the form that
+        // was never tested.
+        row.reason = workspaceMrvsNotReadReason(definition, policy);
       } else if (!row.liveValueAvailable) {
         row.reason = definition.liveReadBlockedReason || (live.valueReadFailed
           ? "The live multi-row value could not be read."
@@ -3088,16 +3417,25 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       } else if (!Array.isArray(liveMrvsRows)) {
         row.reason = "The live multi-row value was not a readable JSON array.";
       } else {
-        const storedMrvsRows = mrvsSet ? mrvsSet.rows : [];
-        const equal = nativeMrvsValuesEqual(
-          storedMrvsRows,
-          liveMrvsRows,
-          mrvsSet ? mrvsSet.comparisonModes : {}
-        );
-        row.comparison = equal ? "match" : "differs";
-        row.reason = equal
-          ? "Stored and live rows match."
-          : nativeMrvsDifferenceReason(storedMrvsRows, liveMrvsRows);
+        const verified = workspaceMode
+          ? workspaceLiveValueForComparison(policy, live, userTimeZone)
+          : { ok: true, value: row.liveValue };
+        if (!verified.ok) {
+          row.reason = verified.reason;
+        } else {
+          const storedMrvsRows = mrvsSet ? mrvsSet.rows : [];
+          const equal = nativeMrvsValuesEqual(
+            storedMrvsRows,
+            liveMrvsRows,
+            mrvsSet ? mrvsSet.comparisonModes : {}
+          );
+          row.comparison = equal ? "match" : "differs";
+          row.reason = equal
+            ? (workspaceMode
+              ? "Stored and live Workspace rows match."
+              : "Stored and live rows match.")
+            : nativeMrvsDifferenceReason(storedMrvsRows, liveMrvsRows);
+        }
       }
     } else if (storedResult.storedReadStatus === "failed") {
       row.reason = "Stored values were unavailable; no comparison was run.";
@@ -3182,6 +3520,10 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
           zoneSource
         );
       }
+    }
+    if (definition.definitionFromAnswer && row.reason) {
+      row.reason += " Definition taken from this record's own answer: the" +
+        " catalog item now defines a different variable with this name.";
     }
     if (row.inactive && row.reason) {
       row.reason = "Inactive variable. " + row.reason;
@@ -3591,19 +3933,15 @@ function workspaceLiveValueRequests(definitions, surfaceKey) {
       def.name && (nameCounts.get(def.name) || 0) > 1
     );
     const secretTwin = duplicateName && nativeNameHoldsSecret(list, def.name);
-    if (
-      policy.disposition !== "comparable" ||
-      !def.name ||
-      !isSysId(def.questionId) ||
-      duplicateName ||
-      secretTwin ||
-      NATIVE_PROTOTYPE_COLLISION_NAMES.has(def.name)
-    ) {
+    if (duplicateName || secretTwin || !workspaceLiveReadAllowed(def, policy)) {
       return [];
     }
     return [{
       name: def.name,
       fieldName: "variables." + def.name,
+      // A multi-row set's question id is its variable set. The Workspace form
+      // exposes the set as one container entry under that same id, so the
+      // MAIN-world identity gate needs no special case for it.
       questionId: def.questionId,
       type: normalizeVariableType(def.type),
       dateKind:

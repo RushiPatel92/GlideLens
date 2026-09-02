@@ -51,9 +51,11 @@ function loadNativeHelpers(snGetMany) {
       "nativeRecordIdentityMatches, nativeStoredDateTimeInZone, " +
       "WORKSPACE_SOW_RITM_TYPE_POLICIES, WORKSPACE_SUPPLIER_TYPE_POLICIES, " +
       "WORKSPACE_TYPE_POLICIES_BY_SURFACE, classifyWorkspaceVariable, " +
+      "workspaceLiveReadAllowed, workspaceMrvsNotReadReason, " +
       "workspaceLiveValueForComparison, fetchNativeRitmStoredValues, " +
       "fetchNativeMrvsStoredValues, nativeMrvsValuesEqual, parseNativeMrvsRows, " +
-      "nativeMrvsColumnsSafe, applyNativeMrvsLiveReadPolicy, " +
+      "nativeMrvsColumnsSafe, nativeMrvsColumnTypes, applyNativeMrvsLiveReadPolicy, " +
+      "reconcileProducerDefinitionsWithAnswers, " +
       "fetchNativeRitmRecordData, fetchNativeProducerRecordData, buildNativeVariableRows };"
   );
   return factory(snGetMany || (async () => []));
@@ -271,12 +273,30 @@ test("each Workspace surface has its own layer-one allowlist", () => {
   const helpers = loadNativeHelpers();
   assert.deepStrictEqual(
     Array.from(helpers.WORKSPACE_SOW_RITM_TYPE_POLICIES.keys()),
-    ["2", "5", "6", "7", "8", "9", "10", "21", "26", "31"]
+    ["1", "2", "5", "6", "7", "8", "9", "10", "18", "21", "26", "31", "33", "34"]
   );
   assert.deepStrictEqual(
     Array.from(helpers.WORKSPACE_SUPPLIER_TYPE_POLICIES.keys()),
-    ["2", "5", "6", "7", "8", "21", "26"]
+    ["1", "2", "5", "6", "7", "8", "10", "18", "21", "26", "33", "34"]
   );
+  // The column allowlist a surface proves for the inside of a multi-row set is
+  // separate from its variable allowlist, and separate per surface.
+  assert.deepStrictEqual(
+    Array.from(helpers.WORKSPACE_SOW_RITM_TYPE_POLICIES.get("34").columnTypes),
+    ["5", "6", "8"]
+  );
+  assert.deepStrictEqual(
+    Array.from(helpers.WORKSPACE_SUPPLIER_TYPE_POLICIES.get("34").columnTypes),
+    ["1", "2", "5", "6", "7", "8", "33"]
+  );
+  // No surface may compare a date column inside a set: the container renders
+  // one in the user's date format and the session timezone, not raw.
+  Object.values(Object.fromEntries(helpers.WORKSPACE_TYPE_POLICIES_BY_SURFACE))
+    .forEach((policies) => {
+      const columnTypes = policies.get("34").columnTypes;
+      assert.ok(!columnTypes.has("9"), "a Date column must never be compared inside a set");
+      assert.ok(!columnTypes.has("10"), "a Date/Time column must never be compared inside a set");
+    });
   assert.deepStrictEqual(
     Array.from(helpers.WORKSPACE_TYPE_POLICIES_BY_SURFACE.keys()),
     ["sow:sc_req_item", "psm/workspace:sn_slm_case", "psm/workspace:sn_slm_task"]
@@ -302,26 +322,26 @@ test("each Workspace surface has its own layer-one allowlist", () => {
 test("per-type evidence never transfers between Workspace surfaces", () => {
   const helpers = loadNativeHelpers();
   const api = liveRequestApi();
-  // Date/Time is proven on SOW and deliberately unproven on the supplier
-  // surfaces: it is stored there but was never rendered, so the raw-to-display
-  // representation proof could not run.
-  const dateTime = definition({ type: "10", name: "needed_by", questionId: id(991) });
+  // Date is proven on SOW and deliberately unproven on the supplier surfaces:
+  // no probed supplier record stores one, so there is no evidence to
+  // allowlist from.
+  const date = definition({ type: "9", name: "needed_by", questionId: id(991) });
   assert.strictEqual(
-    helpers.classifyWorkspaceVariable(dateTime, SOW).disposition,
+    helpers.classifyWorkspaceVariable(date, SOW).disposition,
     "comparable"
   );
   assert.strictEqual(
-    helpers.classifyWorkspaceVariable(dateTime, SUPPLIER_CASE).disposition,
+    helpers.classifyWorkspaceVariable(date, SUPPLIER_CASE).disposition,
     "denied"
   );
-  assert.deepStrictEqual(api.workspaceLiveValueRequests([dateTime], SUPPLIER_CASE), []);
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([date], SUPPLIER_CASE), []);
   // Supplier case and supplier task share one verified policy map, so a type
   // proven on one is proven on the other and neither can drift alone.
   assert.strictEqual(
-    helpers.classifyWorkspaceVariable(dateTime, SUPPLIER_TASK).disposition,
+    helpers.classifyWorkspaceVariable(date, SUPPLIER_TASK).disposition,
     "denied"
   );
-  ["2", "5", "6", "7", "8", "21", "26"].forEach((type) => {
+  ["1", "2", "5", "6", "7", "8", "10", "18", "21", "26", "33", "34"].forEach((type) => {
     assert.deepStrictEqual(
       helpers.classifyWorkspaceVariable(definition({ type }), SUPPLIER_CASE),
       helpers.classifyWorkspaceVariable(definition({ type }), SUPPLIER_TASK),
@@ -2834,4 +2854,559 @@ test("a producer-backed record reads its multi-row sets instead of reporting the
   const text = ui.formatResultsAsText({ mode: "native", rows }, rows);
   assert.match(text, /1 row: \[\{"bank_name":"HJ","bank_country":"NL"\}\]/);
   assert.doesNotMatch(text, /\(not stored\)/);
+});
+
+/* ---------------------------------------------------------------------------
+ * Multi-row variable sets on Workspace.
+ *
+ * The Workspace form exposes a set as one container entry: the raw value is a
+ * JSON array of row objects and displayValue is the same array with display
+ * labels substituted. That pair is what "mrvs-pair" verifies, and reading it
+ * hands over every column of every row at once — which is why the read is
+ * gated on the surface's proof, the classic column-safety rule, and a
+ * per-surface allowlist of the column types the container renders raw.
+ * ------------------------------------------------------------------------ */
+
+function workspaceMrvsDefinition(overrides) {
+  return mrvsDefinition(Object.assign({
+    name: "bank_accounts",
+    label: "Bank Accounts",
+    liveReadAllowed: true,
+    liveReadBlockedReason: "",
+    mrvsColumnsSafe: true,
+    mrvsColumnTypes: [
+      { type: "6", label: "Single Line Text" },
+      { type: "8", label: "Reference" },
+    ],
+  }, overrides || {}));
+}
+
+function workspaceMrvsLive(def, value, displayValue, overrides) {
+  return Object.assign({
+    name: def.name,
+    questionId: def.questionId,
+    foundEntry: true,
+    visible: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: value,
+    liveDisplayValueAvailable: displayValue != null,
+    liveDisplayValue: displayValue == null ? "" : displayValue,
+    liveLayer: 1,
+  }, overrides || {});
+}
+
+function workspaceMrvsRow(def, stored, liveEntry, surfaceKey) {
+  return loadNativeHelpers().buildNativeVariableRows(
+    [def],
+    Object.assign(
+      { storedReadStatus: "success", metadataRows: [] },
+      mrvsResult(def.variableSet, mrvsStored(stored, {
+        comparisonModes: { bank_name: "scalar", bank_country: "scalar" },
+      }))
+    ),
+    liveEntry ? [liveEntry] : [],
+    {
+      workspace: true,
+      workspaceSurfaceKey: surfaceKey === undefined ? SUPPLIER_CASE : surfaceKey,
+      timeZone: "Europe/London",
+      zoneSource: "page",
+    }
+  )[0];
+}
+
+const MRVS_RAW = '[{"bank_name":"HJ","bank_country":"0d38b7111b121100763d91eebc0713e8"}]';
+const MRVS_DISPLAY = '[{"bank_name":"HJ","bank_country":"Netherlands"}]';
+const MRVS_STORED = [{ bank_name: "HJ", bank_country: "0d38b7111b121100763d91eebc0713e8" }];
+
+test("a Workspace multi-row set is requested and compared where the surface proves it", () => {
+  const api = liveRequestApi();
+  const def = workspaceMrvsDefinition();
+  const requests = api.workspaceLiveValueRequests([def], SUPPLIER_CASE);
+  assert.deepStrictEqual(requests, [{
+    name: "bank_accounts",
+    fieldName: "variables.bank_accounts",
+    // The container entry is keyed by the variable set, which is exactly the
+    // question id the MRVS definition carries, so the MAIN-world identity gate
+    // needs no special case.
+    questionId: MRVS_SET_ID,
+    type: "34",
+    dateKind: "",
+    liveLayer: 1,
+  }]);
+
+  const row = workspaceMrvsRow(def, MRVS_STORED, workspaceMrvsLive(def, MRVS_RAW, MRVS_DISPLAY));
+  assert.strictEqual(row.isMrvs, true);
+  assert.strictEqual(row.workspaceCandidate, true);
+  assert.strictEqual(row.storedRowCount, 1);
+  assert.strictEqual(row.liveRowCount, 1);
+  assert.strictEqual(row.comparison, "match");
+  assert.match(row.reason, /Stored and live Workspace rows match/);
+
+  // Key order differs between the reassembled stored side and the form's own
+  // emission order, and that is not a difference.
+  const reordered = workspaceMrvsRow(
+    def,
+    MRVS_STORED,
+    workspaceMrvsLive(
+      def,
+      '[{"bank_country":"0d38b7111b121100763d91eebc0713e8","bank_name":"HJ"}]',
+      '[{"bank_country":"Netherlands","bank_name":"HJ"}]'
+    )
+  );
+  assert.strictEqual(reordered.comparison, "match");
+
+  const changed = workspaceMrvsRow(
+    def,
+    MRVS_STORED,
+    workspaceMrvsLive(
+      def,
+      '[{"bank_name":"KL","bank_country":"0d38b7111b121100763d91eebc0713e8"}]',
+      '[{"bank_name":"KL","bank_country":"Netherlands"}]'
+    )
+  );
+  assert.strictEqual(changed.comparison, "differs");
+});
+
+test("an unproven Workspace surface lists a multi-row set and says so plainly", () => {
+  const api = liveRequestApi();
+  const def = workspaceMrvsDefinition();
+  // A surface with no policy map at all, and an empty key, are both covered:
+  // neither may read the set, and neither may imply the form was asked.
+  ["psm/workspace:sc_req_item", ""].forEach((surfaceKey) => {
+    assert.deepStrictEqual(api.workspaceLiveValueRequests([def], surfaceKey), []);
+    const row = workspaceMrvsRow(def, MRVS_STORED, null, surfaceKey);
+    assert.strictEqual(row.isMrvs, true);
+    assert.strictEqual(row.workspaceCandidate, false);
+    assert.strictEqual(row.comparison, "not-comparable");
+    // The stored side is still real, so the row is not empty.
+    assert.strictEqual(row.storedLookup, "found");
+    assert.strictEqual(row.storedRowCount, 1);
+    assert.match(row.reason, /listed but not compared on this Workspace surface/);
+    // The failure mode this replaces: wording that reads as a fact about the
+    // form, when the form was never asked at all.
+    assert.doesNotMatch(row.reason, /No live multi-row value was available/);
+    assert.doesNotMatch(row.reason, /match/);
+  });
+});
+
+test("a Workspace multi-row set is never read when a column type is unproven there", () => {
+  const api = liveRequestApi();
+  // A Date/Time column inside the container is rendered in the user's date
+  // format and the session timezone, not raw, so a set holding one would
+  // report a difference in a record where none exists.
+  const withDateTime = workspaceMrvsDefinition({
+    mrvsColumnTypes: [
+      { type: "6", label: "Single Line Text" },
+      { type: "10", label: "Date/Time" },
+    ],
+  });
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([withDateTime], SUPPLIER_CASE), []);
+  const row = workspaceMrvsRow(withDateTime, MRVS_STORED, null);
+  assert.strictEqual(row.workspaceCandidate, false);
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /has not verified how Date\/Time is represented inside a multi-row set/);
+
+  // Column evidence does not transfer between surfaces either: a Checkbox
+  // column is proven inside a supplier set and not inside a SOW one.
+  const withCheckbox = workspaceMrvsDefinition({
+    mrvsColumnTypes: [
+      { type: "6", label: "Single Line Text" },
+      { type: "7", label: "Checkbox" },
+    ],
+  });
+  assert.strictEqual(
+    api.workspaceLiveValueRequests([withCheckbox], SUPPLIER_CASE).length,
+    1
+  );
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([withCheckbox], SOW), []);
+
+  // A set whose columns were never enumerated is refused, not assumed empty.
+  const unknownColumns = workspaceMrvsDefinition({ mrvsColumnTypes: null });
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([unknownColumns], SUPPLIER_CASE), []);
+  assert.match(
+    workspaceMrvsRow(unknownColumns, MRVS_STORED, null).reason,
+    /column definitions were not read/
+  );
+
+  // The classic all-columns-safe rule still gates the Workspace read.
+  const unsafe = workspaceMrvsDefinition({
+    liveReadAllowed: false,
+    liveReadBlockedReason:
+      "Live multi-row value was not read because its columns could not all be verified as safe and comparable.",
+  });
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([unsafe], SUPPLIER_CASE), []);
+  assert.match(
+    workspaceMrvsRow(unsafe, MRVS_STORED, null).reason,
+    /could not all be verified as safe and comparable/
+  );
+});
+
+test("the Workspace multi-row representation is verified before any comparison", () => {
+  const helpers = loadNativeHelpers();
+  const policy = { disposition: "mrvs", validator: "mrvs-pair", layer: 1 };
+  const source = (value, displayValue) => ({
+    foundEntry: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: value,
+    liveDisplayValueAvailable: displayValue != null,
+    liveDisplayValue: displayValue == null ? "" : displayValue,
+  });
+  const verify = (value, displayValue) =>
+    helpers.workspaceLiveValueForComparison(policy, source(value, displayValue), "");
+
+  assert.deepStrictEqual(verify(MRVS_RAW, MRVS_DISPLAY), { ok: true, value: MRVS_RAW });
+  assert.deepStrictEqual(verify("[]", "[]"), { ok: true, value: "[]" });
+
+  // Every way the pair can fail to be the observed shape refuses rather than
+  // falling through to a raw string comparison.
+  [
+    [MRVS_RAW, null],
+    [MRVS_RAW, ""],
+    [MRVS_RAW, '[{"bank_name":"HJ"}]'],
+    [MRVS_RAW, "[]"],
+    [MRVS_RAW, '["HJ"]'],
+    ['{"bank_name":"HJ"}', '{"bank_name":"HJ"}'],
+    ["not json", "not json"],
+    ["[null]", "[null]"],
+  ].forEach(([value, displayValue]) => {
+    const verdict = verify(value, displayValue);
+    assert.strictEqual(verdict.ok, false, JSON.stringify([value, displayValue]));
+    assert.match(verdict.reason, /multi-row representation could not be verified/);
+  });
+
+  // And the same refusal reaches the panel row rather than a comparison.
+  const def = workspaceMrvsDefinition();
+  const row = workspaceMrvsRow(
+    def,
+    MRVS_STORED,
+    workspaceMrvsLive(def, MRVS_RAW, '[{"bank_name":"HJ"}]')
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /multi-row representation could not be verified/);
+});
+
+test("Workspace candidates are exactly the rows a live read was requested for", () => {
+  const api = liveRequestApi();
+  const helpers = loadNativeHelpers();
+  const definitions = [
+    definition({ name: "short_text", type: "6", questionId: id(1401) }),
+    definition({ name: "yes_no", type: "1", questionId: id(1402) }),
+    definition({ name: "lookup", type: "18", questionId: id(1403) }),
+    definition({ name: "attachment", type: "33", questionId: id(1404) }),
+    definition({ name: "needed_by", type: "9", questionId: id(1405) }),
+    workspaceMrvsDefinition(),
+  ];
+  const requested = api
+    .workspaceLiveValueRequests(definitions, SUPPLIER_CASE)
+    .map((request) => request.name)
+    .sort();
+  const candidates = helpers
+    .buildNativeVariableRows(
+      definitions,
+      Object.assign(
+        {
+          storedReadStatus: "success",
+          metadataRows: definitions
+            .filter((def) => !def.isMrvs)
+            .map((def) => storedRow(def, "")),
+        },
+        mrvsResult(MRVS_SET_ID, mrvsStored([]))
+      ),
+      [],
+      { workspace: true, workspaceSurfaceKey: SUPPLIER_CASE, timeZone: "", zoneSource: "page" }
+    )
+    .filter((row) => row.workspaceCandidate)
+    .map((row) => row.name)
+    .sort();
+  assert.deepStrictEqual(candidates, requested);
+  // Types 1, 18 and 33 are now proven on this surface; type 9 is not.
+  assert.deepStrictEqual(
+    requested,
+    ["attachment", "bank_accounts", "lookup", "short_text", "yes_no"]
+  );
+});
+
+test("the column types a multi-row set is built from are read from its definitions", () => {
+  const helpers = loadNativeHelpers();
+  assert.deepStrictEqual(
+    helpers.nativeMrvsColumnTypes([
+      { type: { value: "6", display_value: "Single Line Text" } },
+      { type: { value: "10", display_value: "Date/Time" } },
+    ]),
+    [
+      { type: "6", label: "Single Line Text" },
+      { type: "10", label: "Date/Time" },
+    ]
+  );
+  assert.deepStrictEqual(helpers.nativeMrvsColumnTypes(null), []);
+});
+
+test("a date column inside a multi-row set stops the live read on every surface", () => {
+  const helpers = loadNativeHelpers();
+  const withDate = mrvsDefinition({ mrvsColumnsSafe: true });
+  withDate.mrvsColumnTypes = [
+    { type: "6", label: "Single Line Text" },
+    { type: "10", label: "Date/Time" },
+  ];
+  const withoutDate = mrvsDefinition({ mrvsColumnsSafe: true });
+  withoutDate.mrvsColumnTypes = [
+    { type: "6", label: "Single Line Text" },
+    { type: "8", label: "Reference" },
+  ];
+  const unsafe = mrvsDefinition({ mrvsColumnsSafe: false });
+  unsafe.mrvsColumnTypes = [{ type: "10", label: "Date/Time" }];
+
+  helpers.applyNativeMrvsLiveReadPolicy(
+    [withDate, withoutDate, unsafe],
+    mrvsResult(MRVS_SET_ID, mrvsStored([]))
+  );
+
+  assert.strictEqual(withoutDate.liveReadAllowed, true);
+  assert.strictEqual(withoutDate.liveReadBlockedReason, "");
+
+  // The form hands the whole set over with the date cell already formatted to
+  // the user's date format and shifted into the session timezone, so comparing
+  // it against stored UTC reports a difference that does not exist.
+  assert.strictEqual(withDate.liveReadAllowed, false);
+  assert.match(
+    withDate.liveReadBlockedReason,
+    /renders Date\/Time inside a set in the user's date format and timezone/
+  );
+
+  // A column that could not be verified at all may be a secret, and that is
+  // the stronger reason to refuse.
+  assert.strictEqual(unsafe.liveReadAllowed, false);
+  assert.match(unsafe.liveReadBlockedReason, /could not all be verified as safe and comparable/);
+
+  // The classic panel therefore lists the set rather than reporting a
+  // difference it cannot stand behind.
+  const rows = loadNativeHelpers().buildNativeVariableRows(
+    [withDate],
+    Object.assign(
+      { storedReadStatus: "success", metadataRows: [] },
+      mrvsResult(MRVS_SET_ID, mrvsStored([{ due: "2026-04-21 14:13:37" }]))
+    ),
+    []
+  );
+  assert.strictEqual(rows[0].comparison, "not-comparable");
+  assert.strictEqual(rows[0].storedRowCount, 1);
+  assert.match(rows[0].reason, /user's date format and timezone/);
+});
+
+/* ---------------------------------------------------------------------------
+ * A catalog item whose attached variable set has been swapped since the record
+ * was answered. The item defines `commodities` with one question id; the
+ * record answered — and the form is bound to — a different question of the
+ * same name in a newer set. Observed live on a supplier case, where it emptied
+ * the whole Workspace panel.
+ * ------------------------------------------------------------------------ */
+
+const OLD_SET_ID = id(800);
+const NEW_SET_ID = id(801);
+
+function answerDefinition(overrides) {
+  return Object.assign({
+    name: "commodities",
+    label: "Commodities",
+    type: "6",
+    typeDisplay: "Single Line Text",
+    variableSet: NEW_SET_ID,
+    setName: "",
+    questionId: id(811),
+    hiddenType: false,
+    isMrvs: false,
+    inactive: false,
+    sourceIndex: 0,
+  }, overrides || {});
+}
+
+function reconcileSetMeta() {
+  return new Map([
+    [OLD_SET_ID, { id: OLD_SET_ID, internalName: "old_set", name: "", title: "Old Set", isMrvs: false }],
+    [NEW_SET_ID, { id: NEW_SET_ID, internalName: "new_set", name: "", title: "New Set", isMrvs: false }],
+  ]);
+}
+
+test("a record's own answer outranks a catalog definition that shares its name", () => {
+  const helpers = loadNativeHelpers();
+  const catalogRow = definition({
+    name: "commodities",
+    questionId: id(810),
+    variableSet: OLD_SET_ID,
+    setName: "Old Set",
+    sourceIndex: 0,
+  });
+  const unanswered = definition({
+    name: "never_answered",
+    questionId: id(812),
+    sourceIndex: 1,
+  });
+  const reconciled = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow, unanswered],
+    [answerDefinition()],
+    reconcileSetMeta()
+  );
+
+  // The row keeps its place in the item's order but now names the question the
+  // record actually answered, and the set that question really belongs to.
+  assert.strictEqual(reconciled.length, 2);
+  assert.strictEqual(reconciled[0].name, "commodities");
+  assert.strictEqual(reconciled[0].questionId, id(811));
+  assert.strictEqual(reconciled[0].variableSet, NEW_SET_ID);
+  assert.strictEqual(reconciled[0].setName, "New Set");
+  assert.strictEqual(reconciled[0].sourceIndex, 0);
+  assert.strictEqual(reconciled[0].definitionFromAnswer, true);
+
+  // A variable the item defines and this record never answered is untouched:
+  // listing it is the reason the item is enumerated at all.
+  assert.strictEqual(reconciled[1].questionId, id(812));
+  assert.strictEqual(reconciled[1].definitionFromAnswer, undefined);
+
+  // And the panel says which authority it used rather than quietly swapping.
+  const rows = helpers.buildNativeVariableRows(
+    reconciled,
+    {
+      storedReadStatus: "success",
+      metadataRows: [storedRow(reconciled[0], "steel", { optionSysId: id(820) })],
+    },
+    [liveRow(reconciled[0], "steel")]
+  );
+  assert.strictEqual(rows[0].comparison, "match");
+  assert.match(rows[0].reason, /Definition taken from this record's own answer/);
+});
+
+test("name reconciliation refuses every ambiguous case", () => {
+  const helpers = loadNativeHelpers();
+  const setMeta = reconcileSetMeta();
+  const catalogRow = definition({
+    name: "commodities",
+    questionId: id(810),
+    variableSet: OLD_SET_ID,
+    sourceIndex: 0,
+  });
+
+  // The catalog definition's own id IS answered, so this is a genuine duplicate
+  // name and belongs to the duplicate-name guard, not to a silent swap here.
+  const bothAnswered = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow],
+    [answerDefinition({ questionId: id(810), variableSet: OLD_SET_ID }), answerDefinition()],
+    setMeta
+  );
+  assert.strictEqual(bothAnswered[0].questionId, id(810));
+  assert.strictEqual(bothAnswered[0].definitionFromAnswer, undefined);
+
+  // Two answers share the name: no single authority, so nothing is chosen.
+  const twoAnswers = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow],
+    [answerDefinition({ questionId: id(811) }), answerDefinition({ questionId: id(813) })],
+    setMeta
+  );
+  assert.strictEqual(twoAnswers[0].questionId, id(810));
+
+  // Two catalog definitions share the name: same reasoning from the other side.
+  const twoDefinitions = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow, definition({ name: "commodities", questionId: id(814), sourceIndex: 1 })],
+    [answerDefinition()],
+    setMeta
+  );
+  assert.strictEqual(twoDefinitions[0].questionId, id(810));
+  assert.strictEqual(twoDefinitions[1].questionId, id(814));
+
+  // A multi-row parent is keyed by its variable set, not by an answer row, and
+  // is never substituted.
+  const mrvsParent = mrvsDefinition({ name: "commodities", sourceIndex: 0 });
+  const mrvsKept = helpers.reconcileProducerDefinitionsWithAnswers(
+    [mrvsParent],
+    [answerDefinition()],
+    setMeta
+  );
+  assert.strictEqual(mrvsKept[0].questionId, MRVS_SET_ID);
+  assert.strictEqual(mrvsKept[0].isMrvs, true);
+
+  // An answer whose set is a multi-row set is a cell, not a variable.
+  const mrvsSetMeta = new Map([
+    [NEW_SET_ID, { id: NEW_SET_ID, internalName: "new_set", name: "", title: "New Set", isMrvs: true }],
+  ]);
+  const cellIgnored = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow],
+    [answerDefinition()],
+    mrvsSetMeta
+  );
+  assert.strictEqual(cellIgnored[0].questionId, id(810));
+
+  // A substituted definition of a structural type is dropped, exactly as the
+  // enumeration would have dropped it in the first place.
+  const structural = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow],
+    [answerDefinition({ type: "11", typeDisplay: "Label" })],
+    setMeta
+  );
+  assert.deepStrictEqual(structural, []);
+});
+
+test("a producer record reads the value of a swapped-set variable end to end", async () => {
+  const RECORD_ID = id(1500);
+  const ITEM = id(1501);
+  const catalogRow = definition({
+    name: "commodities",
+    questionId: id(810),
+    variableSet: OLD_SET_ID,
+  });
+  const answered = definition({
+    name: "commodities",
+    questionId: id(811),
+    variableSet: NEW_SET_ID,
+  });
+
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      return [producerMetadataRow(answered, id(1510), {
+        "question.cat_item": ITEM,
+        "question.variable_set": NEW_SET_ID,
+      })];
+    }
+    if (table === "question_answer" && query.startsWith("sys_idIN")) {
+      return [{ sys_id: id(1510), value: "steel" }];
+    }
+    if (table === "item_option_new_set") {
+      const ids = query.replace("sys_idIN", "").split(",");
+      return ids.map((setId) => ({
+        sys_id: setId,
+        name: "",
+        internal_name: setId === OLD_SET_ID ? "old_set" : "new_set",
+        title: setId === OLD_SET_ID ? "Old Set" : "New Set",
+        type: { value: "one_to_one", display_value: "One to One" },
+      }));
+    }
+    if (table === "item_option_new" && query === "cat_item=" + ITEM) return [];
+    if (table === "io_set_item") return [{ variable_set: OLD_SET_ID, order: "100" }];
+    if (table === "item_option_new" && query.startsWith("variable_setIN")) {
+      return [nativeDefinitionRow(catalogRow)];
+    }
+    return [];
+  });
+
+  const recordData = await helpers.fetchNativeProducerRecordData("sn_example_case", RECORD_ID);
+  const row = recordData.definitions.find((entry) => entry.name === "commodities");
+  assert.strictEqual(row.questionId, id(811));
+  assert.strictEqual(row.definitionFromAnswer, true);
+
+  // Before reconciliation the stored read found nothing under the catalog id
+  // and the row claimed the record had never answered it.
+  const rows = helpers.buildNativeVariableRows(
+    recordData.definitions,
+    recordData,
+    [],
+    { workspace: true, workspaceSurfaceKey: SUPPLIER_CASE, timeZone: "", zoneSource: "page" }
+  );
+  const built = rows.find((entry) => entry.name === "commodities");
+  assert.strictEqual(built.storedLookup, "found");
+  assert.strictEqual(built.storedValue, "steel");
+
+  // And the Workspace live read now asks the form for the id the form has.
+  const api = liveRequestApi();
+  const requests = api.workspaceLiveValueRequests(recordData.definitions, SUPPLIER_CASE);
+  assert.deepStrictEqual(requests.map((request) => request.questionId), [id(811)]);
 });

@@ -91,7 +91,15 @@ The suites cover:
   that both worlds gate on the identical surface allowlist and an unlisted
   surface is refused before any read,
   producer-backed Workspace records and the definition-completeness field each
-  stored reader actually sets,
+  stored reader actually sets, multi-row sets on Workspace — that a proven
+  surface requests and compares one, that an unproven surface says it was
+  listed rather than implying the form was asked, that the `mrvs-pair`
+  representation check refuses every way the value/display pair can fail, that
+  the panel's candidate count is exactly the set of rows a live read was
+  requested for, and that a date column inside a set blocks the live read on
+  every path including the classic one, reconciling a catalog-item definition
+  against the record's own answer when a swapped variable set leaves two
+  questions sharing a name — including every ambiguous case it must refuse —
   Select Box raw-value/display-label separation, malformed representation
   rejection, end-to-end Checkbox boolean comparison refusing both a disagreeing
   and an unrecognised pair, tri-state visibility, verdict-derived panel

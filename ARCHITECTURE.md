@@ -319,13 +319,21 @@ required before either `value` or `displayValue` is touched. The layer-1 type
 allowlist is **per surface**, keyed by the same pair, because per-type evidence
 never transfers between surfaces: every type was proven against one component
 on one route, and a surface with no map of its own compares nothing rather than
-inheriting another's. SOW RITMs support types 2, 5, 6, 7, 8, 9, 10, 21, 26 and
-31; the supplier surfaces support 2, 5, 6, 7, 8, 21 and 26, each with a runtime
-shape validator. Date/Time is deliberately absent there: it is stored on a
-supplier case but was never rendered into the form, so the raw-to-display-to-zone
-representation proof that makes a Date/Time comparison safe could not be run at
-all. Types 9 and 31 had no stored example to prove. Other types remain listed
-but uncompared. For Select Box (5), the
+inheriting another's. SOW RITMs support types 1, 2, 5, 6, 7, 8, 9, 10, 18, 21,
+26, 31, 33 and 34; the supplier surfaces support 1, 2, 5, 6, 7, 8, 10, 18, 21,
+26, 33 and 34, each with a runtime shape validator. Types 9 and 31 stay absent
+on the supplier surfaces because no probed supplier record stores one, so there
+is no evidence to allowlist from. Other types remain listed but uncompared.
+
+Yes/No (1) has no single stored spelling — `Yes`/`No` on one probed instance
+and `true`/`false` on the other — which is why it is compared by boolean
+meaning rather than as a raw string. Lookup Select
+Box (18) is validated as a choice pair, not a reference: its raw value is the
+lookup table's own value column, which was free text in 256 of 293 stored rows
+on the configured instance, a sys_id in 28 and comma-bearing text in 9, so
+requiring a sys_id would have refused most real lookups. Attachment (33) is
+validated as a sys_id, which is what every observed stored and live value was.
+For Select Box (5), the
 raw string `value` is compared and a string `displayValue` is required only to
 validate the observed pair shape; the display label is never substituted for
 the raw choice value. Checkbox (7) compares by boolean meaning through its own
@@ -412,11 +420,59 @@ when the complete set definition proves every child column positively safe and
 comparable and the stored metadata reveals no withheld column. Otherwise the
 set stays listed but `g_form.getValue()` is never called for it; this prevents a
 masked or sensitive child from crossing the MAIN-world boundary inside the
-parent JSON. When answered direct
+parent JSON.
+
+A Date or Date/Time **column inside a set** blocks the live read on every path,
+classic included. The same type read as a standalone variable comes back as raw
+canonical UTC and the comparison converts storage into the form's timezone to
+meet it; inside a set it does not. The whole set arrives as one value with the
+date cell already formatted to the user's date format and shifted into the
+session timezone: one measured cell read `21-04-2026 07:13:37` where storage
+held `2026-04-21 14:13:37`, and the classic panel reported that record as
+differing when nothing about it had changed. Converting back is not a fix,
+because the set is compared as a whole and a format that failed to parse would
+become a difference again, so the set is listed with its stored rows and never
+compared, and the row says which column caused it.
+
+Workspace reads the same set through the catalog form rather than `g_form`. It
+is exposed as one container entry under `variables.<set internal name>`, keyed
+by the variable set's own sys_id — which is exactly the question id the parent
+row already carries, so the entry identity gate needs no special case. Its raw
+value is the JSON row array and its `displayValue` is the same array with
+display labels substituted, and the `mrvs-pair` validator requires both to
+parse as arrays of plain objects of equal length with identical column names
+row for row before the raw array is compared. On top of the rules above, each
+Workspace surface carries its **own** allowlist of the column types it has seen
+the container render raw — `5`, `6` and `8` on SOW; `1`, `2`, `5`, `6`, `7`,
+`8` and `33` on the supplier surfaces — because the type allowlist a surface
+proves for standalone variables says nothing about what that container does
+with the same type. A set holding any other column type is listed and never
+read, and the row names the type rather than implying the form was asked and
+had nothing. When answered direct
 questions expose one unique `question.cat_item`, the same catalog-item reader
 enumerates unanswered direct and attached-set definitions; an absent or
 ambiguous relationship remains answers-only instead of guessing through shared
 variable-set attachments.
+
+That enumerated list is then reconciled against the record's own answers,
+because the two can legitimately disagree. A catalog item's attached variable
+sets change over time, and a record answered before such a change holds answers
+against the old question rows while the item now defines new ones carrying the
+same names — observed live as an item attaching a 2024 variable set while a
+2025 case answered, and the form still bound, a different set's questions of
+exactly those names. The item is authoritative about which variables exist; the
+record's answers are authoritative about which question each of its own values
+belongs to. So where exactly one unanswered catalog definition and exactly one
+answer share a name, the answer's question id, type and variable set replace
+the catalog definition's, and the row says the definition came from the record's
+own answer. A catalog definition whose own id is answered is left alone, so a
+genuine duplicate name still reaches the duplicate-name guard rather than being
+resolved silently; two definitions or two answers sharing a name resolve
+nothing; multi-row parents are keyed by variable set and never substituted.
+Without this, storage held nothing under the enumerated id — so the row claimed
+the record had never answered a variable it plainly had — and on Workspace the
+live read asked the form for an id the form does not have, which refuses the
+whole snapshot and empties the panel.
 
 The Service Portal path remains live-only. Masked type `25` is treated as a
 secret and listed redacted. Numeric type `18` is not treated as Hidden; only an
