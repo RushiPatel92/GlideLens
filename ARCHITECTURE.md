@@ -452,7 +452,9 @@ Workspace surface carries its **own** allowlist of the column types it has seen
 the container render raw — `5`, `6` and `8` on SOW; `1`, `2`, `5`, `6`, `7`,
 `8` and `33` on the supplier surfaces — because the type allowlist a surface
 proves for standalone variables says nothing about what that container does
-with the same type. A set holding any other column type is listed and never
+with the same type. SOW's shorter list is not an oversight: the records that
+would widen it render no catalog form on that route at all, so their container
+values cannot be read to prove anything. A set holding any other column type is listed and never
 read, and the row names the type rather than implying the form was asked and
 had nothing.
 

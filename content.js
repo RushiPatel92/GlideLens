@@ -1497,6 +1497,17 @@ const NATIVE_VARIABLE_TYPE_POLICIES = new Map([
  * references as sys_ids against display names, choices as stored values
  * against labels, attachments as attachment sys_ids against file names.
  */
+/*
+ * SOW's list is short because that is all its sets have been seen to hold, and
+ * a deliberate attempt to widen it found nothing to widen it with: of the sets
+ * on that instance holding another type, every candidate request item rendered
+ * no catalog form at all on the Workspace route -- no form component, no
+ * Variables tab, nothing in the fields map -- while a control record mounted
+ * normally in the same session. Multi Line Text, Checkbox, Email and Duration
+ * are each waiting on a record that both holds one and renders its form.
+ * Duration is worth suspecting when it does: it is a formatted type, so expect
+ * it to behave like a date inside a container rather than like raw text.
+ */
 const WORKSPACE_SOW_MRVS_COLUMN_TYPES = new Set(["5", "6", "8"]);
 const WORKSPACE_SUPPLIER_MRVS_COLUMN_TYPES = new Set([
   "1", "2", "5", "6", "7", "8", "33",
