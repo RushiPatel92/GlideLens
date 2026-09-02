@@ -325,15 +325,21 @@ inheriting another's. SOW RITMs support types 1, 2, 5, 6, 7, 8, 9, 10, 18, 21,
 on the supplier surfaces because no probed supplier record stores one, so there
 is no evidence to allowlist from. Other types remain listed but uncompared.
 
-Yes/No (1) has no single stored spelling — `Yes`/`No` on one probed instance
-and `true`/`false` on the other — which is why it is compared by boolean
-meaning rather than as a raw string. Lookup Select
+Yes/No (1) has no single stored spelling. One probed instance stored
+`Yes`/`No` and another `true`/`false`, and a single instance stored both —
+the spelling follows whichever write path produced the value, not the
+platform — which is why it is compared by boolean meaning rather than as a
+raw string. Lookup Select
 Box (18) is validated as a choice pair, not a reference: its raw value is the
 lookup table's own value column, which was free text in 256 of 293 stored rows
 on the configured instance, a sys_id in 28 and comma-bearing text in 9, so
 requiring a sys_id would have refused most real lookups. Attachment (33) is
 validated as a sys_id, which is what every observed stored and live value was.
-For Select Box (5), the
+Both were re-proven on a second instance through a catalog fixture the
+platform itself ordered: the lookup read back its raw stored value in both
+shapes it takes — a free-text label and a sys_id — each against a display
+label, and the attachment read back its attachment sys_id against the file
+name. For Select Box (5), the
 raw string `value` is compared and a string `displayValue` is required only to
 validate the observed pair shape; the display label is never substituted for
 the raw choice value. Checkbox (7) compares by boolean meaning through its own

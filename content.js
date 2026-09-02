@@ -1507,8 +1507,11 @@ const WORKSPACE_SUPPLIER_MRVS_COLUMN_TYPES = new Set([
 // classic-comparable type merely because its stored representation is known.
 //
 // Type 1 (Yes/No) does not have one stored spelling. It holds "Yes"/"No" on
-// the configured instance and "true"/"false" on the stock one, which is
-// exactly why it is compared by boolean meaning rather than as a raw string:
+// the configured instance, and the stock one holds BOTH — "Yes" from an
+// order placed through the portal and "true" from one placed through the
+// catalog API, which stored verbatim what it was handed. The spelling
+// follows the write path rather than the platform, which is exactly why it
+// is compared by boolean meaning rather than as a raw string:
 // that mode folds yes/no, true/false and 1/0 into the same two buckets on both
 // sides, and an empty value stays its own state. A raw comparison would report
 // a difference between spellings that mean the same thing.
@@ -1522,6 +1525,10 @@ const WORKSPACE_SUPPLIER_MRVS_COLUMN_TYPES = new Set([
 // value was — the attachment's own record, against a file name in
 // displayValue. A multi-attachment value would fall outside that shape and
 // stay uncompared, which is the right direction to fail in.
+//
+// Types 18 and 33 were each re-proven on a second instance, against a
+// catalog fixture the platform itself ordered rather than a hand-written
+// row: the lookup in both shapes it takes, and a real attachment.
 //
 // Type 34 is the multi-row variable set. Its live value is the whole set at
 // once, so it carries the same all-columns-safe precondition the classic path
