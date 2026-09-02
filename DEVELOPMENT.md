@@ -59,8 +59,11 @@ The suites cover:
   shared panel headings.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
-  encoded URLs, and the complete Workspace experience path used to distinguish
-  exact SOW support from multi-segment or other experiences.
+  encoded URLs, and the complete Workspace experience path. Workspace support is
+  asserted as an `(experience path, table)` pair rather than a segment count:
+  each supported pair resolves to its stored reader, and every half-match — the
+  right table on the wrong experience, the right experience with the wrong
+  table, a path prefix, a reversed or extended path — is refused.
 - `open_url.test.js` — `OPEN_URL` tab placement beside the originating tab, and
   the fallback to Chrome's default placement when tab context is missing or
   invalid.
@@ -83,7 +86,12 @@ The suites cover:
   prototype collisions, portal masked-type behavior, copy safety, and native
   panel accessibility/source invariants. Workspace coverage includes frame-0
   transport, identity-before-geometry form selection, collapsed/stale forms,
-  exact safe state-map pulls, `canRead` non-access, its independent type policy,
+  exact safe state-map pulls, `canRead` non-access, its per-surface type policy
+  and the proof that no surface inherits another's proven types,
+  that both worlds gate on the identical surface allowlist and an unlisted
+  surface is refused before any read,
+  producer-backed Workspace records and the definition-completeness field each
+  stored reader actually sets,
   Select Box raw-value/display-label separation, malformed representation
   rejection, end-to-end Checkbox boolean comparison refusing both a disagreeing
   and an unrecognised pair, tri-state visibility, verdict-derived panel

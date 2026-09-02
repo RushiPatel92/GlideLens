@@ -277,9 +277,26 @@ separate `sys_user` or instance-property lookup. RITMs read
 when `question_answer` contains rows matching both the probed table and sys_id.
 A moved record or route aborts the comparison.
 
-Service Operations Workspace RITMs use a dedicated frame-0 MAIN-world snapshot;
-the reader never fans out across discovered frames. It accepts only a full
-experience path of exactly `/now/sow/record/sc_req_item/<sys_id>`. Catalog forms
+Supported Workspace records use a dedicated frame-0 MAIN-world snapshot; the
+reader never fans out across discovered frames. Support is allowlisted by the
+`(experience path, table)` **pair**, never by either half alone: today that is
+`sow` with `sc_req_item`, and `psm/workspace` with `sn_slm_case` or
+`sn_slm_task`. Segment count is not the rule — `sow` is one segment and
+`psm/workspace` is two — so `psm/workspace` with `sc_req_item`, `sow` with a
+supplier table, a path prefix such as `psm`, and any other experience are all
+refused with the truthful unsupported message. The pair also chooses the stored
+reader: an RITM route reads `sc_item_option` through its catalog item, and a
+supplier route reads the record's own `question_answer` rows, which is what
+both supplier tables actually store — a supplier task owns its answers rather
+than reading a parent's. A supplier route with no matching answer rows says so
+instead of presenting an empty panel.
+
+That allowlist exists twice, in `content.js` and again inside the MAIN-world
+snapshot function, because an injected function cannot close over extension
+scope and the service worker re-derives the route itself rather than trusting
+the message. A test asserts the two copies are identical; a silent drift would
+either start a read the snapshot then refuses, or let the snapshot answer for a
+surface the router never verified. Catalog forms
 are filtered by `sourceTable`/`sourceId` and corroborating composed-ancestor
 record identity before geometry is considered. One collapsed current form is
 valid; rectangle is used only to break same-record stale duplicates. A visible
@@ -298,9 +315,17 @@ half-pair or any supplied mismatch refuses the complete snapshot. The request
 list is independently allowlisted and excludes secrets, sensitive names,
 duplicates, prototype collisions, malformed definitions, and unverified types
 before MAIN-world injection. Within a requested entry, `canRead === true` is
-required before either `value` or `displayValue` is touched. Layer 1 supports
-only types 2, 5, 6, 7, 8, 9, 10, 21, 26, and 31, each with a runtime shape
-validator; other types remain listed but uncompared. For Select Box (5), the
+required before either `value` or `displayValue` is touched. The layer-1 type
+allowlist is **per surface**, keyed by the same pair, because per-type evidence
+never transfers between surfaces: every type was proven against one component
+on one route, and a surface with no map of its own compares nothing rather than
+inheriting another's. SOW RITMs support types 2, 5, 6, 7, 8, 9, 10, 21, 26 and
+31; the supplier surfaces support 2, 5, 6, 7, 8, 21 and 26, each with a runtime
+shape validator. Date/Time is deliberately absent there: it is stored on a
+supplier case but was never rendered into the form, so the raw-to-display-to-zone
+representation proof that makes a Date/Time comparison safe could not be run at
+all. Types 9 and 31 had no stored example to prove. Other types remain listed
+but uncompared. For Select Box (5), the
 raw string `value` is compared and a string `displayValue` is required only to
 validate the observed pair shape; the display label is never substituted for
 the raw choice value. Checkbox (7) compares by boolean meaning through its own

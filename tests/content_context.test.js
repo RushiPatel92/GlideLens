@@ -17,7 +17,8 @@ function loadContextHelpers() {
     source.slice(contextStart, contextEnd) +
       source.slice(sysIdStart, sysIdEnd) +
       "\nreturn { recordContextFromText, workspaceRecordContextFromText, " +
-        "workspaceRecordContextMatches, sysIdFromText };"
+        "workspaceRecordContextMatches, workspaceSupportedSurface, " +
+        "WORKSPACE_SUPPORTED_SURFACES, sysIdFromText };"
   )();
 }
 
@@ -78,6 +79,94 @@ test("Workspace route matching includes every experience segment", () => {
     }),
     false
   );
+});
+
+/*
+ * Workspace support is allowlisted by the (experience path, table) PAIR. The
+ * earlier rule -- one segment, and that segment is "sow" -- was never the real
+ * safety property; it was the shape the only supported surface happened to
+ * have. These assertions pin the pair rule itself, including that every
+ * half-match is still refused.
+ */
+test("Workspace support is decided by the experience path and table together", () => {
+  const surfaceOf = (url) =>
+    helpers.workspaceSupportedSurface(helpers.workspaceRecordContextFromText(url));
+  const url = (path, table) =>
+    "https://example.service-now.com/now/" + path + "/record/" + table + "/" + SYS_ID;
+
+  assert.deepStrictEqual(surfaceOf(url("sow", "sc_req_item")), {
+    kind: "ritm",
+    key: "sow:sc_req_item",
+  });
+  assert.deepStrictEqual(surfaceOf(url("psm/workspace", "sn_slm_case")), {
+    kind: "producer",
+    key: "psm/workspace:sn_slm_case",
+  });
+  assert.deepStrictEqual(surfaceOf(url("psm/workspace", "sn_slm_task")), {
+    kind: "producer",
+    key: "psm/workspace:sn_slm_task",
+  });
+
+  // Every half-match is refused: the right table on the wrong experience, the
+  // right experience with the wrong table, a prefix of a supported path, a
+  // reversed path, a longer path, and an unrelated multi-segment experience.
+  [
+    url("sow", "sn_slm_case"),
+    url("sow", "sn_slm_task"),
+    url("psm/workspace", "sc_req_item"),
+    url("psm", "sn_slm_case"),
+    url("workspace", "sn_slm_case"),
+    url("workspace/psm", "sn_slm_case"),
+    url("psm/workspace/extra", "sn_slm_case"),
+    url("workspace/agent", "sc_req_item"),
+    url("sow", "incident"),
+  ].forEach((candidate) => {
+    assert.strictEqual(surfaceOf(candidate), null, candidate + " must be refused");
+  });
+
+  assert.strictEqual(surfaceOf("https://example.service-now.com/incident.do"), null);
+  assert.strictEqual(helpers.workspaceSupportedSurface(null), null);
+});
+
+test("a supported pair still needs a well-formed record id", () => {
+  assert.strictEqual(
+    helpers.workspaceSupportedSurface({
+      experiencePath: ["psm", "workspace"],
+      table: "sn_slm_case",
+      sysId: "not-a-sys-id",
+    }),
+    null
+  );
+  assert.strictEqual(
+    helpers.workspaceSupportedSurface({ table: "sn_slm_case", sysId: SYS_ID }),
+    null
+  );
+});
+
+test("route matching still rejects a changed experience on a supported table", () => {
+  const before = {
+    experiencePath: ["psm", "workspace"],
+    table: "sn_slm_case",
+    sysId: SYS_ID,
+  };
+  assert.strictEqual(helpers.workspaceRecordContextMatches(before, { ...before }), true);
+  assert.strictEqual(
+    helpers.workspaceRecordContextMatches(before, { ...before, experiencePath: ["sow"] }),
+    false
+  );
+  assert.strictEqual(
+    helpers.workspaceRecordContextMatches(before, { ...before, table: "sn_slm_task" }),
+    false
+  );
+});
+
+test("every supported surface names a known stored reader", () => {
+  assert.ok(helpers.WORKSPACE_SUPPORTED_SURFACES.length > 0);
+  helpers.WORKSPACE_SUPPORTED_SURFACES.forEach((surface) => {
+    assert.ok(Array.isArray(surface.experiencePath) && surface.experiencePath.length > 0);
+    assert.match(surface.table, /^[a-z][a-z0-9_]*$/);
+    assert.ok(["ritm", "producer"].includes(surface.kind), surface.table + " kind");
+  });
 });
 
 test("an encoded classic list URL is decoded before table detection", () => {

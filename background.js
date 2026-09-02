@@ -3313,16 +3313,25 @@ function inspectWorkspaceVariableSnapshot(variables) {
     }
     return null;
   };
+  /* The same (experience path, table) pair allowlist the content script gates
+   * on, restated here because this function is injected into the MAIN world
+   * and cannot close over extension scope. The service worker re-derives the
+   * route itself rather than trusting the caller's: a page that is not an
+   * allowlisted surface must refuse here even if the message says otherwise.
+   * Keep this list identical to WORKSPACE_SUPPORTED_SURFACES in content.js. */
+  const supportedSurfaces = [
+    "sow:sc_req_item",
+    "psm/workspace:sn_slm_case",
+    "psm/workspace:sn_slm_task",
+  ];
   const route = parseRoute();
   result.route = route;
   if (
     !route ||
-    route.experiencePath.length !== 1 ||
-    route.experiencePath[0] !== "sow" ||
-    route.table !== "sc_req_item" ||
-    !validSysId(route.sysId)
+    !validSysId(route.sysId) ||
+    supportedSurfaces.indexOf(route.experiencePath.join("/") + ":" + route.table) < 0
   ) {
-    result.identityReason = "This is not a supported Service Operations Workspace RITM route.";
+    result.identityReason = "This is not a supported Workspace record route.";
     return result;
   }
 

@@ -180,6 +180,47 @@ function workspaceRecordContextFromText(text) {
   return null;
 }
 
+/*
+ * Workspace Variable Values is allowlisted per (experience path, table) PAIR,
+ * never by either half alone. Widening this list is a deliberate act: each
+ * entry means that surface's live rendering and its stored-side routing were
+ * both verified, and a pair that is absent is refused with the truthful
+ * unsupported message rather than guessed at.
+ *
+ * Matching the pair matters. `psm/workspace` may not borrow the RITM reader
+ * because it is a Workspace route, and `sow` may not borrow the producer
+ * reader because the table happens to be producer-backed. Segment count is not
+ * the rule and never was the point: `sow` is one segment and `psm/workspace`
+ * is two, and both are refused for any table not named beside them.
+ *
+ * `kind` selects the stored reader, not the panel wording: `ritm` reads
+ * sc_item_option through the RITM's catalog item, `producer` reads the
+ * record's own question_answer rows.
+ */
+const WORKSPACE_SUPPORTED_SURFACES = [
+  { experiencePath: ["sow"], table: "sc_req_item", kind: "ritm" },
+  { experiencePath: ["psm", "workspace"], table: "sn_slm_case", kind: "producer" },
+  { experiencePath: ["psm", "workspace"], table: "sn_slm_task", kind: "producer" },
+];
+
+function workspaceSurfaceKey(experiencePath, table) {
+  return (Array.isArray(experiencePath) ? experiencePath.join("/") : "") + ":" + table;
+}
+
+// The route's surface, or null when this exact pair is not supported.
+function workspaceSupportedSurface(route) {
+  if (!route || !Array.isArray(route.experiencePath)) return null;
+  const path = route.experiencePath.join("/");
+  const match = WORKSPACE_SUPPORTED_SURFACES.find(
+    (surface) =>
+      surface.experiencePath.join("/") === path && surface.table === route.table
+  );
+  // Shape-checked here rather than through isSysId so this gate stays with the
+  // other route helpers and depends on nothing defined further down the file.
+  if (!match || !/^[0-9a-f]{32}$/i.test(String(route.sysId || ""))) return null;
+  return { kind: match.kind, key: workspaceSurfaceKey(match.experiencePath, match.table) };
+}
+
 function workspaceRecordContextMatches(left, right) {
   if (!left || !right) return false;
   return (
@@ -1439,7 +1480,7 @@ const NATIVE_VARIABLE_TYPE_POLICIES = new Map([
 // Workspace values come from undocumented component state, so comparison is
 // independently positive-allowlisted per verified layer. Never inherit a
 // classic-comparable type merely because its stored representation is known.
-const WORKSPACE_VARIABLE_TYPE_POLICIES = new Map([
+const WORKSPACE_SOW_RITM_TYPE_POLICIES = new Map([
   ["2", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
   ["5", { disposition: "comparable", comparisonMode: "scalar", validator: "choice-pair", layer: 1 }],
   ["6", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
@@ -1450,6 +1491,50 @@ const WORKSPACE_VARIABLE_TYPE_POLICIES = new Map([
   ["21", { disposition: "comparable", comparisonMode: "set", validator: "sys-id-list", layer: 1 }],
   ["26", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
   ["31", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
+]);
+
+/*
+ * Per-type evidence does not transfer between Workspace surfaces: every entry
+ * above was proven against one component on one route. The supplier surfaces
+ * render through the same `sn-catalog-form` and the same `variables.<name>`
+ * fields map, but each type still had to be re-proven there against
+ * question_answer storage before it was listed below.
+ *
+ * Deliberately absent, and why:
+ *
+ * - 9 and 31 had no stored example on either probed supplier record, so there
+ *   is no evidence to allowlist from.
+ * - 10 (Date/Time) is stored on the supplier case but was never rendered into
+ *   the form, so the raw-to-display-to-zone representation proof — the thing
+ *   that makes a Date/Time comparison safe — could not be run at all.
+ * - 1, 18 and 33 compared exactly on both supplier records, but no Workspace
+ *   surface enables them yet. Enabling a type here that SOW still refuses
+ *   would make two surfaces disagree about the same type on the same
+ *   evidence standard; they belong to a separate, cross-surface decision.
+ *
+ * Two of the probed values did differ, and both were the comparison working:
+ * a hidden Checkbox whose committed state was empty while storage held
+ * "false", and a Multi Line Text holding an application JSON payload with a
+ * localised display label inside it, recomputed by the form in the session
+ * language. Neither is a representation defect, so neither type is withheld.
+ */
+const WORKSPACE_SUPPLIER_TYPE_POLICIES = new Map([
+  ["2", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
+  ["5", { disposition: "comparable", comparisonMode: "scalar", validator: "choice-pair", layer: 1 }],
+  ["6", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
+  ["7", { disposition: "comparable", comparisonMode: "boolean", validator: "boolean-pair", layer: 1 }],
+  ["8", { disposition: "comparable", comparisonMode: "scalar", validator: "sys-id", layer: 1 }],
+  ["21", { disposition: "comparable", comparisonMode: "set", validator: "sys-id-list", layer: 1 }],
+  ["26", { disposition: "comparable", comparisonMode: "scalar", validator: "text-pair", layer: 1 }],
+]);
+
+// Keyed by the same "<experience path>:<table>" pair the router allowlists, so
+// a surface can never silently inherit another surface's proven types. A
+// surface with no entry compares nothing and lists every variable instead.
+const WORKSPACE_TYPE_POLICIES_BY_SURFACE = new Map([
+  ["sow:sc_req_item", WORKSPACE_SOW_RITM_TYPE_POLICIES],
+  ["psm/workspace:sn_slm_case", WORKSPACE_SUPPLIER_TYPE_POLICIES],
+  ["psm/workspace:sn_slm_task", WORKSPACE_SUPPLIER_TYPE_POLICIES],
 ]);
 
 const NATIVE_PROTOTYPE_COLLISION_NAMES = new Set([
@@ -1485,7 +1570,7 @@ function classifyNativeVariable(definition) {
   return nativeTypePolicy(def.type, def.typeDisplay);
 }
 
-function classifyWorkspaceVariable(definition) {
+function classifyWorkspaceVariable(definition, surfaceKey) {
   const nativePolicy = classifyNativeVariable(definition);
   if (
     nativePolicy.disposition === "secret" ||
@@ -1494,8 +1579,10 @@ function classifyWorkspaceVariable(definition) {
   ) {
     return nativePolicy;
   }
+  const policies = WORKSPACE_TYPE_POLICIES_BY_SURFACE.get(String(surfaceKey || ""));
+  if (!policies) return { disposition: "denied" };
   const numericType = normalizeVariableType(definition && definition.type);
-  return WORKSPACE_VARIABLE_TYPE_POLICIES.get(numericType) || { disposition: "denied" };
+  return policies.get(numericType) || { disposition: "denied" };
 }
 
 function normalizedNativeSet(value) {
@@ -2842,8 +2929,9 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
   const userTimeZone = opts.timeZone || "";
   const zoneSource = opts.zoneSource || "";
   const workspaceMode = Boolean(opts.workspace);
+  const workspaceSurface = String(opts.workspaceSurfaceKey || "");
   const policyResolver = workspaceMode
-    ? classifyWorkspaceVariable
+    ? (definition) => classifyWorkspaceVariable(definition, workspaceSurface)
     : classifyNativeVariable;
   const visibilityResolver = workspaceMode
     ? workspaceVariableBucket
@@ -3271,12 +3359,36 @@ function showWorkspaceVariableValuesError(message) {
   closePalette();
 }
 
+/*
+ * The two stored readers report definition completeness under different names:
+ * the RITM reader enumerates a catalog item and sets `definitionReadStatus`,
+ * while the producer reader sets `definitionEnumerationStatus`. Reading only
+ * the first left every producer-backed Workspace panel stuck on "partial" even
+ * when every candidate had been checked, because the field was undefined.
+ *
+ * `answers-only` counts as complete here on purpose, and only because of what
+ * the panel actually claims: that every listed comparable variable was checked
+ * against storage. It never claims to list variables the producer defines but
+ * this record never answered. A truncated, failed or unavailable enumeration is
+ * a different thing and stays incomplete.
+ */
+function workspaceDefinitionsComplete(recordData) {
+  const data = recordData || {};
+  if (typeof data.definitionEnumerationStatus === "string") {
+    return (
+      data.definitionEnumerationStatus === "success" ||
+      data.definitionEnumerationStatus === "answers-only"
+    );
+  }
+  return data.definitionReadStatus === "success";
+}
+
 function workspacePanelState(recordData, formStatus, rows) {
   const candidates = (rows || []).filter((row) => row.workspaceCandidate);
   const checked = candidates.filter(
     (row) => row.comparison === "match" || row.comparison === "differs"
   );
-  const definitionComplete = recordData.definitionReadStatus === "success";
+  const definitionComplete = workspaceDefinitionsComplete(recordData);
   const storedComplete =
     recordData.storedReadStatus === "success" ||
     recordData.storedReadStatus === "empty";
@@ -3307,7 +3419,14 @@ function workspacePanelState(recordData, formStatus, rows) {
   };
 }
 
-async function showWorkspaceRitmVariableValues(route, initialSnapshot) {
+/*
+ * One Workspace reader for every allowlisted surface. The route decided which
+ * surface this is; `surface.kind` decides only which stored reader owns the
+ * record, and `surface.key` keeps the live type policy pinned to the surface
+ * that was actually verified. The identity gate, the route recheck and the
+ * final-snapshot discard rule are identical for all of them.
+ */
+async function showWorkspaceVariableValues(route, surface, initialSnapshot) {
   if (!workspaceSnapshotMatchesRoute(initialSnapshot, route)) {
     showWorkspaceVariableValuesError(
       (initialSnapshot && initialSnapshot.identityReason) ||
@@ -3319,10 +3438,21 @@ async function showWorkspaceRitmVariableValues(route, initialSnapshot) {
   showToast("Reading stored variable metadata…", false, 6000);
   let recordData;
   try {
-    recordData = await fetchNativeRitmRecordData(route.sysId);
+    recordData = surface.kind === "producer"
+      ? await fetchNativeProducerRecordData(route.table, route.sysId)
+      : await fetchNativeRitmRecordData(route.sysId);
   } catch (error) {
     showWorkspaceVariableValuesError(
       "Stored variable metadata could not be read. No values were compared."
+    );
+    return;
+  }
+  // A producer-backed table with no matching question_answer rows is not a
+  // record this reader can speak for. Say so instead of presenting an empty
+  // panel that reads as "this record has no variables".
+  if (surface.kind === "producer" && !recordData.recordProducerFound) {
+    showWorkspaceVariableValuesError(
+      "No record producer variable answers were found for this Workspace record. Nothing was compared."
     );
     return;
   }
@@ -3334,7 +3464,7 @@ async function showWorkspaceRitmVariableValues(route, initialSnapshot) {
     );
     return;
   }
-  const requests = workspaceLiveValueRequests(recordData.definitions);
+  const requests = workspaceLiveValueRequests(recordData.definitions, surface.key);
   showToast("Reading live Workspace values…", false, 6000);
   const finalSnapshot = await probeWorkspaceVariableSnapshot(requests);
   if (
@@ -3354,6 +3484,7 @@ async function showWorkspaceRitmVariableValues(route, initialSnapshot) {
     finalSnapshot.perVariable,
     {
       workspace: true,
+      workspaceSurfaceKey: surface.key,
       timeZone: finalSnapshot.timeZone || "",
       zoneSource: finalSnapshot.timeZone ? "page" : "no-page-zone",
     }
@@ -3442,7 +3573,7 @@ function nativeLiveValueRequests(definitions) {
   });
 }
 
-function workspaceLiveValueRequests(definitions) {
+function workspaceLiveValueRequests(definitions, surfaceKey) {
   const list = Array.isArray(definitions) ? definitions : [];
   const nameCounts = new Map();
   list.forEach((definition) => {
@@ -3455,7 +3586,7 @@ function workspaceLiveValueRequests(definitions) {
 
   return list.flatMap((definition) => {
     const def = definition || {};
-    const policy = classifyWorkspaceVariable(def);
+    const policy = classifyWorkspaceVariable(def, surfaceKey);
     const duplicateName = Boolean(
       def.name && (nameCounts.get(def.name) || 0) > 1
     );
@@ -3630,14 +3761,12 @@ async function showVariableValues() {
       return;
     }
     if (workspaceRoute) {
-      const isSupportedSowRitm =
-        workspaceRoute.experiencePath.length === 1 &&
-        workspaceRoute.experiencePath[0] === "sow" &&
-        workspaceRoute.table === "sc_req_item";
-      if (isSupportedSowRitm) {
+      const surface = workspaceSupportedSurface(workspaceRoute);
+      if (surface) {
         const initialWorkspaceSnapshot = await probeWorkspaceVariableSnapshot([]);
-        await showWorkspaceRitmVariableValues(
+        await showWorkspaceVariableValues(
           workspaceRoute,
+          surface,
           initialWorkspaceSnapshot
         );
       } else {

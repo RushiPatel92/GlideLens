@@ -13,6 +13,9 @@ const manifestSource = fs.readFileSync(path.join(__dirname, "..", "manifest.json
 const id = (number) => Number(number).toString(16).padStart(32, "0");
 const RITM_ID = id(1);
 const ITEM_ID = id(2);
+const SOW = "sow:sc_req_item";
+const SUPPLIER_CASE = "psm/workspace:sn_slm_case";
+const SUPPLIER_TASK = "psm/workspace:sn_slm_task";
 
 function nativeHelperSource() {
   const fieldStart = contentSource.indexOf("function snFieldValue");
@@ -46,7 +49,8 @@ function loadNativeHelpers(snGetMany) {
       "\nreturn { NATIVE_VARIABLE_TYPE_POLICIES, NATIVE_PROTOTYPE_COLLISION_NAMES, " +
       "NATIVE_STORED_METADATA_FIELDS, classifyNativeVariable, nativeValuesEqual, " +
       "nativeRecordIdentityMatches, nativeStoredDateTimeInZone, " +
-      "WORKSPACE_VARIABLE_TYPE_POLICIES, classifyWorkspaceVariable, " +
+      "WORKSPACE_SOW_RITM_TYPE_POLICIES, WORKSPACE_SUPPLIER_TYPE_POLICIES, " +
+      "WORKSPACE_TYPE_POLICIES_BY_SURFACE, classifyWorkspaceVariable, " +
       "workspaceLiveValueForComparison, fetchNativeRitmStoredValues, " +
       "fetchNativeMrvsStoredValues, nativeMrvsValuesEqual, parseNativeMrvsRows, " +
       "nativeMrvsColumnsSafe, applyNativeMrvsLiveReadPolicy, " +
@@ -263,14 +267,22 @@ test("the policy enumerates every documented numeric type and defaults unknown t
   });
 });
 
-test("Workspace has an independent ten-type layer-one allowlist", () => {
+test("each Workspace surface has its own layer-one allowlist", () => {
   const helpers = loadNativeHelpers();
   assert.deepStrictEqual(
-    Array.from(helpers.WORKSPACE_VARIABLE_TYPE_POLICIES.keys()),
+    Array.from(helpers.WORKSPACE_SOW_RITM_TYPE_POLICIES.keys()),
     ["2", "5", "6", "7", "8", "9", "10", "21", "26", "31"]
   );
   assert.deepStrictEqual(
-    helpers.classifyWorkspaceVariable(definition({ type: "5" })),
+    Array.from(helpers.WORKSPACE_SUPPLIER_TYPE_POLICIES.keys()),
+    ["2", "5", "6", "7", "8", "21", "26"]
+  );
+  assert.deepStrictEqual(
+    Array.from(helpers.WORKSPACE_TYPE_POLICIES_BY_SURFACE.keys()),
+    ["sow:sc_req_item", "psm/workspace:sn_slm_case", "psm/workspace:sn_slm_task"]
+  );
+  assert.deepStrictEqual(
+    helpers.classifyWorkspaceVariable(definition({ type: "5" }), SOW),
     {
       disposition: "comparable",
       comparisonMode: "scalar",
@@ -279,7 +291,61 @@ test("Workspace has an independent ten-type layer-one allowlist", () => {
     }
   );
   assert.strictEqual(
-    helpers.classifyWorkspaceVariable(definition({ type: "25", typeDisplay: "Masked" })).disposition,
+    helpers.classifyWorkspaceVariable(
+      definition({ type: "25", typeDisplay: "Masked" }),
+      SOW
+    ).disposition,
+    "secret"
+  );
+});
+
+test("per-type evidence never transfers between Workspace surfaces", () => {
+  const helpers = loadNativeHelpers();
+  const api = liveRequestApi();
+  // Date/Time is proven on SOW and deliberately unproven on the supplier
+  // surfaces: it is stored there but was never rendered, so the raw-to-display
+  // representation proof could not run.
+  const dateTime = definition({ type: "10", name: "needed_by", questionId: id(991) });
+  assert.strictEqual(
+    helpers.classifyWorkspaceVariable(dateTime, SOW).disposition,
+    "comparable"
+  );
+  assert.strictEqual(
+    helpers.classifyWorkspaceVariable(dateTime, SUPPLIER_CASE).disposition,
+    "denied"
+  );
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([dateTime], SUPPLIER_CASE), []);
+  // Supplier case and supplier task share one verified policy map, so a type
+  // proven on one is proven on the other and neither can drift alone.
+  assert.strictEqual(
+    helpers.classifyWorkspaceVariable(dateTime, SUPPLIER_TASK).disposition,
+    "denied"
+  );
+  ["2", "5", "6", "7", "8", "21", "26"].forEach((type) => {
+    assert.deepStrictEqual(
+      helpers.classifyWorkspaceVariable(definition({ type }), SUPPLIER_CASE),
+      helpers.classifyWorkspaceVariable(definition({ type }), SUPPLIER_TASK),
+      "type " + type + " must classify identically on both supplier surfaces"
+    );
+  });
+  // A surface with no policy map of its own compares nothing at all rather
+  // than falling back to another surface's proven types.
+  const text = definition({ type: "6", name: "note", questionId: id(992) });
+  assert.strictEqual(
+    helpers.classifyWorkspaceVariable(text, "psm/workspace:sc_req_item").disposition,
+    "denied"
+  );
+  assert.strictEqual(helpers.classifyWorkspaceVariable(text, "").disposition, "denied");
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([text], "sow:sn_slm_case"), []);
+});
+
+test("a secret stays secret on a surface that has no policy map", () => {
+  const helpers = loadNativeHelpers();
+  assert.strictEqual(
+    helpers.classifyWorkspaceVariable(
+      definition({ type: "25", typeDisplay: "Masked" }),
+      "psm/workspace:sc_req_item"
+    ).disposition,
     "secret"
   );
 });
@@ -296,10 +362,10 @@ test("Workspace keeps the single-instance type-16 observation denied", () => {
     disposition: "comparable",
     comparisonMode: "scalar",
   });
-  assert.deepStrictEqual(helpers.classifyWorkspaceVariable(wideText), {
+  assert.deepStrictEqual(helpers.classifyWorkspaceVariable(wideText, SOW), {
     disposition: "denied",
   });
-  assert.deepStrictEqual(api.workspaceLiveValueRequests([wideText]), []);
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([wideText], SOW), []);
 });
 
 test("Workspace compares Checkbox as a boolean now both approved instances proved its shape", () => {
@@ -318,13 +384,13 @@ test("Workspace compares Checkbox as a boolean now both approved instances prove
   // Stock and configured instances both exposed layer 1 `value` and
   // `displayValue` as equal strings matching storage, so the observed pair is
   // verified with text-pair while the comparison itself stays boolean.
-  assert.deepStrictEqual(helpers.classifyWorkspaceVariable(checkbox), {
+  assert.deepStrictEqual(helpers.classifyWorkspaceVariable(checkbox, SOW), {
     disposition: "comparable",
     comparisonMode: "boolean",
     validator: "boolean-pair",
     layer: 1,
   });
-  assert.deepStrictEqual(api.workspaceLiveValueRequests([checkbox]), [
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([checkbox], SOW), [
     {
       name: "accept_policy",
       fieldName: "variables.accept_policy",
@@ -364,7 +430,7 @@ test("a Workspace Checkbox row compares end to end through the panel builder", (
       metadataRows: [storedRow(checkboxDef, stored, { policy: nativePolicy })],
     },
     [liveEntry],
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   )[0];
 
   const checked = build("true", live("true", "true"));
@@ -384,7 +450,8 @@ test("a Workspace Checkbox row compares end to end through the panel builder", (
 test("a Workspace Checkbox whose live pair disagrees is not comparable", () => {
   const helpers = loadNativeHelpers();
   const policy = helpers.classifyWorkspaceVariable(
-    definition({ type: "7", typeDisplay: "Checkbox" })
+    definition({ type: "7", typeDisplay: "Checkbox" }),
+    SOW
   );
   // A rendered label such as "Yes" would make displayValue disagree with the
   // raw value. That is an unverified shape, never a substituted comparison.
@@ -746,7 +813,7 @@ test("Workspace requests contain only positively allowlisted unique safe definit
     duplicateB,
     collision,
     malformed,
-  ]);
+  ], SOW);
   assert.deepStrictEqual(requests, [
     {
       name: "plain_note",
@@ -1084,7 +1151,7 @@ test("Workspace snapshot does not forward non-string Select Box representations"
     [choiceDef],
     { storedReadStatus: "success", metadataRows: [storedRow(choiceDef, "1")] },
     snapshot.perVariable,
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   );
   assert.strictEqual(row.comparison, "not-comparable");
   assert.match(row.reason, /value unavailable/i);
@@ -1110,7 +1177,7 @@ test("Workspace rows compare only after layer-specific representation validation
     [textDef],
     { storedReadStatus: "success", metadataRows: [textStored] },
     [live],
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   );
   assert.strictEqual(matched.workspaceCandidate, true);
   assert.strictEqual(matched.comparison, "match");
@@ -1120,7 +1187,7 @@ test("Workspace rows compare only after layer-specific representation validation
     [textDef],
     { storedReadStatus: "success", metadataRows: [textStored] },
     [{ ...live, liveDisplayValue: "live\r\n" }],
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   );
   assert.strictEqual(normalisedDisplay.comparison, "not-comparable");
   assert.match(normalisedDisplay.reason, /representation could not be verified/);
@@ -1146,7 +1213,7 @@ test("Workspace Select Box compares raw value while requiring the display pair s
     [choiceDef],
     { storedReadStatus: "success", metadataRows: [stored] },
     [{ ...live, ...overrides }],
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   )[0];
 
   assert.strictEqual(build({}).comparison, "match");
@@ -1172,7 +1239,7 @@ test("Workspace Select Box compares raw value while requiring the display pair s
     [choiceDef],
     { storedReadStatus: "success", metadataRows: [emptyStored] },
     [{ ...live, liveValue: "", liveDisplayValue: "" }],
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   );
   assert.strictEqual(empty.comparison, "match");
 
@@ -1194,7 +1261,7 @@ test("Workspace visibility is tri-state and independent from canRead", () => {
     [def],
     { storedReadStatus: "success", metadataRows: [stored] },
     live ? [{ name: def.name, questionId: def.questionId, foundEntry: true, ...live }] : [],
-    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "Europe/London", zoneSource: "page" }
   )[0];
 
   const deniedVisible = build({ visible: true, canRead: false });
@@ -1235,7 +1302,7 @@ test("Workspace Date/Time proves raw UTC against the normalised display wall clo
     [def],
     { storedReadStatus: "success", metadataRows: [storedRow(def, stored)] },
     [{ ...live, ...(overrides || {}) }],
-    { workspace: true, timeZone, zoneSource: timeZone ? "page" : "no-page-zone" }
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone, zoneSource: timeZone ? "page" : "no-page-zone" }
   )[0];
   assert.strictEqual(row().comparison, "match");
   assert.strictEqual(row({ liveDateValue: stored }).comparison, "not-comparable");
@@ -2493,8 +2560,8 @@ test("Workspace refusal and unavailable copy never claim stored-only values", ()
 });
 
 test("Workspace panel completeness is derived from final row verdicts", () => {
-  const start = contentSource.indexOf("function workspacePanelState");
-  const end = contentSource.indexOf("async function showWorkspaceRitmVariableValues", start);
+  const start = contentSource.indexOf("function workspaceDefinitionsComplete");
+  const end = contentSource.indexOf("async function showWorkspaceVariableValues", start);
   const panelState = new Function(
     contentSource.slice(start, end) + "\nreturn workspacePanelState;"
   )();
@@ -2535,6 +2602,94 @@ test("Workspace panel completeness is derived from final row verdicts", () => {
     panelState({ definitionReadStatus: "truncated", storedReadStatus: "truncated" }, "unavailable", []).panelState,
     "stored-unavailable"
   );
+
+  // The producer reader reports enumeration under its own field name. Reading
+  // only definitionReadStatus pinned every producer-backed Workspace panel to
+  // "partial" while claiming a complete check in its own row counts.
+  const producerComplete = {
+    definitionEnumerationStatus: "success",
+    storedReadStatus: "success",
+  };
+  assert.strictEqual(
+    panelState(producerComplete, "available", [
+      { workspaceCandidate: true, comparison: "match" },
+    ]).panelState,
+    "complete"
+  );
+  assert.strictEqual(
+    panelState(
+      { definitionEnumerationStatus: "answers-only", storedReadStatus: "success" },
+      "available",
+      [{ workspaceCandidate: true, comparison: "match" }]
+    ).panelState,
+    "complete"
+  );
+  // A truncated or failed enumeration is not complete, and a producer record
+  // must never inherit completeness from the RITM field being absent.
+  ["truncated", "failed", "unavailable"].forEach((status) => {
+    assert.strictEqual(
+      panelState(
+        { definitionEnumerationStatus: status, storedReadStatus: "success" },
+        "available",
+        [{ workspaceCandidate: true, comparison: "match" }]
+      ).panelState,
+      "partial",
+      status + " enumeration must not read as complete"
+    );
+  });
+});
+
+/*
+ * The MAIN-world snapshot re-derives the route itself and cannot close over
+ * extension scope, so the surface allowlist exists twice on purpose. Nothing
+ * but a test stops the two copies drifting, and a drift is silent: the router
+ * would start a read the snapshot then refuses, or worse, the snapshot would
+ * answer for a surface the router never verified.
+ */
+test("both worlds gate Workspace on the same surface allowlist", () => {
+  const surfaces = new Function(
+    contentSource.slice(
+      contentSource.indexOf("const WORKSPACE_SUPPORTED_SURFACES"),
+      contentSource.indexOf("function workspaceSurfaceKey")
+    ) + "; return WORKSPACE_SUPPORTED_SURFACES;"
+  )();
+  const contentKeys = surfaces.map(
+    (surface) => surface.experiencePath.join("/") + ":" + surface.table
+  );
+
+  const probeStart = backgroundSource.indexOf("const supportedSurfaces = [");
+  assert.ok(probeStart >= 0, "the MAIN-world surface list was not found");
+  const probeEnd = backgroundSource.indexOf("];", probeStart);
+  const backgroundKeys = backgroundSource
+    .slice(probeStart, probeEnd)
+    .match(/"[^"]+"/g)
+    .map((quoted) => quoted.slice(1, -1));
+
+  assert.deepStrictEqual(backgroundKeys, contentKeys);
+
+  // And the type policy map is keyed by the same strings, so no allowlisted
+  // surface can reach a live read with no policy of its own.
+  const helpers = loadNativeHelpers();
+  assert.deepStrictEqual(
+    Array.from(helpers.WORKSPACE_TYPE_POLICIES_BY_SURFACE.keys()),
+    contentKeys
+  );
+});
+
+test("the MAIN-world snapshot refuses an unlisted Workspace surface", () => {
+  const probe = workspaceSnapshotProbe(
+    { querySelectorAll: () => [] },
+    {
+      href:
+        "https://example.service-now.com/now/psm/workspace/record/sc_req_item/" +
+        id(1),
+    }
+  );
+  const refused = probe([]);
+  assert.strictEqual(refused.identityStatus, "refused");
+  assert.strictEqual(refused.formStatus, "refused");
+  assert.deepStrictEqual(refused.perVariable, []);
+  assert.match(refused.identityReason, /not a supported Workspace record route/);
 });
 
 test("native orchestration constrains classic frames on Workspace and keeps portal fallback", () => {
@@ -2562,7 +2717,7 @@ test("native orchestration constrains classic frames on Workspace and keeps port
   assert.match(flow, /workspaceRecordContextFromText\(location\.href\)/);
   assert.match(commandFlow, /showNativeProducerVariableValues\(initialProbe, workspaceRoute\)/);
   assert.match(flow, /fetchNativeProducerRecordData/);
-  assert.match(commandFlow, /showWorkspaceRitmVariableValues/);
+  assert.match(commandFlow, /showWorkspaceVariableValues\(/);
   assert.match(flow, /await showHiddenPortalVariables\(\)/);
 });
 
