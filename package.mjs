@@ -3,6 +3,7 @@
  *
  *   node package.mjs            build dist/glidelens-<version>.zip
  *   node package.mjs --check    run every guard, build nothing
+ *   node package.mjs --force    build even when v<version> is already tagged
  *
  * Why Node and not the old bash package.sh
  * ----------------------------------------
@@ -45,6 +46,7 @@
  * smaller and much louder failure than a silently incomplete allowlist.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import {
@@ -347,6 +349,52 @@ console.log(
 if (checkOnly) {
   console.log("--check given; nothing written.");
   process.exit(0);
+}
+
+/* ---------------------------------------------------------------------------
+ * Never overwrite a released artifact
+ * ---------------------------------------------------------------------------
+ * The output is named from manifest.json, and the manifest carries the LAST
+ * RELEASED version for the whole of development: RELEASING.md bumps it in the
+ * release commit itself. So a build run while developing lands on
+ * dist/glidelens-<already released>.zip — the same name as the artifact the
+ * stores are serving, different bytes, written on top of the real one. That is
+ * not hypothetical; it happened, and the released 0.13.0 zip had to be rebuilt
+ * from its tag to get it back.
+ *
+ * An existing v<version> tag is the signal that this number is spent. The check
+ * fails OPEN when git cannot answer — a Download ZIP has no .git, and refusing
+ * there would block a legitimate rebuild rather than prevent a mistake.
+ */
+function releasedTagExists(version) {
+  try {
+    const found = execFileSync("git", ["tag", "--list", `v${version}`], {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return found.trim() === `v${version}`;
+  } catch (error) {
+    return null;
+  }
+}
+
+const released = releasedTagExists(manifest.version);
+if (released === null) {
+  console.log("Note: git could not be consulted, so the released-version check did not run.");
+} else if (released && !process.argv.includes("--force")) {
+  console.error(
+    "\npackage.mjs: refusing to build\n\n" +
+      `  Version ${manifest.version} is already released — the tag v${manifest.version} exists,\n` +
+      `  so writing dist/glidelens-${manifest.version}.zip would overwrite the released\n` +
+      "  artifact with different bytes.\n\n" +
+      "  Developing? Run 'node package.mjs --check', which runs every guard and\n" +
+      "  writes nothing, and load the repository root unpacked to test a change.\n\n" +
+      "  Releasing? Bump 'version' in manifest.json first (RELEASING.md step 2).\n\n" +
+      `  Rebuilding the released ${manifest.version} artifact from its own tag? That is\n` +
+      "  what --force is for.\n"
+  );
+  process.exit(1);
 }
 
 const entries = files.map((name) => ({

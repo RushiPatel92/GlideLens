@@ -121,14 +121,26 @@ node package.mjs --check
 
 ## Store artifact packaging
 
-Build the distribution archive with:
+Building an artifact is a **release step, not a development step**. Use
+`node package.mjs --check` above while developing, and load the repository root
+unpacked to test a change: the artifact is named from `manifest.json`, which
+carries the last released version for the whole of development, so a build run
+now lands on `dist/glidelens-<already released>.zip` — the name the stores are
+serving, different bytes, on top of the real artifact.
+
+`package.mjs` refuses to do that. When the tag `v<version>` already exists it
+prints what to do instead and exits 1. `--force` overrides it, for the one case
+that is legitimate: rebuilding a released artifact from its own tag, which is
+also how a `dist/` entry is recovered if it was overwritten.
 
 ```powershell
-node package.mjs
+node package.mjs           # release build; refuses if v<version> is tagged
+node package.mjs --force   # rebuild a released artifact from its tag
 ```
 
 It writes `dist/glidelens-<version>.zip` and prints its SHA-256. Builds from the
-same working copy are deterministic on one platform. Line-ending differences
+same working copy are deterministic on one platform — a rebuild of `0.12.0` from
+its tag reproduced the SHA-256 recorded at submission. Line-ending differences
 mean Windows and Linux checkouts are not promised to produce identical bytes.
 
 `package.mjs` owns the explicit `SHIP` allowlist. When adding a file that Chrome

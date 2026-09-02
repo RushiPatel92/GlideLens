@@ -13,10 +13,14 @@ Edge Add-ons:
 ## Release preparation
 
 1. Confirm the release scope and explicit publication authorization.
-2. Bump `version` in `manifest.json` and update `CHANGELOG.md`.
+2. Bump `version` in `manifest.json` and update `CHANGELOG.md`. This comes
+   before the build, and `package.mjs` enforces it: with the previous version
+   still in the manifest its tag already exists, and the build refuses rather
+   than overwrite the released artifact of that version.
 3. Run the full test command in `DEVELOPMENT.md`.
 4. Run `node package.mjs --check`.
-5. Run `node package.mjs` and retain the printed SHA-256.
+5. Run `node package.mjs` and retain the printed SHA-256. Record it in the
+   submission notes: it is the only way to tell later which bytes were shipped.
 6. Extract `dist/glidelens-<version>.zip` into a temporary directory, load that
    directory unpacked in Chrome, and exercise it on a real instance. Test the
    artifact rather than the working tree.
