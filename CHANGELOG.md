@@ -10,6 +10,78 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **Variable Values compares what is stored with what the form is holding,
+  rather than listing what the form shows.** On a classic RITM or
+  record-producer target it reads metadata-allowlisted stored values and the
+  exact `variables.<name>` live values, capturing record identity and the page
+  timezone with the form so a value can never be attributed to the wrong
+  record, never fetching a secret, and comparing each multi-row set row by row.
+  Reference and choice labels are not mistaken for differences, because the raw
+  value is what is compared. Layout types -- Break, Label, Rich Text Label, the
+  Container and Custom families and UI Page -- are dropped from the panel
+  entirely rather than listed as variables with no value.
+- **The comparison runs on Workspace records, one verified surface at a time.**
+  Service Operations Workspace request items, and supplier cases and supplier
+  tasks in Source-to-Pay Workspace. Route, record, form, read permission and
+  each raw value's shape are all checked before anything is read, and every
+  other Workspace experience and table is refused without any read at all. Each
+  supported surface carries its own verified type list rather than inheriting
+  another's, so a type proven against one component on one route is not assumed
+  elsewhere. Partial and stored-only results say plainly what was not compared,
+  and a stored-only panel is structurally incapable of claiming a comparison.
+- **Multi-row variable sets are compared on Workspace too.** Every one of them
+  used to read "No live multi-row value was available" -- a statement about a
+  form that had never been asked, because the live read only ever ran for
+  ordinary comparable variables. The set is now read as the single container
+  value the form exposes, and its rows are compared structurally against the
+  stored rows. A set that is *not* read now names the actual reason -- a
+  surface that compares no sets, a column that could not be verified as safe,
+  columns that were never enumerated, or a column type whose rendering inside a
+  set has not been proven on that surface -- and the panel's "all N were
+  checked" count is now exactly the set of rows a live read was requested for.
+- **More variable types compare, each on its own evidence.** Yes/No, Lookup
+  Select Box and Attachment on both Workspace surfaces, and Date/Time on the
+  supplier ones. Yes/No is compared by boolean meaning rather than as a raw
+  string, because storage has no single spelling for it -- `Yes`/`No` on one
+  probed instance and `true`/`false` on another, which a raw comparison would
+  have called a difference. Lookup Select Box is treated as a choice and not a
+  reference: its stored value is the lookup table's own value column, which was
+  free text in most sampled rows, so demanding a sys_id would have refused most
+  real lookups. Attachment is a single attachment record, and a value of any
+  other shape stays uncompared rather than being judged.
+
+### Fixed
+- **A date inside a multi-row set is no longer reported as a difference that
+  does not exist.** A Date/Time read as an ordinary variable comes back as raw
+  canonical UTC, and the comparison converts the stored value to meet it.
+  Inside a multi-row set it does not: the whole set arrives as one value with
+  the date cell already formatted to the user's date format and shifted into
+  the session timezone. One measured cell read `21-04-2026 07:13:37` where
+  storage held `2026-04-21 14:13:37`, and the panel called that record changed
+  when nothing about it had been touched. This was shipped classic behaviour,
+  not only a Workspace one. Converting the cell back was rejected as a fix,
+  because the set is compared as a whole and a format that failed to parse
+  would quietly become a difference again -- so a set holding a date or
+  date/time column is listed with its stored rows, uncompared, on every
+  surface, and the row names the column responsible.
+- **Variables whose catalog item has since swapped a variable set now show
+  their values.** A catalog item's attached variable sets change over time, so
+  a record answered before such a change holds its answers against the old
+  questions while the item now defines new ones carrying exactly the same
+  names. The panel enumerated the item and asked storage for values under ids
+  this record had never used: the classic panel reported five variables as
+  never answered when their values were sitting in storage all along, and the
+  Workspace panel refused to render at all, because the live read asked the
+  form for an id the form does not have. The item is still authoritative about
+  which variables exist; the record's own answers are now authoritative about
+  which question each of its values belongs to, and a row resolved that way
+  says so. It stays deliberately narrow -- a genuine duplicate name still goes
+  to the duplicate-name guard, two definitions or two answers sharing a name
+  resolve nothing, and multi-row parents are never substituted.
+
 ## [0.13.0] - 2026-08-29
 
 ### Added
