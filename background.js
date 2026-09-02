@@ -3012,6 +3012,656 @@ function inspectPortalVariableDebug() {
   return report;
 }
 
+// Self-contained MAIN-world reader for classic RITM variables. The caller
+// supplies the definition list because g_form cannot enumerate these fields.
+// Every g_form call is isolated: one throwing prototype-collision key must not
+// abort the identity or the rest of the variables. Secret values are never
+// touched, so they cannot cross the executeScript result boundary.
+/*
+ * Pick the frame that actually holds the classic record form.
+ *
+ * The marker -- sys_target and sys_uniqueValue agreeing with what g_form
+ * reports -- is the whole basis for calling a frame a classic record form. A
+ * Workspace or embedded frame can expose a g_form without it, so this is a
+ * filter and not merely a sort preference: sorting alone still falls through to
+ * a markerless frame when no frame carries a marker, which is exactly the
+ * Workspace case the native path is supposed to decline. Returning nothing
+ * leaves the caller to report no classic form, and the Service Portal path
+ * stays available.
+ */
+function selectClassicRecordFrame(results, expectedIdentity) {
+  const expected = expectedIdentity &&
+    /^[a-z][a-z0-9_]*$/.test(String(expectedIdentity.table || "")) &&
+    /^[0-9a-f]{32}$/i.test(String(expectedIdentity.sysId || ""))
+    ? {
+        table: String(expectedIdentity.table).toLowerCase(),
+        sysId: String(expectedIdentity.sysId).toLowerCase(),
+      }
+    : null;
+  return (results || [])
+    .filter((item) => {
+      if (!item || !item.foundGForm || !item.recordMarkerMatched) return false;
+      if (!expected) return true;
+      return Boolean(
+        item.identity &&
+        String(item.identity.table || "").toLowerCase() === expected.table &&
+        String(item.identity.sysId || "").toLowerCase() === expected.sysId
+      );
+    })
+    .sort((a, b) => (b.perVariable || []).length - (a.perVariable || []).length)[0];
+}
+
+function inspectNativeRecordVariables(variables) {
+  const result = {
+    foundGForm: false,
+    identity: { table: "", sysId: "" },
+    recordMarkerMatched: false,
+    timeZone: "",
+    variableNamespaceAvailable: null,
+    perVariable: [],
+  };
+  let form = null;
+  try {
+    if (typeof g_form !== "undefined" && g_form) form = g_form;
+  } catch (e) {}
+  if (!form) return result;
+  result.foundGForm = true;
+
+  try {
+    if (typeof g_tz !== "undefined") result.timeZone = String(g_tz || "");
+  } catch (e) {}
+
+  try {
+    if (typeof form.getTableName === "function") {
+      result.identity.table = String(form.getTableName() || "");
+    }
+  } catch (e) {}
+  try {
+    if (typeof form.getUniqueValue === "function") {
+      result.identity.sysId = String(form.getUniqueValue() || "");
+    }
+  } catch (e) {}
+  try {
+    const tableMarker = document.querySelector('input[name="sys_target"],#sys_target');
+    const idMarker = document.querySelector('input[name="sys_uniqueValue"],#sys_uniqueValue');
+    result.recordMarkerMatched = Boolean(
+      tableMarker &&
+      idMarker &&
+      String(tableMarker.value || "") === result.identity.table &&
+      String(idMarker.value || "") === result.identity.sysId
+    );
+  } catch (e) {}
+
+  if (
+    !/^[a-z][a-z0-9_]*$/.test(result.identity.table) ||
+    !/^[0-9a-f]{32}$/i.test(result.identity.sysId)
+  ) {
+    return result;
+  }
+
+  const collisionNames = new Set([
+    ...Object.getOwnPropertyNames(Object.prototype),
+    ...Object.getOwnPropertyNames(Function.prototype),
+  ]);
+  const list = Array.isArray(variables) ? variables : [];
+  let namespaceReadCount = 0;
+  let namespaceNonEmptyCount = 0;
+  let plainNonEmptyCount = 0;
+  let requestedValueCount = 0;
+  list.forEach((variable) => {
+    const name = String((variable && variable.name) || "");
+    const fieldName = String((variable && variable.fieldName) || "");
+    const questionId = String((variable && variable.questionId) || "");
+    const secret = Boolean(variable && variable.secret);
+    const collision = collisionNames.has(name);
+    const entry = {
+      name,
+      questionId,
+      foundEl: false,
+      visible: null,
+      gFormReportedVisible: null,
+      liveValueAvailable: false,
+      liveValue: "",
+      // A Date variable renders in the user's date format while it is stored
+      // as yyyy-MM-dd, so the raw strings never match. The page owns both the
+      // format preference and the parser, so the normalisation has to happen
+      // here; the panel still shows the raw live value.
+      liveDateValue: "",
+      liveDateNormalised: false,
+      valueReadFailed: false,
+      namespaceUnavailable: false,
+    };
+
+    try {
+      const element = questionId ? document.getElementById(questionId) : null;
+      entry.foundEl = Boolean(element);
+      if (element) {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        entry.visible = Boolean(
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.opacity !== "0" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      }
+    } catch (e) {}
+
+    if (!secret && !collision && name) {
+      try {
+        if (typeof form.isVisible === "function") {
+          entry.gFormReportedVisible = Boolean(form.isVisible(fieldName || name));
+        }
+      } catch (e) {}
+    }
+    if (variable && variable.readValue && !secret && !collision && name && fieldName) {
+      requestedValueCount++;
+      try {
+        if (typeof form.getValue === "function") {
+          const liveValue = form.getValue(fieldName);
+          entry.liveValue = String(liveValue == null ? "" : liveValue);
+          entry.liveValueAvailable = true;
+          namespaceReadCount++;
+          if (entry.liveValue !== "") namespaceNonEmptyCount++;
+
+          // This is a support probe, never a fallback value. On older form
+          // implementations an unsupported variables.* name returns "". If
+          // every safe namespaced read is empty while one safe plain read is
+          // not, the whole live source is unavailable rather than all-different.
+          if (fieldName !== name) {
+            try {
+              const plainValue = form.getValue(name);
+              if (String(plainValue == null ? "" : plainValue) !== "") {
+                plainNonEmptyCount++;
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {
+        entry.valueReadFailed = true;
+      }
+    }
+    const dateKind = variable && variable.dateKind;
+    if (dateKind && entry.liveValueAvailable && entry.liveValue) {
+      try {
+        const format = dateKind === "datetime"
+          ? (typeof g_user_date_time_format !== "undefined" ? g_user_date_time_format : "")
+          : (typeof g_user_date_format !== "undefined" ? g_user_date_format : "");
+        // getDateFromFormat returns 0 for anything it cannot parse. Parsing
+        // with the browser's zone and reading back with local getters is an
+        // identity on the wall clock, so what comes out is exactly the date
+        // and time the form is showing, in a fixed format. No timezone
+        // conversion happens here in either direction.
+        const parsed = typeof getDateFromFormat === "function" && format
+          ? getDateFromFormat(entry.liveValue, format)
+          : 0;
+        if (parsed) {
+          // Parsing and reading back with local getters is an identity on the
+          // displayed wall clock only away from browser-local DST transitions.
+          // A gap or overlap can normalise/duplicate local components, so fail
+          // closed instead of sharing that assumption with Workspace.
+          const transitionWindow = 4 * 60 * 60 * 1000;
+          if (
+            new Date(parsed - transitionWindow).getTimezoneOffset() !==
+            new Date(parsed + transitionWindow).getTimezoneOffset()
+          ) {
+            result.perVariable.push(entry);
+            return;
+          }
+          const date = new Date(parsed);
+          const pad = (part) => String(part).padStart(2, "0");
+          entry.liveDateValue = date.getFullYear() + "-" +
+            pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+          if (dateKind === "datetime") {
+            entry.liveDateValue += " " + pad(date.getHours()) + ":" +
+              pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+          }
+          entry.liveDateNormalised = true;
+        }
+      } catch (e) {}
+    }
+    result.perVariable.push(entry);
+  });
+  if (requestedValueCount > 0) {
+    result.variableNamespaceAvailable = !(
+      namespaceReadCount === requestedValueCount &&
+      namespaceNonEmptyCount === 0 &&
+      plainNonEmptyCount > 0
+    );
+    if (!result.variableNamespaceAvailable) {
+      result.perVariable.forEach((entry) => {
+        if (!entry.liveValueAvailable) return;
+        entry.liveValue = "";
+        entry.liveValueAvailable = false;
+        entry.liveDateValue = "";
+        entry.liveDateNormalised = false;
+        entry.namespaceUnavailable = true;
+      });
+    }
+  }
+  return result;
+}
+
+// Self-contained MAIN-world Workspace snapshot. The handler always injects
+// this function into frame 0 exactly once. It inventories only named identity
+// properties until one catalog form (or the strict stored-only fallback) is
+// verified, then pulls only exact, pre-authorised fields-map keys.
+function inspectWorkspaceVariableSnapshot(variables) {
+  const result = {
+    route: null,
+    identity: { table: "", sysId: "" },
+    identityStatus: "refused",
+    identityReason: "The Workspace record identity could not be verified.",
+    formStatus: "refused",
+    selectedFormCollapsed: false,
+    timeZone: "",
+    userDateFormat: "",
+    userDateTimeFormat: "",
+    perVariable: [],
+  };
+  const stringValue = (value) => String(value == null ? "" : value);
+  const validTable = (value) => /^[a-z][a-z0-9_]*$/.test(stringValue(value));
+  const validSysId = (value) => /^[0-9a-f]{32}$/i.test(stringValue(value));
+  const sameIdentity = (left, right) => Boolean(
+    left && right && left.table === right.table && left.sysId === right.sysId
+  );
+  const identityKey = (identity) => identity.table + ":" + identity.sysId;
+  const readIdentity = (element, tableProperty, idProperty) => {
+    try {
+      const table = stringValue(element && element[tableProperty]).toLowerCase();
+      const sysId = stringValue(element && element[idProperty]).toLowerCase();
+      return validTable(table) && validSysId(sysId) ? { table, sysId } : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const rectVisible = (element) => {
+    try {
+      const rect = element.getBoundingClientRect();
+      return Boolean(rect && rect.width > 0 && rect.height > 0);
+    } catch (e) {
+      return false;
+    }
+  };
+  const tagName = (element) => stringValue(element && element.tagName).toLowerCase();
+  const parseRoute = () => {
+    let current = "";
+    try { current = stringValue(location.href); } catch (e) { return null; }
+    const variants = [];
+    for (let index = 0; index < 3; index++) {
+      if (!current || variants.indexOf(current) >= 0) break;
+      variants.push(current);
+      try {
+        const decoded = decodeURIComponent(current);
+        if (decoded === current) break;
+        current = decoded;
+      } catch (e) {
+        break;
+      }
+    }
+    for (const value of variants) {
+      const match = value.match(
+        /\/now\/((?:[^/?#]+\/)*)record\/([^/?#]+)\/([0-9a-f]{32})(?:[/?#]|$)/i
+      );
+      if (!match) continue;
+      return {
+        experiencePath: match[1].split("/").filter(Boolean).map((part) => part.toLowerCase()),
+        table: stringValue(match[2]).toLowerCase(),
+        sysId: stringValue(match[3]).toLowerCase(),
+      };
+    }
+    return null;
+  };
+  const route = parseRoute();
+  result.route = route;
+  if (
+    !route ||
+    route.experiencePath.length !== 1 ||
+    route.experiencePath[0] !== "sow" ||
+    route.table !== "sc_req_item" ||
+    !validSysId(route.sysId)
+  ) {
+    result.identityReason = "This is not a supported Service Operations Workspace RITM route.";
+    return result;
+  }
+
+  try {
+    if (typeof g_tz !== "undefined") result.timeZone = stringValue(g_tz);
+  } catch (e) {}
+  try {
+    if (typeof g_user_date_format !== "undefined") {
+      result.userDateFormat = stringValue(g_user_date_format);
+    }
+  } catch (e) {}
+  try {
+    if (typeof g_user_date_time_format !== "undefined") {
+      result.userDateTimeFormat = stringValue(g_user_date_time_format);
+    }
+  } catch (e) {}
+
+  const elements = [];
+  const visitedRoots = new Set();
+  const walk = (root, depth) => {
+    if (!root || depth > 25 || visitedRoots.has(root)) return;
+    visitedRoots.add(root);
+    let descendants = [];
+    try { descendants = root.querySelectorAll("*"); } catch (e) { return; }
+    for (const element of descendants) {
+      if (elements.length >= 30000) return;
+      elements.push(element);
+      let shadow = null;
+      try { shadow = element.shadowRoot; } catch (e) {}
+      if (shadow) walk(shadow, depth + 1);
+    }
+  };
+  walk(document, 0);
+
+  const composedAncestors = (element) => {
+    const ancestors = [];
+    const seen = new Set();
+    let current = element;
+    while (current && !seen.has(current) && ancestors.length < 100) {
+      seen.add(current);
+      let parent = null;
+      try { parent = current.parentElement; } catch (e) {}
+      if (parent) {
+        current = parent;
+      } else {
+        let root = null;
+        try { root = current.getRootNode(); } catch (e) {}
+        current = root && root.host ? root.host : null;
+      }
+      if (current) ancestors.push(current);
+    }
+    return ancestors;
+  };
+  const namedIdentity = (element) => {
+    const tag = tagName(element);
+    if (tag === "sn-form-data-connected") {
+      return readIdentity(element, "table", "sysId");
+    }
+    if (tag.indexOf("macroponent-") === 0) {
+      return readIdentity(element, "table", "sysId");
+    }
+    return null;
+  };
+  const associatedIdentities = (element) =>
+    composedAncestors(element).map(namedIdentity).filter(Boolean);
+
+  const catalogForms = elements
+    .filter((element) => tagName(element) === "sn-catalog-form")
+    .map((element) => ({
+      element,
+      identity: readIdentity(element, "sourceTable", "sourceId"),
+      visible: rectVisible(element),
+      associated: associatedIdentities(element),
+    }));
+  const matchingForms = catalogForms.filter((candidate) =>
+    sameIdentity(candidate.identity, route)
+  );
+  let selectedForm = null;
+
+  if (matchingForms.length) {
+    const invalidAssociation = matchingForms.some((candidate) =>
+      !candidate.associated.length ||
+      candidate.associated.some((identity) => !sameIdentity(identity, route))
+    );
+    if (invalidAssociation) {
+      result.identityReason = "A Workspace catalog form was not bound to one corroborating record identity.";
+      return result;
+    }
+    if (matchingForms.length === 1) {
+      selectedForm = matchingForms[0];
+    } else {
+      const rendered = matchingForms.filter((candidate) => candidate.visible);
+      if (rendered.length !== 1) {
+        result.identityReason = "More than one Workspace catalog form matched this record without a unique rendered form.";
+        return result;
+      }
+      selectedForm = rendered[0];
+    }
+    result.identity = { table: route.table, sysId: route.sysId };
+    result.identityStatus = "verified";
+    result.identityReason = "";
+    result.formStatus = "available";
+    result.selectedFormCollapsed = !selectedForm.visible;
+  } else {
+    const visibleFormData = elements
+      .filter((element) => tagName(element) === "sn-form-data-connected" && rectVisible(element))
+      .map((element) => ({ element, identity: readIdentity(element, "table", "sysId") }))
+      .filter((entry) => entry.identity);
+    let fallbackIdentity = null;
+    if (visibleFormData.length === 1) {
+      fallbackIdentity = visibleFormData[0].identity;
+      const corroborators = associatedIdentities(visibleFormData[0].element)
+        .filter((identity) => identityKey(identity) !== identityKey(fallbackIdentity));
+      if (corroborators.some((identity) => !sameIdentity(identity, fallbackIdentity))) {
+        result.identityReason = "Workspace record identity corroborators disagreed.";
+        return result;
+      }
+    } else if (visibleFormData.length > 1) {
+      result.identityReason = "More than one visible Workspace record identity was present.";
+      return result;
+    } else {
+      const visibleMacroponentIdentities = elements
+        .filter((element) => tagName(element).indexOf("macroponent-") === 0 && rectVisible(element))
+        .map((element) => readIdentity(element, "table", "sysId"))
+        .filter(Boolean);
+      const distinct = new Map();
+      visibleMacroponentIdentities.forEach((identity) => distinct.set(identityKey(identity), identity));
+      if (visibleMacroponentIdentities.length && distinct.size === 1) {
+        fallbackIdentity = visibleMacroponentIdentities[0];
+      }
+    }
+    if (!fallbackIdentity || !sameIdentity(fallbackIdentity, route)) {
+      result.identityReason = "The Workspace record identity was absent, ambiguous, or did not match the route.";
+      return result;
+    }
+    result.identity = fallbackIdentity;
+    result.identityStatus = "verified";
+    result.identityReason = "";
+    result.formStatus = "absent";
+  }
+
+  if (!selectedForm) return result;
+  let fields = null;
+  try { fields = selectedForm.element.fields; } catch (e) {}
+  if (!fields || (typeof fields !== "object" && typeof fields !== "function")) {
+    result.formStatus = "unavailable";
+    return result;
+  }
+
+  const pad = (part) => String(part).padStart(2, "0");
+  const validCanonical = (value, dateKind) => {
+    const pattern = dateKind === "datetime"
+      ? /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/
+      : /^(\d{4})-(\d{2})-(\d{2})$/;
+    const match = stringValue(value).match(pattern);
+    if (!match) return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = dateKind === "datetime" ? Number(match[4]) : 0;
+    const minute = dateKind === "datetime" ? Number(match[5]) : 0;
+    const second = dateKind === "datetime" ? Number(match[6]) : 0;
+    const check = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+    return (
+      check.getUTCFullYear() === year &&
+      check.getUTCMonth() === month - 1 &&
+      check.getUTCDate() === day &&
+      check.getUTCHours() === hour &&
+      check.getUTCMinutes() === minute &&
+      check.getUTCSeconds() === second
+    );
+  };
+  const normaliseDisplayDate = (displayValue, dateKind) => {
+    const display = stringValue(displayValue);
+    if (validCanonical(display, dateKind)) {
+      return { available: true, value: display };
+    }
+    const format = dateKind === "datetime"
+      ? result.userDateTimeFormat
+      : result.userDateFormat;
+    if (!format) return { available: false, value: "" };
+    let parsed = 0;
+    try {
+      parsed = typeof getDateFromFormat === "function"
+        ? getDateFromFormat(display, format)
+        : 0;
+    } catch (e) {
+      return { available: false, value: "" };
+    }
+    if (!parsed) return { available: false, value: "" };
+    try {
+      const transitionWindow = 4 * 60 * 60 * 1000;
+      if (
+        new Date(parsed - transitionWindow).getTimezoneOffset() !==
+        new Date(parsed + transitionWindow).getTimezoneOffset()
+      ) {
+        return { available: false, value: "" };
+      }
+      const date = new Date(parsed);
+      let normalised = date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+      if (dateKind === "datetime") {
+        normalised += " " + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+      }
+      return { available: validCanonical(normalised, dateKind), value: normalised };
+    } catch (e) {
+      return { available: false, value: "" };
+    }
+  };
+
+  let entryIdentityDisagreement = false;
+  const requests = Array.isArray(variables) ? variables : [];
+  requests.forEach((request) => {
+    const name = stringValue(request && request.name);
+    const fieldName = stringValue(request && request.fieldName);
+    const questionId = stringValue(request && request.questionId).toLowerCase();
+    const dateKind = request && request.dateKind;
+    const entryResult = {
+      name,
+      fieldName,
+      questionId,
+      foundEntry: false,
+      visible: null,
+      canRead: null,
+      liveValueAvailable: false,
+      liveValue: "",
+      liveDisplayValueAvailable: false,
+      liveDisplayValue: "",
+      liveDateValue: "",
+      liveDateNormalised: false,
+      isModified: null,
+      valueReadFailed: false,
+      identityMismatch: false,
+      identityUnavailable: false,
+      liveLayer: 1,
+    };
+    let entry = null;
+    try {
+      if (fieldName && Object.prototype.hasOwnProperty.call(fields, fieldName)) {
+        entry = fields[fieldName];
+      }
+    } catch (e) {}
+    if (!entry || (typeof entry !== "object" && typeof entry !== "function")) {
+      result.perVariable.push(entryResult);
+      return;
+    }
+    entryResult.foundEntry = true;
+    let entryId = "";
+    let entryName = "";
+    let referringTable = "";
+    let referringRecordId = "";
+    try { entryId = stringValue(entry.id).toLowerCase(); } catch (e) {}
+    try { entryName = stringValue(entry.name); } catch (e) {}
+    try { referringTable = stringValue(entry.referringTable).toLowerCase(); } catch (e) {}
+    try { referringRecordId = stringValue(entry.referringRecordId).toLowerCase(); } catch (e) {}
+    const hasReferringTable = Boolean(referringTable);
+    const hasReferringRecordId = Boolean(referringRecordId);
+    const referringIdentityValid =
+      (!hasReferringTable && !hasReferringRecordId) ||
+      (
+        hasReferringTable &&
+        hasReferringRecordId &&
+        referringTable === route.table &&
+        referringRecordId === route.sysId
+      );
+    if (!entryId || !entryName) {
+      entryResult.identityUnavailable = true;
+      result.perVariable.push(entryResult);
+      return;
+    }
+    if (
+      entryId !== questionId ||
+      entryName !== fieldName ||
+      !referringIdentityValid
+    ) {
+      entryResult.identityMismatch = true;
+      entryIdentityDisagreement = true;
+      result.perVariable.push(entryResult);
+      return;
+    }
+    try {
+      if (typeof entry.visible === "boolean") entryResult.visible = entry.visible;
+    } catch (e) {}
+    try {
+      if (typeof entry.canRead === "boolean") entryResult.canRead = entry.canRead;
+    } catch (e) {}
+    try {
+      if (typeof entry.isModified === "boolean") entryResult.isModified = entry.isModified;
+    } catch (e) {}
+    if (entryResult.canRead !== true) {
+      result.perVariable.push(entryResult);
+      return;
+    }
+    try {
+      const liveValue = entry.value;
+      if (typeof liveValue === "string") {
+        entryResult.liveValue = liveValue;
+        entryResult.liveValueAvailable = true;
+      }
+    } catch (e) {
+      entryResult.valueReadFailed = true;
+    }
+    try {
+      const displayValue = entry.displayValue;
+      if (typeof displayValue === "string") {
+        entryResult.liveDisplayValue = displayValue;
+        entryResult.liveDisplayValueAvailable = true;
+      }
+    } catch (e) {
+      entryResult.valueReadFailed = true;
+    }
+    if (
+      dateKind &&
+      entryResult.liveDisplayValueAvailable &&
+      entryResult.liveDisplayValue !== ""
+    ) {
+      const normalised = normaliseDisplayDate(entryResult.liveDisplayValue, dateKind);
+      entryResult.liveDateValue = normalised.value;
+      entryResult.liveDateNormalised = normalised.available;
+    } else if (
+      dateKind &&
+      entryResult.liveValueAvailable &&
+      entryResult.liveDisplayValueAvailable &&
+      entryResult.liveValue === "" &&
+      entryResult.liveDisplayValue === ""
+    ) {
+      entryResult.liveDateValue = "";
+      entryResult.liveDateNormalised = true;
+    }
+    result.perVariable.push(entryResult);
+  });
+  if (entryIdentityDisagreement) {
+    result.identityStatus = "refused";
+    result.identityReason = "Workspace variable entries disagreed with the selected record identity.";
+    result.formStatus = "refused";
+    result.perVariable = [];
+  }
+  return result;
+}
+
 // Self-contained MAIN-world inspector for hidden/switched-off catalog
 // variables. Duplicates helpers from fillPortalVariables/inspectPortalVariableDebug
 // rather than sharing them, since executeScript({func}) only serializes the
@@ -4069,6 +4719,103 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ok: true,
         foundForm: Boolean(found),
         variables: found ? found.variables || [] : [],
+      });
+    }).catch((error) => {
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
+  if (msg && msg.type === "GET_WORKSPACE_VARIABLE_SNAPSHOT" && sender.tab) {
+    if (sender.frameId !== 0) {
+      sendResponse({ ok: false, error: "Workspace inspection must originate in frame 0." });
+      return false;
+    }
+    const variables = Array.isArray(msg.variables) ? msg.variables.slice(0, 500) : [];
+    injectInFrame(
+      sender.tab.id,
+      0,
+      { world: "MAIN", func: inspectWorkspaceVariableSnapshot, args: [variables] },
+      "inspect Workspace record variables"
+    ).then((raw) => {
+      const value = (raw || [])
+        .map((item) => item && item.result)
+        .find((item) => item !== undefined && item !== null);
+      if (!value) {
+        sendResponse({ ok: false, error: "The top-level Workspace page did not return a snapshot." });
+        return;
+      }
+      sendResponse({ ok: true, snapshot: value });
+    }).catch((error) => {
+      sendResponse({ ok: false, error: errorText(error) });
+    });
+    return true;
+  }
+  if (msg && msg.type === "GET_NATIVE_RECORD_VARIABLES" && sender.tab) {
+    const variables = Array.isArray(msg.variables) ? msg.variables : [];
+    const requestedIdentity = msg.expectedIdentity || {};
+    const expectedIdentity =
+      /^[a-z][a-z0-9_]*$/.test(String(requestedIdentity.table || "")) &&
+      /^[0-9a-f]{32}$/i.test(String(requestedIdentity.sysId || ""))
+        ? {
+            table: String(requestedIdentity.table).toLowerCase(),
+            sysId: String(requestedIdentity.sysId).toLowerCase(),
+          }
+        : null;
+    const softNoMatchOnFailure = Boolean(
+      msg.softNoMatchOnFailure && expectedIdentity
+    );
+    readFromPageFrames(
+      sender.tab.id,
+      inspectNativeRecordVariables,
+      [variables],
+      "inspect classic record variables",
+      {
+        accept: (value) => Boolean(
+          value &&
+          value.foundGForm &&
+          value.identity &&
+          /^[a-z][a-z0-9_]*$/.test(value.identity.table) &&
+          /^[0-9a-f]{32}$/i.test(value.identity.sysId) &&
+          value.recordMarkerMatched &&
+          (!expectedIdentity || (
+            String(value.identity.table || "").toLowerCase() === expectedIdentity.table &&
+            String(value.identity.sysId || "").toLowerCase() === expectedIdentity.sysId
+          ))
+        ),
+      }
+    ).then(({ results, failures }) => {
+      const found = selectClassicRecordFrame(results, expectedIdentity);
+      if (!found && failures.length) {
+        if (softNoMatchOnFailure) {
+          sendResponse({
+            ok: true,
+            foundGForm: false,
+            probeInconclusive: true,
+            unreachableFrameCount: failures.length,
+            identity: { table: "", sysId: "" },
+            timeZone: "",
+            variableNamespaceAvailable: null,
+            perVariable: [],
+          });
+          return;
+        }
+        sendResponse({
+          ok: false,
+          error: inconclusiveError(failures, "inspect the classic form"),
+        });
+        return;
+      }
+      sendResponse({
+        ok: true,
+        foundGForm: Boolean(found),
+        identity: found ? found.identity : { table: "", sysId: "" },
+        timeZone: found ? found.timeZone || "" : "",
+        variableNamespaceAvailable: found
+          ? found.variableNamespaceAvailable
+          : null,
+        probeInconclusive: false,
+        unreachableFrameCount: failures.length,
+        perVariable: found ? found.perVariable || [] : [],
       });
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });

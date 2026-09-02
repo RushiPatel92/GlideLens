@@ -256,6 +256,148 @@ Its dormant implementation and `TOGGLE_FIELD_NAMES` handler remain in
 
 ## Catalog and Service Portal behavior
 
+Variable Values is context-sensitive. It parses any top-frame Workspace record
+route before probing classic frames. On ordinary classic pages, a frame
+qualifies only when `sys_target` and `sys_uniqueValue` agree with
+`g_form.getTableName()` / `getUniqueValue()`. On a Workspace route, that
+intra-frame marker is not enough: the classic frame must also name the exact
+record in the top-frame route. A mismatched embedded classic form is ignored,
+even when it answers first. When no matching classic frame exists, failures in
+unrelated child frames are retained as diagnostics but do not suppress the
+independently gated Workspace path. Before a final classic value read on a
+Workspace shell, the route and expected identity are checked again.
+
+Classic live reads use exact `variables.<name>` field names. If every safe
+namespaced read is empty while a safe plain-name support probe is non-empty, the
+whole catalog-variable live source is unavailable; plain values are never used
+as fallback values because they may belong to record fields. Date/Time uses
+`g_tz` captured in the same final MAIN-world snapshot as the live value, not a
+separate `sys_user` or instance-property lookup. RITMs read
+`sc_item_option_mtom` / `sc_item_option`; other classic records qualify only
+when `question_answer` contains rows matching both the probed table and sys_id.
+A moved record or route aborts the comparison.
+
+Service Operations Workspace RITMs use a dedicated frame-0 MAIN-world snapshot;
+the reader never fans out across discovered frames. It accepts only a full
+experience path of exactly `/now/sow/record/sc_req_item/<sys_id>`. Catalog forms
+are filtered by `sourceTable`/`sourceId` and corroborating composed-ancestor
+record identity before geometry is considered. One collapsed current form is
+valid; rectangle is used only to break same-record stale duplicates. A visible
+side panel for another record is ignored. With no qualifying catalog form, the
+stored-only path requires one unambiguous visible page-owned record identity;
+the URL alone never establishes identity. That state is labelled stored-only
+only after the stored read completes; a failed or truncated stored read reports
+that neither side was available and never claims to be showing stored values.
+
+Workspace live reads are exact pulls from `sn-catalog-form.fields` by
+`variables.<name>`, followed by question and record identity checks. Question
+id and exact entry name are mandatory. The entry-level
+`referringTable`/`referringRecordId` pair is optional on some field types; when
+both are absent the already-verified parent form remains authoritative, while a
+half-pair or any supplied mismatch refuses the complete snapshot. The request
+list is independently allowlisted and excludes secrets, sensitive names,
+duplicates, prototype collisions, malformed definitions, and unverified types
+before MAIN-world injection. Within a requested entry, `canRead === true` is
+required before either `value` or `displayValue` is touched. Layer 1 supports
+only types 2, 5, 6, 7, 8, 9, 10, 21, 26, and 31, each with a runtime shape
+validator; other types remain listed but uncompared. For Select Box (5), the
+raw string `value` is compared and a string `displayValue` is required only to
+validate the observed pair shape; the display label is never substituted for
+the raw choice value. Checkbox (7) compares by boolean meaning through its own
+`boolean-pair` validator. Both instances exposed `value` and `displayValue` as
+equal strings matching storage, so a rendered label disagreeing with the raw
+value is refused as unverified. Because a checkbox has a known value domain, an
+agreeing pair is additionally required to be a recognised boolean or empty: an
+unrecognised representation stays uncompared rather than falling through to a
+raw string comparison that could report a difference between identical states.
+
+Native stored values are metadata-first and default-deny. The
+`sc_item_option_mtom` read never requests a value column; a second, batched
+`sc_item_option` read requests values only for explicitly allowlisted variable
+types whose definition and stored metadata agree. Secret, unknown, structural,
+and MRVS values never enter that request. Empty values, missing stored rows,
+duplicates, failures, and row-cap truncation remain distinct states, and the
+stored side distinguishes "read and absent" from "never read" — only a lookup
+that actually ran may report a variable as not stored. Scalar
+types compare raw strings; Yes/No and Checkbox recognise `true`/`1`/`yes` and
+`false`/`0`/`no` as equivalent while keeping empty distinct; List Collector
+compares de-duplicated, non-empty comma-separated membership. Lookup Select Box
+and Lookup Multiple Choice are scalars despite the second one's name: both were
+verified live to store one raw value — whichever field `lookup_value` names, so
+a label as readily as a sys_id — and never a comma-separated list, so set
+membership would be the wrong comparison. Attachment is a scalar too: it stores
+the attachment's sys_id, so a replaced or cleared attachment reads as a
+difference. Multiple Choice, Wide Single Line Text, IP Address and Requested
+For are scalars on the same evidence. Date display text is normalised through
+the page's `getDateFromFormat` and captured user format. The helper verifies the
+wall-clock components survive the parse/local-getter round trip and refuses
+browser-local DST gaps or overlaps. Date/Time additionally proves that the raw
+layer-1 UTC value converts through same-snapshot `g_tz` to the normalised display
+wall clock before comparing raw-to-raw with storage. A missing format, parser,
+zone, malformed shape, or failed representation proof leaves the row
+uncompared. The browser timezone is never a fallback. Duration stays denied because its stored side is a
+`1970-01-01`-based internal value the form never echoes back, and HTML stays
+denied because either side may re-encode it; comparing either raw would turn
+a correct "not compared" into a false "differs".
+Every structural variable type is excluded from the panel altogether, on the
+native, producer, and portal paths: Break, Rich Text Label, Label, Container
+Start, Container End, Container Split, Custom, Custom with Label and UI Page.
+A layout divider, instructional HTML, a caption, a container boundary and an
+embedded widget have no value on either side, so none of them is listed. Their
+structural policy entries are kept so an unfiltered row would still never be
+fetched. Type names are matched alongside the numbers because types 14 and 17
+read "Custom" and "Custom with Label" on current releases and "Macro" and
+"Macro with Label" on older ones.
+Inactive variable definitions are
+still enumerated — an old record can hold stored data for a since-retired
+variable — but a row is listed only when something is stored for it, and then
+says so; a retired variable with nothing stored is dropped rather than reported
+as not stored, which read as a fault on a field that is not on the form at all.
+Prototype-collision names are not comparable. Neither is a duplicated name, and
+no duplicate is read at all: `g_form` resolves a shared name to whichever
+definition it chooses, so reading the ordinary twin of a masked variable could
+surface the masked value in a row not marked secret. A duplicate that shares its
+name with a secret is treated as secret itself, so the probe never touches the
+name.
+Record-producer targets apply the same rule to `question_answer`: the first read
+requests answer/question metadata without `value`, and the second requests
+`sys_id,value` only for allowlisted answer ids. No matching rows means the
+extension does not claim an arbitrary classic record is producer-backed.
+Variable-set metadata is resolved before that second read, so MRVS child-answer
+ids are excluded and each MRVS renders as one parent row.
+
+A multi-row variable set stores nothing on its own question row, so it gets a
+third read of its own against `sc_multi_row_question_answer`, keyed by
+`parent_id` (the RITM for a RITM target, the record itself for a
+producer-backed one) and the set. It follows the same two phases: cell and
+column identity first with no value column, then `sys_id,value` only for cells
+whose own column type is allowlisted, so a masked column inside a set stays
+unread. `row_index` is what groups cells into rows, so a set where any cell
+lacks a usable one is withheld and not compared: read order is not a
+substitute, and keying on it would split one real row into a fabricated
+single-column row per cell and then report those as row-count differences.
+Cells are grouped by `row_index` into the same array-of-objects shape
+`g_form.getValue()` returns, and compared structurally — row order matters, key
+order does not, an absent key equals an empty one, and each column uses its own
+comparison mode. A set with any withheld column is listed with those column
+names and not compared, rather than reported as a difference. When the read
+returns no rows at all for the record, the set is reported unstored and left
+uncompared. The live MRVS JSON is an all-columns read, so it is requested only
+when the complete set definition proves every child column positively safe and
+comparable and the stored metadata reveals no withheld column. Otherwise the
+set stays listed but `g_form.getValue()` is never called for it; this prevents a
+masked or sensitive child from crossing the MAIN-world boundary inside the
+parent JSON. When answered direct
+questions expose one unique `question.cat_item`, the same catalog-item reader
+enumerates unanswered direct and attached-set definitions; an absent or
+ambiguous relationship remains answers-only instead of guessing through shared
+variable-set attachments.
+
+The Service Portal path remains live-only. Masked type `25` is treated as a
+secret and listed redacted. Numeric type `18` is not treated as Hidden; only an
+explicit Hidden type label may supply that bucket, avoiding the verified Lookup
+Select Box misclassification.
+
 Variable insight icons open Catalog Insight scoped to an individual variable's
 onChange client scripts and UI policy actions. The variable name and definition
 sys_id exist only in Service Portal's Angular field model, so a MAIN-world

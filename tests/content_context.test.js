@@ -16,7 +16,8 @@ function loadContextHelpers() {
   return new Function(
     source.slice(contextStart, contextEnd) +
       source.slice(sysIdStart, sysIdEnd) +
-      "\nreturn { recordContextFromText, sysIdFromText };"
+      "\nreturn { recordContextFromText, workspaceRecordContextFromText, " +
+        "workspaceRecordContextMatches, sysIdFromText };"
   )();
 }
 
@@ -47,6 +48,35 @@ test("Workspace record routes are unaffected", () => {
       "https://example.service-now.com/now/workspace/example/record/sn_example_case/" + SYS_ID
     ),
     { table: "sn_example_case", sysId: SYS_ID }
+  );
+});
+
+test("Workspace Variable Values retains the complete experience path", () => {
+  assert.deepStrictEqual(
+    helpers.workspaceRecordContextFromText(
+      "https://example.service-now.com/now/sow/record/sc_req_item/" + SYS_ID +
+        "/params/selected-tab-index/0"
+    ),
+    { experiencePath: ["sow"], table: "sc_req_item", sysId: SYS_ID }
+  );
+  assert.deepStrictEqual(
+    helpers.workspaceRecordContextFromText(
+      "https://example.service-now.com/now/workspace/agent/record/sc_req_item/" + SYS_ID
+    ),
+    { experiencePath: ["workspace", "agent"], table: "sc_req_item", sysId: SYS_ID }
+  );
+});
+
+test("Workspace route matching includes every experience segment", () => {
+  const sow = { experiencePath: ["sow"], table: "sc_req_item", sysId: SYS_ID };
+  assert.strictEqual(helpers.workspaceRecordContextMatches(sow, { ...sow }), true);
+  assert.strictEqual(
+    helpers.workspaceRecordContextMatches(sow, {
+      experiencePath: ["workspace", "agent"],
+      table: "sc_req_item",
+      sysId: SYS_ID,
+    }),
+    false
   );
 });
 

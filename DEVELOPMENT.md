@@ -25,7 +25,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js
 ```
 
 The suites cover:
@@ -59,7 +59,8 @@ The suites cover:
   shared panel headings.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
-  Workspace routes, and encoded URLs.
+  encoded URLs, and the complete Workspace experience path used to distinguish
+  exact SOW support from multi-segment or other experiences.
 - `open_url.test.js` — `OPEN_URL` tab placement beside the originating tab, and
   the fallback to Chrome's default placement when tab context is missing or
   invalid.
@@ -69,6 +70,24 @@ The suites cover:
   frames without hanging on helper frames.
 - `prefill_settle.test.js` — installation and removal of GlideAjax settle
   tracking around catalog-variable prefill.
+- `variable_values_native.test.js` — classic RITM identity before/after reads,
+  Workspace-aware embedded-classic selection, exact `variables.<name>` classic
+  reads and same-snapshot page timezone, record-producer `question_answer`
+  routing, metadata-first secret-safe stored
+  reads, producer definition enumeration, MRVS-child consolidation, multi-row
+  stored reads and structural row comparison, positive
+  type policy, row presence, duplicates,
+  failure/empty/truncated states, scalar and List Collector comparison,
+  date and timezone-aware date/time normalisation, retired-variable
+  filtering,
+  prototype collisions, portal masked-type behavior, copy safety, and native
+  panel accessibility/source invariants. Workspace coverage includes frame-0
+  transport, identity-before-geometry form selection, collapsed/stale forms,
+  exact safe state-map pulls, `canRead` non-access, its independent type policy,
+  Select Box raw-value/display-label separation, malformed representation
+  rejection, end-to-end Checkbox boolean comparison refusing both a disagreeing
+  and an unrecognised pair, tri-state visibility, verdict-derived panel
+  completeness, and structurally honest stored-only copy.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real
@@ -153,7 +172,8 @@ default. Reverify when platform behavior or the queried schema changes.
   isolated-world results UI.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including
   variable-scoped views.
-- `hidden_variables_ui.js` — Service Portal variable values panel.
+- `hidden_variables_ui.js` — shared Service Portal and classic RITM Variable
+  Values panel, including stored/live comparison on the native path.
 - `tests/` — developer-only Node tests.
 - `docs/` — the public GitHub Pages site, not extension runtime code.
 - `package.mjs` — dependency-free store artifact builder.

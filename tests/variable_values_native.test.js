@@ -1,0 +1,2682 @@
+/* Tests for native-UI Variable Values: identity, safe stored reads, comparison,
+ * portal regression behavior, rendering/copy safety, and source invariants. */
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
+const uiSource = fs.readFileSync(path.join(__dirname, "..", "hidden_variables_ui.js"), "utf8");
+const manifestSource = fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8");
+
+const id = (number) => Number(number).toString(16).padStart(32, "0");
+const RITM_ID = id(1);
+const ITEM_ID = id(2);
+
+function nativeHelperSource() {
+  const fieldStart = contentSource.indexOf("function snFieldValue");
+  const fieldEnd = contentSource.indexOf("function normalizeSourceInput", fieldStart);
+  const typeStart = contentSource.indexOf("const UNSUPPORTED_VARIABLE_TYPES");
+  const typeEnd = contentSource.indexOf("function parseVariableOrder", typeStart);
+  const policyStart = contentSource.indexOf("const SENSITIVE_VARIABLE_NAME_PATTERN");
+  const policyEnd = contentSource.indexOf("const VARIABLE_DEFINITION_FIELDS", policyStart);
+  const nativeStart = contentSource.indexOf("function nativeDefinitionFromRow");
+  const nativeEnd = contentSource.indexOf("// Build one row per variable", nativeStart);
+  for (const [name, start, end] of [
+    ["field", fieldStart, fieldEnd],
+    ["type", typeStart, typeEnd],
+    ["policy", policyStart, policyEnd],
+    ["native", nativeStart, nativeEnd],
+  ]) {
+    assert.ok(start >= 0 && end > start, name + " helper block not found");
+  }
+  return [
+    contentSource.slice(fieldStart, fieldEnd),
+    contentSource.slice(typeStart, typeEnd),
+    contentSource.slice(policyStart, policyEnd),
+    contentSource.slice(nativeStart, nativeEnd),
+  ].join("\n");
+}
+
+function loadNativeHelpers(snGetMany) {
+  const factory = new Function(
+    "snGetMany",
+    nativeHelperSource() +
+      "\nreturn { NATIVE_VARIABLE_TYPE_POLICIES, NATIVE_PROTOTYPE_COLLISION_NAMES, " +
+      "NATIVE_STORED_METADATA_FIELDS, classifyNativeVariable, nativeValuesEqual, " +
+      "nativeRecordIdentityMatches, nativeStoredDateTimeInZone, " +
+      "WORKSPACE_VARIABLE_TYPE_POLICIES, classifyWorkspaceVariable, " +
+      "workspaceLiveValueForComparison, fetchNativeRitmStoredValues, " +
+      "fetchNativeMrvsStoredValues, nativeMrvsValuesEqual, parseNativeMrvsRows, " +
+      "nativeMrvsColumnsSafe, applyNativeMrvsLiveReadPolicy, " +
+      "fetchNativeRitmRecordData, fetchNativeProducerRecordData, buildNativeVariableRows };"
+  );
+  return factory(snGetMany || (async () => []));
+}
+
+function liveRequestApi() {
+  return new Function(
+    nativeHelperSource() +
+      contentSource.slice(
+        contentSource.indexOf("// True when any definition sharing this name"),
+        contentSource.indexOf("async function finishNativeVariableValues")
+      ) +
+      "\nreturn { nativeLiveValueRequests, workspaceLiveValueRequests };"
+  )();
+}
+
+function workspaceSnapshotProbe(document, location, globals) {
+  const start = backgroundSource.indexOf("function inspectWorkspaceVariableSnapshot");
+  const end = backgroundSource.indexOf("// Self-contained MAIN-world inspector for hidden", start);
+  assert.ok(start >= 0 && end > start, "Workspace snapshot probe not found");
+  const values = globals || {};
+  const probe = new Function(
+    "document",
+    "location",
+    "g_tz",
+    "g_user_date_format",
+    "g_user_date_time_format",
+    "getDateFromFormat",
+    backgroundSource.slice(start, end) + "\nreturn inspectWorkspaceVariableSnapshot;"
+  )(
+    document,
+    location,
+    values.timeZone || "Europe/London",
+    values.dateFormat || "yyyy-MM-dd",
+    values.dateTimeFormat || "yyyy-MM-dd HH:mm:ss",
+    values.getDateFromFormat || (() => 0)
+  );
+  return probe;
+}
+
+function workspaceElement(tagName, properties, parent, visible = true) {
+  return Object.assign({
+    tagName: tagName.toUpperCase(),
+    parentElement: parent || null,
+    shadowRoot: null,
+    getRootNode() { return { host: null }; },
+    getBoundingClientRect() {
+      return visible ? { width: 300, height: 200 } : { width: 0, height: 0 };
+    },
+  }, properties || {});
+}
+
+function workspaceDocument(elements) {
+  return {
+    querySelectorAll(selector) {
+      assert.strictEqual(selector, "*");
+      return elements;
+    },
+  };
+}
+
+function definition(overrides) {
+  return Object.assign({
+    name: "example",
+    label: "Example",
+    type: "6",
+    typeDisplay: "Single Line Text",
+    questionId: id(100),
+    setName: "",
+    hiddenType: false,
+    isMrvs: false,
+  }, overrides || {});
+}
+
+function storedRow(def, value, overrides) {
+  return Object.assign({
+    optionSysId: id(200),
+    questionId: def.questionId,
+    name: def.name,
+    type: def.type,
+    typeDisplay: def.typeDisplay,
+    secret: false,
+    policy: { disposition: "comparable", comparisonMode: def.type === "21" ? "set" : "scalar" },
+    fetchAllowed: true,
+    valueAvailable: true,
+    storedValue: value,
+  }, overrides || {});
+}
+
+function liveRow(def, value, overrides) {
+  return Object.assign({
+    name: def.name,
+    questionId: def.questionId,
+    foundEl: true,
+    visible: true,
+    gFormReportedVisible: true,
+    liveValueAvailable: true,
+    liveValue: value,
+    valueReadFailed: false,
+  }, overrides || {});
+}
+
+function rowsFor(definitions, metadataRows, liveResults, status = "success", extra) {
+  return loadNativeHelpers().buildNativeVariableRows(
+    definitions,
+    Object.assign({ storedReadStatus: status, metadataRows }, extra || {}),
+    liveResults
+  );
+}
+
+const MRVS_SET_ID = id(700);
+
+function mrvsDefinition(overrides) {
+  return definition(Object.assign({
+    name: "example_rows",
+    label: "Example Rows",
+    type: "34",
+    typeDisplay: "Multi-Row Variable Set",
+    variableSet: MRVS_SET_ID,
+    questionId: MRVS_SET_ID,
+    isMrvs: true,
+  }, overrides || {}));
+}
+
+// Shape returned by assembleNativeMrvsSets for one set.
+function mrvsStored(rows, overrides) {
+  return Object.assign({
+    rows,
+    withheldColumns: [],
+    comparisonModes: {},
+  }, overrides || {});
+}
+
+function mrvsResult(setId, set, status = "success") {
+  return {
+    mrvsReadStatus: status,
+    mrvsReadError: "",
+    mrvsValuesBySetId: set ? new Map([[setId, set]]) : new Map(),
+  };
+}
+
+function mrvsAnswerRow(answerSysId, columnName, rowIndex, overrides) {
+  return Object.assign({
+    sys_id: answerSysId,
+    parent_id: RITM_ID,
+    row_index: String(rowIndex),
+    variable_set: MRVS_SET_ID,
+    item_option_new: id(800),
+    "item_option_new.name": columnName,
+    "item_option_new.question_text": columnName,
+    "item_option_new.type": { value: "6", display_value: "Single Line Text" },
+  }, overrides || {});
+}
+
+function metadataRow(def, optionSysId, overrides) {
+  return Object.assign({
+    "sc_item_option.sys_id": optionSysId,
+    "sc_item_option.item_option_new": def.questionId,
+    "sc_item_option.item_option_new.name": def.name,
+    "sc_item_option.item_option_new.question_text": def.label,
+    "sc_item_option.item_option_new.type": {
+      value: def.type,
+      display_value: def.typeDisplay,
+    },
+  }, overrides || {});
+}
+
+function producerMetadataRow(def, answerSysId, overrides) {
+  return Object.assign({
+    sys_id: answerSysId,
+    table_name: "sn_example_case",
+    table_sys_id: RITM_ID,
+    document: id(990),
+    question: def.questionId,
+    "question.name": def.name,
+    "question.question_text": def.label,
+    "question.type": { value: def.type, display_value: def.typeDisplay },
+    "question.order": "100",
+    "question.variable_set": "",
+    "question.reference": "",
+    "question.lookup_table": "",
+    "question.list_table": "",
+    "question.cat_item": "",
+  }, overrides || {});
+}
+
+function nativeDefinitionRow(def, overrides) {
+  return Object.assign({
+    sys_id: def.questionId,
+    name: def.name,
+    question_text: def.label,
+    type: { value: def.type, display_value: def.typeDisplay },
+    order: "100",
+    variable_set: def.variableSet || "",
+    reference: "",
+    lookup_table: "",
+    list_table: "",
+  }, overrides || {});
+}
+
+test("the policy enumerates every documented numeric type and defaults unknown types closed", () => {
+  const helpers = loadNativeHelpers();
+  const documented = [
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14",
+    "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26",
+    "27", "28", "29", "31", "32", "33", "34", "40",
+  ];
+  documented.forEach((type) => assert.ok(helpers.NATIVE_VARIABLE_TYPE_POLICIES.has(type), type));
+  assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type: "999" })), {
+    disposition: "denied",
+  });
+});
+
+test("Workspace has an independent ten-type layer-one allowlist", () => {
+  const helpers = loadNativeHelpers();
+  assert.deepStrictEqual(
+    Array.from(helpers.WORKSPACE_VARIABLE_TYPE_POLICIES.keys()),
+    ["2", "5", "6", "7", "8", "9", "10", "21", "26", "31"]
+  );
+  assert.deepStrictEqual(
+    helpers.classifyWorkspaceVariable(definition({ type: "5" })),
+    {
+      disposition: "comparable",
+      comparisonMode: "scalar",
+      validator: "choice-pair",
+      layer: 1,
+    }
+  );
+  assert.strictEqual(
+    helpers.classifyWorkspaceVariable(definition({ type: "25", typeDisplay: "Masked" })).disposition,
+    "secret"
+  );
+});
+
+test("Workspace keeps the single-instance type-16 observation denied", () => {
+  const helpers = loadNativeHelpers();
+  const api = liveRequestApi();
+  const wideText = definition({
+    name: "request_description",
+    type: "16",
+    questionId: id(985),
+  });
+  assert.deepStrictEqual(helpers.classifyNativeVariable(wideText), {
+    disposition: "comparable",
+    comparisonMode: "scalar",
+  });
+  assert.deepStrictEqual(helpers.classifyWorkspaceVariable(wideText), {
+    disposition: "denied",
+  });
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([wideText]), []);
+});
+
+test("Workspace compares Checkbox as a boolean now both approved instances proved its shape", () => {
+  const helpers = loadNativeHelpers();
+  const api = liveRequestApi();
+  const checkbox = definition({
+    name: "accept_policy",
+    type: "7",
+    typeDisplay: "Checkbox",
+    questionId: id(986),
+  });
+  assert.deepStrictEqual(helpers.classifyNativeVariable(checkbox), {
+    disposition: "comparable",
+    comparisonMode: "boolean",
+  });
+  // Stock and configured instances both exposed layer 1 `value` and
+  // `displayValue` as equal strings matching storage, so the observed pair is
+  // verified with text-pair while the comparison itself stays boolean.
+  assert.deepStrictEqual(helpers.classifyWorkspaceVariable(checkbox), {
+    disposition: "comparable",
+    comparisonMode: "boolean",
+    validator: "boolean-pair",
+    layer: 1,
+  });
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([checkbox]), [
+    {
+      name: "accept_policy",
+      fieldName: "variables.accept_policy",
+      questionId: id(986),
+      type: "7",
+      dateKind: "",
+      liveLayer: 1,
+    },
+  ]);
+});
+
+test("a Workspace Checkbox row compares end to end through the panel builder", () => {
+  const helpers = loadNativeHelpers();
+  const checkboxDef = definition({
+    name: "gl_checkbox",
+    type: "7",
+    typeDisplay: "Checkbox",
+    questionId: id(987),
+  });
+  const nativePolicy = { disposition: "comparable", comparisonMode: "boolean" };
+  const live = (value, displayValue) => ({
+    name: checkboxDef.name,
+    questionId: checkboxDef.questionId,
+    foundEntry: true,
+    visible: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: value,
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: displayValue,
+    liveLayer: 1,
+  });
+  const build = (stored, liveEntry) => helpers.buildNativeVariableRows(
+    [checkboxDef],
+    {
+      storedReadStatus: "success",
+      metadataRows: [storedRow(checkboxDef, stored, { policy: nativePolicy })],
+    },
+    [liveEntry],
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  )[0];
+
+  const checked = build("true", live("true", "true"));
+  assert.strictEqual(checked.workspaceCandidate, true);
+  assert.strictEqual(checked.comparison, "match");
+  assert.strictEqual(build("false", live("false", "false")).comparison, "match");
+  // Boolean meaning bridges the platform's interchangeable spellings.
+  assert.strictEqual(build("true", live("1", "1")).comparison, "match");
+  assert.strictEqual(build("true", live("false", "false")).comparison, "differs");
+
+  // An unrecognised representation refuses instead of claiming a difference.
+  const unrecognised = build("true", live("checked", "checked"));
+  assert.strictEqual(unrecognised.comparison, "not-comparable");
+  assert.match(unrecognised.reason, /representation could not be verified/);
+});
+
+test("a Workspace Checkbox whose live pair disagrees is not comparable", () => {
+  const helpers = loadNativeHelpers();
+  const policy = helpers.classifyWorkspaceVariable(
+    definition({ type: "7", typeDisplay: "Checkbox" })
+  );
+  // A rendered label such as "Yes" would make displayValue disagree with the
+  // raw value. That is an unverified shape, never a substituted comparison.
+  const mismatched = helpers.workspaceLiveValueForComparison(policy, {
+    foundEntry: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: "true",
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: "Yes",
+  });
+  assert.strictEqual(mismatched.ok, false);
+  const agreed = helpers.workspaceLiveValueForComparison(policy, {
+    foundEntry: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: "false",
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: "false",
+  });
+  assert.deepStrictEqual(agreed, { ok: true, value: "false" });
+  // An agreeing pair is still refused when the representation is not a
+  // recognised boolean: reporting "differs" there could describe two states
+  // that are actually identical.
+  const unrecognised = helpers.workspaceLiveValueForComparison(policy, {
+    foundEntry: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: "checked",
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: "checked",
+  });
+  assert.strictEqual(unrecognised.ok, false);
+  // Empty stays comparable so a stored empty against a live false is surfaced.
+  assert.deepStrictEqual(
+    helpers.workspaceLiveValueForComparison(policy, {
+      foundEntry: true,
+      canRead: true,
+      liveValueAvailable: true,
+      liveValue: "",
+      liveDisplayValueAvailable: true,
+      liveDisplayValue: "",
+    }),
+    { ok: true, value: "" }
+  );
+  // Boolean meaning still bridges the platform's interchangeable spellings.
+  assert.strictEqual(helpers.nativeValuesEqual("true", "1", "boolean"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("false", "0", "boolean"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("", "false", "boolean"), false);
+});
+
+test("Break is structural, and Lookup Multiple Choice and URL compare as plain strings", () => {
+  const helpers = loadNativeHelpers();
+  // Verified live: type 22 stores one raw value, never a comma-separated list,
+  // so it is a scalar rather than a set like List Collector.
+  assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type: "12" })), {
+    disposition: "structural",
+  });
+  ["22", "27"].forEach((type) => {
+    assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type })), {
+      disposition: "comparable",
+      comparisonMode: "scalar",
+    });
+  });
+  const def = definition({ type: "22" });
+  assert.strictEqual(helpers.nativeValuesEqual("a,b", "b,a", "scalar"), false);
+  assert.strictEqual(helpers.nativeValuesEqual("one value", "one value", "scalar"), true);
+  // A secret name still wins over a comparable type.
+  assert.deepStrictEqual(
+    helpers.classifyNativeVariable(Object.assign({}, def, { name: "password" })),
+    { disposition: "secret" }
+  );
+});
+
+test("Lookup Select Box and Attachment compare as single raw values", () => {
+  const helpers = loadNativeHelpers();
+  // Verified live: type 18 stores one raw choice value (a sys_id or a label,
+  // depending on lookup_value) and type 33 stores one attachment sys_id.
+  // Neither is ever comma-separated, so both are scalars.
+  ["18", "33"].forEach((type) => {
+    assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type })), {
+      disposition: "comparable",
+      comparisonMode: "scalar",
+    });
+  });
+  const attachment = id(801);
+  assert.strictEqual(helpers.nativeValuesEqual(attachment, attachment, "scalar"), true);
+  assert.strictEqual(helpers.nativeValuesEqual(attachment, id(802), "scalar"), false);
+  // A replaced attachment reads as a difference, and a cleared one is not
+  // mistaken for a match.
+  assert.strictEqual(helpers.nativeValuesEqual(attachment, "", "scalar"), false);
+});
+
+test("plain single-value types compare as scalars, and format-risky types stay denied", () => {
+  const helpers = loadNativeHelpers();
+  // Verified live: each stores one raw value with no separator — choice values,
+  // free text, an address, and a user sys_id.
+  ["3", "16", "28", "31"].forEach((type) => {
+    assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type })), {
+      disposition: "comparable",
+      comparisonMode: "scalar",
+    }, type);
+  });
+  // Duration stores an internal format g_form does not echo back, and HTML can
+  // be re-encoded between the two sides. Comparing either raw would turn a
+  // correct "not compared" into a false "differs", so both stay denied. Date (9)
+  // and Date/Time (10) are handled by the normalisation tests below.
+  ["23", "29"].forEach((type) => {
+    assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type })), {
+      disposition: "denied",
+    }, type);
+  });
+});
+
+test("a Date compares on the page-normalised value, never the raw display string", () => {
+  const helpers = loadNativeHelpers();
+  assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type: "9" })), {
+    disposition: "comparable",
+    comparisonMode: "date",
+  });
+  const def = definition({ name: "start_date", type: "9", typeDisplay: "Date" });
+  // The live value arrives in the user's format; the probe supplies the
+  // yyyy-MM-dd normalisation alongside it.
+  const matching = rowsFor(
+    [def],
+    [storedRow(def, "2026-09-24", { policy: { disposition: "comparable", comparisonMode: "date" } })],
+    [liveRow(def, "24-09-2026", { liveDateValue: "2026-09-24", liveDateNormalised: true })]
+  )[0];
+  assert.strictEqual(matching.comparison, "match");
+  assert.strictEqual(matching.liveValue, "24-09-2026", "the panel still shows what the form shows");
+  assert.match(matching.reason, /internal date format; the form shows the same day/);
+  // That wording asserts the days agree, so it must not appear on a differing row.
+
+  const differing = rowsFor(
+    [def],
+    [storedRow(def, "2026-09-24", { policy: { disposition: "comparable", comparisonMode: "date" } })],
+    [liveRow(def, "25-09-2026", { liveDateValue: "2026-09-25", liveDateNormalised: true })]
+  )[0];
+  assert.strictEqual(differing.comparison, "differs");
+  assert.doesNotMatch(differing.reason, /the same day/);
+
+  // An unparsed date is never compared raw: that would report a difference
+  // between "24-09-2026" and "2026-09-24" that does not exist.
+  const unparsed = rowsFor(
+    [def],
+    [storedRow(def, "2026-09-24", { policy: { disposition: "comparable", comparisonMode: "date" } })],
+    [liveRow(def, "24-09-2026", { liveDateValue: "", liveDateNormalised: false })]
+  )[0];
+  assert.strictEqual(unparsed.comparison, "not-comparable");
+  assert.match(unparsed.reason, /user date format/);
+
+  // The probe is only asked to normalise for date variables.
+  const requestSource = contentSource.slice(
+    contentSource.indexOf("function nativeLiveValueRequests"),
+    contentSource.indexOf("async function finishNativeVariableValues")
+  );
+  assert.match(requestSource, /dateKind:/);
+  const probe = backgroundSource.slice(
+    backgroundSource.indexOf("function inspectNativeRecordVariables"),
+    backgroundSource.indexOf("// Self-contained MAIN-world inspector")
+  );
+  assert.match(probe, /variable\.dateKind/);
+  assert.match(probe, /typeof getDateFromFormat === "function"/);
+  assert.match(probe, /typeof g_user_date_format !== "undefined"/);
+  assert.match(probe, /transitionWindow[\s\S]*getTimezoneOffset/);
+});
+
+test("a Date/Time is compared in the signed-in user's timezone, not the browser's", () => {
+  const helpers = loadNativeHelpers();
+  assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type: "10" })), {
+    disposition: "comparable",
+    comparisonMode: "datetime",
+  });
+
+  // Verified live: a value stored as 17:51:39 UTC renders as 23:21:39 for a
+  // user on +5:30, and as 18:51:39 for a user on +1 in August.
+  const stored = "2026-08-23 17:51:39";
+  assert.strictEqual(
+    helpers.nativeStoredDateTimeInZone(stored, "Asia/Kolkata"),
+    "2026-08-23 23:21:39"
+  );
+  assert.strictEqual(
+    helpers.nativeStoredDateTimeInZone(stored, "Europe/London"),
+    "2026-08-23 18:51:39"
+  );
+  // The offset is resolved for that instant, so DST is handled: the same clock
+  // time in January is +0 in London, not +1.
+  assert.strictEqual(
+    helpers.nativeStoredDateTimeInZone("2026-01-23 17:51:39", "Europe/London"),
+    "2026-01-23 17:51:39"
+  );
+  // Anything unresolvable yields "", which leaves the row uncompared.
+  assert.strictEqual(helpers.nativeStoredDateTimeInZone(stored, ""), "");
+  assert.strictEqual(helpers.nativeStoredDateTimeInZone(stored, "Not/AZone"), "");
+  assert.strictEqual(helpers.nativeStoredDateTimeInZone("not a date", "Asia/Kolkata"), "");
+  assert.strictEqual(
+    helpers.nativeStoredDateTimeInZone("2026-02-30 17:51:39", "Asia/Kolkata"),
+    "",
+    "an invalid calendar date must not normalise into a different valid instant"
+  );
+
+  const def = definition({ name: "call_back", type: "10", typeDisplay: "Date/Time" });
+  const policy = { disposition: "comparable", comparisonMode: "datetime" };
+  const rows = (live, zone, zoneSource) => helpers.buildNativeVariableRows(
+    [def],
+    { storedReadStatus: "success", metadataRows: [storedRow(def, stored, { policy })] },
+    [liveRow(def, "23-08-2026 23:21:39", { liveDateValue: live, liveDateNormalised: true })],
+    { timeZone: zone, zoneSource: zoneSource || "user" }
+  )[0];
+
+  const matched = rows("2026-08-23 23:21:39", "Asia/Kolkata");
+  assert.strictEqual(matched.comparison, "match");
+  // The two columns show 17:51:39 next to 23:21:39, so a bare "Match" reads as
+  // a bug. The row has to say why they agree.
+  assert.match(matched.reason, /is UTC, which is 2026-08-23 23:21:39/);
+  assert.match(matched.reason, /Asia\/Kolkata/);
+  assert.match(
+    rows("2026-08-23 23:22:39", "Asia/Kolkata").reason,
+    /differ\. Stored .* is UTC/,
+    "a differing row explains the conversion too, without claiming the form shows it"
+  );
+  // The same wall clock read by a user on a different offset is a real
+  // difference, not a match.
+  assert.strictEqual(rows("2026-08-23 23:21:39", "Europe/London").comparison, "differs");
+  assert.strictEqual(rows("2026-08-23 23:22:39", "Asia/Kolkata").comparison, "differs");
+
+  // With no timezone the row is left uncompared rather than compared raw,
+  // which would report every date/time on the record as differing.
+  const noZone = rows("2026-08-23 23:21:39", "");
+  assert.strictEqual(noZone.comparison, "not-comparable");
+  assert.match(noZone.reason, /timezone could not be resolved/);
+  assert.match(rows("2026-08-23 23:21:39", "", "no-page-zone").reason, /active timezone/);
+
+  // The active page zone is captured in the same MAIN-world probe that reads
+  // values. No sys_user/sys_properties lookup or browser-zone fallback remains.
+  const nativeProbe = backgroundSource.slice(
+    backgroundSource.indexOf("function inspectNativeRecordVariables"),
+    backgroundSource.indexOf("function inspectWorkspaceVariableSnapshot")
+  );
+  const nativeFlow = contentSource.slice(
+    contentSource.indexOf("async function finishNativeVariableValues"),
+    contentSource.indexOf("async function showNativeRitmVariableValues")
+  );
+  assert.match(nativeProbe, /typeof g_tz[\s\S]*result\.timeZone/);
+  assert.match(nativeFlow, /liveProbe\.timeZone/);
+  assert.doesNotMatch(nativeFlow, /sys_user|sys_properties|fetchNativeUserZone/);
+});
+
+test("no duplicate name is read, so a secret twin cannot leak through its sibling", () => {
+  // Two definitions can share a name, and g_form resolves the name to whichever
+  // one it likes. When one of the pair is masked, reading "the ordinary one"
+  // could hand back the masked one's value -- into a row that is not marked
+  // secret, and from there into copy output. Duplicates are uncomparable
+  // anyway, so none of them is ever read.
+  const api = liveRequestApi();
+  const ordinary = definition({ name: "api_key", questionId: id(940) });
+  const masked = definition({
+    name: "api_key",
+    type: "25",
+    typeDisplay: "Masked",
+    questionId: id(941),
+  });
+  const unique = definition({ name: "comments", questionId: id(942) });
+
+  const requests = api.nativeLiveValueRequests([ordinary, masked, unique]);
+  const byQuestion = new Map(requests.map((request) => [request.questionId, request]));
+
+  assert.strictEqual(byQuestion.get(id(940)).readValue, false);
+  assert.strictEqual(byQuestion.get(id(941)).readValue, false);
+  // The ordinary twin is marked secret too: the probe must not touch the name
+  // at all, not even to ask g_form whether it is visible.
+  assert.strictEqual(byQuestion.get(id(940)).secret, true);
+  assert.strictEqual(byQuestion.get(id(940)).duplicateName, true);
+  // A name that is merely duplicated, with no secret in the pair, is still not
+  // read -- but it is not misreported as a secret either.
+  const plainPair = api.nativeLiveValueRequests([
+    definition({ name: "dupe", questionId: id(943) }),
+    definition({ name: "dupe", questionId: id(944) }),
+  ]);
+  assert.deepStrictEqual(plainPair.map((request) => request.readValue), [false, false]);
+  assert.deepStrictEqual(plainPair.map((request) => request.secret), [false, false]);
+  // An unambiguous variable is unaffected.
+  assert.strictEqual(byQuestion.get(id(942)).readValue, true);
+  assert.strictEqual(byQuestion.get(id(942)).secret, false);
+  assert.strictEqual(byQuestion.get(id(942)).fieldName, "variables.comments");
+});
+
+test("a live MRVS is read only after every child column is proven safe", () => {
+  const helpers = loadNativeHelpers();
+  const api = liveRequestApi();
+  const safeColumn = definition({ name: "plain", questionId: id(960), variableSet: MRVS_SET_ID });
+  const secondColumn = definition({ name: "count", questionId: id(961), variableSet: MRVS_SET_ID });
+  const maskedColumn = definition({
+    name: "password",
+    type: "25",
+    typeDisplay: "Masked",
+    questionId: id(962),
+    variableSet: MRVS_SET_ID,
+  });
+
+  assert.strictEqual(
+    helpers.nativeMrvsColumnsSafe(
+      [nativeDefinitionRow(safeColumn), nativeDefinitionRow(secondColumn)],
+      true
+    ),
+    true
+  );
+  assert.strictEqual(
+    helpers.nativeMrvsColumnsSafe(
+      [nativeDefinitionRow(safeColumn), nativeDefinitionRow(maskedColumn)],
+      true
+    ),
+    false,
+    "one masked child must block the whole live JSON read"
+  );
+  assert.strictEqual(
+    helpers.nativeMrvsColumnsSafe([nativeDefinitionRow(safeColumn)], false),
+    false,
+    "a capped column-definition read cannot prove the set safe"
+  );
+
+  const approved = mrvsDefinition({ mrvsColumnsSafe: true });
+  helpers.applyNativeMrvsLiveReadPolicy([approved], mrvsResult(null, null, "empty"));
+  assert.strictEqual(approved.liveReadAllowed, true);
+  assert.strictEqual(api.nativeLiveValueRequests([approved])[0].readValue, true);
+
+  const withheld = mrvsDefinition({ mrvsColumnsSafe: true });
+  helpers.applyNativeMrvsLiveReadPolicy(
+    [withheld],
+    mrvsResult(MRVS_SET_ID, mrvsStored([], { withheldColumns: ["password"] }))
+  );
+  assert.strictEqual(withheld.liveReadAllowed, false);
+  assert.strictEqual(api.nativeLiveValueRequests([withheld])[0].readValue, false);
+  const [row] = rowsFor(
+    [withheld],
+    [],
+    [],
+    "success",
+    mrvsResult(MRVS_SET_ID, mrvsStored([], { withheldColumns: ["password"] }))
+  );
+  assert.match(row.reason, /Columns were not read/);
+});
+
+test("Workspace requests contain only positively allowlisted unique safe definitions", () => {
+  const api = liveRequestApi();
+  const safe = definition({ name: "plain_note", type: "6", questionId: id(945) });
+  const choice = definition({ name: "choice_box", type: "5", questionId: id(946) });
+  const secret = definition({ name: "password_value", type: "25", questionId: id(947) });
+  const duplicateA = definition({ name: "dupe", type: "6", questionId: id(948) });
+  const duplicateB = definition({ name: "dupe", type: "6", questionId: id(949) });
+  const collision = definition({ name: "toString", type: "6", questionId: id(950) });
+  const malformed = definition({ name: "bad_id", type: "6", questionId: "not-an-id" });
+
+  const requests = api.workspaceLiveValueRequests([
+    safe,
+    choice,
+    secret,
+    duplicateA,
+    duplicateB,
+    collision,
+    malformed,
+  ]);
+  assert.deepStrictEqual(requests, [
+    {
+      name: "plain_note",
+      fieldName: "variables.plain_note",
+      questionId: id(945),
+      type: "6",
+      dateKind: "",
+      liveLayer: 1,
+    },
+    {
+      name: "choice_box",
+      fieldName: "variables.choice_box",
+      questionId: id(946),
+      type: "5",
+      dateKind: "",
+      liveLayer: 1,
+    },
+  ]);
+});
+
+test("Workspace snapshot binds identity before geometry and pulls only requested keys", () => {
+  const currentId = id(960);
+  const otherId = id(961);
+  const currentMacro = workspaceElement("macroponent-current", {
+    table: "sc_req_item",
+    sysId: currentId,
+  });
+  const otherMacro = workspaceElement("macroponent-other", {
+    table: "sc_req_item",
+    sysId: otherId,
+  });
+  let unrequestedTouched = false;
+  const fields = {
+    "variables.plain_note": {
+      id: id(962),
+      name: "variables.plain_note",
+      referringTable: "sc_req_item",
+      referringRecordId: currentId,
+      visible: true,
+      canRead: true,
+      value: "live",
+      displayValue: "live",
+    },
+  };
+  Object.defineProperty(fields, "variables.secret", {
+    configurable: true,
+    get() {
+      unrequestedTouched = true;
+      throw new Error("must not read");
+    },
+  });
+  const currentForm = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields,
+  }, currentMacro, false);
+  const unrelatedVisibleForm = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: otherId,
+    fields: {},
+  }, otherMacro, true);
+  const document = workspaceDocument([
+    currentMacro,
+    otherMacro,
+    currentForm,
+    unrelatedVisibleForm,
+  ]);
+  const probe = workspaceSnapshotProbe(document, {
+    href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId,
+  });
+  const snapshot = probe([{
+    name: "plain_note",
+    fieldName: "variables.plain_note",
+    questionId: id(962),
+    type: "6",
+    dateKind: "",
+  }]);
+  assert.strictEqual(snapshot.identityStatus, "verified");
+  assert.strictEqual(snapshot.formStatus, "available");
+  assert.strictEqual(snapshot.selectedFormCollapsed, true);
+  assert.strictEqual(snapshot.perVariable[0].liveValue, "live");
+  assert.strictEqual(unrequestedTouched, false);
+});
+
+test("Workspace snapshot uses rect only to break same-record duplicates", () => {
+  const currentId = id(963);
+  const macro = workspaceElement("macroponent-current", {
+    table: "sc_req_item",
+    sysId: currentId,
+  });
+  const entry = {
+    id: id(964),
+    name: "variables.plain_note",
+    referringTable: "sc_req_item",
+    referringRecordId: currentId,
+    visible: true,
+    canRead: true,
+    value: "current",
+    displayValue: "current",
+  };
+  const stale = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: { "variables.plain_note": { ...entry, value: "stale", displayValue: "stale" } },
+  }, macro, false);
+  const current = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: { "variables.plain_note": entry },
+  }, macro, true);
+  const route = { href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId };
+  const request = [{
+    name: "plain_note",
+    fieldName: "variables.plain_note",
+    questionId: id(964),
+    type: "6",
+    dateKind: "",
+  }];
+  const selected = workspaceSnapshotProbe(
+    workspaceDocument([macro, stale, current]),
+    route
+  )(request);
+  assert.strictEqual(selected.identityStatus, "verified");
+  assert.strictEqual(selected.perVariable[0].liveValue, "current");
+
+  const duplicateVisible = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: {},
+  }, macro, true);
+  const refused = workspaceSnapshotProbe(
+    workspaceDocument([macro, current, duplicateVisible]),
+    route
+  )([]);
+  assert.strictEqual(refused.identityStatus, "refused");
+  assert.match(refused.identityReason, /More than one Workspace catalog form/);
+});
+
+test("Workspace entry referring identity is optional as a complete pair", () => {
+  const currentId = id(971);
+  const questionId = id(972);
+  const macro = workspaceElement("macroponent-current", {
+    table: "sc_req_item",
+    sysId: currentId,
+  });
+  const entry = {
+    id: questionId,
+    name: "variables.plain_note",
+    visible: true,
+    canRead: true,
+    value: "live",
+    displayValue: "live",
+  };
+  const form = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: { "variables.plain_note": entry },
+  }, macro, true);
+  const snapshot = workspaceSnapshotProbe(
+    workspaceDocument([macro, form]),
+    { href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId }
+  )([{
+    name: "plain_note",
+    fieldName: "variables.plain_note",
+    questionId,
+    type: "6",
+    dateKind: "",
+  }]);
+  assert.strictEqual(snapshot.identityStatus, "verified");
+  assert.strictEqual(snapshot.perVariable[0].liveValue, "live");
+});
+
+test("Workspace entry referring identity half-pairs and mismatches refuse atomically", () => {
+  const currentId = id(973);
+  const otherId = id(974);
+  const questionId = id(975);
+  const request = [{
+    name: "plain_note",
+    fieldName: "variables.plain_note",
+    questionId,
+    type: "6",
+    dateKind: "",
+  }];
+  const probeFor = (extra) => {
+    const macro = workspaceElement("macroponent-current", {
+      table: "sc_req_item",
+      sysId: currentId,
+    });
+    const form = workspaceElement("sn-catalog-form", {
+      sourceTable: "sc_req_item",
+      sourceId: currentId,
+      fields: {
+        "variables.plain_note": {
+          id: questionId,
+          name: "variables.plain_note",
+          visible: true,
+          canRead: true,
+          value: "live",
+          displayValue: "live",
+          ...extra,
+        },
+      },
+    }, macro, true);
+    return workspaceSnapshotProbe(
+      workspaceDocument([macro, form]),
+      { href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId }
+    )(request);
+  };
+  for (const snapshot of [
+    probeFor({ referringTable: "sc_req_item" }),
+    probeFor({ referringRecordId: currentId }),
+    probeFor({ referringTable: "sc_req_item", referringRecordId: otherId }),
+  ]) {
+    assert.strictEqual(snapshot.identityStatus, "refused");
+    assert.strictEqual(snapshot.perVariable.length, 0);
+  }
+});
+
+test("Workspace missing mandatory entry identity stays uncompared without poisoning siblings", () => {
+  const currentId = id(976);
+  const questionId = id(977);
+  const macro = workspaceElement("macroponent-current", {
+    table: "sc_req_item",
+    sysId: currentId,
+  });
+  const form = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: {
+      "variables.plain_note": {
+        name: "variables.plain_note",
+        visible: true,
+        canRead: true,
+        value: "must-not-be-read",
+      },
+    },
+  }, macro, true);
+  const snapshot = workspaceSnapshotProbe(
+    workspaceDocument([macro, form]),
+    { href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId }
+  )([{
+    name: "plain_note",
+    fieldName: "variables.plain_note",
+    questionId,
+    type: "6",
+    dateKind: "",
+  }]);
+  assert.strictEqual(snapshot.identityStatus, "verified");
+  assert.strictEqual(snapshot.perVariable[0].identityUnavailable, true);
+  assert.strictEqual(snapshot.perVariable[0].liveValueAvailable, false);
+});
+
+test("Workspace snapshot never touches value getters unless canRead is exactly true", () => {
+  const currentId = id(965);
+  const macro = workspaceElement("macroponent-current", {
+    table: "sc_req_item",
+    sysId: currentId,
+  });
+  let touched = false;
+  const denied = {
+    id: id(966),
+    name: "variables.denied",
+    referringTable: "sc_req_item",
+    referringRecordId: currentId,
+    visible: true,
+    canRead: false,
+  };
+  Object.defineProperties(denied, {
+    value: { get() { touched = true; throw new Error("denied value"); } },
+    displayValue: { get() { touched = true; throw new Error("denied display"); } },
+  });
+  const form = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: { "variables.denied": denied },
+  }, macro, true);
+  const snapshot = workspaceSnapshotProbe(
+    workspaceDocument([macro, form]),
+    { href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId }
+  )([{
+    name: "denied",
+    fieldName: "variables.denied",
+    questionId: id(966),
+    type: "6",
+    dateKind: "",
+  }]);
+  assert.strictEqual(snapshot.identityStatus, "verified");
+  assert.strictEqual(snapshot.perVariable[0].canRead, false);
+  assert.strictEqual(snapshot.perVariable[0].liveValueAvailable, false);
+  assert.strictEqual(touched, false);
+});
+
+test("Workspace snapshot does not forward non-string Select Box representations", () => {
+  const currentId = id(983);
+  const questionId = id(984);
+  const macro = workspaceElement("macroponent-current", {
+    table: "sc_req_item",
+    sysId: currentId,
+  });
+  const form = workspaceElement("sn-catalog-form", {
+    sourceTable: "sc_req_item",
+    sourceId: currentId,
+    fields: {
+      "variables.choice_box": {
+        id: questionId,
+        name: "variables.choice_box",
+        referringTable: "sc_req_item",
+        referringRecordId: currentId,
+        visible: true,
+        canRead: true,
+        value: 1,
+        displayValue: { label: "One" },
+      },
+    },
+  }, macro, true);
+  const snapshot = workspaceSnapshotProbe(
+    workspaceDocument([macro, form]),
+    { href: "https://example.service-now.com/now/sow/record/sc_req_item/" + currentId }
+  )([{
+    name: "choice_box",
+    fieldName: "variables.choice_box",
+    questionId,
+    type: "5",
+    dateKind: "",
+  }]);
+
+  assert.strictEqual(snapshot.identityStatus, "verified");
+  assert.strictEqual(snapshot.perVariable[0].canRead, true);
+  assert.strictEqual(snapshot.perVariable[0].liveValueAvailable, false);
+  assert.strictEqual(snapshot.perVariable[0].liveDisplayValueAvailable, false);
+
+  const helpers = loadNativeHelpers();
+  const choiceDef = definition({ name: "choice_box", type: "5", questionId });
+  const [row] = helpers.buildNativeVariableRows(
+    [choiceDef],
+    { storedReadStatus: "success", metadataRows: [storedRow(choiceDef, "1")] },
+    snapshot.perVariable,
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /value unavailable/i);
+});
+
+test("Workspace rows compare only after layer-specific representation validation", () => {
+  const helpers = loadNativeHelpers();
+  const textDef = definition({ name: "plain_note", type: "6", questionId: id(967) });
+  const textStored = storedRow(textDef, "live");
+  const live = {
+    name: textDef.name,
+    questionId: textDef.questionId,
+    foundEntry: true,
+    visible: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: "live",
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: "live",
+    liveLayer: 1,
+  };
+  const [matched] = helpers.buildNativeVariableRows(
+    [textDef],
+    { storedReadStatus: "success", metadataRows: [textStored] },
+    [live],
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  );
+  assert.strictEqual(matched.workspaceCandidate, true);
+  assert.strictEqual(matched.comparison, "match");
+  assert.strictEqual(matched.visibilityState, "visible");
+
+  const [normalisedDisplay] = helpers.buildNativeVariableRows(
+    [textDef],
+    { storedReadStatus: "success", metadataRows: [textStored] },
+    [{ ...live, liveDisplayValue: "live\r\n" }],
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  );
+  assert.strictEqual(normalisedDisplay.comparison, "not-comparable");
+  assert.match(normalisedDisplay.reason, /representation could not be verified/);
+});
+
+test("Workspace Select Box compares raw value while requiring the display pair shape", () => {
+  const helpers = loadNativeHelpers();
+  const choiceDef = definition({ name: "request_type", type: "5", questionId: id(982) });
+  const stored = storedRow(choiceDef, "create_group");
+  const live = {
+    name: choiceDef.name,
+    questionId: choiceDef.questionId,
+    foundEntry: true,
+    visible: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: "create_group",
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: "Create Ownership Group",
+    liveLayer: 1,
+  };
+  const build = (overrides) => helpers.buildNativeVariableRows(
+    [choiceDef],
+    { storedReadStatus: "success", metadataRows: [stored] },
+    [{ ...live, ...overrides }],
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  )[0];
+
+  assert.strictEqual(build({}).comparison, "match");
+  assert.strictEqual(
+    build({ liveDisplayValue: "create_group" }).comparison,
+    "match",
+    "a choice whose label equals its raw value remains comparable"
+  );
+  assert.strictEqual(
+    build({ liveDisplayValue: "Create Ownership Group " }).comparison,
+    "match",
+    "display formatting is not substituted for the raw comparison value"
+  );
+
+  const rewritten = build({
+    liveValue: "remove_group",
+    liveDisplayValue: "Remove Ownership Group",
+  });
+  assert.strictEqual(rewritten.comparison, "differs");
+
+  const emptyStored = storedRow(choiceDef, "");
+  const [empty] = helpers.buildNativeVariableRows(
+    [choiceDef],
+    { storedReadStatus: "success", metadataRows: [emptyStored] },
+    [{ ...live, liveValue: "", liveDisplayValue: "" }],
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  );
+  assert.strictEqual(empty.comparison, "match");
+
+  for (const malformed of [
+    { liveDisplayValueAvailable: false },
+    { liveValueAvailable: false },
+  ]) {
+    const row = build(malformed);
+    assert.strictEqual(row.comparison, "not-comparable");
+    assert.match(row.reason, /choice representation|value unavailable/i);
+  }
+});
+
+test("Workspace visibility is tri-state and independent from canRead", () => {
+  const helpers = loadNativeHelpers();
+  const def = definition({ name: "plain_note", type: "6", questionId: id(968) });
+  const stored = storedRow(def, "saved");
+  const build = (live) => helpers.buildNativeVariableRows(
+    [def],
+    { storedReadStatus: "success", metadataRows: [stored] },
+    live ? [{ name: def.name, questionId: def.questionId, foundEntry: true, ...live }] : [],
+    { workspace: true, timeZone: "Europe/London", zoneSource: "page" }
+  )[0];
+
+  const deniedVisible = build({ visible: true, canRead: false });
+  assert.strictEqual(deniedVisible.visibilityState, "visible");
+  assert.strictEqual(deniedVisible.hidden, false);
+  assert.strictEqual(deniedVisible.comparison, "not-comparable");
+  assert.match(deniedVisible.reason, /not readable/);
+
+  const hidden = build({ visible: false, canRead: false });
+  assert.strictEqual(hidden.visibilityState, "hidden");
+  assert.strictEqual(hidden.hidden, true);
+
+  const unavailable = build(null);
+  assert.strictEqual(unavailable.visibilityState, "unknown");
+  assert.strictEqual(unavailable.hidden, null);
+  assert.strictEqual(unavailable.bucket, "live-unavailable");
+});
+
+test("Workspace Date/Time proves raw UTC against the normalised display wall clock", () => {
+  const helpers = loadNativeHelpers();
+  const def = definition({ name: "when_needed", type: "10", questionId: id(969) });
+  const stored = "2026-08-23 17:51:39";
+  const live = {
+    name: def.name,
+    questionId: def.questionId,
+    foundEntry: true,
+    visible: true,
+    canRead: true,
+    liveValueAvailable: true,
+    liveValue: stored,
+    liveDisplayValueAvailable: true,
+    liveDisplayValue: "23-08-2026 18:51:39",
+    liveDateValue: "2026-08-23 18:51:39",
+    liveDateNormalised: true,
+    liveLayer: 1,
+  };
+  const row = (overrides, timeZone = "Europe/London") => helpers.buildNativeVariableRows(
+    [def],
+    { storedReadStatus: "success", metadataRows: [storedRow(def, stored)] },
+    [{ ...live, ...(overrides || {}) }],
+    { workspace: true, timeZone, zoneSource: timeZone ? "page" : "no-page-zone" }
+  )[0];
+  assert.strictEqual(row().comparison, "match");
+  assert.strictEqual(row({ liveDateValue: stored }).comparison, "not-comparable");
+  assert.strictEqual(row({}, "").comparison, "not-comparable");
+});
+
+test("a frame without the classic record marker is declined, not merely deprioritised", () => {
+  const selectFrame = new Function(
+    backgroundSource.slice(
+      backgroundSource.indexOf("function selectClassicRecordFrame"),
+      backgroundSource.indexOf("function inspectNativeRecordVariables")
+    ) + "\nreturn selectClassicRecordFrame;"
+  )();
+
+  const marked = {
+    foundGForm: true,
+    recordMarkerMatched: true,
+    identity: { table: "sc_req_item", sysId: RITM_ID },
+    perVariable: [{ name: "a" }],
+  };
+  // A Workspace or embedded frame: a real g_form, no sys_target/sys_uniqueValue
+  // agreement, and more variables than the classic frame -- so neither the
+  // marker preference nor the variable-count tiebreak would exclude it.
+  const workspace = {
+    foundGForm: true,
+    recordMarkerMatched: false,
+    perVariable: [{ name: "a" }, { name: "b" }, { name: "c" }],
+  };
+
+  assert.strictEqual(selectFrame([workspace, marked]), marked);
+  // The regression: with no marked frame at all, the answer is nothing, not
+  // "the best of the markerless ones". The caller then reports no classic form
+  // and the Service Portal path stays available.
+  assert.strictEqual(selectFrame([workspace]), undefined);
+  assert.strictEqual(selectFrame([]), undefined);
+  assert.strictEqual(selectFrame(null), undefined);
+  assert.strictEqual(selectFrame([{ foundGForm: false, recordMarkerMatched: true }]), undefined);
+
+  const wrongRecord = {
+    ...marked,
+    identity: { table: "sc_req_item", sysId: id(999) },
+    perVariable: [{ name: "wrong" }, { name: "larger" }],
+  };
+  assert.strictEqual(
+    selectFrame([wrongRecord, marked], { table: "sc_req_item", sysId: RITM_ID }),
+    marked,
+    "a marker-qualified child for another Workspace record cannot win"
+  );
+  assert.strictEqual(
+    selectFrame([wrongRecord], { table: "sc_req_item", sysId: RITM_ID }),
+    undefined
+  );
+});
+
+test("stored MRVS rows without a row index are withheld, not split into fabricated rows", async () => {
+  // row_index is what groups cells into rows. Keying on read order instead
+  // turns one real two-column row into two single-column rows, which the
+  // comparison then reports as a confident row-count difference against the
+  // live set.
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.startsWith("parent_id=")) {
+      return [
+        mrvsAnswerRow(id(950), "first", "", { row_index: "" }),
+        mrvsAnswerRow(id(951), "second", "", { row_index: "not a number" }),
+      ];
+    }
+    return [
+      { sys_id: id(950), value: "one" },
+      { sys_id: id(951), value: "two" },
+    ];
+  });
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  const set = result.mrvsValuesBySetId.get(MRVS_SET_ID);
+  assert.strictEqual(set.indexIncomplete, true, "both a missing and a malformed index count");
+
+  const def = mrvsDefinition();
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"first":"one","second":"two"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, set)
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /missing a row index/);
+  // Specifically not the fabricated-difference report this replaces.
+  assert.doesNotMatch(row.reason, /Stored has 2 rows/);
+});
+
+test("a well-indexed set is unaffected by the missing-index guard", async () => {
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.startsWith("parent_id=")) {
+      return [mrvsAnswerRow(id(952), "first", 1), mrvsAnswerRow(id(953), "second", 1)];
+    }
+    return [
+      { sys_id: id(952), value: "one" },
+      { sys_id: id(953), value: "two" },
+    ];
+  });
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  const set = result.mrvsValuesBySetId.get(MRVS_SET_ID);
+  assert.strictEqual(set.indexIncomplete, false);
+  assert.deepStrictEqual(set.rows, [{ first: "one", second: "two" }]);
+
+  const def = mrvsDefinition();
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"first":"one","second":"two"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, set)
+  );
+  assert.strictEqual(row.comparison, "match");
+});
+
+test("a retired variable is listed only when it still holds stored data", async () => {
+  // A deactivated variable never renders and never stores an answer, so
+  // enumerating it produced a permanent "not stored" row for a field that is
+  // not on the form at all.
+  const live = definition({ name: "live_one", questionId: id(830) });
+  const retired = definition({ name: "retired", questionId: id(831), inactive: true });
+  const retiredWithData = definition({
+    name: "retired_with_data",
+    questionId: id(832),
+    inactive: true,
+  });
+  const rows = rowsFor(
+    [live, retired, retiredWithData],
+    [storedRow(retiredWithData, "historical value")],
+    []
+  );
+  assert.deepStrictEqual(rows.map((row) => row.name), ["live_one", "retired_with_data"]);
+  // Data on an old record is never hidden, only labelled.
+  const kept = rows.find((row) => row.name === "retired_with_data");
+  assert.strictEqual(kept.inactive, true);
+  assert.strictEqual(kept.storedValue, "historical value");
+  assert.match(kept.reason, /^Inactive variable\./);
+
+  // The flag comes from the definition read on both paths.
+  const itemHelpers = loadNativeHelpers(async (table, query) => {
+    if (table === "sc_req_item") return [{ cat_item: ITEM_ID }];
+    if (table === "item_option_new" && query === "cat_item=" + ITEM_ID) {
+      return [
+        nativeDefinitionRow(live, { active: "true" }),
+        nativeDefinitionRow(retired, { active: "false" }),
+      ];
+    }
+    return [];
+  });
+  const ritm = await itemHelpers.fetchNativeRitmRecordData(RITM_ID);
+  assert.deepStrictEqual(
+    ritm.definitions.map((row) => [row.name, row.inactive]),
+    [["live_one", false], ["retired", true]],
+    "enumeration keeps the row so stored data can still attach to it"
+  );
+  assert.deepStrictEqual(
+    itemHelpers.buildNativeVariableRows(ritm.definitions, ritm, []).map((row) => row.name),
+    ["live_one"]
+  );
+
+  const producerHelpers = loadNativeHelpers(async (table, query) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      return [producerMetadataRow(retired, id(833), { "question.active": "false" })];
+    }
+    return [];
+  });
+  const producer = await producerHelpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(producer.definitions[0].inactive, true);
+});
+
+test("layout-only variable types are dropped from the panel on every path", async () => {
+  const helpers = loadNativeHelpers();
+  // The policy entries survive the exclusion, so a row that somehow reaches the
+  // comparison is still structural and still never fetched.
+  ["11", "12", "14", "15", "17", "19", "20", "24", "32"].forEach((type) => {
+    assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type })), {
+      disposition: "structural",
+    }, type);
+  });
+
+  const label = definition({
+    name: "instructions",
+    type: "32",
+    typeDisplay: "Rich Text Label",
+    questionId: id(810),
+  });
+  const kept = definition({ name: "kept", questionId: id(811) });
+  const brk = definition({
+    name: "page_break",
+    type: "12",
+    typeDisplay: "Break",
+    questionId: id(814),
+  });
+  const caption = definition({
+    name: "section_caption",
+    type: "11",
+    typeDisplay: "Label",
+    questionId: id(815),
+  });
+  const containerStart = definition({
+    name: "box_start",
+    type: "19",
+    typeDisplay: "Container Start",
+    questionId: id(816),
+  });
+  const containerEnd = definition({
+    name: "box_end",
+    type: "20",
+    typeDisplay: "Container End",
+    questionId: id(817),
+  });
+  const customWidget = definition({
+    name: "custom_widget",
+    type: "14",
+    typeDisplay: "Custom",
+    questionId: id(818),
+  });
+  const uiPage = definition({
+    name: "embedded_page",
+    type: "15",
+    typeDisplay: "UI Page",
+    questionId: id(819),
+  });
+  const containerSplit = definition({
+    name: "box_split",
+    type: "24",
+    typeDisplay: "Container Split",
+    questionId: id(826),
+  });
+  const customWithLabel = definition({
+    name: "captioned_widget",
+    type: "17",
+    typeDisplay: "Custom with Label",
+    questionId: id(830),
+  });
+  const setId = id(812);
+  const setLabel = definition({
+    name: "set_instructions",
+    type: "32",
+    typeDisplay: "Rich Text Label",
+    questionId: id(813),
+    variableSet: setId,
+  });
+
+  const itemHelpers = loadNativeHelpers(async (table, query) => {
+    if (table === "sc_req_item") return [{ cat_item: ITEM_ID }];
+    if (table === "item_option_new" && query === "cat_item=" + ITEM_ID) {
+      return [
+        nativeDefinitionRow(label),
+        nativeDefinitionRow(brk),
+        nativeDefinitionRow(caption),
+        nativeDefinitionRow(containerStart),
+        nativeDefinitionRow(containerEnd),
+        nativeDefinitionRow(customWidget),
+        nativeDefinitionRow(uiPage),
+        nativeDefinitionRow(containerSplit),
+        nativeDefinitionRow(customWithLabel),
+        nativeDefinitionRow(kept),
+      ];
+    }
+    if (table === "io_set_item") return [{ variable_set: setId, order: "100" }];
+    if (table === "item_option_new_set") {
+      return [{ sys_id: setId, name: "set", internal_name: "set", title: "Set", type: { value: "", display_value: "" } }];
+    }
+    if (table === "item_option_new" && query === "variable_setIN" + setId) {
+      return [nativeDefinitionRow(setLabel, { variable_set: setId })];
+    }
+    return [];
+  });
+  const ritm = await itemHelpers.fetchNativeRitmRecordData(RITM_ID);
+  assert.deepStrictEqual(ritm.definitions.map((row) => row.name), ["kept"]);
+
+  const producerHelpers = loadNativeHelpers(async (table, query) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      return [
+        producerMetadataRow(label, id(820)),
+        producerMetadataRow(brk, id(822)),
+        producerMetadataRow(caption, id(823)),
+        producerMetadataRow(containerStart, id(824)),
+        producerMetadataRow(containerEnd, id(825)),
+        producerMetadataRow(customWidget, id(827)),
+        producerMetadataRow(uiPage, id(828)),
+        producerMetadataRow(containerSplit, id(829)),
+        producerMetadataRow(customWithLabel, id(831)),
+        producerMetadataRow(kept, id(821)),
+      ];
+    }
+    if (table === "question_answer" && query.startsWith("sys_idIN")) {
+      assert.doesNotMatch(
+        query,
+        new RegExp([
+          id(820), id(822), id(823), id(824), id(825), id(827), id(828), id(829),
+          id(831),
+        ].join("|")),
+        "no value may be requested for an omitted layout variable"
+      );
+      return [{ sys_id: id(821), value: "stored" }];
+    }
+    return [];
+  });
+  const producer = await producerHelpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.deepStrictEqual(producer.definitions.map((row) => row.name), ["kept"]);
+
+  const portalStart = contentSource.indexOf("const VARIABLE_DEFINITION_FIELDS");
+  const portalEnd = contentSource.indexOf("function nativeDefinitionFromRow", portalStart);
+  const portal = await new Function(
+    "snGetMany",
+    nativeHelperSource() + contentSource.slice(portalStart, portalEnd) +
+      "\nreturn { fetchCatalogItemVariableDefinitions };"
+  )(async (table) => {
+    if (table === "item_option_new") {
+      return [
+        nativeDefinitionRow(label),
+        nativeDefinitionRow(brk),
+        nativeDefinitionRow(caption),
+        nativeDefinitionRow(containerStart),
+        nativeDefinitionRow(containerEnd),
+        nativeDefinitionRow(customWidget),
+        nativeDefinitionRow(uiPage),
+        nativeDefinitionRow(containerSplit),
+        nativeDefinitionRow(customWithLabel),
+        nativeDefinitionRow(kept),
+      ];
+    }
+    return [];
+  }).fetchCatalogItemVariableDefinitions(ITEM_ID);
+  assert.deepStrictEqual(portal.variables.map((row) => row.name), ["kept"]);
+});
+
+test("scalar comparison flags an onLoad rewrite and preserves an empty stored value", () => {
+  const def = definition();
+  const [row] = rowsFor([def], [storedRow(def, "")], [liveRow(def, "populated")]);
+  assert.strictEqual(row.storedPresent, true);
+  assert.strictEqual(row.storedValue, "");
+  assert.strictEqual(row.liveValue, "populated");
+  assert.strictEqual(row.comparison, "differs");
+  assert.match(row.reason, /Stored value is empty/);
+});
+
+test("reference and choice raw values compare equal without display-label false positives", () => {
+  for (const type of ["5", "8"]) {
+    const def = definition({ type, typeDisplay: type === "5" ? "Select Box" : "Reference" });
+    const raw = type === "8" ? id(300) : "internal_value";
+    const [row] = rowsFor([def], [storedRow(def, raw)], [liveRow(def, raw)]);
+    assert.strictEqual(row.comparison, "match", type);
+  }
+});
+
+test("Yes/No and Checkbox values use conservative boolean normalisation", () => {
+  const helpers = loadNativeHelpers();
+  for (const type of ["1", "7"]) {
+    assert.deepStrictEqual(helpers.classifyNativeVariable(definition({ type })), {
+      disposition: "comparable",
+      comparisonMode: "boolean",
+    });
+  }
+  assert.strictEqual(helpers.nativeValuesEqual("true", "1", "boolean"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("YES", "true", "boolean"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("false", "0", "boolean"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("No", "false", "boolean"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("true", "false", "boolean"), false);
+  assert.strictEqual(
+    helpers.nativeValuesEqual("", "false", "boolean"),
+    false,
+    "stored empty must stay distinct from a live false/default"
+  );
+
+  const checkbox = definition({ type: "7", typeDisplay: "Checkbox" });
+  const [match] = rowsFor(
+    [checkbox],
+    [storedRow(checkbox, "true", { policy: { disposition: "comparable", comparisonMode: "boolean" } })],
+    [liveRow(checkbox, "1")]
+  );
+  assert.strictEqual(match.comparison, "match");
+});
+
+test("List Collector comparison is a set: order, empty tokens, and duplicates are ignored", () => {
+  const helpers = loadNativeHelpers();
+  assert.strictEqual(helpers.nativeValuesEqual("a,b", "b,a", "set"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("a,,b,", "a,b", "set"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("a,b,b", "b,a", "set"), true);
+  assert.strictEqual(helpers.nativeValuesEqual("a,b", "a,c", "set"), false);
+  const def = definition({ type: "21", typeDisplay: "List Collector" });
+  const [row] = rowsFor([def], [storedRow(def, "a,b")], [liveRow(def, "b,a")]);
+  assert.strictEqual(row.comparison, "match");
+});
+
+test("the constructed prototype deny set covers every collision observed live", () => {
+  const helpers = loadNativeHelpers();
+  const observed = ["name", "constructor", "toString", "valueOf", "length", "hasOwnProperty", "__proto__"];
+  observed.forEach((name) => assert.ok(helpers.NATIVE_PROTOTYPE_COLLISION_NAMES.has(name), name));
+  const def = definition({ name: "name" });
+  const [row] = rowsFor([def], [storedRow(def, "stored")], [liveRow(def, "")]);
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /prototype/);
+});
+
+test("duplicates are preserved and every duplicate is not comparable", () => {
+  const first = definition({ name: "duplicate", questionId: id(401) });
+  const second = definition({ name: "duplicate", questionId: id(402) });
+  const rows = rowsFor(
+    [first, second],
+    [storedRow(first, "one"), storedRow(second, "two", { optionSysId: id(403) })],
+    [liveRow(first, "one"), liveRow(second, "two")]
+  );
+  assert.strictEqual(rows.length, 2);
+  assert.ok(rows.every((row) => row.comparison === "not-comparable"));
+  assert.ok(rows.every((row) => /Duplicate variable name/.test(row.reason)));
+});
+
+test("an empty stored read lists definitions, distinguishes absence, and reports no differences", () => {
+  const def = definition();
+  const [row] = rowsFor([def], [], [liveRow(def, "live")], "empty");
+  assert.strictEqual(row.storedPresent, false);
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /no stored variable rows/i);
+});
+
+test("failed and truncated reads retain live values but run no comparison", () => {
+  const def = definition();
+  for (const status of ["failed", "truncated"]) {
+    const [row] = rowsFor([def], [storedRow(def, "stored")], [liveRow(def, "live")], status);
+    assert.strictEqual(row.liveValue, "live");
+    assert.strictEqual(row.comparison, "not-comparable");
+    assert.match(row.reason, /no comparison was run/);
+  }
+});
+
+test("an unread MRVS reports that it was not read, never that it is not stored", () => {
+  const def = mrvsDefinition();
+  const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "empty");
+  assert.strictEqual(row.bucket, "mrvs");
+  assert.strictEqual(row.isMrvs, true);
+  // The old behaviour rendered this as "(not stored)", which asserted a fact
+  // about the record that no read had ever checked.
+  assert.strictEqual(row.storedLookup, "not-read");
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /were not read/);
+});
+
+test("MRVS stored rows come from the multi-row read and compare structurally", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1", b: "x" }, { a: "2", b: "y" }]);
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"b":"x","a":"1"},{"b":"y","a":"2"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.storedLookup, "found");
+  assert.strictEqual(row.storedRowCount, 2);
+  assert.strictEqual(row.liveRowCount, 2);
+  // Key order differs on the two sides; that is not a difference.
+  assert.strictEqual(row.comparison, "match");
+  assert.match(row.reason, /rows match/);
+});
+
+test("MRVS row-count differences are reported with both counts", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1" }]);
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"a":"1"},{"a":"2"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.comparison, "differs");
+  assert.match(row.reason, /Stored has 1 row; the live form has 2\./);
+});
+
+test("MRVS cell differences are found inside an equal number of rows", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1", b: "old" }]);
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"a":"1","b":"new"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.comparison, "differs");
+  assert.match(row.reason, /rows differ/);
+});
+
+test("a checkbox column inside an MRVS compares by boolean meaning", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ flag: "0" }], { comparisonModes: { flag: "boolean" } });
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"flag":"false"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.comparison, "match");
+});
+
+test("an absent MRVS key is compared as empty rather than as a difference", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1" }]);
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"a":"1","b":""}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.comparison, "match");
+});
+
+test("a withheld MRVS column blocks comparison and names the column", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1" }], { withheldColumns: ["secret_column"] });
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"a":"1","secret_column":"shown"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /secret_column/);
+});
+
+test("an MRVS with no stored rows is reported as unstored, not as a difference", () => {
+  const def = mrvsDefinition();
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"a":"1"}]')],
+    "success",
+    mrvsResult(MRVS_SET_ID, null, "empty")
+  );
+  assert.strictEqual(row.storedLookup, "absent");
+  assert.strictEqual(row.storedRowCount, 0);
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /No multi-row answers are stored/);
+});
+
+test("a set that read successfully but holds no rows still compares", () => {
+  const def = mrvsDefinition();
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, "[]")],
+    "success",
+    mrvsResult(MRVS_SET_ID, null, "success")
+  );
+  assert.strictEqual(row.storedLookup, "found");
+  assert.strictEqual(row.storedValue, "[]");
+  assert.strictEqual(row.comparison, "match");
+});
+
+test("an unreadable live MRVS value is not compared against stored rows", () => {
+  const def = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1" }]);
+  const [row] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, "not json")],
+    "success",
+    mrvsResult(MRVS_SET_ID, stored)
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /readable JSON array/);
+});
+
+test("a failed ordinary stored read is reported as unread, not as an absent row", () => {
+  const def = definition();
+  const [row] = rowsFor([def], [], [liveRow(def, "live")], "failed");
+  assert.strictEqual(row.storedLookup, "not-read");
+  assert.strictEqual(row.comparison, "not-comparable");
+});
+
+test("an empty ordinary stored read is the one case that reports absence", () => {
+  const def = definition();
+  const [row] = rowsFor([def], [], [liveRow(def, "live")], "empty");
+  assert.strictEqual(row.storedLookup, "absent");
+});
+
+test("MRVS values are read in two phases and only for allowlisted columns", async () => {
+  const queries = [];
+  const helpers = loadNativeHelpers(async (table, query, fields) => {
+    queries.push({ table, query, fields });
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.startsWith("parent_id=")) {
+      return [
+        mrvsAnswerRow(id(801), "plain", 1),
+        mrvsAnswerRow(id(802), "password", 1, {
+          "item_option_new.type": { value: "25", display_value: "Masked" },
+        }),
+      ];
+    }
+    return [{ sys_id: id(801), value: "kept" }];
+  });
+
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  assert.strictEqual(result.mrvsReadStatus, "success");
+
+  const [metadataRead, valueRead] = queries;
+  assert.doesNotMatch(metadataRead.fields, /(^|,)value(,|$)/);
+  assert.match(metadataRead.query, new RegExp("^parent_id=" + RITM_ID + "\\^variable_setIN"));
+  assert.strictEqual(valueRead.fields, "sys_id,value");
+  // The masked column's answer id must never enter the value request.
+  assert.match(valueRead.query, new RegExp(id(801)));
+  assert.doesNotMatch(valueRead.query, new RegExp(id(802)));
+
+  const set = result.mrvsValuesBySetId.get(MRVS_SET_ID);
+  assert.deepStrictEqual(set.rows, [{ plain: "kept" }]);
+  assert.deepStrictEqual(set.withheldColumns, ["password"]);
+});
+
+test("MRVS rows are ordered by row_index, not by read order", async () => {
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.startsWith("parent_id=")) {
+      return [
+        mrvsAnswerRow(id(811), "a", 2),
+        mrvsAnswerRow(id(812), "a", 1),
+      ];
+    }
+    return [
+      { sys_id: id(811), value: "second" },
+      { sys_id: id(812), value: "first" },
+    ];
+  });
+
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  assert.deepStrictEqual(
+    result.mrvsValuesBySetId.get(MRVS_SET_ID).rows,
+    [{ a: "first" }, { a: "second" }]
+  );
+});
+
+test("no multi-row read is issued when the item has no multi-row set", async () => {
+  let read = false;
+  const helpers = loadNativeHelpers(async () => {
+    read = true;
+    return [];
+  });
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, []);
+  assert.strictEqual(result.mrvsReadStatus, "skipped");
+  assert.strictEqual(read, false);
+});
+
+test("a capped multi-row read is truncated rather than treated as complete", async () => {
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (!query.startsWith("parent_id=")) return [];
+    return Array.from({ length: 1000 }, (unused, index) =>
+      mrvsAnswerRow(id(2000 + index), "a", index + 1)
+    );
+  });
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  assert.strictEqual(result.mrvsReadStatus, "truncated");
+  assert.strictEqual(result.mrvsValuesBySetId.size, 0);
+});
+
+test("record identity accepts only the same classic record before and after the reads", () => {
+  const helpers = loadNativeHelpers();
+  const initial = { table: "sc_req_item", sysId: RITM_ID };
+  assert.strictEqual(helpers.nativeRecordIdentityMatches(initial, { ...initial }), true);
+  assert.strictEqual(
+    helpers.nativeRecordIdentityMatches(initial, { table: "sc_req_item", sysId: id(999) }),
+    false,
+    "record movement must be rejected"
+  );
+  assert.strictEqual(
+    helpers.nativeRecordIdentityMatches(initial, { table: "sc_task", sysId: RITM_ID }),
+    false,
+    "a different table must be rejected"
+  );
+  assert.strictEqual(
+    helpers.nativeRecordIdentityMatches(
+      { table: "sn_example_case", sysId: RITM_ID },
+      { table: "sn_example_case", sysId: RITM_ID }
+    ),
+    true,
+    "a stable record producer target is valid"
+  );
+});
+
+test("metadata-first reading never requests secret, unknown, or missing-definition values", async () => {
+  const safe = definition({ name: "safe", questionId: id(501) });
+  const secret = definition({ name: "ordinary_name", type: "25", typeDisplay: "Masked", questionId: id(502) });
+  const unknown = definition({ name: "unknown", type: "999", typeDisplay: "Future Type", questionId: id(503) });
+  const safeOption = id(511);
+  const secretOption = id(512);
+  const unknownOption = id(513);
+  const inaccessibleOption = id(514);
+  const requests = [];
+  const helpers = loadNativeHelpers(async (table, query, fields, limit) => {
+    requests.push({ table, query, fields, limit });
+    if (table === "sc_item_option_mtom") {
+      return [
+        metadataRow(safe, safeOption),
+        metadataRow(secret, secretOption),
+        metadataRow(unknown, unknownOption),
+        metadataRow(definition({ name: "orphan", questionId: id(599) }), inaccessibleOption),
+      ];
+    }
+    if (table === "sc_item_option") {
+      assert.match(query, new RegExp(safeOption));
+      assert.doesNotMatch(query, new RegExp(secretOption + "|" + unknownOption + "|" + inaccessibleOption));
+      return [{ sys_id: safeOption, value: "safe stored value" }];
+    }
+    return [];
+  });
+
+  const result = await helpers.fetchNativeRitmStoredValues(
+    RITM_ID,
+    [safe, secret, unknown],
+    "success"
+  );
+  assert.strictEqual(result.storedReadStatus, "success");
+  assert.strictEqual(requests[0].table, "sc_item_option_mtom");
+  assert.doesNotMatch(requests[0].fields, /(^|,)value(,|$)|\.value/);
+  assert.deepStrictEqual(requests.filter((request) => request.table === "sc_item_option").length, 1);
+  const secretResult = result.metadataRows.find((row) => row.optionSysId === secretOption);
+  assert.strictEqual(secretResult.secret, true);
+  assert.strictEqual(secretResult.storedValue, null);
+  assert.strictEqual(secretResult.valueAvailable, false);
+});
+
+test("record producer answers use the same metadata-first allowlist without fetching secrets", async () => {
+  const safe = definition({ name: "safe_checkbox", type: "7", typeDisplay: "Checkbox", questionId: id(551) });
+  const yesNo = definition({ name: "safe_yes_no", type: "1", typeDisplay: "Yes/No", questionId: id(554) });
+  const secret = definition({ name: "ordinary_answer", type: "25", typeDisplay: "Masked", questionId: id(552) });
+  const unknown = definition({ name: "future_answer", type: "999", typeDisplay: "Future Type", questionId: id(553) });
+  const safeAnswer = id(561);
+  const yesNoAnswer = id(564);
+  const secretAnswer = id(562);
+  const unknownAnswer = id(563);
+  const requests = [];
+  const helpers = loadNativeHelpers(async (table, query, fields, limit) => {
+    requests.push({ table, query, fields, limit });
+    assert.strictEqual(table, "question_answer");
+    if (query.startsWith("table_sys_id=")) {
+      assert.match(query, /\^table_name=sn_example_case$/);
+      assert.doesNotMatch(fields, /(^|,)value(,|$)/);
+      return [
+        producerMetadataRow(safe, safeAnswer),
+        producerMetadataRow(yesNo, yesNoAnswer),
+        producerMetadataRow(secret, secretAnswer),
+        producerMetadataRow(unknown, unknownAnswer),
+      ];
+    }
+    assert.match(query, new RegExp(safeAnswer));
+    assert.match(query, new RegExp(yesNoAnswer));
+    assert.doesNotMatch(query, new RegExp(secretAnswer + "|" + unknownAnswer));
+    return [
+      { sys_id: safeAnswer, value: "true" },
+      { sys_id: yesNoAnswer, value: "false" },
+    ];
+  });
+
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.recordProducerFound, true);
+  assert.strictEqual(result.storedReadStatus, "success");
+  assert.strictEqual(result.definitions.length, 4);
+  assert.strictEqual(requests.filter((request) => request.fields === "sys_id,value").length, 1);
+  const secretResult = result.metadataRows.find((row) => row.optionSysId === secretAnswer);
+  assert.strictEqual(secretResult.secret, true);
+  assert.strictEqual(secretResult.storedValue, null);
+  assert.strictEqual(secretResult.valueAvailable, false);
+});
+
+test("record producer definitions include unanswered variables and consolidate MRVS children", async () => {
+  const safe = definition({ name: "safe_answer", questionId: id(570) });
+  const unanswered = definition({ name: "unanswered", questionId: id(571) });
+  const mrvsSetId = id(572);
+  const mrvsChild = definition({
+    name: "mrvs_child",
+    questionId: id(573),
+    variableSet: mrvsSetId,
+  });
+  const safeAnswer = id(574);
+  const mrvsAnswer = id(575);
+  const valueQueries = [];
+  const helpers = loadNativeHelpers(async (table, query, fields) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      assert.doesNotMatch(fields, /(^|,)value(,|$)/);
+      return [
+        producerMetadataRow(safe, safeAnswer, { "question.cat_item": ITEM_ID }),
+        producerMetadataRow(mrvsChild, mrvsAnswer, {
+          "question.variable_set": mrvsSetId,
+          "question.cat_item": "",
+        }),
+      ];
+    }
+    if (table === "item_option_new_set") {
+      return [{
+        sys_id: mrvsSetId,
+        name: "example_rows",
+        internal_name: "example_rows",
+        title: "Example rows",
+        type: { value: "one_to_many", display_value: "Multiple Rows" },
+      }];
+    }
+    if (table === "item_option_new" && query === "cat_item=" + ITEM_ID) {
+      return [nativeDefinitionRow(safe), nativeDefinitionRow(unanswered)];
+    }
+    if (table === "io_set_item") {
+      return [{ variable_set: mrvsSetId, order: "200" }];
+    }
+    if (table === "item_option_new" && query === "variable_setIN" + mrvsSetId) {
+      return [nativeDefinitionRow(mrvsChild, { variable_set: mrvsSetId })];
+    }
+    if (table === "question_answer" && query.startsWith("sys_idIN")) {
+      valueQueries.push(query);
+      return [{ sys_id: safeAnswer, value: "stored" }];
+    }
+    return [];
+  });
+
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.definitionEnumerationStatus, "success");
+  assert.deepStrictEqual(result.definitions.map((row) => row.name), [
+    "safe_answer", "unanswered", "example_rows",
+  ]);
+  assert.strictEqual(result.definitions.some((row) => row.name === "mrvs_child"), false);
+  const parent = result.definitions.find((row) => row.name === "example_rows");
+  assert.strictEqual(parent.isMrvs, true);
+  const childMetadata = result.metadataRows.find((row) => row.optionSysId === mrvsAnswer);
+  assert.strictEqual(childMetadata.fetchAllowed, false);
+  assert.strictEqual(childMetadata.valueAvailable, false);
+  assert.strictEqual(valueQueries.length, 1);
+  assert.match(valueQueries[0], new RegExp(safeAnswer));
+  assert.doesNotMatch(valueQueries[0], new RegExp(mrvsAnswer));
+
+  const rows = helpers.buildNativeVariableRows(result.definitions, result, []);
+  assert.strictEqual(rows.find((row) => row.name === "unanswered").storedPresent, false);
+  assert.strictEqual(rows.find((row) => row.name === "example_rows").bucket, "mrvs");
+});
+
+test("an answers-only producer still consolidates MRVS without guessing a producer definition", async () => {
+  const mrvsSetId = id(580);
+  const child = definition({ name: "child", questionId: id(581), variableSet: mrvsSetId });
+  const answerId = id(582);
+  let unexpectedRead = false;
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      return [producerMetadataRow(child, answerId, {
+        "question.variable_set": mrvsSetId,
+        "question.cat_item": "",
+      })];
+    }
+    if (table === "item_option_new_set") {
+      return [{
+        sys_id: mrvsSetId,
+        name: "rows",
+        internal_name: "rows",
+        title: "Rows",
+        type: { value: "one_to_many", display_value: "Multiple Rows" },
+      }];
+    }
+    // The multi-row read is expected: it is how the set's stored side is
+    // resolved. It is keyed by the record, so it guesses no producer.
+    if (table === "sc_multi_row_question_answer") return [];
+    unexpectedRead = true;
+    return [];
+  });
+
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.definitionEnumerationStatus, "answers-only");
+  assert.deepStrictEqual(result.definitions.map((row) => row.name), ["rows"]);
+  assert.strictEqual(result.definitions[0].isMrvs, true);
+  assert.strictEqual(result.metadataRows[0].fetchAllowed, false);
+  assert.strictEqual(unexpectedRead, false, "shared-set reverse lookup must not guess a producer");
+});
+
+test("producer definition-read failure fetches no answer values", async () => {
+  const def = definition({ name: "safe_answer", questionId: id(590) });
+  const answerId = id(591);
+  let valueRead = false;
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      return [producerMetadataRow(def, answerId, { "question.cat_item": ITEM_ID })];
+    }
+    if (table === "item_option_new" && query === "cat_item=" + ITEM_ID) {
+      throw new Error("definition ACL denied");
+    }
+    if (table === "question_answer" && query.startsWith("sys_idIN")) valueRead = true;
+    return [];
+  });
+
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.definitionEnumerationStatus, "failed");
+  assert.strictEqual(result.storedReadStatus, "failed");
+  assert.strictEqual(result.metadataRows[0].fetchAllowed, false);
+  assert.strictEqual(valueRead, false);
+});
+
+test("a classic record without question_answer rows is not claimed as a producer target", async () => {
+  const helpers = loadNativeHelpers(async () => []);
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.recordProducerFound, false);
+  assert.strictEqual(result.storedReadStatus, "empty");
+  assert.deepStrictEqual(result.definitions, []);
+});
+
+test("record producer table identity is query-safe and fail-closed", async () => {
+  const helpers = loadNativeHelpers(async () => {
+    throw new Error("unsafe input reached the API");
+  });
+  await assert.rejects(
+    () => helpers.fetchNativeProducerRecordData("sn_example_case^ORsys_idISNOTEMPTY", RITM_ID),
+    /identity was not safe/
+  );
+});
+
+test("record producer value failure keeps definitions and disables comparison", async () => {
+  const def = definition({ name: "safe_answer", questionId: id(571) });
+  const answerId = id(572);
+  const helpers = loadNativeHelpers(async (_table, query) => {
+    if (query.startsWith("table_sys_id=")) return [producerMetadataRow(def, answerId)];
+    throw new Error("value ACL denied");
+  });
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.recordProducerFound, true);
+  assert.strictEqual(result.storedReadStatus, "failed");
+  assert.strictEqual(result.definitions.length, 1);
+  assert.strictEqual(result.metadataRows[0].valueAvailable, false);
+});
+
+test("record producer row-cap truncation is explicit and requests no values", async () => {
+  let valueRead = false;
+  const helpers = loadNativeHelpers(async (_table, query) => {
+    if (!query.startsWith("table_sys_id=")) {
+      valueRead = true;
+      return [];
+    }
+    return Array.from({ length: 300 }, (_, index) => {
+      const def = definition({ name: "answer_" + index, questionId: id(2000 + index) });
+      return producerMetadataRow(def, id(2400 + index));
+    });
+  });
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.storedReadStatus, "truncated");
+  assert.strictEqual(valueRead, false);
+});
+
+test("record producer values are batched into 50-row requests", async () => {
+  const metadata = Array.from({ length: 51 }, (_, index) => {
+    const def = definition({ name: "answer_" + index, questionId: id(3000 + index) });
+    return producerMetadataRow(def, id(3400 + index));
+  });
+  const batchSizes = [];
+  const helpers = loadNativeHelpers(async (_table, query) => {
+    if (query.startsWith("table_sys_id=")) return metadata;
+    const ids = query.slice("sys_idIN".length).split(",");
+    batchSizes.push(ids.length);
+    return ids.map((answerId) => ({ sys_id: answerId, value: "" }));
+  });
+  const result = await helpers.fetchNativeProducerRecordData("sn_example_case", RITM_ID);
+  assert.strictEqual(result.storedReadStatus, "success");
+  assert.deepStrictEqual(batchSizes, [50, 1]);
+});
+
+test("stored value requests are chunked into the existing 50-row Table API window", async () => {
+  const definitions = [];
+  const metadata = [];
+  for (let index = 0; index < 51; index++) {
+    const def = definition({ name: "v" + index, questionId: id(600 + index) });
+    definitions.push(def);
+    metadata.push(metadataRow(def, id(700 + index)));
+  }
+  const valueBatchSizes = [];
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table === "sc_item_option_mtom") return metadata;
+    const ids = query.slice("sys_idIN".length).split(",");
+    valueBatchSizes.push(ids.length);
+    return ids.map((sysId) => ({ sys_id: sysId, value: "" }));
+  });
+  const result = await helpers.fetchNativeRitmStoredValues(RITM_ID, definitions, "success");
+  assert.strictEqual(result.storedReadStatus, "success");
+  assert.deepStrictEqual(valueBatchSizes, [50, 1]);
+  assert.ok(result.metadataRows.every((row) => row.valueAvailable));
+});
+
+test("row-cap truncation is explicit and prevents every value request", async () => {
+  const sample = definition();
+  let valueRead = false;
+  const helpers = loadNativeHelpers(async (table) => {
+    if (table === "sc_item_option_mtom") {
+      return Array.from({ length: 300 }, (_, index) => metadataRow(
+        definition({ name: "v" + index, questionId: id(800 + index) }),
+        id(1200 + index)
+      ));
+    }
+    valueRead = true;
+    return [];
+  });
+  const result = await helpers.fetchNativeRitmStoredValues(RITM_ID, [sample], "success");
+  assert.strictEqual(result.storedReadStatus, "truncated");
+  assert.strictEqual(valueRead, false);
+});
+
+test("zero rows and stored-read failure have distinct statuses", async () => {
+  const empty = await loadNativeHelpers(async () => []).fetchNativeRitmStoredValues(
+    RITM_ID,
+    [definition()],
+    "success"
+  );
+  assert.strictEqual(empty.storedReadStatus, "empty");
+
+  const failed = await loadNativeHelpers(async () => { throw new Error("denied"); })
+    .fetchNativeRitmStoredValues(RITM_ID, [definition()], "success");
+  assert.strictEqual(failed.storedReadStatus, "failed");
+});
+
+test("definition access failure aborts before stored metadata or live comparison", async () => {
+  const calls = [];
+  const helpers = loadNativeHelpers(async (table) => {
+    calls.push(table);
+    if (table === "sc_req_item") return [{ cat_item: ITEM_ID }];
+    if (table === "item_option_new") throw new Error("definition denied");
+    return [];
+  });
+  await assert.rejects(() => helpers.fetchNativeRitmRecordData(RITM_ID), /definition denied/);
+  assert.strictEqual(calls.includes("sc_item_option_mtom"), false);
+});
+
+test("an inaccessible variable-set definition fails closed instead of guessing MRVS children", async () => {
+  const helpers = loadNativeHelpers(async (table) => {
+    if (table === "sc_req_item") return [{ cat_item: ITEM_ID }];
+    if (table === "item_option_new") return [];
+    if (table === "io_set_item") return [{ variable_set: id(960), order: "100" }];
+    if (table === "item_option_new_set") return [];
+    return [];
+  });
+  await assert.rejects(
+    () => helpers.fetchNativeRitmRecordData(RITM_ID),
+    /variable-set definitions were inaccessible/
+  );
+});
+
+test("the MAIN-world probe uses fresh identity accessors and guards every variable call", () => {
+  const start = backgroundSource.indexOf("function inspectNativeRecordVariables");
+  const end = backgroundSource.indexOf("// Self-contained MAIN-world inspector for hidden", start);
+  assert.ok(start >= 0 && end > start);
+  const factory = new Function(
+    "g_form",
+    "document",
+    "getComputedStyle",
+    backgroundSource.slice(start, end) + "\nreturn inspectNativeRecordVariables;"
+  );
+  const calls = [];
+  const form = {
+    getTableName: () => "sc_req_item",
+    getUniqueValue: () => RITM_ID,
+    isVisible(name) { calls.push("visible:" + name); return true; },
+    getValue(name) {
+      calls.push("value:" + name);
+      if (name === "variables.throws") throw new Error("bad key");
+      return "live:" + name;
+    },
+  };
+  const document = { getElementById: () => null };
+  const probe = factory(form, document, () => ({ display: "block", visibility: "visible", opacity: "1" }));
+  const result = probe([
+    { name: "secret", fieldName: "variables.secret", questionId: id(901), secret: true, readValue: true },
+    { name: "name", fieldName: "variables.name", questionId: id(902), secret: false, readValue: true },
+    { name: "throws", fieldName: "variables.throws", questionId: id(903), secret: false, readValue: true },
+    { name: "works", fieldName: "variables.works", questionId: id(904), secret: false, readValue: true },
+  ]);
+  assert.deepStrictEqual(result.identity, { table: "sc_req_item", sysId: RITM_ID });
+  assert.strictEqual(calls.includes("value:secret"), false);
+  assert.strictEqual(calls.includes("value:name"), false);
+  assert.strictEqual(calls.includes("value:variables.throws"), true);
+  assert.strictEqual(calls.includes("value:variables.works"), true, "one throw must not abort later reads");
+  assert.strictEqual(
+    result.perVariable.find((row) => row.name === "works").liveValue,
+    "live:variables.works"
+  );
+  assert.match(backgroundSource.slice(start, end), /getUniqueValue/);
+  assert.doesNotMatch(backgroundSource.slice(start, end), /getSysId|hasField|setValue/);
+});
+
+test("classic variables use the exact namespace and fail the whole live source closed when unsupported", () => {
+  const start = backgroundSource.indexOf("function inspectNativeRecordVariables");
+  const end = backgroundSource.indexOf("function inspectWorkspaceVariableSnapshot", start);
+  const probe = new Function(
+    "g_form",
+    "document",
+    "getComputedStyle",
+    backgroundSource.slice(start, end) + "\nreturn inspectNativeRecordVariables;"
+  )({
+    getTableName: () => "sc_req_item",
+    getUniqueValue: () => RITM_ID,
+    isVisible: () => true,
+    getValue(name) {
+      return name.startsWith("variables.") ? "" : "record-field-value";
+    },
+  }, { getElementById: () => null }, () => ({}));
+  const result = probe([{
+    name: "requested_for",
+    fieldName: "variables.requested_for",
+    questionId: id(970),
+    secret: false,
+    readValue: true,
+  }]);
+  assert.strictEqual(result.variableNamespaceAvailable, false);
+  assert.strictEqual(result.perVariable[0].liveValueAvailable, false);
+  assert.strictEqual(result.perVariable[0].namespaceUnavailable, true);
+});
+
+test("secret native rows contain no values and copy output cannot disclose supplied sentinels", () => {
+  const secret = definition({ name: "innocent_name", type: "25", typeDisplay: "Masked" });
+  const [row] = rowsFor(
+    [secret],
+    [storedRow(secret, "STORED_SECRET", { secret: true, fetchAllowed: false, valueAvailable: false })],
+    [liveRow(secret, "LIVE_SECRET")]
+  );
+  assert.strictEqual(row.secret, true);
+  assert.strictEqual(row.storedValue, null);
+  assert.strictEqual(row.liveValue, null);
+  assert.strictEqual(row.comparison, "not-comparable");
+
+  const isolated = {};
+  const ui = new Function(
+    "globalThis",
+    "window",
+    uiSource + "\nreturn globalThis.SNHiddenVariablesUI;"
+  )(isolated, { top: null });
+  const text = ui.formatResultsAsText(
+    { rows: [{ ...row, storedValue: "STORED_SECRET", liveValue: "LIVE_SECRET" }] },
+    [{ ...row, storedValue: "STORED_SECRET", liveValue: "LIVE_SECRET" }]
+  );
+  assert.doesNotMatch(text, /STORED_SECRET|LIVE_SECRET/);
+  assert.match(text, /Values not read \(secret\)/);
+});
+
+test("the portal path now lists masked variables as secret and no longer treats type 18 as hidden", async () => {
+  const helper = nativeHelperSource();
+  const portalStart = contentSource.indexOf("const VARIABLE_DEFINITION_FIELDS");
+  const portalEnd = contentSource.indexOf("function nativeDefinitionFromRow", portalStart);
+  const factory = new Function(
+    "snGetMany",
+    helper + contentSource.slice(portalStart, portalEnd) +
+      "\nreturn { fetchCatalogItemVariableDefinitions };"
+  );
+  const definitions = await factory(async (table) => {
+    if (table === "item_option_new") {
+      return [
+        { sys_id: id(951), name: "ordinary", question_text: "Ordinary", type: { value: "25", display_value: "Masked" }, default_value: "DO_NOT_SHOW" },
+        { sys_id: id(952), name: "lookup", question_text: "Lookup", type: { value: "18", display_value: "Lookup Select Box" }, default_value: "" },
+      ];
+    }
+    return [];
+  }).fetchCatalogItemVariableDefinitions(ITEM_ID);
+  const masked = definitions.variables.find((row) => row.name === "ordinary");
+  const lookup = definitions.variables.find((row) => row.name === "lookup");
+  assert.ok(masked, "masked variable should no longer be omitted");
+  assert.strictEqual(masked.secret, true);
+  assert.strictEqual(masked.defaultValue, "");
+  assert.strictEqual(lookup.hiddenType, false);
+  const portalProbe = backgroundSource.slice(
+    backgroundSource.indexOf("function inspectHiddenPortalVariables"),
+    backgroundSource.indexOf("function mapPortalVariableAnchors")
+  );
+  assert.match(portalProbe, /variable\.secret[\s\S]*result\.results\.push\(entry\)[\s\S]*return/);
+});
+
+test("native panel source exposes comparison state, differing filter, and modal keyboard access", () => {
+  assert.match(uiSource, /width:min\(1180px,calc\(100vw - 32px\)\)/);
+  assert.match(uiSource, /data-filter="differs"/);
+  assert.match(uiSource, /data-count="differs"/);
+  assert.match(uiSource, /role="dialog" aria-modal="true"/);
+  assert.match(uiSource, /role="list" aria-label="Catalog variables"/);
+  assert.match(uiSource, /event\.key !== "Tab"/);
+  assert.match(uiSource, /previousFocus\.focus/);
+  assert.match(uiSource, /aria-pressed/);
+});
+
+test("Workspace stored-only copy is structurally incapable of claiming a comparison", () => {
+  const isolated = {};
+  const ui = new Function(
+    "globalThis",
+    "window",
+    uiSource + "\nreturn globalThis.SNHiddenVariablesUI;"
+  )(isolated, { top: null });
+  const row = {
+    mode: "native",
+    name: "plain_note",
+    label: "Plain note",
+    type: "Single Line Text",
+    bucket: "live-unavailable",
+    secret: false,
+    storedLookup: "found",
+    storedValue: "saved",
+    liveValueAvailable: false,
+    comparison: "not-comparable",
+    reason: "Live value unavailable.",
+  };
+  const result = {
+    mode: "native",
+    recordKind: "workspace",
+    panelState: "stored-only",
+    capabilities: {
+      comparison: false,
+      liveValues: false,
+      differing: false,
+      liveVisibility: false,
+    },
+    rows: [row],
+  };
+  const text = ui.formatResultsAsText(result, [row]);
+  assert.match(text, /Stored Variables/);
+  assert.match(text, /not compared[\s\S]*stored values only/i);
+  assert.match(text, /Stored: saved/);
+  assert.doesNotMatch(text, /\bLive:|\bMatch\b|\bDiffers\b|0 differing/i);
+});
+
+test("Workspace refusal and unavailable copy never claim stored-only values", () => {
+  const isolated = {};
+  const ui = new Function(
+    "globalThis",
+    "window",
+    uiSource + "\nreturn globalThis.SNHiddenVariablesUI;"
+  )(isolated, { top: null });
+  const text = ui.formatResultsAsText({
+    mode: "native",
+    recordKind: "workspace",
+    panelState: "refused",
+    capabilities: {
+      comparison: false,
+      liveValues: false,
+      differing: false,
+      liveVisibility: false,
+    },
+    rows: [],
+  }, []);
+  assert.match(text, /GlideLens — Variable Values/);
+  assert.doesNotMatch(text, /Stored Variables|stored values only/i);
+
+  const unavailable = ui.formatResultsAsText({
+    mode: "native",
+    recordKind: "workspace",
+    panelState: "stored-unavailable",
+    capabilities: {
+      comparison: false,
+      liveValues: false,
+      differing: false,
+      liveVisibility: false,
+    },
+    rows: [],
+  }, []);
+  assert.match(unavailable, /Stored values were unavailable/);
+  assert.doesNotMatch(unavailable, /Stored Variables|stored values only/i);
+});
+
+test("Workspace panel completeness is derived from final row verdicts", () => {
+  const start = contentSource.indexOf("function workspacePanelState");
+  const end = contentSource.indexOf("async function showWorkspaceRitmVariableValues", start);
+  const panelState = new Function(
+    contentSource.slice(start, end) + "\nreturn workspacePanelState;"
+  )();
+  const completeRead = { definitionReadStatus: "success", storedReadStatus: "success" };
+  assert.strictEqual(
+    panelState(completeRead, "available", [
+      { workspaceCandidate: true, comparison: "match" },
+      { workspaceCandidate: true, comparison: "differs" },
+    ]).panelState,
+    "complete"
+  );
+  const partial = panelState(completeRead, "available", [
+    { workspaceCandidate: true, comparison: "match" },
+    { workspaceCandidate: true, comparison: "not-comparable" },
+  ]);
+  assert.deepStrictEqual(partial, {
+    panelState: "partial",
+    candidateCount: 2,
+    checkedCount: 1,
+    uncheckedCount: 1,
+  });
+  assert.strictEqual(
+    panelState({ definitionReadStatus: "success", storedReadStatus: "empty" }, "available", [
+      { workspaceCandidate: true, comparison: "not-comparable" },
+    ]).panelState,
+    "partial"
+  );
+  assert.strictEqual(panelState(completeRead, "available", []).panelState, "no-candidate");
+  assert.strictEqual(
+    panelState({ definitionReadStatus: "success", storedReadStatus: "empty" }, "absent", []).panelState,
+    "no-editor-empty"
+  );
+  assert.strictEqual(
+    panelState({ definitionReadStatus: "success", storedReadStatus: "failed" }, "absent", []).panelState,
+    "stored-unavailable"
+  );
+  assert.strictEqual(
+    panelState({ definitionReadStatus: "truncated", storedReadStatus: "truncated" }, "unavailable", []).panelState,
+    "stored-unavailable"
+  );
+});
+
+test("native orchestration constrains classic frames on Workspace and keeps portal fallback", () => {
+  const start = contentSource.indexOf("async function probeNativeRecordVariables");
+  const end = contentSource.indexOf("/* =====================================================================", start);
+  const flow = contentSource.slice(start, end);
+  const nativeStart = flow.indexOf("async function showNativeRitmVariableValues");
+  const commandStart = flow.indexOf("async function showVariableValues");
+  const nativeFlow = flow.slice(nativeStart, commandStart);
+  const commandFlow = flow.slice(commandStart);
+  assert.ok(
+    commandFlow.indexOf("workspaceRecordContextFromText(location.href)") >= 0 &&
+    commandFlow.indexOf("workspaceRecordContextFromText(location.href)") <
+      commandFlow.indexOf("probeNativeRecordVariables([], {")
+  );
+  assert.match(commandFlow, /expectedIdentity:\s*workspaceRoute/);
+  assert.match(commandFlow, /softNoMatchOnFailure:\s*Boolean\(workspaceRoute\)/);
+  assert.match(commandFlow, /showNativeRitmVariableValues\(initialProbe, workspaceRoute\)/);
+  assert.ok(
+    nativeFlow.indexOf("fetchNativeRitmRecordData") >= 0 &&
+    nativeFlow.indexOf("finishNativeVariableValues") >
+      nativeFlow.indexOf("fetchNativeRitmRecordData")
+  );
+  assert.match(flow, /nativeRecordIdentityMatches\(initialIdentity, finalIdentity\)/);
+  assert.match(flow, /workspaceRecordContextFromText\(location\.href\)/);
+  assert.match(commandFlow, /showNativeProducerVariableValues\(initialProbe, workspaceRoute\)/);
+  assert.match(flow, /fetchNativeProducerRecordData/);
+  assert.match(commandFlow, /showWorkspaceRitmVariableValues/);
+  assert.match(flow, /await showHiddenPortalVariables\(\)/);
+});
+
+test("Workspace transport is pinned to frame zero and classic failures soften only with expected identity", () => {
+  const workspaceHandler = backgroundSource.slice(
+    backgroundSource.indexOf('msg.type === "GET_WORKSPACE_VARIABLE_SNAPSHOT"'),
+    backgroundSource.indexOf('msg.type === "GET_NATIVE_RECORD_VARIABLES"')
+  );
+  assert.match(workspaceHandler, /sender\.frameId !== 0/);
+  assert.match(workspaceHandler, /injectInFrame\([\s\S]*sender\.tab\.id,[\s\S]*0,[\s\S]*world: "MAIN"/);
+  assert.doesNotMatch(workspaceHandler, /readFromPageFrames|discoverContentFrames/);
+
+  const classicHandler = backgroundSource.slice(
+    backgroundSource.indexOf('msg.type === "GET_NATIVE_RECORD_VARIABLES"'),
+    backgroundSource.indexOf('msg.type === "GET_HIDDEN_PORTAL_VARIABLES"')
+  );
+  assert.match(classicHandler, /softNoMatchOnFailure && expectedIdentity/);
+  assert.match(classicHandler, /probeInconclusive:\s*true/);
+  assert.ok(
+    classicHandler.indexOf("if (softNoMatchOnFailure)") <
+      classicHandler.indexOf("inconclusiveError")
+  );
+});
+
+test("the feature adds no permission, allFrames injection, writes, or native setValue calls", () => {
+  const manifest = JSON.parse(manifestSource);
+  assert.deepStrictEqual(manifest.permissions, ["scripting", "storage", "clipboardWrite"]);
+  const nativeBackground = backgroundSource.slice(
+    backgroundSource.indexOf("function inspectNativeRecordVariables"),
+    backgroundSource.indexOf("// Self-contained MAIN-world inspector for hidden")
+  );
+  assert.doesNotMatch(nativeBackground, /allFrames|setValue|fetch\(|console\./);
+  const nativeContent = contentSource.slice(
+    contentSource.indexOf("const NATIVE_VARIABLE_TYPE_POLICIES"),
+    contentSource.indexOf("/* =====================================================================", contentSource.indexOf("async function showVariableValues"))
+  );
+  assert.doesNotMatch(nativeContent, /setValue\s*\(|console\./);
+});
+
+/*
+ * End-to-end reproduction of the reported symptom: a producer-backed classic
+ * record whose multi-row variable sets rendered "(not stored)" while the live
+ * form held rows. Drives the real producer reader, row builder, and copy
+ * formatter over a stubbed Table API.
+ */
+test("a producer-backed record reads its multi-row sets instead of reporting them unstored", async () => {
+  const RECORD_ID = id(1100);
+  const direct = definition({ name: "requested_for", questionId: id(1101), type: "8", typeDisplay: "Reference" });
+  const mrvsChild = definition({
+    name: "bank_name",
+    questionId: id(1102),
+    variableSet: MRVS_SET_ID,
+  });
+  const setRow = {
+    sys_id: MRVS_SET_ID,
+    name: "bank_accounts",
+    internal_name: "bank_accounts",
+    title: "Bank Accounts",
+    type: { value: "one_to_many", display_value: "Multiple Rows" },
+  };
+
+  const helpers = loadNativeHelpers(async (table, query, fields) => {
+    if (table === "question_answer" && query.startsWith("table_sys_id=")) {
+      return [producerMetadataRow(direct, id(1200), { "question.cat_item": ITEM_ID })];
+    }
+    if (table === "question_answer" && query.startsWith("sys_idIN")) {
+      return [{ sys_id: id(1200), value: "abel.tuter" }];
+    }
+    if (table === "item_option_new_set") return [setRow];
+    if (table === "item_option_new" && query === "cat_item=" + ITEM_ID) {
+      return [nativeDefinitionRow(direct)];
+    }
+    if (table === "io_set_item") return [{ variable_set: MRVS_SET_ID, order: "100" }];
+    if (table === "item_option_new" && query.startsWith("variable_setIN")) {
+      return [nativeDefinitionRow(mrvsChild)];
+    }
+    if (table === "sc_multi_row_question_answer" && query.startsWith("parent_id=")) {
+      assert.match(query, new RegExp("^parent_id=" + RECORD_ID + "\\^"));
+      assert.doesNotMatch(fields, /(^|,)value(,|$)/);
+      return [
+        mrvsAnswerRow(id(1301), "bank_name", 1, { parent_id: RECORD_ID }),
+        mrvsAnswerRow(id(1302), "bank_country", 1, { parent_id: RECORD_ID }),
+      ];
+    }
+    if (table === "sc_multi_row_question_answer") {
+      return [
+        { sys_id: id(1301), value: "HJ" },
+        { sys_id: id(1302), value: "NL" },
+      ];
+    }
+    return [];
+  });
+
+  const recordData = await helpers.fetchNativeProducerRecordData("sn_example_case", RECORD_ID);
+  assert.strictEqual(recordData.mrvsReadStatus, "success");
+
+  const parent = recordData.definitions.find((row) => row.isMrvs);
+  assert.ok(parent, "the multi-row set should be listed as one parent row");
+  const rows = helpers.buildNativeVariableRows(recordData.definitions, recordData, [
+    liveRow(direct, "abel.tuter"),
+    liveRow(parent, '[{"bank_country":"NL","bank_name":"HJ"}]'),
+  ]);
+
+  const mrvsRow = rows.find((row) => row.isMrvs);
+  assert.strictEqual(mrvsRow.storedLookup, "found");
+  assert.strictEqual(mrvsRow.storedRowCount, 1);
+  assert.strictEqual(mrvsRow.comparison, "match");
+
+  const ui = new Function(
+    "globalThis",
+    "window",
+    uiSource + "\nreturn globalThis.SNHiddenVariablesUI;"
+  )({}, { top: null });
+  const text = ui.formatResultsAsText({ mode: "native", rows }, rows);
+  assert.match(text, /1 row: \[\{"bank_name":"HJ","bank_country":"NL"\}\]/);
+  assert.doesNotMatch(text, /\(not stored\)/);
+});
