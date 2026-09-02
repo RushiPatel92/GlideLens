@@ -53,6 +53,21 @@ reconstructed version by version.
   real lookups. Attachment is a single attachment record, and a value of any
   other shape stays uncompared rather than being judged.
 
+### Changed
+- **A multi-row variable set is shown as a table, not as a JSON array.** The
+  whole set arrived as one line of `[{"...":"..."},{...}]` in a narrow column,
+  which is unreadable exactly when it matters -- a set with five columns and
+  four rows. Each side now reports its row count and offers the rows on demand
+  as a table: one line per row, one column per variable in the set, with a
+  column only one side carries still shown. Where a comparison actually ran the
+  two sides merge into one table and a changed cell reads `stored -> live`, so
+  the row and column that moved are visible at a glance rather than by reading
+  two JSON arrays against each other. Where no comparison ran the sides stay in
+  separate labelled tables, because a merged cell would claim one had. A row
+  present on one side only reads as an absent row rather than an empty one, and
+  the copy output is deliberately unchanged: it still carries the whole array,
+  which is what gets pasted into a script or a ticket.
+
 ### Fixed
 - **A date inside a multi-row set is no longer reported as a difference that
   does not exist.** A Date/Time read as an ordinary variable comes back as raw

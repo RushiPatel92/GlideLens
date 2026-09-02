@@ -793,6 +793,54 @@ a { color: var(--teal); }
   white-space: nowrap;
 }
 .dm-vvalue.empty { color: #5f5f78; font-style: italic; }
+.dm-mrvs-toggle {
+  justify-self: start;
+  margin-top: 1px;
+  border: 1px solid #575780;
+  background: #31314f;
+  color: #c9c9e0;
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font: 10px var(--sans);
+}
+.dm-mrvs-toggle:hover { background: #3b3b60; color: #fff; }
+.dm-mrvs-detail {
+  grid-column: 1 / -1;
+  margin: 9px 0 2px;
+  overflow-x: auto;
+  border: 1px solid #33334f;
+  border-radius: 6px;
+  background: #22223a;
+}
+.dm-mrvs-caption {
+  padding: 6px 10px;
+  border-bottom: 1px solid #2e2e48;
+  color: #85859f;
+  font: 10px var(--sans);
+}
+.dm-mrvs-table {
+  border-collapse: collapse;
+  width: 100%;
+  font: 11px var(--mono);
+  color: #c1c1d6;
+}
+.dm-mrvs-table th,
+.dm-mrvs-table td {
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid #2b2b44;
+  white-space: nowrap;
+}
+.dm-mrvs-table th {
+  background: #26263f;
+  color: #9a9ab8;
+  font: 600 10px var(--mono);
+  letter-spacing: .02em;
+}
+.dm-mrvs-table tbody tr:last-child td { border-bottom: none; }
+.dm-mrvs-index { width: 26px; color: #6f6f88; }
+.dm-mrvs-differs { color: #ffb5c5; background: #3a2531; }
 .dm-bucket {
   justify-self: start;
   padding: 2px 7px;
@@ -2385,8 +2433,9 @@ a { color: var(--teal); }
       reason: "The variable name collides with the form API prototype.", hidden: true },
     { label: "Approval chain", name: "approval_chain", type: "Multi-Row Variable Set",
       bucket: "mrvs",
-      stored: "1 row: [{\"stage\":\"manager\",\"days\":\"3\"}]",
-      live: "2 rows: [{\"stage\":\"manager\",\"days\":\"3\"},{\"stage\":\"finance\",\"days\":\"5\"}]",
+      stored: "1 row", live: "2 rows",
+      storedRows: [{ stage: "manager", days: "3" }],
+      liveRows: [{ stage: "manager", days: "3" }, { stage: "finance", days: "5" }],
       comparison: "differs",
       reason: "Stored has 1 row; the live form has 2.", hidden: false },
     { label: "Access code", name: "access_code", type: "Masked",
@@ -2475,7 +2524,98 @@ a { color: var(--teal); }
     });
 
     el.append(name, type, bucket, comparison, values);
+    if (v.storedRows || v.liveRows) el.appendChild(mrvsDetail(v, values));
     return el;
+  }
+
+  // The panel renders a multi-row set as a table rather than a JSON array, and
+  // merges the two sides into one grid only where a comparison actually ran.
+  function mrvsColumns(groups) {
+    var names = [];
+    groups.forEach(function (rows) {
+      (rows || []).forEach(function (row) {
+        Object.keys(row).forEach(function (key) {
+          if (names.indexOf(key) === -1) names.push(key);
+        });
+      });
+    });
+    return names;
+  }
+
+  function mrvsCell(rows, index, column) {
+    var row = rows[index];
+    if (!row) return "(no row)";
+    return row[column] || "(empty)";
+  }
+
+  function mrvsDetail(v, values) {
+    var stored = v.storedRows || [];
+    var live = v.liveRows || [];
+    var columns = mrvsColumns([stored, live]);
+    var detail = document.createElement("div");
+    detail.className = "dm-mrvs-detail";
+    detail.hidden = true;
+
+    var caption = document.createElement("div");
+    caption.className = "dm-mrvs-caption";
+    caption.textContent = v.comparison === "differs"
+      ? "Stored rows; a changed cell reads stored \u2192 live."
+      : "Stored and live rows, which match.";
+    detail.appendChild(caption);
+
+    var table = document.createElement("table");
+    table.className = "dm-mrvs-table";
+    var head = document.createElement("tr");
+    var indexHead = document.createElement("th");
+    indexHead.className = "dm-mrvs-index";
+    indexHead.scope = "col";
+    indexHead.textContent = "#";
+    head.appendChild(indexHead);
+    columns.forEach(function (column) {
+      var cell = document.createElement("th");
+      cell.scope = "col";
+      cell.textContent = column;
+      head.appendChild(cell);
+    });
+    var thead = document.createElement("thead");
+    thead.appendChild(head);
+    var body = document.createElement("tbody");
+    for (var index = 0; index < Math.max(stored.length, live.length); index += 1) {
+      var line = document.createElement("tr");
+      var indexCell = document.createElement("td");
+      indexCell.className = "dm-mrvs-index";
+      indexCell.textContent = String(index + 1);
+      line.appendChild(indexCell);
+      columns.forEach(function (column) {
+        var cell = document.createElement("td");
+        var storedText = mrvsCell(stored, index, column);
+        var liveText = mrvsCell(live, index, column);
+        if (storedText === liveText) {
+          cell.textContent = storedText;
+        } else {
+          cell.className = "dm-mrvs-differs";
+          cell.textContent = storedText + " \u2192 " + liveText;
+        }
+        line.appendChild(cell);
+      });
+      body.appendChild(line);
+    }
+    table.append(thead, body);
+    detail.appendChild(table);
+
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "dm-mrvs-toggle";
+    toggle.textContent = "Show rows";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", function () {
+      var open = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", open ? "false" : "true");
+      toggle.textContent = open ? "Show rows" : "Hide rows";
+      detail.hidden = open;
+    });
+    values.appendChild(toggle);
+    return detail;
   }
 
   function render() {

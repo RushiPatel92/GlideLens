@@ -454,7 +454,18 @@ the container render raw — `5`, `6` and `8` on SOW; `1`, `2`, `5`, `6`, `7`,
 proves for standalone variables says nothing about what that container does
 with the same type. A set holding any other column type is listed and never
 read, and the row names the type rather than implying the form was asked and
-had nothing. When answered direct
+had nothing.
+
+The panel never prints a set as its JSON array. Each side reports its row count
+and offers the rows as a table: one line per row, one column per variable in the
+set, with a column only one side carries still shown. The stored and live sides
+merge into a single table, where a changed cell reads `stored → live`, only
+where a verdict says a comparison actually ran; a set that was listed rather
+than compared keeps its sides in separate labelled tables, so the rendering
+cannot imply a comparison that never happened. A row missing from one side reads
+as an absent row rather than an empty one. The copy output is deliberately not
+changed by any of this and still carries the whole JSON array, which is what
+someone pastes into a script. When answered direct
 questions expose one unique `question.cat_item`, the same catalog-item reader
 enumerates unanswered direct and attached-set definitions; an absent or
 ambiguous relationship remains answers-only instead of guessing through shared

@@ -166,6 +166,10 @@
     .row-value.expandable:hover{color:#eaeaf6}
     .row-value.expanded{white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word}
     .row-value.redacted{color:#ff9d9d;font-style:italic}
+    .row-value.mrvs{
+      white-space:normal;overflow:visible;text-overflow:clip;
+      display:flex;gap:9px;align-items:baseline;
+    }
     .value-tag{color:#75758c;font-style:italic;margin-left:6px}
     .comparison{min-width:0}
     .comparison-reason{margin-top:4px;color:#85859f;font-size:10px;line-height:1.35}
@@ -175,6 +179,34 @@
     .native-value-text{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#c1c1d6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .native-value-text.expandable{cursor:pointer}
     .native-value-text.expanded{white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word}
+    .mrvs-toggle{
+      justify-self:start;margin-top:1px;border:1px solid #575780;background:#31314f;
+      color:#c9c9e0;border-radius:5px;padding:3px 8px;cursor:pointer;font-size:10px;
+    }
+    .mrvs-toggle:hover{background:#3b3b60;color:#fff}
+    .mrvs-detail{
+      grid-column:1/-1;margin:9px 0 2px;overflow-x:auto;
+      border:1px solid #33334f;border-radius:6px;background:#22223a;
+    }
+    .mrvs-caption{
+      padding:6px 10px;color:#85859f;font-size:10px;border-bottom:1px solid #2e2e48;
+    }
+    .mrvs-table + .mrvs-caption{border-top:1px solid #2e2e48}
+    .mrvs-table{
+      border-collapse:collapse;width:100%;
+      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#c1c1d6;
+    }
+    .mrvs-table th,.mrvs-table td{
+      text-align:left;padding:5px 10px;border-bottom:1px solid #2b2b44;
+      white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis;
+    }
+    .mrvs-table th{
+      color:#9a9ab8;font-size:10px;letter-spacing:.02em;
+      font-weight:600;background:#26263f;
+    }
+    .mrvs-table tbody tr:last-child td{border-bottom:none}
+    .mrvs-index{color:#6f6f88;width:26px}
+    .mrvs-cell-differs{color:#ffb5c5;background:#3a2531}
     .empty{padding:48px 20px;text-align:center;color:#74748b;font-size:13px}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;
@@ -317,6 +349,209 @@
     return String(row.liveValue == null ? "" : row.liveValue) || "(empty)";
   };
 
+  /*
+   * A multi-row set's value is a JSON array of row objects. As one line it is
+   * unreadable, so the panel shows a short row count and renders the rows
+   * themselves as a table on demand: one line per row, one column per variable
+   * in the set.
+   *
+   * The stored and live sides merge into ONE table only when a comparison
+   * actually ran, because a cell reading "stored -> live" is a comparison
+   * claim. A set that was listed rather than compared keeps its sides in
+   * separate tables, each labelled with the side it came from.
+   */
+  const MRVS_EMPTY_CELL = "(empty)";
+  const MRVS_ABSENT_ROW = "(no row)";
+  let mrvsDetailSeq = 0;
+
+  const mrvsRowObjects = (raw) => {
+    const text = String(raw == null ? "" : raw);
+    if (!text) return null;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      return null;
+    }
+    if (!Array.isArray(parsed)) return null;
+    return parsed.every(
+      (entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+    ) ? parsed : null;
+  };
+
+  // Column order follows first appearance, stored side first, so a column only
+  // the live side carries is still shown rather than dropped.
+  const mrvsColumnNames = (...groups) => {
+    const names = [];
+    groups.forEach((rows) => {
+      (rows || []).forEach((entry) => {
+        Object.keys(entry || {}).forEach((key) => {
+          if (names.indexOf(key) < 0) names.push(key);
+        });
+      });
+    });
+    return names;
+  };
+
+  const mrvsCellText = (entry, column) => {
+    if (!entry) return MRVS_ABSENT_ROW;
+    const value = entry[column];
+    if (value == null || value === "") return MRVS_EMPTY_CELL;
+    return String(value);
+  };
+
+  const mrvsCaption = (text) => {
+    const caption = document.createElement("div");
+    caption.className = "mrvs-caption";
+    caption.textContent = text;
+    return caption;
+  };
+
+  const mrvsTable = (columns, rowCount, fillCell) => {
+    const table = document.createElement("table");
+    table.className = "mrvs-table";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    const indexHead = document.createElement("th");
+    indexHead.className = "mrvs-index";
+    indexHead.setAttribute("scope", "col");
+    indexHead.textContent = "#";
+    headRow.appendChild(indexHead);
+    columns.forEach((column) => {
+      const cell = document.createElement("th");
+      cell.setAttribute("scope", "col");
+      cell.textContent = column;
+      cell.title = column;
+      headRow.appendChild(cell);
+    });
+    head.appendChild(headRow);
+    const body = document.createElement("tbody");
+    for (let index = 0; index < rowCount; index += 1) {
+      const line = document.createElement("tr");
+      const indexCell = document.createElement("td");
+      indexCell.className = "mrvs-index";
+      indexCell.textContent = String(index + 1);
+      line.appendChild(indexCell);
+      columns.forEach((column) => line.appendChild(fillCell(index, column)));
+      body.appendChild(line);
+    }
+    table.append(head, body);
+    return table;
+  };
+
+  const mrvsPlainCell = (rows) => (index, column) => {
+    const cell = document.createElement("td");
+    cell.textContent = mrvsCellText(rows[index], column);
+    cell.title = cell.textContent;
+    return cell;
+  };
+
+  const mrvsComparedCell = (storedRows, liveRows) => (index, column) => {
+    const cell = document.createElement("td");
+    const stored = mrvsCellText(storedRows[index], column);
+    const live = mrvsCellText(liveRows[index], column);
+    if (stored === live) {
+      cell.textContent = stored;
+      cell.title = stored;
+      return cell;
+    }
+    cell.className = "mrvs-cell-differs";
+    cell.textContent = stored + " → " + live;
+    cell.title = "Stored: " + stored + "\nLive: " + live;
+    return cell;
+  };
+
+  const appendMrvsTable = (wrap, caption, rows) => {
+    const columns = mrvsColumnNames(rows);
+    if (!columns.length) return;
+    wrap.appendChild(mrvsCaption(caption));
+    wrap.appendChild(mrvsTable(columns, rows.length, mrvsPlainCell(rows)));
+  };
+
+  const mrvsDetail = (storedRows, liveRows, compared, differs) => {
+    const wrap = document.createElement("div");
+    wrap.className = "mrvs-detail";
+    if (compared && storedRows && liveRows) {
+      const columns = mrvsColumnNames(storedRows, liveRows);
+      if (!columns.length) return null;
+      wrap.appendChild(mrvsCaption(differs
+        ? "Stored rows; a changed cell reads stored → live."
+        : "Stored and live rows, which match."));
+      wrap.appendChild(mrvsTable(
+        columns,
+        Math.max(storedRows.length, liveRows.length),
+        mrvsComparedCell(storedRows, liveRows)
+      ));
+      return wrap;
+    }
+    if (storedRows) appendMrvsTable(wrap, "Stored rows", storedRows);
+    if (liveRows) appendMrvsTable(wrap, "Live rows", liveRows);
+    return wrap.childElementCount ? wrap : null;
+  };
+
+  // The detail sits on its own full-width line inside the row's own grid, so a
+  // wide set stays readable without squeezing the columns beside it.
+  const attachMrvsDetail = (rowElement, host, detail, label) => {
+    if (!detail) return;
+    mrvsDetailSeq += 1;
+    detail.id = "mrvs-detail-" + mrvsDetailSeq;
+    detail.hidden = true;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "mrvs-toggle";
+    toggle.textContent = "Show rows";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", detail.id);
+    toggle.setAttribute("aria-label", "Show rows for " + label);
+    toggle.addEventListener("click", () => {
+      const open = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", open ? "false" : "true");
+      toggle.textContent = open ? "Show rows" : "Hide rows";
+      toggle.setAttribute("aria-label", (open ? "Show" : "Hide") + " rows for " + label);
+      detail.hidden = open;
+    });
+    host.appendChild(toggle);
+    rowElement.appendChild(detail);
+  };
+
+  /*
+   * Which rows a side actually holds, or null when there are none to show.
+   * "(not stored)", "(not read)" and "(not available)" are claims nativeSideText
+   * already makes correctly, so a side without rows keeps its own wording
+   * rather than being flattened into an empty table.
+   */
+  const nativeMrvsSideRows = (row, side) => {
+    if (row.secret) return null;
+    if (side === "stored") {
+      if (row.storedLookup !== "found" || row.storedValue == null) return null;
+      return mrvsRowObjects(row.storedValue);
+    }
+    if (!row.liveValueAvailable) return null;
+    return mrvsRowObjects(row.liveValue);
+  };
+
+  const mrvsCountLabel = (rows) => {
+    if (!rows.length) return "(no rows)";
+    return rows.length === 1 ? "1 row" : String(rows.length) + " rows";
+  };
+
+  // On screen a set says how many rows it has and offers the table. The copy
+  // output is deliberately NOT changed: it keeps the full JSON array, which is
+  // what someone pastes into a script or a ticket.
+  const nativeSideDisplayText = (row, side) => {
+    if (!row.isMrvs) return nativeSideText(row, side);
+    const rows = nativeMrvsSideRows(row, side);
+    return rows ? mrvsCountLabel(rows) : nativeSideText(row, side);
+  };
+
+  const portalMrvsRows = (row) =>
+    (row.isMrvs && row.valueSource === "live") ? mrvsRowObjects(row.value) : null;
+
+  const valueCellDisplayText = (row) => {
+    const rows = portalMrvsRows(row);
+    return rows ? mrvsCountLabel(rows) : valueCellText(row);
+  };
+
   const renderRows = () => {
     if (!resultsShadow) return;
     const list = resultsShadow.querySelector(".rows");
@@ -377,7 +612,7 @@
           sideLabel.textContent = side;
           const sideValue = document.createElement("span");
           sideValue.className = "native-value-text";
-          sideValue.textContent = nativeSideText(row, side);
+          sideValue.textContent = nativeSideDisplayText(row, side);
           if (!row.secret && sideValue.textContent.length > 28) {
             sideValue.classList.add("expandable");
             sideValue.tabIndex = 0;
@@ -413,11 +648,31 @@
         }
         nativeCells.push(valuesCell);
         el.append(...nativeCells);
+        if (row.isMrvs) {
+          const storedRows = nativeMrvsSideRows(row, "stored");
+          const liveRows = capabilities.liveValues
+            ? nativeMrvsSideRows(row, "live")
+            : null;
+          // Merging the sides into one table asserts they were compared, so it
+          // is allowed only where a verdict says a comparison actually ran.
+          const compared = Boolean(
+            capabilities.comparison &&
+            (row.comparison === "match" || row.comparison === "differs")
+          );
+          attachMrvsDetail(
+            el,
+            valuesCell,
+            mrvsDetail(storedRows, liveRows, compared, row.comparison === "differs"),
+            row.label || row.name
+          );
+        }
       } else {
         const valueCell = document.createElement("div");
         valueCell.className = "row-value" + (row.valueSource === "redacted" ? " redacted" : "");
-        valueCell.textContent = valueCellText(row);
-        if (valueCell.textContent.length > 28) {
+        const portalRows = portalMrvsRows(row);
+        valueCell.textContent = valueCellDisplayText(row);
+        if (portalRows) valueCell.classList.add("mrvs");
+        if (!portalRows && valueCell.textContent.length > 28) {
           valueCell.classList.add("expandable");
           valueCell.tabIndex = 0;
           valueCell.setAttribute("role", "button");
@@ -434,6 +689,16 @@
           valueCell.title = valueCell.textContent;
         }
         el.append(nameCell, typeCell, bucketCell, valueCell);
+        if (portalRows) {
+          // The portal path reads live values only, so there is no second side
+          // and nothing to compare against.
+          attachMrvsDetail(
+            el,
+            valueCell,
+            mrvsDetail(null, portalRows, false, false),
+            row.label || row.name
+          );
+        }
       }
       list.appendChild(el);
     });

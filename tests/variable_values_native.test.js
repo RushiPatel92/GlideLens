@@ -3410,3 +3410,182 @@ test("a producer record reads the value of a swapped-set variable end to end", a
   const requests = api.workspaceLiveValueRequests(recordData.definitions, SUPPLIER_CASE);
   assert.deepStrictEqual(requests.map((request) => request.questionId), [id(811)]);
 });
+
+/* ---------------------------------------------------------------------------
+ * Rendering a multi-row set as a table.
+ *
+ * The value is a JSON array of row objects, which no one can read as one line.
+ * The panel shows a row count and builds the rows into a table on demand. The
+ * part that needs pinning is not the markup but the honesty: merging the stored
+ * and live sides into one grid, with a cell reading "stored -> live", asserts
+ * that a comparison ran. A set that was listed rather than compared must keep
+ * its sides apart, and the copy output must keep the raw JSON either way.
+ * ------------------------------------------------------------------------ */
+
+function fakeElement(tagName) {
+  return {
+    tagName: String(tagName).toUpperCase(),
+    className: "",
+    id: "",
+    title: "",
+    hidden: false,
+    textContent: "",
+    attributes: {},
+    children: [],
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name)
+        ? this.attributes[name]
+        : null;
+    },
+    appendChild(child) { this.children.push(child); return child; },
+    append(...nodes) { nodes.forEach((node) => this.children.push(node)); },
+    addEventListener() {},
+    get childElementCount() { return this.children.length; },
+  };
+}
+
+function mrvsViewSource() {
+  const start = uiSource.indexOf("  const MRVS_EMPTY_CELL");
+  const end = uiSource.indexOf("  // The detail sits on its own full-width line", start);
+  assert.ok(start > 0 && end > start, "multi-row table helpers not found in the panel source");
+  return uiSource.slice(start, end);
+}
+
+function mrvsViewApi() {
+  const start = uiSource.indexOf("  const MRVS_EMPTY_CELL");
+  const end = uiSource.indexOf("  // The detail sits on its own full-width line", start);
+  assert.ok(start > 0 && end > start, "multi-row table helpers not found in the panel source");
+  return new Function(
+    "document",
+    uiSource.slice(start, end) +
+      "\nreturn { mrvsRowObjects, mrvsColumnNames, mrvsDetail };"
+  )({ createElement: fakeElement });
+}
+
+const descendants = (node) => (node.children || []).reduce(
+  (all, child) => all.concat([child], descendants(child)),
+  []
+);
+const byClass = (node, className) =>
+  descendants(node).filter((child) => child.className === className);
+const cellTexts = (table) =>
+  descendants(table)
+    .filter((child) => child.tagName === "TD" && child.className !== "mrvs-index")
+    .map((child) => child.textContent);
+
+test("a multi-row value is only read as rows when it really is an array of rows", () => {
+  const view = mrvsViewApi();
+  assert.deepStrictEqual(view.mrvsRowObjects('[{"a":"1"}]'), [{ a: "1" }]);
+  assert.deepStrictEqual(view.mrvsRowObjects("[]"), []);
+  assert.strictEqual(view.mrvsRowObjects(""), null);
+  assert.strictEqual(view.mrvsRowObjects("not json"), null);
+  // A bare object, an array of arrays and an array of strings are all shapes a
+  // table cannot be built from, and each must fall back to the plain text.
+  assert.strictEqual(view.mrvsRowObjects('{"a":"1"}'), null);
+  assert.strictEqual(view.mrvsRowObjects('[["a","1"]]'), null);
+  assert.strictEqual(view.mrvsRowObjects('["a"]'), null);
+});
+
+test("columns keep first-appearance order and a live-only column still shows", () => {
+  const view = mrvsViewApi();
+  assert.deepStrictEqual(
+    view.mrvsColumnNames(
+      [{ bank: "HJ", country: "NL" }],
+      [{ country: "NL", bank: "HJ", added: "x" }]
+    ),
+    ["bank", "country", "added"]
+  );
+});
+
+test("a compared multi-row set merges into one table and marks the changed cell", () => {
+  const view = mrvsViewApi();
+  const detail = view.mrvsDetail(
+    [{ bank: "HJ", country: "NL" }, { bank: "KB", country: "PL" }],
+    [{ bank: "HJ", country: "NL" }, { bank: "KB SA", country: "PL" }],
+    true,
+    true
+  );
+  const captions = byClass(detail, "mrvs-caption").map((node) => node.textContent);
+  assert.strictEqual(captions.length, 1);
+  assert.match(captions[0], /stored → live/);
+
+  const headers = descendants(detail)
+    .filter((node) => node.tagName === "TH")
+    .map((node) => node.textContent);
+  assert.deepStrictEqual(headers, ["#", "bank", "country"]);
+
+  const changed = byClass(detail, "mrvs-cell-differs");
+  assert.strictEqual(changed.length, 1);
+  assert.strictEqual(changed[0].textContent, "KB → KB SA");
+  assert.match(changed[0].title, /Stored: KB\nLive: KB SA/);
+  // An unchanged cell is written once, not as an arrow against itself.
+  assert.ok(cellTexts(detail).includes("HJ"));
+  assert.ok(!cellTexts(detail).some((text) => text === "HJ → HJ"));
+});
+
+test("a row present on one side only reads as an absent row rather than an empty one", () => {
+  const view = mrvsViewApi();
+  const detail = view.mrvsDetail(
+    [{ bank: "HJ" }, { bank: "KB" }],
+    [{ bank: "HJ" }],
+    true,
+    true
+  );
+  const changed = byClass(detail, "mrvs-cell-differs");
+  assert.strictEqual(changed.length, 1);
+  assert.strictEqual(changed[0].textContent, "KB → (no row)");
+});
+
+test("an uncompared multi-row set keeps its sides in separate tables", () => {
+  const view = mrvsViewApi();
+  const detail = view.mrvsDetail(
+    [{ bank: "HJ" }],
+    [{ bank: "KB" }],
+    false,
+    false
+  );
+  assert.deepStrictEqual(
+    byClass(detail, "mrvs-caption").map((node) => node.textContent),
+    ["Stored rows", "Live rows"]
+  );
+  // No arrow anywhere: nothing here claims the two sides were compared.
+  assert.strictEqual(byClass(detail, "mrvs-cell-differs").length, 0);
+  assert.ok(!cellTexts(detail).some((text) => text.includes("→")));
+});
+
+test("a stored-only multi-row set renders one labelled table and an empty cell says so", () => {
+  const view = mrvsViewApi();
+  const detail = view.mrvsDetail([{ bank: "HJ", country: "" }], null, false, false);
+  assert.deepStrictEqual(
+    byClass(detail, "mrvs-caption").map((node) => node.textContent),
+    ["Stored rows"]
+  );
+  assert.deepStrictEqual(cellTexts(detail), ["HJ", "(empty)"]);
+  assert.strictEqual(view.mrvsDetail(null, null, false, false), null);
+  // Rows with no columns at all cannot become a table, and must not become an
+  // empty one that implies the set was read and found blank.
+  assert.strictEqual(view.mrvsDetail([{}], null, false, false), null);
+});
+
+test("the panel shows a row count while the copy output keeps the whole array", () => {
+  // The rendered side text and the copied side text are deliberately different
+  // functions: the panel is for reading, the clipboard is for pasting.
+  assert.match(uiSource, /sideValue\.textContent = nativeSideDisplayText\(row, side\)/);
+  assert.match(uiSource, /lines\.push\("  Stored: " \+ nativeSideText\(row, "stored"\)\)/);
+  assert.match(uiSource, /rows\.length === 1 \? "1 row" : String\(rows\.length\) \+ " rows"/);
+
+  // Merging the two sides is gated on a verdict, not on both sides existing.
+  assert.match(
+    uiSource,
+    /capabilities\.comparison &&\s*\(row\.comparison === "match" \|\| row\.comparison === "differs"\)/
+  );
+
+  // Every cell in the table is filled as text. The panel shell is the one
+  // place allowed to write markup, and a set's own values must never reach it.
+  assert.doesNotMatch(mrvsViewSource(), /innerHTML/);
+  assert.match(mrvsViewSource(), /cell\.textContent = /);
+  assert.match(uiSource, /detail\.hidden = true/);
+  assert.match(uiSource, /toggle\.setAttribute\("aria-expanded", "false"\)/);
+  assert.match(uiSource, /toggle\.setAttribute\("aria-controls", detail\.id\)/);
+});

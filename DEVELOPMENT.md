@@ -93,7 +93,11 @@ The suites cover:
   producer-backed Workspace records and the definition-completeness field each
   stored reader actually sets, multi-row sets on Workspace — that a proven
   surface requests and compares one, that an unproven surface says it was
-  listed rather than implying the form was asked, that the `mrvs-pair`
+  listed rather than implying the form was asked, how the panel renders a set's
+  rows as a table — the merged stored/live grid only where a verdict says a
+  comparison ran, separate labelled tables where it did not, an absent row
+  distinguished from an empty cell, and the copy output still carrying the whole
+  array — that the `mrvs-pair`
   representation check refuses every way the value/display pair can fail, that
   the panel's candidate count is exactly the set of rows a live read was
   requested for, and that a date column inside a set blocks the live read on
