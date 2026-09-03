@@ -146,6 +146,15 @@ reconstructed version by version.
   definition is refused on the classic form when the form does not render its
   question -- otherwise the value read back belongs to the item's new variable
   of the same name.
+- **A producer-backed classic record no longer calls every variable hidden.**
+  Its catalog variables are not fields `g_form` manages, so `isVisible` answered
+  false for all of them and the element the reader measures is a zero-size
+  wrapper -- and the panel reported "Hidden by policy/script" for every variable
+  on a form that was showing them. Those rows now read "Visibility unknown",
+  which is what the page actually supports; the values and their comparison,
+  which are the point of the panel, are unchanged. Request items still report
+  what the form says, because their variables are real fields and surfacing a
+  hidden one is the feature's own point.
 - **A hidden Checkbox on a supplier record compares instead of reporting no
   live value.** The Workspace component settles a checkbox that a UI policy
   hides into a real JavaScript boolean rather than a string, and the reader

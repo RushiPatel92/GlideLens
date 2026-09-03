@@ -415,6 +415,23 @@ definition it chooses, so reading the ordinary twin of a masked variable could
 surface the masked value in a row not marked secret. A duplicate that shares its
 name with a secret is treated as secret itself, so the probe never touches the
 name.
+A record-producer-backed classic form makes **no visibility claim at all**.
+Its catalog variables are not fields `g_form` manages: measured on one such
+record, `getFieldNames` is undefined, `isVisible` answered false for all 115
+variables, and the element the reader measures by question id is an `<item>`
+wrapper that is `display:inline` and always 0x0. Both sources therefore reported
+every variable as hidden by a UI policy while the form was plainly showing them.
+Those rows are bucketed `visibility-unknown` and labelled "Visibility unknown";
+values and their comparison are untouched, which is what the panel is for.
+
+The record kind decides this, because it is a structural fact rather than a
+guess about the page. An aggregate "nothing on this form looked visible" test
+was tried first and is wrong: on that very record one multi-row parent did
+measure visible, which silently disarmed it — and a multi-row row shows its own
+bucket, so the disarming row was invisible in the result. Request items keep
+reporting what the form says, since their variables really are fields and
+surfacing a hidden one is the feature's own point.
+
 Record-producer targets apply the same rule to `question_answer`: the first read
 requests answer/question metadata without `value`, and the second requests
 `sys_id,value` only for allowlisted answer ids. No matching rows means the

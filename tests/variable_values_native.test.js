@@ -1407,6 +1407,56 @@ test("only a true boolean is normalised, and only where the surface proved it", 
   assert.doesNotMatch(body, /Boolean\(raw\)|!!raw/);
 });
 
+test("a producer-backed classic form makes no visibility claim at all", () => {
+  // Measured on such a record: g_form does not manage the catalog variables as
+  // fields -- getFieldNames is undefined there -- so isVisible answered false
+  // for all 115 of them, and the element the reader measures is an <item>
+  // wrapper that is display:inline and always 0x0. Every variable was therefore
+  // reported "Hidden by policy/script" while the form was showing them.
+  const helpers = loadNativeHelpers();
+  const def = definition({ name: "plain", type: "6" });
+  const live = [{
+    name: def.name,
+    questionId: def.questionId,
+    foundEl: true,
+    visible: false,
+    gFormReportedVisible: false,
+    liveValueAvailable: true,
+    liveValue: "kept",
+  }];
+  const stored = { storedReadStatus: "success", metadataRows: [storedRow(def, "kept")] };
+
+  const [producerRow] = helpers.buildNativeVariableRows([def], stored, live, {
+    recordKind: "producer",
+  });
+  assert.strictEqual(producerRow.bucket, "visibility-unknown");
+  assert.strictEqual(producerRow.hidden, null);
+  // Values are the panel's subject and are unaffected.
+  assert.strictEqual(producerRow.comparison, "match");
+
+  // A request item still reports what the form said: its variables ARE fields,
+  // and hidden-variable detection is the feature's own point.
+  const [ritmRow] = helpers.buildNativeVariableRows([def], stored, live, {
+    recordKind: "ritm",
+  });
+  assert.strictEqual(ritmRow.bucket, "invisible");
+  assert.strictEqual(ritmRow.hidden, true);
+
+  // A multi-row parent keeps its own bucket on both, since it never carried a
+  // visibility badge -- and one such row measuring visible is exactly what
+  // defeated an earlier aggregate "nothing looked visible" test.
+  const mrvs = mrvsDefinition();
+  const [mrvsRow] = helpers.buildNativeVariableRows(
+    [mrvs],
+    { storedReadStatus: "success", metadataRows: [] },
+    [],
+    { recordKind: "producer" }
+  );
+  assert.strictEqual(mrvsRow.bucket, "mrvs");
+
+  assert.match(uiSource, /"visibility-unknown": "Visibility unknown"/);
+});
+
 test("Workspace visibility is tri-state and independent from canRead", () => {
   const helpers = loadNativeHelpers();
   const def = definition({ name: "plain_note", type: "6", questionId: id(968) });

@@ -22,6 +22,7 @@
     "hidden-type": "Hidden type",
     invisible: "Hidden by policy/script",
     absent: "Not rendered",
+    "visibility-unknown": "Visibility unknown",
     "live-unavailable": "Live availability unknown",
     visible: "Visible",
     mrvs: "Multi-row set",
@@ -149,6 +150,7 @@
     .badge.hidden-type{color:#ffb1b1;background:#432a36;border-color:#684050}
     .badge.invisible{color:#a9d5ff;background:#24364a;border-color:#365573}
     .badge.absent{color:#b5e4c2;background:#263b35;border-color:#39594d}
+    .badge.visibility-unknown{color:#c9c9d6;background:#2b2b38;border-color:#43435a}
     .badge.visible{color:#8f9bb3;background:#252539;border-color:#34344f}
     .badge.mrvs{color:#e6c78f;background:#3a3320;border-color:#5c5031}
     .badge.match{color:#9de0c0;background:#203a32;border-color:#315b4d}

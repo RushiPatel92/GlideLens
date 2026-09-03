@@ -83,7 +83,9 @@ The suites cover:
   failure/empty/truncated states, scalar and List Collector comparison,
   date and timezone-aware date/time normalisation, retired-variable
   filtering,
-  prototype collisions, portal masked-type behavior, copy safety, and native
+  prototype collisions, portal masked-type behavior, copy safety, that a
+  producer-backed classic record makes no visibility claim while a request item
+  still does, and native
   panel accessibility/source invariants. Workspace coverage includes frame-0
   transport, identity-before-geometry form selection, collapsed/stale forms,
   exact safe state-map pulls, `canRead` non-access, that a

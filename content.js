@@ -3644,13 +3644,28 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
   const userTimeZone = opts.timeZone || "";
   const zoneSource = opts.zoneSource || "";
   const workspaceMode = Boolean(opts.workspace);
+  // A record-producer-backed classic form does not manage its catalog variables
+  // as g_form fields, so neither visibility source can speak for them. Measured
+  // on one such record: getFieldNames is undefined, isVisible answered false for
+  // all 115 variables, and the element the reader measures is an <item> wrapper
+  // that is display:inline and always 0x0 -- so every variable was reported
+  // "Hidden by policy/script" while the form was plainly showing them. The
+  // record kind is a structural fact rather than a guess about the page, which
+  // is why it decides this and an aggregate "nothing looked visible" test does
+  // not: on this very record one multi-row parent did measure visible, which
+  // silently disarmed such a test.
+  const visibilityUnknowable = !workspaceMode && opts.recordKind === "producer";
   const workspaceSurface = String(opts.workspaceSurfaceKey || "");
   const policyResolver = workspaceMode
     ? (definition) => classifyWorkspaceVariable(definition, workspaceSurface)
     : classifyNativeVariable;
   const visibilityResolver = workspaceMode
     ? workspaceVariableBucket
-    : nativeVariableBucket;
+    : (definition, live) => (
+      visibilityUnknowable && !definition.isMrvs
+        ? { bucket: "visibility-unknown", hidden: null }
+        : nativeVariableBucket(definition, live)
+    );
   const duplicateNames = nativeDuplicateNameSet(
     definitions,
     storedResult.metadataRows
@@ -4456,7 +4471,7 @@ async function finishNativeVariableValues(
     recordData.definitions,
     recordData,
     liveProbe.perVariable,
-    zone
+    Object.assign({ recordKind }, zone)
   );
   globalThis.SNHiddenVariablesUI.showResults({
     mode: "native",
