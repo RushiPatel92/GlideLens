@@ -152,7 +152,12 @@ reconstructed version by version.
   wrapper -- and the panel reported "Hidden by policy/script" for every variable
   on a form that was showing them. Those rows now read "Visibility unknown",
   which is what the page actually supports; the values and their comparison,
-  which are the point of the panel, are unchanged. Request items still report
+  which are the point of the panel, are unchanged. Those rows carry an explicit
+  unknown visibility state, so the header counts them and the filter offers
+  them: without it they inherited the summary's default and were counted and
+  filtered as *visible* while their own badge said otherwise, and the count and
+  filter themselves were Workspace-only, which would have dropped 76 of 79 rows
+  out of the summary with no mention. Request items still report
   what the form says, because their variables are real fields and surfacing a
   hidden one is the feature's own point.
 - **A hidden Checkbox on a supplier record compares instead of reporting no

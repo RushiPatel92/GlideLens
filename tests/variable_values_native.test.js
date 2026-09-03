@@ -1431,6 +1431,11 @@ test("a producer-backed classic form makes no visibility claim at all", () => {
   });
   assert.strictEqual(producerRow.bucket, "visibility-unknown");
   assert.strictEqual(producerRow.hidden, null);
+  // The state is what the panel counts and filters on. The row builder's
+  // fallback reads `hidden ? "hidden" : "visible"`, so a null hidden without an
+  // explicit state is counted and filtered as VISIBLE -- the badge saying
+  // "Visibility unknown" while the header claims it is visible.
+  assert.strictEqual(producerRow.visibilityState, "unknown");
   // Values are the panel's subject and are unaffected.
   assert.strictEqual(producerRow.comparison, "match");
 
@@ -1441,6 +1446,7 @@ test("a producer-backed classic form makes no visibility claim at all", () => {
   });
   assert.strictEqual(ritmRow.bucket, "invisible");
   assert.strictEqual(ritmRow.hidden, true);
+  assert.strictEqual(ritmRow.visibilityState, "hidden");
 
   // A multi-row parent keeps its own bucket on both, since it never carried a
   // visibility badge -- and one such row measuring visible is exactly what
@@ -1455,6 +1461,11 @@ test("a producer-backed classic form makes no visibility claim at all", () => {
   assert.strictEqual(mrvsRow.bucket, "mrvs");
 
   assert.match(uiSource, /"visibility-unknown": "Visibility unknown"/);
+  // The count and filter for that state used to be Workspace-only, so these
+  // rows would have been counted under neither hidden nor visible and dropped
+  // out of the summary without saying so.
+  assert.match(uiSource, /const showUnknown = Boolean\(capabilities\.liveVisibility && unknownTotal\)/);
+  assert.doesNotMatch(uiSource, /capabilities\.liveVisibility && workspaceMode \? '<span><strong data-count="unknown"/);
 });
 
 test("Workspace visibility is tri-state and independent from canRead", () => {

@@ -3663,7 +3663,12 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
     ? workspaceVariableBucket
     : (definition, live) => (
       visibilityUnknowable && !definition.isMrvs
-        ? { bucket: "visibility-unknown", hidden: null }
+        // visibilityState is explicit, never left to the row builder's
+        // fallback: that reads `hidden ? "hidden" : "visible"`, so a null
+        // hidden silently became "visible" and the panel's header count and
+        // Visible filter both claimed these rows were visible while their own
+        // badge said the visibility was unknown.
+        ? { bucket: "visibility-unknown", hidden: null, visibilityState: "unknown" }
         : nativeVariableBucket(definition, live)
     );
   const duplicateNames = nativeDuplicateNameSet(

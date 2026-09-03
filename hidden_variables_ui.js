@@ -854,6 +854,14 @@
     const hiddenTotal = rows.filter((row) => visibilityState(row) === "hidden").length;
     const visibleTotal = rows.filter((row) => visibilityState(row) === "visible").length;
     const unknownTotal = rows.filter((row) => visibilityState(row) === "unknown").length;
+    // Offered whenever rows are actually in that state, rather than only on
+    // Workspace. A producer-backed classic form cannot establish visibility for
+    // any of its variables, so most of its rows land here -- and counting them
+    // under neither "hidden" nor "visible" would drop them from the summary
+    // without saying so. The wording differs because the Workspace case is
+    // specifically an unreadable live value.
+    const showUnknown = Boolean(capabilities.liveVisibility && unknownTotal);
+    const unknownLabel = workspaceMode ? "live unknown" : "visibility unknown";
     const differsTotal = rows.filter((row) => row.comparison === "differs").length;
     const setsNote = result.setCount
       ? result.setCount + (result.setCount === 1 ? " variable set" : " variable sets")
@@ -923,7 +931,7 @@
             <span><strong data-count="total">0</strong>variables</span>
             ${capabilities.liveVisibility ? '<span><strong data-count="hidden">0</strong>hidden</span>' : ""}
             ${capabilities.liveVisibility ? '<span><strong data-count="visible">0</strong>visible</span>' : ""}
-            ${capabilities.liveVisibility && workspaceMode ? '<span><strong data-count="unknown">0</strong>live unknown</span>' : ""}
+            ${showUnknown ? '<span><strong data-count="unknown">0</strong>' + unknownLabel + "</span>" : ""}
             ${capabilities.differing ? '<span><strong data-count="differs">0</strong>differing</span>' : ""}
             ${setsNote ? '<span>' + setsNote + "</span>" : ""}
             ${result.foundForm || nativeMode ? "" : '<span class="warning">Could not find the catalog form on this page.</span>'}
@@ -934,7 +942,7 @@
               <button class="filter active" type="button" data-filter="all" aria-pressed="true">All</button>
               ${capabilities.liveVisibility ? '<button class="filter" type="button" data-filter="hidden" aria-pressed="false">Hidden</button>' : ""}
               ${capabilities.liveVisibility ? '<button class="filter" type="button" data-filter="visible" aria-pressed="false">Visible</button>' : ""}
-              ${capabilities.liveVisibility && workspaceMode ? '<button class="filter" type="button" data-filter="unknown" aria-pressed="false">Live unknown</button>' : ""}
+              ${showUnknown ? '<button class="filter" type="button" data-filter="unknown" aria-pressed="false">' + (workspaceMode ? "Live unknown" : "Visibility unknown") + "</button>" : ""}
               ${capabilities.differing ? '<button class="filter" type="button" data-filter="differs" aria-pressed="false">Differing</button>' : ""}
             </div>
             <button class="toggle" type="button" data-toggle="nonempty" aria-pressed="false">
