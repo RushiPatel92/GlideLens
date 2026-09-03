@@ -379,10 +379,19 @@ function releasedTagExists(version) {
   }
 }
 
+/* Local tags only. A clone that has never fetched them looks exactly like a
+ * repository with no releases, so the absence of a tag is reported as what it
+ * is -- what this checkout knows -- rather than as proof the version is free. */
+function localTagsOnlyNote(version) {
+  return `Checked local tags only; no v${version} tag in this checkout.`;
+}
+
 const released = releasedTagExists(manifest.version);
 if (released === null) {
   console.log("Note: git could not be consulted, so the released-version check did not run.");
-} else if (released && !process.argv.includes("--force")) {
+} else if (!released) {
+  console.log(localTagsOnlyNote(manifest.version));
+} else if (!process.argv.includes("--force")) {
   console.error(
     "\npackage.mjs: refusing to build\n\n" +
       `  Version ${manifest.version} is already released — the tag v${manifest.version} exists,\n` +

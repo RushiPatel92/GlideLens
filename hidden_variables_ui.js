@@ -362,6 +362,8 @@
    */
   const MRVS_EMPTY_CELL = "(empty)";
   const MRVS_ABSENT_ROW = "(no row)";
+  // A newline for tooltips, and a separator no column name can contain.
+  const LINE_BREAK = String.fromCharCode(10);
   let mrvsDetailSeq = 0;
 
   const mrvsRowObjects = (raw) => {
@@ -446,18 +448,46 @@
     return cell;
   };
 
-  const mrvsComparedCell = (storedRows, liveRows) => (index, column) => {
+  /*
+   * A cell is marked changed only when the COMPARISON said so, never when the
+   * two strings happen to differ. A Yes/No or Checkbox column inside a set
+   * folds "Yes" and "true" into one bucket, so a raw string compare here would
+   * paint a red cell inside a set the panel has badged "Match" -- the row and
+   * the table would contradict each other. The differing cells arrive with the
+   * row, computed by the same rules that produced the verdict.
+   */
+  // A separator no column name can contain, built without an escape so it
+  // survives editing.
+  const MRVS_KEY_SEPARATOR = String.fromCharCode(31);
+
+  const mrvsDiffKeys = (row) => {
+    const keys = new Set();
+    const cells = Array.isArray(row && row.mrvsCellDiffs) ? row.mrvsCellDiffs : [];
+    cells.forEach((cell) => {
+      if (cell && typeof cell.column === "string") {
+        keys.add(cell.row + MRVS_KEY_SEPARATOR + cell.column);
+      }
+    });
+    return keys;
+  };
+
+  const mrvsComparedCell = (storedRows, liveRows, diffKeys) => (index, column) => {
     const cell = document.createElement("td");
     const stored = mrvsCellText(storedRows[index], column);
     const live = mrvsCellText(liveRows[index], column);
-    if (stored === live) {
+    if (!diffKeys.has(index + MRVS_KEY_SEPARATOR + column)) {
       cell.textContent = stored;
-      cell.title = stored;
+      // Equal by the comparison, different as text -- a stored "Yes" against a
+      // live "true". Showing one value keeps the table honest about the
+      // verdict, and the tooltip still says what each side holds.
+      cell.title = stored === live
+        ? stored
+        : "Stored: " + stored + LINE_BREAK + "Live: " + live + LINE_BREAK + "(compared equal)";
       return cell;
     }
     cell.className = "mrvs-cell-differs";
     cell.textContent = stored + " → " + live;
-    cell.title = "Stored: " + stored + "\nLive: " + live;
+    cell.title = "Stored: " + stored + LINE_BREAK + "Live: " + live;
     return cell;
   };
 
@@ -468,7 +498,7 @@
     wrap.appendChild(mrvsTable(columns, rows.length, mrvsPlainCell(rows)));
   };
 
-  const mrvsDetail = (storedRows, liveRows, compared, differs) => {
+  const mrvsDetail = (storedRows, liveRows, compared, differs, diffKeys) => {
     const wrap = document.createElement("div");
     wrap.className = "mrvs-detail";
     if (compared && storedRows && liveRows) {
@@ -480,7 +510,7 @@
       wrap.appendChild(mrvsTable(
         columns,
         Math.max(storedRows.length, liveRows.length),
-        mrvsComparedCell(storedRows, liveRows)
+        mrvsComparedCell(storedRows, liveRows, diffKeys || new Set())
       ));
       return wrap;
     }
@@ -662,7 +692,13 @@
           attachMrvsDetail(
             el,
             valuesCell,
-            mrvsDetail(storedRows, liveRows, compared, row.comparison === "differs"),
+            mrvsDetail(
+              storedRows,
+              liveRows,
+              compared,
+              row.comparison === "differs",
+              mrvsDiffKeys(row)
+            ),
             row.label || row.name
           );
         }

@@ -51,7 +51,8 @@ function loadNativeHelpers(snGetMany) {
       "nativeRecordIdentityMatches, nativeStoredDateTimeInZone, " +
       "WORKSPACE_SOW_RITM_TYPE_POLICIES, WORKSPACE_SUPPLIER_TYPE_POLICIES, " +
       "WORKSPACE_TYPE_POLICIES_BY_SURFACE, classifyWorkspaceVariable, " +
-      "workspaceLiveReadAllowed, workspaceMrvsNotReadReason, " +
+      "workspaceLiveReadAllowed, nativeMrvsNotReadReason, " +
+      "nativeDuplicateNameSet, nativeLiveReadRequested, workspaceLiveReadRequested, " +
       "workspaceLiveValueForComparison, fetchNativeRitmStoredValues, " +
       "fetchNativeMrvsStoredValues, nativeMrvsValuesEqual, parseNativeMrvsRows, " +
       "nativeMrvsColumnsSafe, nativeMrvsColumnTypes, applyNativeMrvsLiveReadPolicy, " +
@@ -177,6 +178,12 @@ function mrvsDefinition(overrides) {
     variableSet: MRVS_SET_ID,
     questionId: MRVS_SET_ID,
     isMrvs: true,
+    // applyNativeMrvsLiveReadPolicy sets both on every multi-row definition
+    // before the rows are built, so a fixture without them models a state the
+    // reader cannot produce.
+    mrvsColumnsSafe: true,
+    liveReadAllowed: true,
+    liveReadBlockedReason: "",
   }, overrides || {}));
 }
 
@@ -1928,7 +1935,9 @@ test("MRVS values are read in two phases and only for allowlisted columns", asyn
 
   const [metadataRead, valueRead] = queries;
   assert.doesNotMatch(metadataRead.fields, /(^|,)value(,|$)/);
-  assert.match(metadataRead.query, new RegExp("^parent_id=" + RITM_ID + "\\^variable_setIN"));
+  // The metadata read covers every set on the record, not only the enumerated
+  // ones: a set the item no longer attaches has to be visible to be refused.
+  assert.strictEqual(metadataRead.query, "parent_id=" + RITM_ID);
   assert.strictEqual(valueRead.fields, "sys_id,value");
   // The masked column's answer id must never enter the value request.
   assert.match(valueRead.query, new RegExp(id(801)));
@@ -2815,7 +2824,8 @@ test("a producer-backed record reads its multi-row sets instead of reporting the
       return [nativeDefinitionRow(mrvsChild)];
     }
     if (table === "sc_multi_row_question_answer" && query.startsWith("parent_id=")) {
-      assert.match(query, new RegExp("^parent_id=" + RECORD_ID + "\\^"));
+      // Every set on the record, so a detached one can be seen and refused.
+      assert.strictEqual(query, "parent_id=" + RECORD_ID);
       assert.doesNotMatch(fields, /(^|,)value(,|$)/);
       return [
         mrvsAnswerRow(id(1301), "bank_name", 1, { parent_id: RECORD_ID }),
@@ -3132,12 +3142,14 @@ test("the column types a multi-row set is built from are read from its definitio
   const helpers = loadNativeHelpers();
   assert.deepStrictEqual(
     helpers.nativeMrvsColumnTypes([
-      { type: { value: "6", display_value: "Single Line Text" } },
-      { type: { value: "10", display_value: "Date/Time" } },
+      { name: "note", type: { value: "6", display_value: "Single Line Text" } },
+      { name: "due", type: { value: "10", display_value: "Date/Time" } },
     ]),
     [
-      { type: "6", label: "Single Line Text" },
-      { type: "10", label: "Date/Time" },
+      // The name travels too: the live representation check binds the JSON's
+      // keys to this set's own columns.
+      { name: "note", type: "6", label: "Single Line Text" },
+      { name: "due", type: "10", label: "Date/Time" },
     ]
   );
   assert.deepStrictEqual(helpers.nativeMrvsColumnTypes(null), []);
@@ -3459,7 +3471,7 @@ function mrvsViewApi() {
   return new Function(
     "document",
     uiSource.slice(start, end) +
-      "\nreturn { mrvsRowObjects, mrvsColumnNames, mrvsDetail };"
+      "\nreturn { mrvsRowObjects, mrvsColumnNames, mrvsDetail, mrvsDiffKeys };"
   )({ createElement: fakeElement });
 }
 
@@ -3500,11 +3512,14 @@ test("columns keep first-appearance order and a live-only column still shows", (
 
 test("a compared multi-row set merges into one table and marks the changed cell", () => {
   const view = mrvsViewApi();
+  // The changed cells come from the comparison, never from the panel reading
+  // the two strings itself.
   const detail = view.mrvsDetail(
     [{ bank: "HJ", country: "NL" }, { bank: "KB", country: "PL" }],
     [{ bank: "HJ", country: "NL" }, { bank: "KB SA", country: "PL" }],
     true,
-    true
+    true,
+    view.mrvsDiffKeys({ mrvsCellDiffs: [{ row: 1, column: "bank" }] })
   );
   const captions = byClass(detail, "mrvs-caption").map((node) => node.textContent);
   assert.strictEqual(captions.length, 1);
@@ -3530,7 +3545,8 @@ test("a row present on one side only reads as an absent row rather than an empty
     [{ bank: "HJ" }, { bank: "KB" }],
     [{ bank: "HJ" }],
     true,
-    true
+    true,
+    view.mrvsDiffKeys({ mrvsCellDiffs: [{ row: 1, column: "bank" }] })
   );
   const changed = byClass(detail, "mrvs-cell-differs");
   assert.strictEqual(changed.length, 1);
@@ -3588,4 +3604,322 @@ test("the panel shows a row count while the copy output keeps the whole array", 
   assert.match(uiSource, /detail\.hidden = true/);
   assert.match(uiSource, /toggle\.setAttribute\("aria-expanded", "false"\)/);
   assert.match(uiSource, /toggle\.setAttribute\("aria-controls", detail\.id\)/);
+});
+
+/* ---------------------------------------------------------------------------
+ * A row may only be given a reason that describes what the read actually did.
+ *
+ * These are regressions for two defects found by executing the row builder
+ * rather than reading it. Both were failures of the same invariant: the panel
+ * described the form's state for a row the form was never asked about, and the
+ * accounting counted a row differently from the way the request builder
+ * treated it.
+ * ------------------------------------------------------------------------ */
+
+test("a multi-row set sharing a name is never asked for and never claims the form was empty", () => {
+  // Two definitions, one name. Neither request builder emits for either, on
+  // either world, so no reason may describe the form's state.
+  const twin = definition({ name: "example_rows", label: "Twin", type: "6", questionId: id(701) });
+  const set = mrvsDefinition();
+  const stored = mrvsStored([{ a: "1" }]);
+
+  const api = liveRequestApi();
+  assert.deepStrictEqual(
+    api.nativeLiveValueRequests([set, twin]).filter((request) => request.readValue),
+    []
+  );
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([set, twin], SOW), []);
+
+  const classic = rowsFor([set, twin], [], [], "success", mrvsResult(MRVS_SET_ID, stored));
+  const classicSet = classic.find((row) => row.isMrvs);
+  assert.strictEqual(classicSet.comparison, "not-comparable");
+  assert.match(classicSet.reason, /name is shared by another row/);
+  assert.doesNotMatch(classicSet.reason, /no live multi-row value was available/i);
+
+  const workspace = loadNativeHelpers().buildNativeVariableRows(
+    [set, twin],
+    Object.assign({ storedReadStatus: "success", metadataRows: [] }, mrvsResult(MRVS_SET_ID, stored)),
+    [],
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "", zoneSource: "page" }
+  );
+  const workspaceSet = workspace.find((row) => row.isMrvs);
+  assert.strictEqual(workspaceSet.comparison, "not-comparable");
+  assert.match(workspaceSet.reason, /name is shared by another row/);
+  assert.doesNotMatch(workspaceSet.reason, /no live multi-row value was available/i);
+  // And it may not be counted as something the panel promised to check.
+  assert.strictEqual(workspaceSet.workspaceCandidate, false);
+});
+
+test("a multi-row set whose name collides with the form prototype says so", () => {
+  const set = mrvsDefinition({ name: "toString" });
+  const [row] = rowsFor(
+    [set],
+    [],
+    [],
+    "success",
+    mrvsResult(MRVS_SET_ID, mrvsStored([{ a: "1" }]))
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /collides with the form API prototype/);
+  assert.doesNotMatch(row.reason, /available/i);
+});
+
+test("the reason for an unread set never ends on a claim about the form", () => {
+  const helpers = loadNativeHelpers();
+  const policy = helpers.WORKSPACE_SOW_RITM_TYPE_POLICIES.get("34");
+  // Every branch, including the fallback reached when nothing else explains it.
+  const reasons = [
+    helpers.nativeMrvsNotReadReason({ name: "a" }, policy, { duplicateName: true }),
+    helpers.nativeMrvsNotReadReason({ name: "" }, policy, {}),
+    helpers.nativeMrvsNotReadReason({ name: "toString" }, policy, {}),
+    helpers.nativeMrvsNotReadReason({ name: "a" }, {}, { workspaceMode: true }),
+    helpers.nativeMrvsNotReadReason({ name: "a", liveReadAllowed: false }, policy, {}),
+    helpers.nativeMrvsNotReadReason(
+      { name: "a", liveReadAllowed: true, mrvsColumnTypes: [] },
+      policy,
+      { workspaceMode: true }
+    ),
+    helpers.nativeMrvsNotReadReason(
+      { name: "a", liveReadAllowed: true, mrvsColumnTypes: [{ type: "21", label: "List Collector" }] },
+      policy,
+      { workspaceMode: true }
+    ),
+    helpers.nativeMrvsNotReadReason(
+      { name: "a", liveReadAllowed: true, mrvsColumnTypes: [{ type: "6", label: "Text" }] },
+      policy,
+      { workspaceMode: true }
+    ),
+  ];
+  reasons.forEach((reason) => {
+    assert.ok(reason && reason.length > 0);
+    // "No live value was available" is a statement about a form that answered.
+    // None of these rows reached a form at all.
+    assert.doesNotMatch(reason, /value was available/i);
+  });
+  assert.match(reasons[0], /shared by another row/);
+  assert.match(reasons[3], /not compared on this\s+Workspace surface/);
+  assert.match(reasons[6], /List Collector/);
+});
+
+test("a name duplicated only in storage is neither requested nor counted", () => {
+  // The definition list holds one `alpha`; the record holds two stored rows
+  // called `alpha`. The request builders and the panel must agree that this is
+  // a duplicate: reading the name could return either row's variable.
+  const alpha = definition({ name: "alpha", label: "Alpha", type: "6", questionId: id(801) });
+  const metadataRows = [
+    storedRow(alpha, "one"),
+    Object.assign({}, storedRow(alpha, "two"), { questionId: id(802) }),
+  ];
+
+  const helpers = loadNativeHelpers();
+  const duplicates = helpers.nativeDuplicateNameSet([alpha], metadataRows);
+  assert.strictEqual(duplicates.has("alpha"), true);
+
+  const api = liveRequestApi();
+  const classicRequest = api.nativeLiveValueRequests([alpha], duplicates)[0];
+  assert.strictEqual(classicRequest.readValue, false);
+  assert.deepStrictEqual(api.workspaceLiveValueRequests([alpha], SOW, duplicates), []);
+
+  const rows = loadNativeHelpers().buildNativeVariableRows(
+    [alpha],
+    { storedReadStatus: "success", metadataRows },
+    [],
+    { workspace: true, workspaceSurfaceKey: SOW, timeZone: "", zoneSource: "page" }
+  );
+  // Requested and counted must move together: neither, here.
+  assert.strictEqual(rows[0].workspaceCandidate, false);
+  assert.strictEqual(rows[0].comparison, "not-comparable");
+});
+
+test("the request builders and the panel take duplicate names from one place", () => {
+  // Source-level guard: the drift that caused the defect was two independent
+  // name counts, and a future edit must not reintroduce one.
+  const builderStart = contentSource.indexOf("function nativeLiveValueRequests");
+  const builderEnd = contentSource.indexOf("async function finishNativeVariableValues", builderStart);
+  const builders = contentSource.slice(builderStart, builderEnd);
+  assert.doesNotMatch(builders, /nameCounts/);
+  assert.match(builders, /nativeDuplicateNameSet/);
+
+  // The old counts are gone from the file entirely, and the panel's candidate
+  // flag is the request decision itself rather than a restatement of it.
+  assert.doesNotMatch(contentSource, /definitionNameCounts|storedNameCounts/);
+  assert.match(
+    contentSource,
+    /row\.workspaceCandidate = Boolean\(workspaceMode && liveReadRequested && !secret\)/
+  );
+});
+
+test("a cell the comparison called equal is never marked changed, whatever the strings say", () => {
+  // A Yes/No or Checkbox column inside a set folds Yes and true into one
+  // bucket, so the row can be a Match while its two cells read differently.
+  // Marking that cell would make the table contradict the badge above it.
+  const view = mrvsViewApi();
+  const detail = view.mrvsDetail(
+    [{ approved: "Yes", note: "same" }],
+    [{ approved: "true", note: "same" }],
+    true,
+    false,
+    view.mrvsDiffKeys({ mrvsCellDiffs: [] })
+  );
+  assert.strictEqual(byClass(detail, "mrvs-cell-differs").length, 0);
+  const cells = descendants(detail).filter(
+    (node) => node.tagName === "TD" && node.className !== "mrvs-index"
+  );
+  assert.deepStrictEqual(cells.map((cell) => cell.textContent), ["Yes", "same"]);
+  // The tooltip still tells the truth about both sides.
+  assert.match(cells[0].title, /Stored: Yes/);
+  assert.match(cells[0].title, /Live: true/);
+  assert.match(cells[0].title, /compared equal/);
+  assert.strictEqual(cells[1].title, "same");
+});
+
+test("the panel derives no cell verdict of its own", () => {
+  // Source guard: the equality that decides a changed cell belongs to the
+  // comparison, and the panel may only render what it was handed.
+  const source = mrvsViewSource();
+  assert.match(source, /diffKeys[.]has[(]/);
+  assert.doesNotMatch(source, /if [(]stored === live[)]/);
+});
+
+test("rows stored under a set the item no longer attaches are seen but never read", async () => {
+  const detachedSet = id(777);
+  const queries = [];
+  const helpers = loadNativeHelpers(async (table, query, fields) => {
+    queries.push({ table, query, fields });
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.startsWith("parent_id=")) {
+      return [
+        mrvsAnswerRow(id(801), "plain", 1),
+        // Same record, a set the catalog item does not attach any more.
+        Object.assign(mrvsAnswerRow(id(803), "orphan", 1), { variable_set: detachedSet }),
+      ];
+    }
+    return [{ sys_id: id(801), value: "kept" }];
+  });
+
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  assert.deepStrictEqual(result.detachedMrvsSetIds, [detachedSet]);
+  // Its value is never requested: nothing would show it.
+  const valueRead = queries[1];
+  assert.doesNotMatch(valueRead.query, new RegExp(id(803)));
+  // And it does not contaminate the enumerated set's rows.
+  assert.deepStrictEqual(result.mrvsValuesBySetId.get(MRVS_SET_ID).rows, [{ plain: "kept" }]);
+  assert.strictEqual(result.mrvsValuesBySetId.has(detachedSet), false);
+});
+
+test("a set with no stored rows refuses while the record holds detached rows", () => {
+  const def = mrvsDefinition();
+  // The enumerated set has nothing; the record stores rows under another set.
+  const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "success",
+    mrvsValuesBySetId: new Map(),
+    detachedMrvsSetIds: [id(778)],
+  });
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /no longer attaches/);
+  // Without the detached rows the same shape is an ordinary difference, so the
+  // refusal is caused by the evidence and not by the empty set alone.
+  const [plain] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "success",
+    mrvsValuesBySetId: new Map(),
+    detachedMrvsSetIds: [],
+  });
+  assert.strictEqual(plain.comparison, "differs");
+});
+
+test("a request item reconciles a swapped variable set exactly as a producer record does", async () => {
+  // The swap is a property of the catalog item, so a request item on the same
+  // item is wrong in the same way: without this the row says the record never
+  // answered a variable whose value is sitting in storage, and the Workspace
+  // read asks the form for a question id it does not have.
+  const REQUEST_ITEM = id(1600);
+  const ITEM = id(1601);
+  const catalogQuestion = id(1610);
+  const answeredQuestion = id(1611);
+  const catalogRow = definition({
+    name: "commodities",
+    questionId: catalogQuestion,
+    variableSet: OLD_SET_ID,
+  });
+
+  const queries = [];
+  const helpers = loadNativeHelpers(async (table, query) => {
+    queries.push({ table, query });
+    if (table === "sc_req_item") return [{ sys_id: REQUEST_ITEM, cat_item: ITEM }];
+    if (table === "item_option_new" && query === "cat_item=" + ITEM) return [];
+    if (table === "io_set_item") return [{ variable_set: OLD_SET_ID, order: "100" }];
+    if (table === "item_option_new_set") {
+      return [{
+        sys_id: OLD_SET_ID,
+        name: "",
+        internal_name: "old_set",
+        title: "Old Set",
+        type: { value: "one_to_one", display_value: "One to One" },
+      }];
+    }
+    if (table === "item_option_new" && query.startsWith("variable_setIN")) {
+      return [nativeDefinitionRow(catalogRow)];
+    }
+    if (table === "sc_item_option_mtom") {
+      // The record answered the NEW question, under the set the item dropped.
+      return [{
+        "sc_item_option.sys_id": id(1620),
+        "sc_item_option.item_option_new": answeredQuestion,
+        "sc_item_option.item_option_new.name": "commodities",
+        "sc_item_option.item_option_new.question_text": "Commodities",
+        "sc_item_option.item_option_new.type": { value: "6", display_value: "Single Line Text" },
+        "sc_item_option.item_option_new.variable_set": NEW_SET_ID,
+      }];
+    }
+    if (table === "sc_item_option") return [{ sys_id: id(1620), value: "steel" }];
+    return [];
+  });
+
+  const recordData = await helpers.fetchNativeRitmRecordData(REQUEST_ITEM);
+  const reconciled = recordData.definitions.find((entry) => entry.name === "commodities");
+  assert.strictEqual(reconciled.questionId, answeredQuestion);
+  assert.strictEqual(reconciled.definitionFromAnswer, true);
+
+  // The stored rows are read once, not twice, now that the reader needs them
+  // before the definitions are settled.
+  const storedReads = queries.filter((entry) => entry.table === "sc_item_option_mtom");
+  assert.strictEqual(storedReads.length, 1);
+
+  // And the value is found, which is the whole point.
+  const rows = helpers.buildNativeVariableRows(
+    recordData.definitions,
+    recordData,
+    []
+  );
+  const row = rows.find((entry) => entry.name === "commodities");
+  assert.strictEqual(row.storedLookup, "found");
+  assert.strictEqual(row.storedValue, "steel");
+  assert.match(row.reason, /taken from this record's own answer/);
+});
+
+test("a substituted definition is not compared when the classic form binds the other question", () => {
+  // Workspace refuses this through the entry identity gate. The classic reader
+  // resolves by name, so a form bound to the item's NEW question would hand
+  // back that variable's value; comparing it against this record's older answer
+  // compares two different variables.
+  const def = definition({
+    name: "commodities",
+    questionId: id(1630),
+    definitionFromAnswer: true,
+  });
+  const [row] = rowsFor(
+    [def],
+    [storedRow(def, "steel")],
+    [Object.assign(liveRow(def, ""), { foundEl: false })]
+  );
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /does not render that question/);
+
+  // With the form rendering it, the same row compares normally.
+  const [bound] = rowsFor(
+    [def],
+    [storedRow(def, "steel")],
+    [Object.assign(liveRow(def, "steel"), { foundEl: true })]
+  );
+  assert.strictEqual(bound.comparison, "match");
 });

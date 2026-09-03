@@ -69,6 +69,52 @@ reconstructed version by version.
   which is what gets pasted into a script or a ticket.
 
 ### Fixed
+- **A multi-row set that was never read no longer says the form had nothing.**
+  Two variables sharing a name are never read at all -- the form would resolve
+  the name to whichever of them it chooses -- but a set in that position fell
+  through to the wording used for a form that answered and had no value. The
+  same sentence appeared for a set with no readable name and for one whose name
+  collides with the form API prototype. Every one of those rows now says which
+  of those things stopped the read, on the classic form as well as Workspace,
+  and the check sits ahead of the one that describes an actual read.
+- **The panel and the read agree on which rows were checked.** The request
+  builders treated a name as duplicated when two definitions carried it; the
+  panel also counted a name carried by two stored rows. A variable duplicated
+  only in storage was therefore read and then not counted, so the panel checked
+  something it never promised to check. Both now take the set of duplicate
+  names from one place.
+- **A changed cell in a multi-row table is one the comparison actually found.**
+  The table compared the two strings itself, while the comparison folds `Yes`
+  and `true` into one bucket for Yes/No and Checkbox columns -- so a supplier
+  set could render a red changed cell underneath a green Match badge. The
+  differing cells now travel with the row, computed once by the rules that
+  produced the verdict, and a cell that is equal by comparison but different as
+  text says so in its tooltip instead.
+- **The live multi-row representation check requires the shape it claims.** It
+  verified that both sides were arrays of plain objects with matching keys, but
+  said nothing about the cells: a number, a null or a nested object passed, and
+  a nested object then stringified to `[object Object]` and reported a
+  difference that meant nothing. Cells must now be strings, and every key must
+  be one of that set's own columns, which is what ties the value to this
+  variable set rather than to any array of objects.
+- **A record whose rows live under a swapped variable set no longer reads as
+  empty.** The multi-row read asked only for the sets the catalog item attaches
+  today, so a record answered before the item changed looked exactly like a
+  record with no rows -- and zero stored rows against a populated form is a
+  difference the query invented. Those rows are now seen (though never read)
+  and such a set is listed rather than compared.
+- **Request items reconcile a swapped variable set too.** The repair added for
+  record-producer targets applies to the catalog item, not to the table holding
+  the values, so a request item on a changed item was still reporting variables
+  the record had plainly answered as unstored, and still emptying its Workspace
+  panel. Both readers now run the same reconciliation, and a substituted
+  definition is refused on the classic form when the form does not render its
+  question -- otherwise the value read back belongs to the item's new variable
+  of the same name.
+- **A multi-row column whose name could not be read is withheld, not dropped.**
+  Dropping it left the row one key short, where it would compare as empty
+  against a live side that had it.
+
 - **A date inside a multi-row set is no longer reported as a difference that
   does not exist.** A Date/Time read as an ordinary variable comes back as raw
   canonical UTC, and the comparison converts the stored value to meet it.

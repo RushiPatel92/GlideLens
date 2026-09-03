@@ -100,7 +100,14 @@ The suites cover:
   array — that the `mrvs-pair`
   representation check refuses every way the value/display pair can fail, that
   the panel's candidate count is exactly the set of rows a live read was
-  requested for, and that a date column inside a set blocks the live read on
+  requested for — including a name duplicated only in storage, which both the
+  request builders and the panel must treat identically — that a set which was
+  never asked for says why rather than describing the form's state, that the
+  live representation check requires string cells belonging to the set's own
+  columns, that a record holding rows under a set the item no longer attaches
+  refuses instead of reporting a difference, that a substituted definition is
+  refused on the classic form when the form does not render its question, that
+  the request item reconciles a swapped set exactly as a producer record does, and that a date column inside a set blocks the live read on
   every path including the classic one, reconciling a catalog-item definition
   against the record's own answer when a swapped variable set leaves two
   questions sharing a name — including every ambiguous case it must refuse —

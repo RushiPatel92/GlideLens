@@ -1718,6 +1718,59 @@ function workspaceLiveReadAllowed(definition, policy) {
 }
 
 /*
+ * The names no live read may touch, on either world: a name held by more than
+ * one definition, or by more than one stored row. Both g_form and the Workspace
+ * fields map resolve a name to whichever entry they choose, so reading one
+ * could attribute another variable's value to this row.
+ *
+ * The two counts stay separate on purpose. A definition and its own stored row
+ * share a name by construction, so counting them together would call every
+ * ordinary variable a duplicate.
+ *
+ * Every caller takes the set from here. The request builders used to derive it
+ * from definitions alone while the panel derived it from definitions AND stored
+ * rows, so a name duplicated only in storage was read and then not counted as
+ * read -- the panel checked something it never promised to check.
+ */
+function nativeDuplicateNameSet(definitions, storedMetadataRows) {
+  const definitionCounts = new Map();
+  const storedCounts = new Map();
+  const bump = (counts, name) => {
+    if (!name) return;
+    counts.set(name, (counts.get(name) || 0) + 1);
+  };
+  (definitions || []).forEach((definition) => bump(definitionCounts, definition && definition.name));
+  (storedMetadataRows || []).forEach((row) => bump(storedCounts, row && row.name));
+  const duplicates = new Set();
+  definitionCounts.forEach((count, name) => { if (count > 1) duplicates.add(name); });
+  storedCounts.forEach((count, name) => { if (count > 1) duplicates.add(name); });
+  return duplicates;
+}
+
+/*
+ * Was a live read actually requested for this definition? The request builders
+ * and the panel's accounting must answer this identically, because the panel
+ * describes what the read did: a row it never asked for may not be given a
+ * reason that describes the form's state.
+ */
+function nativeLiveReadRequested(definition, policy, duplicateName) {
+  const def = definition || {};
+  return Boolean(
+    def.name &&
+    (policy || {}).disposition !== "secret" &&
+    !duplicateName &&
+    (!def.isMrvs || def.liveReadAllowed === true) &&
+    !NATIVE_PROTOTYPE_COLLISION_NAMES.has(def.name)
+  );
+}
+
+function workspaceLiveReadRequested(definition, policy, duplicateName) {
+  // A secret twin needs no separate test: it is only ever a duplicate name,
+  // and a duplicate name is refused here on its own.
+  return Boolean(!duplicateName && workspaceLiveReadAllowed(definition, policy));
+}
+
+/*
  * Why a Workspace multi-row row was listed rather than compared. Each branch
  * names a different fact, because they are different facts: a surface that
  * never reads sets, a set whose columns the classic safety rule already
@@ -1726,10 +1779,25 @@ function workspaceLiveReadAllowed(definition, policy) {
  * one thing none of them may say is that no live value was available — the
  * form was never asked, so that would be a claim about the form.
  */
-function workspaceMrvsNotReadReason(definition, policy) {
+function nativeMrvsNotReadReason(definition, policy, options) {
   const def = definition || {};
   const rule = policy || {};
-  if (!rule.validator || !rule.columnTypes) {
+  const opts = options || {};
+  // In the order the request builders reject, so the reason names the first
+  // thing that actually stopped the read.
+  if (opts.duplicateName) {
+    return "The variable name is shared by another row on this record, so no" +
+      " live rows were read: the form would resolve the name to whichever of" +
+      " them it chooses.";
+  }
+  if (!def.name) {
+    return "The set has no readable name, so no live rows were read.";
+  }
+  if (NATIVE_PROTOTYPE_COLLISION_NAMES.has(def.name)) {
+    return "The variable name collides with the form API prototype, so no live" +
+      " rows were read.";
+  }
+  if (opts.workspaceMode && (!rule.validator || !rule.columnTypes)) {
     return "Multi-row variable sets are listed but not compared on this" +
       " Workspace surface, so no live rows were read.";
   }
@@ -1738,22 +1806,26 @@ function workspaceMrvsNotReadReason(definition, policy) {
       "Live multi-row rows were not read because the set's columns could not" +
       " all be verified as safe and comparable.";
   }
-  if (!Array.isArray(def.mrvsColumnTypes) || !def.mrvsColumnTypes.length) {
-    return "The set's column definitions were not read, so no live rows were" +
-      " read.";
+  if (opts.workspaceMode) {
+    if (!Array.isArray(def.mrvsColumnTypes) || !def.mrvsColumnTypes.length) {
+      return "The set's column definitions were not read, so no live rows were" +
+        " read.";
+    }
+    const unproven = [];
+    def.mrvsColumnTypes.forEach((column) => {
+      if (!column || rule.columnTypes.has(column.type)) return;
+      const label = String(column.label || column.type || "").trim() || "unknown";
+      if (unproven.indexOf(label) < 0) unproven.push(label);
+    });
+    if (unproven.length) {
+      return "No live rows were read: this Workspace surface has not verified" +
+        " how " + unproven.sort().join(", ") + " is represented inside a" +
+        " multi-row set.";
+    }
   }
-  const unproven = [];
-  def.mrvsColumnTypes.forEach((column) => {
-    if (!column || rule.columnTypes.has(column.type)) return;
-    const label = String(column.label || column.type || "").trim() || "unknown";
-    if (unproven.indexOf(label) < 0) unproven.push(label);
-  });
-  if (unproven.length) {
-    return "No live rows were read: this Workspace surface has not verified" +
-      " how " + unproven.sort().join(", ") + " is represented inside a" +
-      " multi-row set.";
-  }
-  return "No live multi-row value was available.";
+  // Deliberately not a statement about the form: every branch above is a
+  // reason the form was never asked, and so is anything that reaches here.
+  return "No live rows were read for this set.";
 }
 
 function normalizedNativeSet(value) {
@@ -2074,6 +2146,7 @@ function nativeMrvsColumnsSafe(rows, complete) {
  * all; this asks what is in there. */
 function nativeMrvsColumnTypes(rows) {
   return (Array.isArray(rows) ? rows : []).map((row) => ({
+    name: snFieldValue(row, "name").trim(),
     type: normalizeVariableType(snFieldValue(row, "type")),
     label: snFieldDisplay(row, "type") || snFieldValue(row, "type"),
   }));
@@ -2091,11 +2164,15 @@ function nativeMrvsColumnTypes(rows) {
  * "21-04-2026 07:13:37" where storage held "2026-04-21 14:13:37" — a real
  * record reported as differing when nothing about it had changed.
  *
- * Converting the cell back is not a fix: the set is compared as a whole, the
- * stored cell's own type is known only from the set's column definitions, and
- * a format that fails to parse would silently become a difference again. So a
- * set holding one is listed with its stored rows and never compared, on every
- * surface including the classic form.
+ * Converting the cell back was rejected, though not because it cannot be done:
+ * the standalone path already parses a displayed date with the page's own
+ * parser and fails closed when it cannot. The reason is that a set is compared
+ * as a whole. Every cell would have to normalise, the cell's type is known only
+ * from the set's column definitions, and any cell that failed would have to
+ * refuse the entire set — so the honest outcome for a set holding one is the
+ * refusal it already gets, reached with far less machinery. A set holding a
+ * date column is therefore listed with its stored rows and never compared, on
+ * every surface including the classic form.
  */
 const NATIVE_MRVS_UNCOMPARABLE_COLUMN_TYPES = new Set(["9", "10"]);
 
@@ -2287,6 +2364,9 @@ const NATIVE_STORED_METADATA_FIELDS = [
   "sc_item_option.item_option_new.name",
   "sc_item_option.item_option_new.question_text",
   "sc_item_option.item_option_new.type",
+  // The answer's own variable set, so a definition reconciled from this row
+  // reports the set the record actually answered rather than the stale one.
+  "sc_item_option.item_option_new.variable_set",
 ].join(",");
 
 function nativeStoredMetadataFromRow(row, definitionById) {
@@ -2313,8 +2393,10 @@ function nativeStoredMetadataFromRow(row, definitionById) {
     optionSysId: snFieldValue(row, "sc_item_option.sys_id"),
     questionId,
     name,
+    label,
     type,
     typeDisplay,
+    variableSet: snFieldValue(row, prefix + ".variable_set"),
     secret,
     policy: metadataPolicy,
     fetchAllowed,
@@ -2328,21 +2410,36 @@ function nativeStoredMetadataFromRow(row, definitionById) {
  * phase two asks sc_item_option for values only for rows positively classified
  * as comparable by both the definition read and the metadata read.
  */
+async function readNativeRitmMetadataRows(requestItemSysId) {
+  try {
+    return {
+      rows: await snGetMany(
+        "sc_item_option_mtom",
+        "request_item=" + requestItemSysId,
+        NATIVE_STORED_METADATA_FIELDS,
+        NATIVE_STORED_METADATA_LIMIT,
+        { displayAll: true, excludeRefLinks: true }
+      ),
+      failed: false,
+    };
+  } catch (error) {
+    return { rows: [], failed: true };
+  }
+}
+
 async function fetchNativeRitmStoredValues(
   requestItemSysId,
   definitions,
-  definitionReadStatus
+  definitionReadStatus,
+  preloadedRows
 ) {
-  let metadataRows;
-  try {
-    metadataRows = await snGetMany(
-      "sc_item_option_mtom",
-      "request_item=" + requestItemSysId,
-      NATIVE_STORED_METADATA_FIELDS,
-      NATIVE_STORED_METADATA_LIMIT,
-      { displayAll: true, excludeRefLinks: true }
-    );
-  } catch (error) {
+  // The reader has already read these to reconcile the definitions against the
+  // record's own answers, and reading them twice would ask the same question of
+  // the instance for no gain.
+  const preloaded = preloadedRows && !preloadedRows.failed ? preloadedRows : null;
+  const read = preloaded || (await readNativeRitmMetadataRows(requestItemSysId));
+  const metadataRows = read.rows;
+  if (read.failed) {
     return {
       storedReadStatus: "failed",
       storedReadError: "Stored variable rows could not be read.",
@@ -2480,7 +2577,9 @@ function nativeMrvsCellFromRow(row, sourceIndex) {
 function assembleNativeMrvsSets(cells) {
   const bySet = new Map();
   cells.forEach((cell) => {
-    if (!isSysId(cell.setId) || !cell.columnName) return;
+    // A cell with no readable set id cannot be attributed to anything, so it
+    // is the one case with nowhere to record it.
+    if (!isSysId(cell.setId)) return;
     if (!bySet.has(cell.setId)) {
       bySet.set(cell.setId, {
         rows: new Map(),
@@ -2490,6 +2589,14 @@ function assembleNativeMrvsSets(cells) {
       });
     }
     const set = bySet.get(cell.setId);
+    // A column whose name could not be read is withheld rather than dropped.
+    // Dropping it leaves the row short of a key, and the comparison would then
+    // treat the missing cell as empty and report a difference — or worse, agree
+    // with a live side that is also missing it.
+    if (!cell.columnName) {
+      set.withheld.add("(unnamed column)");
+      return;
+    }
     if (!cell.fetchAllowed || !cell.valueAvailable) {
       set.withheld.add(cell.columnName);
       return;
@@ -2541,14 +2648,22 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
     mrvsReadStatus: status,
     mrvsReadError: error || "",
     mrvsValuesBySetId: new Map(),
+    detachedMrvsSetIds: [],
   });
   if (!isSysId(parentSysId) || !setIds.length) return withoutValues("skipped", "");
 
   let metadataRows;
   try {
+    // Deliberately NOT filtered to the enumerated sets. The set ids come from
+    // the catalog item, and an item's attached sets change: a record answered
+    // before such a change stores its rows under the old set. Filtered, that
+    // record is indistinguishable from one with no rows at all, and the panel
+    // compares zero stored rows against a populated form -- a difference
+    // manufactured by the query. Reading them all lets the row refuse instead.
+    // Values are still fetched only for cells in an enumerated set.
     metadataRows = await snGetMany(
       "sc_multi_row_question_answer",
-      "parent_id=" + parentSysId + "^variable_setIN" + setIds.join(","),
+      "parent_id=" + parentSysId,
       NATIVE_MRVS_METADATA_FIELDS,
       NATIVE_MRVS_ANSWER_LIMIT,
       { displayAll: true, excludeRefLinks: true }
@@ -2561,7 +2676,17 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
     return withoutValues("truncated", "The multi-row answer list reached its read limit.");
   }
 
-  const cells = metadataRows.map((row, index) => nativeMrvsCellFromRow(row, index));
+  const allCells = metadataRows.map((row, index) => nativeMrvsCellFromRow(row, index));
+  const enumerated = new Set(setIds);
+  // Rows belonging to a set this item does not attach. Their values are never
+  // read -- nothing would display them -- but their existence is what tells a
+  // set with no rows that it cannot claim the record simply has none.
+  const detachedSetIds = Array.from(new Set(
+    allCells
+      .filter((cell) => isSysId(cell.setId) && !enumerated.has(cell.setId))
+      .map((cell) => cell.setId)
+  )).sort();
+  const cells = allCells.filter((cell) => enumerated.has(cell.setId));
   const allowedIds = Array.from(
     new Set(cells.filter((cell) => cell.fetchAllowed).map((cell) => cell.answerId))
   );
@@ -2597,6 +2722,7 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
     mrvsReadStatus: "success",
     mrvsReadError: "",
     mrvsValuesBySetId: assembleNativeMrvsSets(cells),
+    detachedMrvsSetIds: detachedSetIds,
   };
 }
 
@@ -2773,6 +2899,30 @@ function consolidateProducerAnswerDefinitions(answerDefinitions, setMeta) {
  * instead of being silently resolved here. Multi-row parents are never
  * substituted: they are keyed by variable set, not by an answer row.
  */
+/*
+ * The request-item reader has no separate answer list: its definitions come
+ * from the catalog item and its stored rows are matched to them by question id.
+ * These are the same answers in definition shape, so the one reconciler serves
+ * both readers -- the swap it repairs is a property of catalog items, not of
+ * whichever table stores the values.
+ */
+function nativeAnswerDefinitionsFromStoredRows(metadataRows) {
+  return (metadataRows || [])
+    .filter((row) => row && row.name && isSysId(row.questionId))
+    .map((row, index) => ({
+      name: row.name,
+      label: row.label || row.name,
+      type: row.type,
+      typeDisplay: row.typeDisplay,
+      variableSet: row.variableSet || "",
+      setName: "",
+      questionId: row.questionId,
+      hiddenType: false,
+      isMrvs: false,
+      sourceIndex: index,
+    }));
+}
+
 function reconcileProducerDefinitionsWithAnswers(definitions, answerDefinitions, setMeta) {
   const list = Array.isArray(definitions) ? definitions : [];
   const answers = Array.isArray(answerDefinitions) ? answerDefinitions : [];
@@ -3039,10 +3189,41 @@ async function fetchNativeRitmRecordData(requestItemSysId) {
   if (!isSysId(catalogItemSysId)) throw new Error("The current RITM has no readable catalog item.");
 
   const definitionResult = await fetchNativeCatalogItemVariableDefinitions(catalogItemSysId);
+
+  // The item says which variables exist; this record's own answers say which
+  // question each of its values belongs to. Where an item has swapped a
+  // variable set since the record was created, those disagree, and without
+  // this the row reports a variable the record plainly answered as unstored --
+  // and the Workspace live read asks the form for an id it does not have,
+  // which empties the panel.
+  const metadataRead = await readNativeRitmMetadataRows(requestItemSysId);
+  const answerDefinitions = nativeAnswerDefinitionsFromStoredRows(
+    metadataRead.rows.map((row) => nativeStoredMetadataFromRow(row, new Map()))
+  );
+  const ritmSetMeta = new Map();
+  (definitionResult.mrvsSetIds || []).forEach((setId) => {
+    if (isSysId(setId)) ritmSetMeta.set(setId, { id: setId, isMrvs: true, title: "" });
+  });
+  definitionResult.definitions.forEach((definition) => {
+    if (!definition || !isSysId(definition.variableSet)) return;
+    if (ritmSetMeta.has(definition.variableSet)) return;
+    ritmSetMeta.set(definition.variableSet, {
+      id: definition.variableSet,
+      isMrvs: false,
+      title: definition.setName || "",
+    });
+  });
+  definitionResult.definitions = reconcileProducerDefinitionsWithAnswers(
+    definitionResult.definitions,
+    answerDefinitions,
+    ritmSetMeta
+  );
+
   const storedResult = await fetchNativeRitmStoredValues(
     requestItemSysId,
     definitionResult.definitions,
-    definitionResult.definitionReadStatus
+    definitionResult.definitionReadStatus,
+    metadataRead
   );
   const mrvsResult = await fetchNativeMrvsStoredValues(
     requestItemSysId,
@@ -3110,6 +3291,39 @@ function nativeDifferenceReason(storedValue, liveValue) {
   return "Stored and live values differ.";
 }
 
+/*
+ * Which cells the comparison found different, judged by the same per-column
+ * modes the verdict used. The panel marks exactly these.
+ *
+ * It cannot re-derive them from the values it renders: a Yes/No or Checkbox
+ * column folds "Yes" and "true" into one bucket, so a raw string compare in the
+ * panel would paint a changed cell inside a set the comparison called a match.
+ */
+function nativeMrvsDifferingCells(storedRows, liveRows, comparisonModes) {
+  const stored = Array.isArray(storedRows) ? storedRows : [];
+  const live = Array.isArray(liveRows) ? liveRows : [];
+  const modes = comparisonModes || {};
+  const cells = [];
+  const rowCount = Math.max(stored.length, live.length);
+  for (let index = 0; index < rowCount; index += 1) {
+    const storedRow = stored[index];
+    const liveRow = live[index];
+    const columns = new Set([
+      ...Object.keys(storedRow || {}),
+      ...Object.keys(liveRow || {}),
+    ]);
+    columns.forEach((column) => {
+      // A row missing from one side differs in every column it has, which is
+      // what makes a row-count difference visible cell by cell.
+      const differs = !storedRow || !liveRow
+        ? true
+        : !nativeValuesEqual(storedRow[column], liveRow[column], modes[column] || "scalar");
+      if (differs) cells.push({ row: index, column });
+    });
+  }
+  return cells;
+}
+
 function nativeMrvsDifferenceReason(storedRows, liveRows) {
   if (storedRows.length !== liveRows.length) {
     return "Stored has " + storedRows.length + " row" +
@@ -3142,7 +3356,7 @@ function validWorkspaceCanonicalDate(value, dateTime) {
   );
 }
 
-function workspaceLiveValueForComparison(policy, live, timeZone) {
+function workspaceLiveValueForComparison(policy, live, timeZone, definition) {
   const source = live || {};
   if (!source.foundEntry) {
     return { ok: false, reason: "Live value unavailable in this Workspace source." };
@@ -3212,11 +3426,32 @@ function workspaceLiveValueForComparison(policy, live, timeZone) {
     // plain objects, of equal length, with identical column names row for row,
     // is what separates that verified shape from any other JSON a future
     // component might put behind this key. Only the raw array is compared.
+    //
+    // Every observed cell was a string, and every key was one of the set's own
+    // columns. Both are required rather than assumed: a number, null or a
+    // nested object would otherwise reach the comparison, where a nested object
+    // stringifies to "[object Object]" and reports a difference that says
+    // nothing. Binding the keys to this set's columns is what ties the array to
+    // this variable set rather than to any array of objects.
+    const columnNames = new Set(
+      (Array.isArray(definition && definition.mrvsColumnTypes)
+        ? definition.mrvsColumnTypes
+        : []
+      ).map((column) => column && column.name).filter(Boolean)
+    );
     const liveRows = parseNativeMrvsRows(value);
     const displayRows = displayAvailable ? parseNativeMrvsRows(displayValue) : null;
     const plainRows = (rows) =>
       Array.isArray(rows) &&
-      rows.every((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+      rows.every((entry) => (
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        Object.keys(entry).every((key) => (
+          typeof entry[key] === "string" &&
+          (!columnNames.size || columnNames.has(key))
+        ))
+      ));
     if (
       !plainRows(liveRows) ||
       !plainRows(displayRows) ||
@@ -3278,19 +3513,10 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
   const visibilityResolver = workspaceMode
     ? workspaceVariableBucket
     : nativeVariableBucket;
-  const definitionNameCounts = new Map();
-  (definitions || []).forEach((definition) => {
-    if (!definition.name) return;
-    definitionNameCounts.set(
-      definition.name,
-      (definitionNameCounts.get(definition.name) || 0) + 1
-    );
-  });
-  const storedNameCounts = new Map();
-  (storedResult.metadataRows || []).forEach((row) => {
-    if (!row.name) return;
-    storedNameCounts.set(row.name, (storedNameCounts.get(row.name) || 0) + 1);
-  });
+  const duplicateNames = nativeDuplicateNameSet(
+    definitions,
+    storedResult.metadataRows
+  );
 
   return (definitions || []).map((definition) => {
     const storedMatches = (storedResult.metadataRows || []).filter(
@@ -3305,10 +3531,13 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
     const visibility = visibilityResolver(definition, live);
     const policy = policyResolver(definition);
     const duplicateName = Boolean(
-      definition.name &&
-      ((definitionNameCounts.get(definition.name) || 0) > 1 ||
-        (storedNameCounts.get(definition.name) || 0) > 1)
+      definition.name && duplicateNames.has(definition.name)
     );
+    // Exactly what the request builder for this world decided, so the panel can
+    // never describe a read it did not make.
+    const liveReadRequested = workspaceMode
+      ? workspaceLiveReadRequested(definition, policy, duplicateName)
+      : nativeLiveReadRequested(definition, policy, duplicateName);
     const storedPresent = storedMatches.length > 0;
     const stored = storedMatches.length === 1 ? storedMatches[0] : null;
     const secret = policy.disposition === "secret" || storedMatches.some((row) => row.secret);
@@ -3358,12 +3587,7 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
     };
     // Exactly the rows workspaceLiveValueRequests asked the form for, so the
     // panel's "all N were checked" can never count a row no read covered.
-    row.workspaceCandidate = Boolean(
-      workspaceMode &&
-      workspaceLiveReadAllowed(definition, policy) &&
-      !duplicateName &&
-      !secret
-    );
+    row.workspaceCandidate = Boolean(workspaceMode && liveReadRequested && !secret);
 
     if (!secret && live.liveValueAvailable) {
       row.liveValue = String(live.liveValue == null ? "" : live.liveValue);
@@ -3422,12 +3646,27 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       } else if (mrvsSet && mrvsSet.indexIncomplete) {
         row.reason = "Stored rows are missing a row index, so they could not be" +
           " grouped and no comparison was run.";
-      } else if (workspaceMode && !workspaceLiveReadAllowed(definition, policy)) {
+      } else if (
+        (!mrvsSet || !mrvsSet.rows.length) &&
+        (storedResult.detachedMrvsSetIds || []).length
+      ) {
+        // This record stores multi-row rows under a set the catalog item does
+        // not attach, so "no stored rows" here is a statement about the item's
+        // current set list, not about the record. Comparing it against a
+        // populated form would report a difference that the read created.
+        row.reason = "No stored rows were found for this set, and this record" +
+          " stores multi-row rows under a variable set the catalog item no" +
+          " longer attaches, so no comparison was run.";
+      } else if (!liveReadRequested) {
         // Say what actually happened. This row's stored rows are real and its
         // live rows were never asked for, so anything that sounds like an
-        // absent or unreadable live value would be a claim about the form that
-        // was never tested.
-        row.reason = workspaceMrvsNotReadReason(definition, policy);
+        // absent or unreadable live value would be a claim about a form that
+        // was never tested. This branch must stay ahead of the availability
+        // one, which describes a read that did happen.
+        row.reason = nativeMrvsNotReadReason(definition, policy, {
+          workspaceMode,
+          duplicateName,
+        });
       } else if (!row.liveValueAvailable) {
         row.reason = definition.liveReadBlockedReason || (live.valueReadFailed
           ? "The live multi-row value could not be read."
@@ -3436,7 +3675,7 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
         row.reason = "The live multi-row value was not a readable JSON array.";
       } else {
         const verified = workspaceMode
-          ? workspaceLiveValueForComparison(policy, live, userTimeZone)
+          ? workspaceLiveValueForComparison(policy, live, userTimeZone, definition)
           : { ok: true, value: row.liveValue };
         if (!verified.ok) {
           row.reason = verified.reason;
@@ -3448,6 +3687,15 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
             mrvsSet ? mrvsSet.comparisonModes : {}
           );
           row.comparison = equal ? "match" : "differs";
+          // Only ever set alongside a verdict, so the panel cannot mark a cell
+          // on a row whose sides were never compared.
+          row.mrvsCellDiffs = equal
+            ? []
+            : nativeMrvsDifferingCells(
+              storedMrvsRows,
+              liveMrvsRows,
+              mrvsSet ? mrvsSet.comparisonModes : {}
+            );
           row.reason = equal
             ? (workspaceMode
               ? "Stored and live Workspace rows match."
@@ -3465,6 +3713,22 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       row.reason = "The variable name collides with the form API prototype.";
     } else if (duplicateName || storedMatches.length > 1) {
       row.reason = "Duplicate variable name; no arbitrary row was selected.";
+    } else if (
+      !workspaceMode &&
+      definition.definitionFromAnswer &&
+      live.foundEl === false &&
+      row.liveValueAvailable
+    ) {
+      // The definition came from this record's own answer because the catalog
+      // item now defines a different variable of the same name. The classic
+      // reader resolves `variables.<name>`, so if the form is bound to the
+      // item's NEW question instead, that read returned the new variable's
+      // value and comparing it against this record's older answer would report
+      // a difference between two different variables. The form not rendering
+      // this question id is exactly that case.
+      row.reason = "Definition taken from this record's own answer, but the" +
+        " form does not render that question, so the live value belongs to a" +
+        " different variable of the same name and no comparison was run.";
     } else if (policy.disposition === "structural") {
       row.reason = "Structural variable type has no comparable value.";
     } else if (policy.disposition !== "comparable") {
@@ -3824,7 +4088,11 @@ async function showWorkspaceVariableValues(route, surface, initialSnapshot) {
     );
     return;
   }
-  const requests = workspaceLiveValueRequests(recordData.definitions, surface.key);
+  const requests = workspaceLiveValueRequests(
+    recordData.definitions,
+    surface.key,
+    nativeDuplicateNameSet(recordData.definitions, recordData.metadataRows)
+  );
   showToast("Reading live Workspace values…", false, 6000);
   const finalSnapshot = await probeWorkspaceVariableSnapshot(requests);
   if (
@@ -3890,25 +4158,19 @@ function nativeNameHoldsSecret(definitions, name) {
   );
 }
 
-function nativeLiveValueRequests(definitions) {
-  // A name shared by two definitions is already uncomparable, and g_form
-  // resolves it to whichever one it chooses. If either of them is secret,
-  // reading "the other one" by that name can surface the secret's value in an
-  // ordinary row, so no duplicate name is ever read.
-  const nameCounts = new Map();
-  (definitions || []).forEach((definition) => {
-    if (!definition.name) return;
-    nameCounts.set(definition.name, (nameCounts.get(definition.name) || 0) + 1);
-  });
+function nativeLiveValueRequests(definitions, duplicateNames) {
+  // A name shared by two definitions, or by two stored rows, is already
+  // uncomparable, and g_form resolves it to whichever one it chooses. If either
+  // of them is secret, reading "the other one" by that name can surface the
+  // secret's value in an ordinary row, so no duplicate name is ever read.
+  const duplicates = duplicateNames || nativeDuplicateNameSet(definitions, []);
 
   return (definitions || []).map((definition) => {
     const policy = classifyNativeVariable(definition);
     const duplicateName = Boolean(
-      definition.name && (nameCounts.get(definition.name) || 0) > 1
+      definition.name && duplicates.has(definition.name)
     );
     const ownSecret = policy.disposition === "secret";
-    const mrvsReadAllowed =
-      !definition.isMrvs || definition.liveReadAllowed === true;
     return {
       name: definition.name,
       fieldName: definition.name ? "variables." + definition.name : "",
@@ -3922,36 +4184,20 @@ function nativeLiveValueRequests(definitions) {
         policy.comparisonMode === "date" || policy.comparisonMode === "datetime"
           ? policy.comparisonMode
           : "",
-      readValue: Boolean(
-        definition.name &&
-        !ownSecret &&
-        !duplicateName &&
-        mrvsReadAllowed &&
-        !NATIVE_PROTOTYPE_COLLISION_NAMES.has(definition.name)
-      ),
+      readValue: nativeLiveReadRequested(definition, policy, duplicateName),
     };
   });
 }
 
-function workspaceLiveValueRequests(definitions, surfaceKey) {
+function workspaceLiveValueRequests(definitions, surfaceKey, duplicateNames) {
   const list = Array.isArray(definitions) ? definitions : [];
-  const nameCounts = new Map();
-  list.forEach((definition) => {
-    if (!definition || !definition.name) return;
-    nameCounts.set(
-      definition.name,
-      (nameCounts.get(definition.name) || 0) + 1
-    );
-  });
+  const duplicates = duplicateNames || nativeDuplicateNameSet(list, []);
 
   return list.flatMap((definition) => {
     const def = definition || {};
     const policy = classifyWorkspaceVariable(def, surfaceKey);
-    const duplicateName = Boolean(
-      def.name && (nameCounts.get(def.name) || 0) > 1
-    );
-    const secretTwin = duplicateName && nativeNameHoldsSecret(list, def.name);
-    if (duplicateName || secretTwin || !workspaceLiveReadAllowed(def, policy)) {
+    const duplicateName = Boolean(def.name && duplicates.has(def.name));
+    if (!workspaceLiveReadRequested(def, policy, duplicateName)) {
       return [];
     }
     return [{
@@ -3977,7 +4223,10 @@ async function finishNativeVariableValues(
   recordKind,
   initialWorkspaceRoute
 ) {
-  const liveRequests = nativeLiveValueRequests(recordData.definitions);
+  const liveRequests = nativeLiveValueRequests(
+    recordData.definitions,
+    nativeDuplicateNameSet(recordData.definitions, recordData.metadataRows)
+  );
   showToast("Reading live form values…", false, 6000);
   let finalWorkspaceRoute = null;
   if (initialWorkspaceRoute) {
