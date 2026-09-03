@@ -114,8 +114,11 @@ reconstructed version by version.
   every multi-row set on that record. Their existence is only ever a yes/no, so
   it is now a separate bounded one-row probe and the read itself stays filtered
   to the sets the item attaches. A probe that cannot be answered refuses rather
-  than assuming there are none, and a record whose rows are *all* detached says
-  so instead of reading as simply empty.
+  than assuming there are none -- and says the check could not be completed,
+  rather than claiming the record holds rows that nothing established. A record
+  whose rows are *all* detached says so instead of reading as simply empty,
+  while a set whose every column was withheld still reports the withheld
+  columns: it has stored rows, and saying none were found was wrong.
 - **A failed answer read is final rather than retried behind the panel's
   back.** The request-item reader reads the record's answers once and
   reconciles the catalog definitions against them. When that read failed the

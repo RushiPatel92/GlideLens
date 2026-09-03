@@ -3874,7 +3874,7 @@ test("detached rows are found by a bounded probe and never widen the metadata re
   });
 
   const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
-  assert.strictEqual(result.detachedMrvsRowsPresent, true);
+  assert.strictEqual(result.detachedMrvsRows, "present");
   assert.strictEqual(result.mrvsReadStatus, "success");
 
   const probe = queries.find((entry) => entry.query.indexOf("NOT IN") >= 0);
@@ -3926,10 +3926,22 @@ test("a detached probe that fails refuses rather than assuming there are none", 
     return [];
   });
   const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
-  // Unknown, so the state that refuses more is assumed: an empty set on this
-  // record cannot claim the record simply has no rows.
-  assert.strictEqual(result.detachedMrvsRowsPresent, true);
+  // Unknown, not present. It refuses exactly as "present" does, but the panel
+  // may not report that this record holds detached rows -- no read established
+  // that, and saying so asserts a fact about storage.
+  assert.strictEqual(result.detachedMrvsRows, "unknown");
   assert.strictEqual(result.mrvsReadStatus, "empty");
+
+  const def = mrvsDefinition();
+  const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "empty",
+    mrvsValuesBySetId: new Map(),
+    detachedMrvsRows: "unknown",
+  });
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /could not be completed/);
+  // And it does not claim the detached rows exist.
+  assert.doesNotMatch(row.reason, /stores multi-row rows under a variable set/);
 });
 
 test("a record whose rows are ALL detached says so instead of reading as empty", () => {
@@ -3940,7 +3952,7 @@ test("a record whose rows are ALL detached says so instead of reading as empty",
   const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
     mrvsReadStatus: "empty",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsRowsPresent: true,
+    detachedMrvsRows: "present",
   });
   assert.strictEqual(row.comparison, "not-comparable");
   assert.match(row.reason, /no longer attaches/);
@@ -3948,7 +3960,7 @@ test("a record whose rows are ALL detached says so instead of reading as empty",
   const [plain] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
     mrvsReadStatus: "empty",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsRowsPresent: false,
+    detachedMrvsRows: "absent",
   });
   assert.match(plain.reason, /No multi-row answers are stored for this record/);
 });
@@ -3959,7 +3971,7 @@ test("a set with no stored rows refuses while the record holds detached rows", (
   const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
     mrvsReadStatus: "success",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsRowsPresent: true,
+    detachedMrvsRows: "present",
   });
   assert.strictEqual(row.comparison, "not-comparable");
   assert.match(row.reason, /no longer attaches/);
@@ -3968,9 +3980,44 @@ test("a set with no stored rows refuses while the record holds detached rows", (
   const [plain] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
     mrvsReadStatus: "success",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsRowsPresent: false,
+    detachedMrvsRows: "absent",
   });
   assert.strictEqual(plain.comparison, "differs");
+});
+
+test("a fully withheld set says its columns were withheld, not that no rows were found", () => {
+  // assembleNativeMrvsSets creates the set entry before the withheld
+  // early-return, so a set whose every column was withheld has an entry with
+  // zero rows. Judged only on "no rows", such a set on a record that also holds
+  // detached rows claimed none were found -- rows were found, and withheld.
+  const def = mrvsDefinition();
+  const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "success",
+    mrvsValuesBySetId: new Map([[MRVS_SET_ID, mrvsStored([], { withheldColumns: ["a"] })]]),
+    detachedMrvsRows: "present",
+  });
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /Columns were not read/);
+  assert.doesNotMatch(row.reason, /No stored rows were found/);
+
+  // The index-incomplete branch sits ahead of the detached ones for the same
+  // reason: its set entry also exists.
+  const [indexed] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "success",
+    mrvsValuesBySetId: new Map([[MRVS_SET_ID, mrvsStored([], { indexIncomplete: true })]]),
+    detachedMrvsRows: "present",
+  });
+  assert.match(indexed.reason, /missing a row index/);
+  assert.doesNotMatch(indexed.reason, /No stored rows were found/);
+
+  // A set with NO entry at all still reports the detached rows, so moving the
+  // withheld branch ahead did not cost the case it was ordered for.
+  const [absent] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "empty",
+    mrvsValuesBySetId: new Map(),
+    detachedMrvsRows: "present",
+  });
+  assert.match(absent.reason, /no longer attaches/);
 });
 
 test("a request item reconciles a swapped variable set exactly as a producer record does", async () => {

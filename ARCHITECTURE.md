@@ -554,18 +554,27 @@ indistinguishable from a record with no rows, or the panel compares zero stored
 rows against a populated form — a difference manufactured by the query. That is
 established by a **bounded existence probe**, `parent_id=<id>^variable_setNOT
 IN<enumerated ids>` at a limit of one row, while the metadata read itself stays
-filtered to the enumerated sets. Only the yes/no is ever used, never which sets
-or how many.
+filtered to the enumerated sets. The signal is tri-state — present, absent or
+unknown — never which sets or how many.
 
 Widening the metadata read instead and filtering afterwards was the obvious
 shape and the wrong one: detached cells then counted toward the row cap, so a
 record holding enough of them truncated the read and refused **every** set on
-it, over rows that were never going to be read. A probe that cannot be answered
-is treated as detached-present, because that is the direction that refuses. A
-set with no stored rows on a record holding detached rows is listed rather than
-compared, and because the read is filtered, a record whose rows are *all*
-detached now reads as empty — so that reason is checked ahead of the plain
-"nothing stored" one. `NOT IN` was verified live rather than assumed: on a
+it, over rows that were never going to be read. A probe that cannot be answered refuses exactly as a
+positive one does, but reports itself as unknown and says so in its own words:
+claiming the record holds rows under a dropped set would assert something about
+storage that no read established. A set with no stored rows on a record holding
+detached rows is listed rather than compared, and because the read is filtered,
+a record whose rows are *all* detached now reads as empty — so both detached
+reasons are checked ahead of the plain "nothing stored" one.
+
+They sit *behind* the withheld and index-incomplete reasons, though.
+`assembleNativeMrvsSets` creates a set's entry before the withheld
+early-return, so a set whose every column was withheld has an entry with zero
+rows; judged on "no rows" alone it would report that none were found, when rows
+were found and withheld. Both of those branches require the set entry to exist,
+so the all-detached record — which has no entry at all — still reaches the
+detached reason. `NOT IN` was verified live rather than assumed: on a
 record holding 44 rows across two sets, `IN` the first returned 26, `NOT IN` the
 first returned 18, `NOT IN` both returned 0, and `NOT IN` an unrelated id
 returned all 44, so the condition is applied rather than silently ignored.

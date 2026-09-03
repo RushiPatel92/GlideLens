@@ -110,8 +110,10 @@ The suites cover:
   refuses instead of reporting a difference, that the detached rows behind that
   refusal are found by a bounded limit-one probe so they cannot consume the
   metadata read's row cap and truncate every set on the record, that a probe
-  which fails refuses rather than assuming there are none, that a record whose
-  rows are all detached says so instead of reading as simply empty, that a
+  which fails refuses rather than assuming there are none while reporting itself
+  as unknown rather than claiming rows it never saw, that a set whose every
+  column was withheld says so rather than reporting no rows found, that a record
+  whose rows are all detached says so instead of reading as simply empty, that a
   substituted definition is
   refused on the classic form when the form does not render its question, that
   the request item reconciles a swapped set exactly as a producer record does,

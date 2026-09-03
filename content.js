@@ -2663,12 +2663,17 @@ function assembleNativeMrvsSets(cells) {
  */
 async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
   const setIds = Array.from(new Set((mrvsSetIds || []).filter(isSysId)));
-  let detachedRowsPresent = false;
+  // Tri-state, not a boolean: "present", "absent" or "unknown". A probe that
+  // could not be answered still refuses, but it may not be reported as having
+  // found rows -- that would assert something about this record's storage that
+  // no read established. The name carries no "present" so a caller cannot treat
+  // it as a boolean by accident and silently turn "unknown" into "yes".
+  let detachedMrvsRows = "absent";
   const withoutValues = (status, error) => ({
     mrvsReadStatus: status,
     mrvsReadError: error || "",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsRowsPresent: detachedRowsPresent,
+    detachedMrvsRows,
   });
   if (!isSysId(parentSysId) || !setIds.length) return withoutValues("skipped", "");
 
@@ -2697,12 +2702,13 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
       1,
       { excludeRefLinks: true }
     );
-    detachedRowsPresent = detachedProbe.length > 0;
+    detachedMrvsRows = detachedProbe.length > 0 ? "present" : "absent";
   } catch (error) {
-    // Unknown, so assume whichever state refuses more. A set with no stored rows
-    // then declines to compare rather than reporting a difference it cannot rule
-    // out having invented.
-    detachedRowsPresent = true;
+    // Unknown refuses exactly as "present" does -- a set with no stored rows
+    // declines to compare rather than reporting a difference it cannot rule out
+    // having invented -- but it says so in its own words, because no read
+    // established that this record holds detached rows.
+    detachedMrvsRows = "unknown";
   }
 
   let metadataRows;
@@ -2763,7 +2769,7 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
     mrvsReadStatus: "success",
     mrvsReadError: "",
     mrvsValuesBySetId: assembleNativeMrvsSets(cells),
-    detachedMrvsRowsPresent: detachedRowsPresent,
+    detachedMrvsRows,
   };
 }
 
@@ -3751,9 +3757,20 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
           "Multi-row variable set values were not read.";
       } else if (mrvsStatus !== "success" && mrvsStatus !== "empty") {
         row.reason = "Multi-row variable set values were not read.";
+      } else if (mrvsSet && mrvsSet.withheldColumns.length) {
+        // Ahead of the detached branches: a set whose every column was withheld
+        // has an entry with zero rows, because assembleNativeMrvsSets creates
+        // the entry before the withheld early-return. Judged only on "no rows",
+        // such a set on a record that also holds detached rows would say none
+        // were found. Rows were found; they were withheld.
+        row.reason = "Columns were not read, so no comparison was run: " +
+          mrvsSet.withheldColumns.join(", ") + ".";
+      } else if (mrvsSet && mrvsSet.indexIncomplete) {
+        row.reason = "Stored rows are missing a row index, so they could not be" +
+          " grouped and no comparison was run.";
       } else if (
         (!mrvsSet || !mrvsSet.rows.length) &&
-        storedResult.detachedMrvsRowsPresent
+        storedResult.detachedMrvsRows === "present"
       ) {
         // This record stores multi-row rows under a set the catalog item does
         // not attach, so "no stored rows" here is a statement about the item's
@@ -3766,17 +3783,21 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
         row.reason = "No stored rows were found for this set, and this record" +
           " stores multi-row rows under a variable set the catalog item no" +
           " longer attaches, so no comparison was run.";
+      } else if (
+        (!mrvsSet || !mrvsSet.rows.length) &&
+        storedResult.detachedMrvsRows === "unknown"
+      ) {
+        // Same refusal, different claim. The probe did not answer, so whether
+        // this record holds rows under a dropped set is unknown -- and saying it
+        // does would assert a fact about storage that no read established.
+        row.reason = "No stored rows were found for this set, and the check for" +
+          " rows under a variable set the catalog item no longer attaches could" +
+          " not be completed, so no comparison was run.";
       } else if (mrvsStatus === "empty") {
         // Zero rows across every enumerated set on this record. That is a real
         // state, but it is also what a wrong parent record would look like, so
         // it is reported rather than compared against a populated live form.
         row.reason = "No multi-row answers are stored for this record.";
-      } else if (mrvsSet && mrvsSet.withheldColumns.length) {
-        row.reason = "Columns were not read, so no comparison was run: " +
-          mrvsSet.withheldColumns.join(", ") + ".";
-      } else if (mrvsSet && mrvsSet.indexIncomplete) {
-        row.reason = "Stored rows are missing a row index, so they could not be" +
-          " grouped and no comparison was run.";
       } else if (!liveReadRequested) {
         // Say what actually happened. This row's stored rows are real and its
         // live rows were never asked for, so anything that sounds like an
