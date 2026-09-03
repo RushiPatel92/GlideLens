@@ -315,7 +315,24 @@ half-pair or any supplied mismatch refuses the complete snapshot. The request
 list is independently allowlisted and excludes secrets, sensitive names,
 duplicates, prototype collisions, malformed definitions, and unverified types
 before MAIN-world injection. Within a requested entry, `canRead === true` is
-required before either `value` or `displayValue` is touched. The layer-1 type
+required before either `value` or `displayValue` is touched.
+
+A value must be a string, with one measured exception. On the supplier
+surfaces a Checkbox that a UI policy hides settles into a real JavaScript
+`true`/`false` rather than a string, and stays that way: measured over 50
+seconds on a supplier case, the hidden checkbox read `boolean` throughout while
+a second checkbox on the same record read `string` throughout. Refusing it
+reported the live value as unavailable when the form held it all along —
+classic is unaffected because `g_form.getValue()` always returns a string. So a
+real boolean is accepted and normalised to `"true"`/`"false"`, which leaves one
+representation for the comparison and its validators. The allowance is decided
+by the content script and travels on the request as `booleanKind`, exactly as
+`dateKind` does, because it is a per-surface, per-policy judgement the snapshot
+must not make: only a variable whose own comparison mode is boolean, and only on
+a surface in `WORKSPACE_BOOLEAN_VALUE_SURFACES`. SOW is deliberately absent —
+no request item on either verified instance exposes a boolean-typed variable at
+all, so nothing proves its component behaves the same. A number, a null or a
+truthy object is still refused everywhere. The layer-1 type
 allowlist is **per surface**, keyed by the same pair, because per-type evidence
 never transfers between surfaces: every type was proven against one component
 on one route, and a surface with no map of its own compares nothing rather than

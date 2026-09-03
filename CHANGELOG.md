@@ -146,6 +146,17 @@ reconstructed version by version.
   definition is refused on the classic form when the form does not render its
   question -- otherwise the value read back belongs to the item's new variable
   of the same name.
+- **A hidden Checkbox on a supplier record compares instead of reporting no
+  live value.** The Workspace component settles a checkbox that a UI policy
+  hides into a real JavaScript boolean rather than a string, and the reader
+  accepted only strings -- so the panel said the live value was unavailable
+  while the form held it all along. Measured over 50 seconds on a supplier case,
+  the hidden checkbox read as a boolean throughout while another checkbox on the
+  same record read as a string throughout. A real boolean is now normalised to
+  `true`/`false`, and only for a variable whose own comparison is boolean on a
+  surface where that representation was measured; a number, a null or an object
+  is still refused. Service Operations Workspace is deliberately excluded,
+  because no request item exposes a boolean-typed variable to prove it with.
 - **A multi-row column whose name could not be read is withheld, not dropped.**
   Dropping it left the row one key short, where it would compare as empty
   against a live side that had it.

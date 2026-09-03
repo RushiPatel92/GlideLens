@@ -1622,6 +1622,22 @@ const WORKSPACE_TYPE_POLICIES_BY_SURFACE = new Map([
   ["psm/workspace:sn_slm_task", WORKSPACE_SUPPLIER_TYPE_POLICIES],
 ]);
 
+/*
+ * Surfaces whose component is known to hand a boolean-typed variable a real
+ * JavaScript boolean rather than a string, and may therefore have one read as
+ * the value `true`/`false`.
+ *
+ * Its own list, not a property of the type policy, because this is a statement
+ * about a component's representation and those never transfer between surfaces.
+ * SOW is absent because nothing proves it either way: no request item on either
+ * verified instance exposes a boolean-typed variable at all. If one turns up,
+ * probe it before adding the surface here.
+ */
+const WORKSPACE_BOOLEAN_VALUE_SURFACES = new Set([
+  "psm/workspace:sn_slm_case",
+  "psm/workspace:sn_slm_task",
+]);
+
 const NATIVE_PROTOTYPE_COLLISION_NAMES = new Set([
   ...Object.getOwnPropertyNames(Object.prototype),
   ...Object.getOwnPropertyNames(Function.prototype),
@@ -4365,6 +4381,27 @@ function workspaceLiveValueRequests(definitions, surfaceKey, duplicateNames) {
         policy.comparisonMode === "date" || policy.comparisonMode === "datetime"
           ? policy.comparisonMode
           : "",
+      // May a real JavaScript boolean be accepted as this entry's value?
+      //
+      // The supplier component settles a checkbox's value into a raw boolean
+      // rather than a string. Measured on a supplier case: the entry arrives as
+      // the string "true" and, about a second later, becomes boolean `true` and
+      // stays there — so the panel, which always runs after that, saw a value it
+      // refused and reported the live value as unavailable when the form had it
+      // all along. Only the field hidden by a UI policy settled that way; the
+      // six rendered boolean variables on the same record stayed strings, which
+      // fits a rendered control writing its value back as text while a field
+      // that never renders keeps the raw one.
+      //
+      // Decided here rather than in the snapshot for the same reason `dateKind`
+      // is: this is a per-surface, per-policy judgement and the snapshot must
+      // not make one. SOW is deliberately excluded — no request item exposes a
+      // boolean-typed variable at all, so there is nothing to prove it with, and
+      // per-type evidence never transfers between surfaces.
+      booleanKind: Boolean(
+        policy.comparisonMode === "boolean" &&
+        WORKSPACE_BOOLEAN_VALUE_SURFACES.has(surfaceKey)
+      ),
       liveLayer: policy.layer,
     }];
   });

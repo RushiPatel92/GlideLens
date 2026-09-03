@@ -3548,6 +3548,7 @@ function inspectWorkspaceVariableSnapshot(variables) {
     const fieldName = stringValue(request && request.fieldName);
     const questionId = stringValue(request && request.questionId).toLowerCase();
     const dateKind = request && request.dateKind;
+    const booleanKind = Boolean(request && request.booleanKind);
     const entryResult = {
       name,
       fieldName,
@@ -3561,6 +3562,7 @@ function inspectWorkspaceVariableSnapshot(variables) {
       liveDisplayValue: "",
       liveDateValue: "",
       liveDateNormalised: false,
+      liveBooleanNormalised: false,
       isModified: null,
       valueReadFailed: false,
       identityMismatch: false,
@@ -3624,20 +3626,34 @@ function inspectWorkspaceVariableSnapshot(variables) {
       result.perVariable.push(entryResult);
       return;
     }
+    // A boolean is accepted ONLY where the caller said this surface and this
+    // variable's own comparison mode allow it, and only as a true boolean --
+    // never a number, never a truthy object. Everything else still has to be a
+    // string. Normalising here keeps one representation past this point, so the
+    // comparison and its validators are unchanged.
+    const readPrimitive = (raw) => {
+      if (typeof raw === "string") return { ok: true, text: raw };
+      if (booleanKind && typeof raw === "boolean") {
+        return { ok: true, text: raw ? "true" : "false", normalised: true };
+      }
+      return { ok: false, text: "" };
+    };
     try {
-      const liveValue = entry.value;
-      if (typeof liveValue === "string") {
-        entryResult.liveValue = liveValue;
+      const liveValue = readPrimitive(entry.value);
+      if (liveValue.ok) {
+        entryResult.liveValue = liveValue.text;
         entryResult.liveValueAvailable = true;
+        if (liveValue.normalised) entryResult.liveBooleanNormalised = true;
       }
     } catch (e) {
       entryResult.valueReadFailed = true;
     }
     try {
-      const displayValue = entry.displayValue;
-      if (typeof displayValue === "string") {
-        entryResult.liveDisplayValue = displayValue;
+      const displayValue = readPrimitive(entry.displayValue);
+      if (displayValue.ok) {
+        entryResult.liveDisplayValue = displayValue.text;
         entryResult.liveDisplayValueAvailable = true;
+        if (displayValue.normalised) entryResult.liveBooleanNormalised = true;
       }
     } catch (e) {
       entryResult.valueReadFailed = true;

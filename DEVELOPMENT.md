@@ -86,7 +86,9 @@ The suites cover:
   prototype collisions, portal masked-type behavior, copy safety, and native
   panel accessibility/source invariants. Workspace coverage includes frame-0
   transport, identity-before-geometry form selection, collapsed/stale forms,
-  exact safe state-map pulls, `canRead` non-access, its per-surface type policy
+  exact safe state-map pulls, `canRead` non-access, that a
+  boolean-valued entry is read only where the surface and the variable's own
+  comparison mode both allow it and never for a number or an object, its per-surface type policy
   and the proof that no surface inherits another's proven types,
   that both worlds gate on the identical surface allowlist and an unlisted
   surface is refused before any read,

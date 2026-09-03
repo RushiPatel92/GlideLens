@@ -447,6 +447,7 @@ test("Workspace compares Checkbox as a boolean now both approved instances prove
       questionId: id(986),
       type: "7",
       dateKind: "",
+      booleanKind: false,
       liveLayer: 1,
     },
   ]);
@@ -871,6 +872,7 @@ test("Workspace requests contain only positively allowlisted unique safe definit
       questionId: id(945),
       type: "6",
       dateKind: "",
+      booleanKind: false,
       liveLayer: 1,
     },
     {
@@ -879,6 +881,7 @@ test("Workspace requests contain only positively allowlisted unique safe definit
       questionId: id(946),
       type: "5",
       dateKind: "",
+      booleanKind: false,
       liveLayer: 1,
     },
   ]);
@@ -1301,6 +1304,107 @@ test("Workspace Select Box compares raw value while requiring the display pair s
     assert.strictEqual(row.comparison, "not-comparable");
     assert.match(row.reason, /choice representation|value unavailable/i);
   }
+});
+
+test("a supplier checkbox settling into a real boolean is read, not refused", () => {
+  // Measured live on a supplier case: the entry arrives as the string "true"
+  // and about a second later becomes boolean `true` and stays there. The panel
+  // always runs after that, so it saw a value it refused and reported the live
+  // value as unavailable while the form held it all along. Classic is
+  // unaffected because g_form.getValue() always returns a string.
+  const currentId = id(991);
+  const questionId = id(992);
+  const macro = workspaceElement("macroponent-current", {
+    table: "sn_slm_case",
+    sysId: currentId,
+  });
+  const entry = {
+    id: questionId,
+    name: "variables.approved",
+    referringTable: "sn_slm_case",
+    referringRecordId: currentId,
+    // The field is hidden by a UI policy, which is the case that settles to a
+    // raw boolean -- a rendered control writes its value back as text.
+    visible: false,
+    canRead: true,
+    value: true,
+    displayValue: true,
+  };
+  const form = workspaceElement("sn-catalog-form", {
+    sourceTable: "sn_slm_case",
+    sourceId: currentId,
+    fields: { "variables.approved": entry },
+  }, macro, true);
+  const snap = (booleanKind) => workspaceSnapshotProbe(
+    workspaceDocument([macro, form]),
+    { href: "https://example.service-now.com/now/psm/workspace/record/sn_slm_case/" + currentId }
+  )([{
+    name: "approved",
+    fieldName: "variables.approved",
+    questionId,
+    type: "7",
+    dateKind: "",
+    booleanKind,
+  }]);
+
+  const allowed = snap(true).perVariable[0];
+  assert.strictEqual(allowed.liveValueAvailable, true);
+  assert.strictEqual(allowed.liveValue, "true");
+  assert.strictEqual(allowed.liveDisplayValue, "true");
+  assert.strictEqual(allowed.liveBooleanNormalised, true);
+
+  // And it reaches the panel as a comparison against the stored string.
+  const helpers = loadNativeHelpers();
+  const def = definition({ name: "approved", type: "7", typeDisplay: "CheckBox", questionId });
+  const [row] = helpers.buildNativeVariableRows(
+    [def],
+    { storedReadStatus: "success", metadataRows: [storedRow(def, "true")], workspaceMode: true, workspaceSurface: SUPPLIER_CASE },
+    [{
+      name: def.name,
+      questionId: def.questionId,
+      foundEntry: true,
+      visible: false,
+      canRead: true,
+      liveValueAvailable: true,
+      liveValue: "true",
+      liveDisplayValueAvailable: true,
+      liveDisplayValue: "true",
+      liveBooleanNormalised: true,
+      liveLayer: 1,
+    }]
+  );
+  assert.strictEqual(row.comparison, "match");
+
+  // Without the caller's permission the boolean is still refused, so the
+  // allowance is the surface's decision and not the snapshot's.
+  const refused = snap(false).perVariable[0];
+  assert.strictEqual(refused.liveValueAvailable, false);
+  assert.strictEqual(refused.liveBooleanNormalised, false);
+});
+
+test("only a true boolean is normalised, and only where the surface proved it", () => {
+  const api = liveRequestApi();
+  const checkbox = definition({ name: "approved", type: "7", typeDisplay: "CheckBox" });
+  const yesNo = definition({ name: "flag", type: "1", typeDisplay: "Yes / No" });
+  const text = definition({ name: "note", type: "6", typeDisplay: "Single Line Text" });
+
+  // Proven on the supplier surfaces...
+  const supplier = api.workspaceLiveValueRequests([checkbox, yesNo, text], SUPPLIER_CASE);
+  assert.strictEqual(supplier.find((r) => r.name === "approved").booleanKind, true);
+  assert.strictEqual(supplier.find((r) => r.name === "flag").booleanKind, true);
+  // ...and never for a type whose comparison is not boolean.
+  assert.strictEqual(supplier.find((r) => r.name === "note").booleanKind, false);
+
+  // Not on SOW: no request item on either verified instance exposes a
+  // boolean-typed variable, so nothing proves the component behaves the same.
+  const sow = api.workspaceLiveValueRequests([checkbox, yesNo, text], SOW);
+  sow.forEach((r) => assert.strictEqual(r.booleanKind, false));
+
+  // Source guard: a number or a truthy object must never be normalised.
+  const start = backgroundSource.indexOf("const readPrimitive");
+  const body = backgroundSource.slice(start, start + 400);
+  assert.match(body, /typeof raw === "boolean"/);
+  assert.doesNotMatch(body, /Boolean\(raw\)|!!raw/);
 });
 
 test("Workspace visibility is tri-state and independent from canRead", () => {
@@ -2990,6 +3094,7 @@ test("a Workspace multi-row set is requested and compared where the surface prov
     questionId: MRVS_SET_ID,
     type: "34",
     dateKind: "",
+    booleanKind: false,
     liveLayer: 1,
   }]);
 
