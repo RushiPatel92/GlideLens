@@ -82,7 +82,13 @@ The suites cover:
   asserted as an `(experience path, table)` pair rather than a segment count:
   each supported pair resolves to its stored reader, and every half-match — the
   right table on the wrong experience, the right experience with the wrong
-  table, a path prefix, a reversed or extended path — is refused.
+  table, a path prefix, a reversed or extended path — is refused. A record
+  opened as a **sub-tab** nests its route inside the tab owner's, and the
+  assertions pin that the innermost record wins, that the experience path stops
+  at the first `record/` instead of swallowing the trail, that only a
+  `sub/record/` segment moves the identity, that deeper nesting still resolves
+  to the record on screen, and that the sub-record is allowlisted on its own
+  pair — a supported owner never vouches for an unsupported sub-record.
 - `open_url.test.js` — `OPEN_URL` tab placement beside the originating tab, and
   the fallback to Chrome's default placement when tab context is missing or
   invalid.
@@ -113,6 +119,11 @@ The suites cover:
   and the proof that no surface inherits another's proven types,
   that both worlds gate on the identical surface allowlist and an unlisted
   surface is refused before any read,
+  that the MAIN-world snapshot resolves a sub-tab route to the sub-record and
+  refuses an unlisted sub-record table, and that both worlds carry the same
+  sub-tab rule — neither may keep a greedy experience group, because the
+  snapshot re-derives the route itself and a fix applied to one world alone
+  would have the content script ask for a record the other refuses to describe,
   producer-backed Workspace records and the definition-completeness field each
   stored reader actually sets, multi-row sets on Workspace — that a proven
   surface requests and compares one, that an unproven surface says it was

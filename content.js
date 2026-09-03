@@ -157,24 +157,68 @@ function recordContextFromText(text) {
   return { table: null, sysId: sysIdFromText(text) };
 }
 
+/*
+ * A record opened as a SUB-TAB nests a second record inside the route of the
+ * one that owns the tab:
+ *
+ *   /now/<experience>/record/<table>/<id>
+ *   /now/<experience>/record/<owner>/<owner id>/params/.../sub/record/<table>/<id>
+ *
+ * The identity must be the record the form is showing, which is the innermost
+ * one. Only a `sub/record/<table>/<id>` segment moves it: any other trailing
+ * path leaves the tab's own record in place, and the live identity gate still
+ * has to agree with whatever this returns before a single value is read.
+ *
+ * The owning record is deliberately not constrained. It is not part of either
+ * half of the read -- the stored side queries the sub-record's own table and
+ * the live side is pinned to the sub-record's form and every corroborating
+ * ancestor -- so gating on it would refuse working surfaces to no benefit.
+ */
+const WORKSPACE_SUBRECORD_PATTERN = "/sub/record/([^/?#]+)/([0-9a-f]{32})(?:[/?#]|$)";
+
+function workspaceSubRecordFromText(value) {
+  // A fresh regex per call: a shared global one carries `lastIndex` between
+  // calls and would skip matches. The LAST match wins, so deeper nesting still
+  // resolves to the record actually on screen.
+  const pattern = new RegExp(WORKSPACE_SUBRECORD_PATTERN, "gi");
+  let table = "";
+  let sysId = "";
+  let match = pattern.exec(value);
+  while (match) {
+    table = String(match[1] || "").toLowerCase();
+    sysId = String(match[2] || "").toLowerCase();
+    match = pattern.exec(value);
+  }
+  return table && sysId ? { table, sysId } : null;
+}
+
 // Preserve the complete Workspace experience path. recordContextFromText is
 // intentionally lossy because its other callers need only table/sys_id; the
 // Variable Values router must distinguish the single `sow` segment from other
 // and multi-segment experiences before it decides which form reader may run.
 function workspaceRecordContextFromText(text) {
   for (const value of decodedVariants(text)) {
+    /*
+     * The experience group is LAZY so it stops at the FIRST `record/`. Greedy
+     * was wrong on a sub-tab: it resolved the right record but let the
+     * experience path swallow the whole trail
+     * ("psm/workspace/record/<owner table>/<id>/params/selected-tab-index/6/sub"),
+     * which matches no allowlisted pair, so every sub-tab refused. On a route
+     * with one `record/` the two are identical.
+     */
     const match = value.match(
-      /\/now\/((?:[^/?#]+\/)*)record\/([^/?#]+)\/([0-9a-f]{32})(?:[/?#]|$)/i
+      /\/now\/((?:[^/?#]+\/)*?)record\/([^/?#]+)\/([0-9a-f]{32})(?:[/?#]|$)/i
     );
     if (!match) continue;
     const experiencePath = match[1]
       .split("/")
       .filter(Boolean)
       .map((part) => part.toLowerCase());
+    const sub = workspaceSubRecordFromText(value);
     return {
       experiencePath,
-      table: String(match[2] || "").toLowerCase(),
-      sysId: String(match[3] || "").toLowerCase(),
+      table: sub ? sub.table : String(match[2] || "").toLowerCase(),
+      sysId: sub ? sub.sysId : String(match[3] || "").toLowerCase(),
     };
   }
   return null;

@@ -128,6 +128,82 @@ test("Workspace support is decided by the experience path and table together", (
   assert.strictEqual(helpers.workspaceSupportedSurface(null), null);
 });
 
+/*
+ * A record opened as a SUB-TAB nests its route inside the route of the tab that
+ * owns it. The owner used to win the experience path -- the greedy group
+ * swallowed the whole trail, giving
+ * "psm/workspace/record/<owner table>/<id>/params/selected-tab-index/6/sub",
+ * which matches no allowlisted pair -- so every sub-tab refused while its form
+ * was plainly on screen.
+ *
+ * Only the parse was wrong. Measured live on a supplier case: exactly one
+ * catalog form was mounted, it was the SUB-record's, and every corroborating
+ * ancestor identity was the sub-record's too, so the identity gate needed no
+ * loosening and keeps its full strength here.
+ */
+const OWNER_ID = "00000000000000000000000000000002";
+const subTabUrl = (experience, ownerTable, table, sysId) =>
+  "https://example.service-now.com/now/" + experience + "/record/" + ownerTable +
+  "/" + OWNER_ID + "/params/selected-tab-index/6/sub/record/" + table + "/" + (sysId || SYS_ID);
+
+test("a record opened as a sub-tab resolves to the sub-record, not the tab owner", () => {
+  const url = subTabUrl("psm/workspace", "sn_slm_case", "sn_slm_task");
+
+  assert.deepStrictEqual(helpers.workspaceRecordContextFromText(url), {
+    experiencePath: ["psm", "workspace"],
+    table: "sn_slm_task",
+    sysId: SYS_ID,
+  });
+  assert.deepStrictEqual(
+    helpers.workspaceSupportedSurface(helpers.workspaceRecordContextFromText(url)),
+    { kind: "producer", key: "psm/workspace:sn_slm_task" }
+  );
+
+  // The owner's identity must never be the one that gets read.
+  assert.notStrictEqual(helpers.workspaceRecordContextFromText(url).sysId, OWNER_ID);
+});
+
+test("a sub-tab is allowlisted by its own pair, and a supported owner never vouches for it", () => {
+  const surfaceOf = (url) =>
+    helpers.workspaceSupportedSurface(helpers.workspaceRecordContextFromText(url));
+
+  // An unlisted sub-record table is refused even though the owner is supported.
+  assert.strictEqual(surfaceOf(subTabUrl("psm/workspace", "sn_slm_case", "incident")), null);
+  // An unsupported experience is refused however supported both tables are.
+  assert.strictEqual(surfaceOf(subTabUrl("sow", "sn_slm_case", "sn_slm_task")), null);
+  // And the pair rule still applies to the sub-record, not to the owner.
+  assert.strictEqual(surfaceOf(subTabUrl("sow", "sc_req_item", "sn_slm_case")), null);
+});
+
+test("only a sub-record segment moves the identity, and the innermost one wins", () => {
+  const other = "00000000000000000000000000000003";
+  const base =
+    "https://example.service-now.com/now/psm/workspace/record/sn_slm_case/" + OWNER_ID;
+
+  // A trailing path that is not a sub-record leaves the tab's own record alone.
+  assert.deepStrictEqual(
+    helpers.workspaceRecordContextFromText(base + "/params/selected-tab-index/6"),
+    { experiencePath: ["psm", "workspace"], table: "sn_slm_case", sysId: OWNER_ID }
+  );
+
+  // Nested deeper, the record on screen is the last one, not the first.
+  assert.deepStrictEqual(
+    helpers.workspaceRecordContextFromText(
+      base + "/params/x/1/sub/record/sn_slm_task/" + other +
+        "/params/y/2/sub/record/sn_slm_task/" + SYS_ID
+    ),
+    { experiencePath: ["psm", "workspace"], table: "sn_slm_task", sysId: SYS_ID }
+  );
+
+  // The encoded form of a sub-tab route resolves identically.
+  assert.deepStrictEqual(
+    helpers.workspaceRecordContextFromText(
+      encodeURIComponent(subTabUrl("psm/workspace", "sn_slm_case", "sn_slm_task"))
+    ),
+    { experiencePath: ["psm", "workspace"], table: "sn_slm_task", sysId: SYS_ID }
+  );
+});
+
 test("a supported pair still needs a well-formed record id", () => {
   assert.strictEqual(
     helpers.workspaceSupportedSurface({

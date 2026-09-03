@@ -277,6 +277,20 @@ separate `sys_user` or instance-property lookup. RITMs read
 when `question_answer` contains rows matching both the probed table and sys_id.
 A moved record or route aborts the comparison.
 
+A record opened as a **sub-tab** nests its route inside the route of the tab
+that owns it:
+`/now/<experience>/record/<owner>/<owner id>/params/.../sub/record/<table>/<id>`.
+The identity is the innermost record, because that is the one the form is
+showing, and the experience path is read up to the *first* `record/` so it stays
+the experience (`psm/workspace`) rather than swallowing the whole trail. Only a
+`sub/record/<table>/<id>` segment moves the identity; any other trailing path
+leaves the tab's own record in place. The owning record is deliberately not
+constrained — it takes part in neither half of the read, since the stored side
+queries the sub-record's own table and the live side is pinned to the
+sub-record's form and every corroborating ancestor. The sub-record is
+allowlisted on its own `(experience path, table)` pair like any other route: a
+supported owner never vouches for an unsupported sub-record.
+
 Supported Workspace records use a dedicated frame-0 MAIN-world snapshot; the
 reader never fans out across discovered frames. Support is allowlisted by the
 `(experience path, table)` **pair**, never by either half alone: today that is

@@ -69,6 +69,18 @@ reconstructed version by version.
   which is what gets pasted into a script or a ticket.
 
 ### Fixed
+- **A record opened as a sub-tab in Workspace is now supported.** Reported from
+  a supplier task opened inside its case. A sub-tab nests its route inside the
+  route of the tab that owns it, and the experience path used to swallow that
+  whole trail, so it matched no supported surface and the panel refused while
+  the form was plainly on screen. The identity is now the innermost record --
+  the one the form is showing -- and the experience path stops at the first
+  `record/`. Only a `sub/record/` segment moves the identity, the sub-record is
+  allowlisted on its own `(experience path, table)` pair so a supported owner
+  never vouches for an unsupported sub-record, and the live identity gate is
+  unchanged and still has to agree before anything is read. Verified on a
+  supplier task that stores 15 answers inside a case that stores 148: the panel
+  compares the task's 15, not the owner's.
 - **A multi-row set that was never read no longer says the form had nothing.**
   Two variables sharing a name are never read at all -- the form would resolve
   the name to whichever of them it chooses -- but a set in that position fell

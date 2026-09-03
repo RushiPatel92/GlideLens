@@ -2920,6 +2920,73 @@ test("the MAIN-world snapshot refuses an unlisted Workspace surface", () => {
   assert.match(refused.identityReason, /not a supported Workspace record route/);
 });
 
+/*
+ * Both worlds must resolve a sub-tab route the same way. They parse it
+ * independently -- the MAIN-world snapshot re-derives the route rather than
+ * trusting the caller -- so a fix applied to only one of them would leave the
+ * content script asking for a record the snapshot refuses to describe.
+ */
+test("the MAIN-world snapshot resolves a sub-tab route to the sub-record", () => {
+  const probe = workspaceSnapshotProbe(
+    { querySelectorAll: () => [] },
+    {
+      href:
+        "https://example.service-now.com/now/psm/workspace/record/sn_slm_case/" +
+        id(2) + "/params/selected-tab-index/6/sub/record/sn_slm_task/" + id(1),
+    }
+  );
+  const result = probe([]);
+
+  assert.deepStrictEqual(result.route, {
+    experiencePath: ["psm", "workspace"],
+    table: "sn_slm_task",
+    sysId: id(1),
+  });
+  // The route gate passed. It still refuses on this stub document, but for the
+  // absent identity rather than for the route -- which is the distinction the
+  // bug turned on.
+  assert.strictEqual(result.identityStatus, "refused");
+  assert.doesNotMatch(result.identityReason, /not a supported Workspace record route/);
+});
+
+test("the MAIN-world snapshot still refuses an unlisted sub-record table", () => {
+  const probe = workspaceSnapshotProbe(
+    { querySelectorAll: () => [] },
+    {
+      href:
+        "https://example.service-now.com/now/psm/workspace/record/sn_slm_case/" +
+        id(2) + "/params/selected-tab-index/6/sub/record/incident/" + id(1),
+    }
+  );
+  const refused = probe([]);
+  assert.strictEqual(refused.route.table, "incident");
+  assert.match(refused.identityReason, /not a supported Workspace record route/);
+});
+
+test("both worlds carry the same sub-tab route rule", () => {
+  /* The two copies are written in different syntax -- a string pattern in the
+   * content script, a regex literal in the injected MAIN-world function -- so
+   * compare them with escapes removed. Pinned as source because the snapshot
+   * re-derives the route itself: if only one world learned the sub-tab shape,
+   * the content script would ask for a record the snapshot refuses to describe,
+   * and the panel would refuse for a reason that names the wrong cause. */
+  const withoutEscapes = (source) => source.split("\\").join("");
+  const subRecordRule = "/sub/record/([^/?#]+)/([0-9a-f]{32})(?:[/?#]|$)";
+  const lazyExperience = "((?:[^/?#]+/)*?)record/";
+
+  [contentSource, backgroundSource].forEach((source) => {
+    const flat = withoutEscapes(source);
+    assert.ok(flat.indexOf(subRecordRule) >= 0, "sub-record rule missing from a world");
+    assert.ok(flat.indexOf(lazyExperience) >= 0, "lazy experience group missing from a world");
+    // A greedy experience group is what caused the bug; neither world may keep one.
+    assert.strictEqual(
+      flat.indexOf("((?:[^/?#]+/)*)record/"),
+      -1,
+      "a greedy experience group would swallow a sub-tab trail again"
+    );
+  });
+});
+
 test("native orchestration constrains classic frames on Workspace and keeps portal fallback", () => {
   const start = contentSource.indexOf("async function probeNativeRecordVariables");
   const end = contentSource.indexOf("/* =====================================================================", start);

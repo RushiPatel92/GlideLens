@@ -3300,15 +3300,35 @@ function inspectWorkspaceVariableSnapshot(variables) {
         break;
       }
     }
+    /* A record opened as a SUB-TAB nests its route inside the tab owner's:
+     * /now/<experience>/record/<owner>/<id>/params/.../sub/record/<table>/<id>.
+     * The identity is the innermost record, and the experience group is LAZY so
+     * it stops at the FIRST `record/` rather than swallowing the whole trail.
+     * Keep this identical to workspaceRecordContextFromText in content.js --
+     * the two worlds must resolve the same route from the same URL, or one of
+     * them refuses a surface the other allows. */
+    const subRecord = (value) => {
+      const pattern = /\/sub\/record\/([^/?#]+)\/([0-9a-f]{32})(?:[/?#]|$)/gi;
+      let table = "";
+      let sysId = "";
+      let found = pattern.exec(value);
+      while (found) {
+        table = stringValue(found[1]).toLowerCase();
+        sysId = stringValue(found[2]).toLowerCase();
+        found = pattern.exec(value);
+      }
+      return table && sysId ? { table, sysId } : null;
+    };
     for (const value of variants) {
       const match = value.match(
-        /\/now\/((?:[^/?#]+\/)*)record\/([^/?#]+)\/([0-9a-f]{32})(?:[/?#]|$)/i
+        /\/now\/((?:[^/?#]+\/)*?)record\/([^/?#]+)\/([0-9a-f]{32})(?:[/?#]|$)/i
       );
       if (!match) continue;
+      const sub = subRecord(value);
       return {
         experiencePath: match[1].split("/").filter(Boolean).map((part) => part.toLowerCase()),
-        table: stringValue(match[2]).toLowerCase(),
-        sysId: stringValue(match[3]).toLowerCase(),
+        table: sub ? sub.table : stringValue(match[2]).toLowerCase(),
+        sysId: sub ? sub.sysId : stringValue(match[3]).toLowerCase(),
       };
     }
     return null;
