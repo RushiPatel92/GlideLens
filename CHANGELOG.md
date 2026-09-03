@@ -10,7 +10,7 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## [Unreleased]
+## [0.14.0] - 2026-09-03
 
 ### Added
 - **Variable Values compares what is stored with what the form is holding,
@@ -842,6 +842,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.14.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.14.0
 [0.13.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.13.0
 [0.12.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.12.0
 [0.11.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.1
