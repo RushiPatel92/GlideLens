@@ -19,6 +19,25 @@ GitHub's **Code → Download ZIP** contains every committed file. Chrome ignores
 the project documentation and tests when the extracted repository is loaded
 unpacked. The store artifact is different and uses an explicit allowlist.
 
+### Step 3 is not optional, and skipping it looks like a broken change
+
+Refreshing the ServiceNow tab re-reads every content script from disk, so a
+`content.js` edit appears without touching the extension card. The **service
+worker does not work that way**: Chrome keeps running the `background.js` it
+registered earlier until the extension is reloaded. A change to the worker
+therefore has no effect while its content-script half plainly works — which is
+indistinguishable from the change itself being wrong.
+
+Reload the card whenever `background.js` changes. If a fix seems not to work
+and only the worker's half is missing, suspect this before suspecting the fix.
+
+Loading the repository root unpacked is otherwise fully supported and has been
+verified end to end against two instances and two record surfaces, matching the
+same results the packaged artifact produces. Use an extraction of
+`dist/*.zip` for release validation — there the point is to test the artifact
+people install, which excludes tests, docs and plans — not because the
+repository directory behaves differently.
+
 ## Tests and validation
 
 Run all Node tests explicitly so behavior does not depend on Node's directory
