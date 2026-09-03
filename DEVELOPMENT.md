@@ -19,13 +19,32 @@ GitHub's **Code → Download ZIP** contains every committed file. Chrome ignores
 the project documentation and tests when the extracted repository is loaded
 unpacked. The store artifact is different and uses an explicit allowlist.
 
+### Step 3 is not optional, and skipping it looks like a broken change
+
+Refreshing the ServiceNow tab re-reads every content script from disk, so a
+`content.js` edit appears without touching the extension card. The **service
+worker does not work that way**: Chrome keeps running the `background.js` it
+registered earlier until the extension is reloaded. A change to the worker
+therefore has no effect while its content-script half plainly works — which is
+indistinguishable from the change itself being wrong.
+
+Reload the card whenever `background.js` changes. If a fix seems not to work
+and only the worker's half is missing, suspect this before suspecting the fix.
+
+Loading the repository root unpacked is otherwise fully supported and has been
+verified end to end against two instances and two record surfaces, matching the
+same results the packaged artifact produces. Use an extraction of
+`dist/*.zip` for release validation — there the point is to test the artifact
+people install, which excludes tests, docs and plans — not because the
+repository directory behaves differently.
+
 ## Tests and validation
 
 Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js
 ```
 
 The suites cover:
@@ -59,7 +78,17 @@ The suites cover:
   shared panel headings.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
-  Workspace routes, and encoded URLs.
+  encoded URLs, and the complete Workspace experience path. Workspace support is
+  asserted as an `(experience path, table)` pair rather than a segment count:
+  each supported pair resolves to its stored reader, and every half-match — the
+  right table on the wrong experience, the right experience with the wrong
+  table, a path prefix, a reversed or extended path — is refused. A record
+  opened as a **sub-tab** nests its route inside the tab owner's, and the
+  assertions pin that the innermost record wins, that the experience path stops
+  at the first `record/` instead of swallowing the trail, that only a
+  `sub/record/` segment moves the identity, that deeper nesting still resolves
+  to the record on screen, and that the sub-record is allowlisted on its own
+  pair — a supported owner never vouches for an unsupported sub-record.
 - `open_url.test.js` — `OPEN_URL` tab placement beside the originating tab, and
   the fallback to Chrome's default placement when tab context is missing or
   invalid.
@@ -69,6 +98,70 @@ The suites cover:
   frames without hanging on helper frames.
 - `prefill_settle.test.js` — installation and removal of GlideAjax settle
   tracking around catalog-variable prefill.
+- `variable_values_native.test.js` — classic RITM identity before/after reads,
+  Workspace-aware embedded-classic selection, exact `variables.<name>` classic
+  reads and same-snapshot page timezone, record-producer `question_answer`
+  routing, metadata-first secret-safe stored
+  reads, producer definition enumeration, MRVS-child consolidation, multi-row
+  stored reads and structural row comparison, positive
+  type policy, row presence, duplicates,
+  failure/empty/truncated states, scalar and List Collector comparison,
+  date and timezone-aware date/time normalisation, retired-variable
+  filtering,
+  prototype collisions, portal masked-type behavior, copy safety, that a
+  producer-backed classic record makes no visibility claim while a request item
+  still does, and native
+  panel accessibility/source invariants. Workspace coverage includes frame-0
+  transport, identity-before-geometry form selection, collapsed/stale forms,
+  exact safe state-map pulls, `canRead` non-access, that a
+  boolean-valued entry is read only where the surface and the variable's own
+  comparison mode both allow it and never for a number or an object, its per-surface type policy
+  and the proof that no surface inherits another's proven types,
+  that both worlds gate on the identical surface allowlist and an unlisted
+  surface is refused before any read,
+  that the MAIN-world snapshot resolves a sub-tab route to the sub-record and
+  refuses an unlisted sub-record table, and that both worlds carry the same
+  sub-tab rule — neither may keep a greedy experience group, because the
+  snapshot re-derives the route itself and a fix applied to one world alone
+  would have the content script ask for a record the other refuses to describe,
+  producer-backed Workspace records and the definition-completeness field each
+  stored reader actually sets, multi-row sets on Workspace — that a proven
+  surface requests and compares one, that an unproven surface says it was
+  listed rather than implying the form was asked, how the panel renders a set's
+  rows as a table — the merged stored/live grid only where a verdict says a
+  comparison ran, separate labelled tables where it did not, an absent row
+  distinguished from an empty cell, and the copy output still carrying the whole
+  array — that the `mrvs-pair`
+  representation check refuses every way the value/display pair can fail, that
+  the panel's candidate count is exactly the set of rows a live read was
+  requested for — including a name duplicated only in storage, which both the
+  request builders and the panel must treat identically — that a set which was
+  never asked for says why rather than describing the form's state, that the
+  live representation check requires string cells belonging to the set's own
+  columns — on the classic path too, where a nested-object cell used to reach
+  the comparison, and with no escape hatch for a set whose columns were never
+  resolved — that a record holding rows under a set the item no longer attaches
+  refuses instead of reporting a difference, that the detached rows behind that
+  refusal are found by a bounded limit-one probe so they cannot consume the
+  metadata read's row cap and truncate every set on the record, that a probe
+  which fails refuses rather than assuming there are none while reporting itself
+  as unknown rather than claiming rows it never saw, that a set whose every
+  column was withheld says so rather than reporting no rows found, that a record
+  whose rows are all detached says so instead of reading as simply empty, that a
+  substituted definition is
+  refused on the classic form when the form does not render its question, that
+  the request item reconciles a swapped set exactly as a producer record does,
+  that a failed answer preload is final rather than retried into a panel whose
+  definitions were never reconciled, that an answer under a variable set the
+  reader cannot identify never substitutes, and that a substituted definition
+  keeps the hidden-type and inactive flags it was read with, and that a date column inside a set blocks the live read on
+  every path including the classic one, reconciling a catalog-item definition
+  against the record's own answer when a swapped variable set leaves two
+  questions sharing a name — including every ambiguous case it must refuse —
+  Select Box raw-value/display-label separation, malformed representation
+  rejection, end-to-end Checkbox boolean comparison refusing both a disagreeing
+  and an unrecognised pair, tri-state visibility, verdict-derived panel
+  completeness, and structurally honest stored-only copy.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real
@@ -82,14 +175,26 @@ node package.mjs --check
 
 ## Store artifact packaging
 
-Build the distribution archive with:
+Building an artifact is a **release step, not a development step**. Use
+`node package.mjs --check` above while developing, and load the repository root
+unpacked to test a change: the artifact is named from `manifest.json`, which
+carries the last released version for the whole of development, so a build run
+now lands on `dist/glidelens-<already released>.zip` — the name the stores are
+serving, different bytes, on top of the real artifact.
+
+`package.mjs` refuses to do that. When the tag `v<version>` already exists it
+prints what to do instead and exits 1. `--force` overrides it, for the one case
+that is legitimate: rebuilding a released artifact from its own tag, which is
+also how a `dist/` entry is recovered if it was overwritten.
 
 ```powershell
-node package.mjs
+node package.mjs           # release build; refuses if v<version> is tagged
+node package.mjs --force   # rebuild a released artifact from its tag
 ```
 
 It writes `dist/glidelens-<version>.zip` and prints its SHA-256. Builds from the
-same working copy are deterministic on one platform. Line-ending differences
+same working copy are deterministic on one platform — a rebuild of `0.12.0` from
+its tag reproduced the SHA-256 recorded at submission. Line-ending differences
 mean Windows and Linux checkouts are not promised to produce identical bytes.
 
 `package.mjs` owns the explicit `SHIP` allowlist. When adding a file that Chrome
@@ -153,7 +258,8 @@ default. Reverify when platform behavior or the queried schema changes.
   isolated-world results UI.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including
   variable-scoped views.
-- `hidden_variables_ui.js` — Service Portal variable values panel.
+- `hidden_variables_ui.js` — shared Service Portal and classic RITM Variable
+  Values panel, including stored/live comparison on the native path.
 - `tests/` — developer-only Node tests.
 - `docs/` — the public GitHub Pages site, not extension runtime code.
 - `package.mjs` — dependency-free store artifact builder.

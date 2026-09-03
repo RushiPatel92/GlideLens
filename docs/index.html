@@ -773,7 +773,7 @@ a { color: var(--teal); }
 }
 .dm-vrow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 130px 140px minmax(0, 1fr);
+  grid-template-columns: minmax(150px, 1fr) 105px 125px 125px minmax(190px, 1.25fr);
   gap: 12px;
   align-items: center;
   padding: 9px 15px;
@@ -793,6 +793,54 @@ a { color: var(--teal); }
   white-space: nowrap;
 }
 .dm-vvalue.empty { color: #5f5f78; font-style: italic; }
+.dm-mrvs-toggle {
+  justify-self: start;
+  margin-top: 1px;
+  border: 1px solid #575780;
+  background: #31314f;
+  color: #c9c9e0;
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font: 10px var(--sans);
+}
+.dm-mrvs-toggle:hover { background: #3b3b60; color: #fff; }
+.dm-mrvs-detail {
+  grid-column: 1 / -1;
+  margin: 9px 0 2px;
+  overflow-x: auto;
+  border: 1px solid #33334f;
+  border-radius: 6px;
+  background: #22223a;
+}
+.dm-mrvs-caption {
+  padding: 6px 10px;
+  border-bottom: 1px solid #2e2e48;
+  color: #85859f;
+  font: 10px var(--sans);
+}
+.dm-mrvs-table {
+  border-collapse: collapse;
+  width: 100%;
+  font: 11px var(--mono);
+  color: #c1c1d6;
+}
+.dm-mrvs-table th,
+.dm-mrvs-table td {
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid #2b2b44;
+  white-space: nowrap;
+}
+.dm-mrvs-table th {
+  background: #26263f;
+  color: #9a9ab8;
+  font: 600 10px var(--mono);
+  letter-spacing: .02em;
+}
+.dm-mrvs-table tbody tr:last-child td { border-bottom: none; }
+.dm-mrvs-index { width: 26px; color: #6f6f88; }
+.dm-mrvs-differs { color: #ffb5c5; background: #3a2531; }
 .dm-bucket {
   justify-self: start;
   padding: 2px 7px;
@@ -807,6 +855,14 @@ a { color: var(--teal); }
 .dm-bucket.absent      { color: #b5e4c2; background: #263b35; border-color: #39594d; }
 .dm-bucket.visible     { color: #8f9bb3; background: #252539; border-color: #34344f; }
 .dm-bucket.mrvs        { color: #e6c78f; background: #3a3320; border-color: #5c5031; }
+.dm-bucket.match       { color: #9de0c0; background: #203a32; border-color: #315b4d; }
+.dm-bucket.differs     { color: #ffb5c5; background: #432936; border-color: #734156; }
+.dm-bucket.not-comparable { color: #d7c896; background: #393422; border-color: #5d5330; }
+.dm-vcompare small { display: block; margin-top: 4px; color: #85859f; font-size: 9.5px; line-height: 1.3; }
+.dm-vvalues { display: grid; gap: 4px; min-width: 0; }
+.dm-vside { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 6px; align-items: baseline; }
+.dm-vside b { color: #77778f; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.dm-vside span { overflow: hidden; color: #c1c1d6; font: 10.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 
 /* --- Debug Timeline events (debug_timeline_ui.js) --- */
 .dm-ev { border-bottom: 1px solid #23233a; }
@@ -1398,41 +1454,55 @@ a { color: var(--teal); }
       <article class="feature" id="variable-values">
         <div class="feature-rail">
           <p class="eyebrow">Catalog</p>
-          <dl>
-            <dt>Covers</dt>
-            <dd class="plain">Hidden-type</dd>
-            <dd class="plain">UI Policy hidden</dd>
-            <dd class="plain">Not rendered</dd>
+           <dl>
+             <dt>Covers</dt>
+            <dd class="plain">Stored vs live</dd>
+            <dd class="plain">record movement</dd>
+            <dd class="plain">secret-safe reads</dd>
           </dl>
         </div>
         <div class="feature-body">
           <h2>Variable Values, including the ones you cannot see</h2>
           <p>
-            Every variable on the item with its current value, variable sets
-            included — and crucially <strong>the ones you cannot see</strong>.
-            Filter to hidden to find the variable a policy quietly set behind your
-            back.
+            On a classic RITM or record-producer target, compare the raw value
+            stored in the database with the raw value now held by
+            <code>g_form</code>, so an onLoad change is visible without mistaking
+            reference or choice labels for differences.
+            On a verified Workspace record &mdash; a Service Operations Workspace
+            request item, or a supplier case or supplier task in Source-to-Pay
+            Workspace &mdash; the same command checks a narrower evidence-backed
+            set after confirming the visible record, the Variable Editor, read
+            permission, and each raw value's shape. Each supported surface has
+            its own verified type list rather than inheriting another's. Partial
+            and stored-only results say plainly what was not compared; every
+            other Workspace experience and table remains unsupported.
+            On an ordering form, the same command keeps its current best-effort
+            live-value and hidden-variable view.
           </p>
           <div class="tags">
             <span class="tag">hidden / visible filter</span>
+            <span class="tag">differing filter</span>
+            <span class="tag">Workspace guarded comparison</span>
             <span class="tag is-ok">read-only</span>
           </div>
           <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Switch to <em>Hidden</em>, or try <em>Non-empty</em>.</p>
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, native RITM panel. Switch to <em>Differing</em>, or try <em>Non-empty</em>.</p>
             <div class="dm" id="dmVars">
               <div class="dm-head">
                 <h3 class="dm-title">Variable Values <span class="dm-be">Best effort</span></h3>
-                <p class="dm-sub">Every variable on this catalog item with its best-effort current value. Hidden = permanently Hidden-type, switched off by a UI Policy or client script, or not rendered.</p>
+                <p class="dm-sub">Stored Table API values compared with raw live g_form values on this RITM. Values are read-only; reference and choice labels are not compared.</p>
               </div>
               <div class="dm-sum">
                 <span><strong id="dmvTotal">0</strong>variables</span>
                 <span><strong id="dmvHidden">0</strong>hidden</span>
                 <span><strong id="dmvVisible">0</strong>visible</span>
+                <span><strong id="dmvDiffers">0</strong>differing</span>
               </div>
               <div class="dm-ctl">
                 <button class="dm-btn on" type="button" data-vfilter="all" aria-pressed="true">All</button>
                 <button class="dm-btn" type="button" data-vfilter="hidden" aria-pressed="false">Hidden</button>
                 <button class="dm-btn" type="button" data-vfilter="visible" aria-pressed="false">Visible</button>
+                <button class="dm-btn" type="button" data-vfilter="differs" aria-pressed="false">Differing</button>
                 <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
                 <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
               </div>
@@ -2347,21 +2417,30 @@ a { color: var(--teal); }
 
   var VARS = [
     { label: "Laptop model", name: "laptop_model", type: "Select Box",
-      bucket: "visible", value: "macbook_pro_16", hidden: false },
+      bucket: "visible", stored: "standard_16", live: "standard_16", comparison: "match",
+      reason: "Stored and live values match.", hidden: false },
     { label: "Business justification", name: "business_justification", type: "Multi Line Text",
-      bucket: "visible", value: "Replacement for a damaged device", hidden: false },
-    { label: "Start date", name: "start_date", type: "Date",
-      bucket: "visible", value: "2026-08-17", hidden: false },
-    { label: "Approval chain", name: "approval_chain", type: "Multi Row Set",
-      bucket: "mrvs", value: "3 rows", hidden: false },
-    { label: "Employment type", name: "employment_type", type: "Select Box", set: "Employment details",
-      bucket: "invisible", value: "contractor", hidden: true },
-    { label: "Accessories", name: "accessories", type: "Checkbox", set: "Employment details",
-      bucket: "invisible", value: "false", hidden: true },
-    { label: "Cost centre code", name: "cost_centre_code", type: "Single Line Text",
-      bucket: "hidden-type", value: "CC-4471", hidden: true },
-    { label: "Legacy asset tag", name: "legacy_asset_tag", type: "Single Line Text",
-      bucket: "absent", value: "", hidden: true }
+      bucket: "visible", stored: "", live: "Replacement for a damaged device", comparison: "differs",
+      reason: "Stored value is empty; the live value differs.", hidden: false },
+    { label: "Ownership group", name: "ownership_group", type: "Reference",
+      bucket: "visible", stored: "7b21…41f0", live: "7b21…41f0", comparison: "match",
+      reason: "Stored and live values match.", hidden: false },
+    { label: "Support groups", name: "support_groups", type: "List Collector",
+      bucket: "visible", stored: "13a2…9b10,8c44…2d07", live: "8c44…2d07,13a2…9b10", comparison: "match",
+      reason: "Stored and live values match.", hidden: false },
+    { label: "Requested for name", name: "name", type: "Single Line Text",
+      bucket: "invisible", stored: "(not read)", live: "(not available)", comparison: "not-comparable",
+      reason: "The variable name collides with the form API prototype.", hidden: true },
+    { label: "Approval chain", name: "approval_chain", type: "Multi-Row Variable Set",
+      bucket: "mrvs",
+      stored: "1 row", live: "2 rows",
+      storedRows: [{ stage: "manager", days: "3" }],
+      liveRows: [{ stage: "manager", days: "3" }, { stage: "finance", days: "5" }],
+      comparison: "differs",
+      reason: "Stored has 1 row; the live form has 2.", hidden: false },
+    { label: "Access code", name: "access_code", type: "Masked",
+      bucket: "absent", stored: "Not read (secret)", live: "Not read (secret)", comparison: "not-comparable",
+      reason: "Secret value was not read.", hidden: true, secret: true }
   ];
 
   var BUCKET_LABELS = {
@@ -2384,9 +2463,10 @@ a { color: var(--teal); }
     return VARS.filter(function (v) {
       if (filter === "hidden" && !v.hidden) return false;
       if (filter === "visible" && v.hidden) return false;
-      if (nonEmpty.getAttribute("aria-pressed") === "true" && !v.value) return false;
+      if (filter === "differs" && v.comparison !== "differs") return false;
+      if (nonEmpty.getAttribute("aria-pressed") === "true" && (v.secret || (!v.stored && !v.live))) return false;
       if (!q) return true;
-      return [v.name, v.label, v.type, v.set, BUCKET_LABELS[v.bucket]]
+      return [v.name, v.label, v.type, v.set, BUCKET_LABELS[v.bucket], v.comparison, v.reason]
         .filter(Boolean).join(" ").toLowerCase().indexOf(q) !== -1;
     });
   }
@@ -2419,13 +2499,123 @@ a { color: var(--teal); }
     bucket.className = "dm-bucket " + v.bucket;
     bucket.textContent = BUCKET_LABELS[v.bucket];
 
-    var value = document.createElement("div");
-    value.className = "dm-vvalue" + (v.value ? "" : " empty");
-    value.textContent = v.value || "(empty)";
-    value.title = v.value || "(empty)";
+    var comparison = document.createElement("div");
+    comparison.className = "dm-vcompare";
+    var comparisonBadge = document.createElement("span");
+    comparisonBadge.className = "dm-bucket " + v.comparison;
+    comparisonBadge.textContent = v.comparison === "not-comparable"
+      ? "Not comparable"
+      : v.comparison.charAt(0).toUpperCase() + v.comparison.slice(1);
+    var reason = document.createElement("small");
+    reason.textContent = v.reason;
+    comparison.append(comparisonBadge, reason);
 
-    el.append(name, type, bucket, value);
+    var values = document.createElement("div");
+    values.className = "dm-vvalues";
+    [["Stored", v.stored], ["Live", v.live]].forEach(function (pair) {
+      var line = document.createElement("div");
+      line.className = "dm-vside";
+      var side = document.createElement("b");
+      side.textContent = pair[0];
+      var value = document.createElement("span");
+      value.textContent = pair[1] || "(empty)";
+      line.append(side, value);
+      values.appendChild(line);
+    });
+
+    el.append(name, type, bucket, comparison, values);
+    if (v.storedRows || v.liveRows) el.appendChild(mrvsDetail(v, values));
     return el;
+  }
+
+  // The panel renders a multi-row set as a table rather than a JSON array, and
+  // merges the two sides into one grid only where a comparison actually ran.
+  function mrvsColumns(groups) {
+    var names = [];
+    groups.forEach(function (rows) {
+      (rows || []).forEach(function (row) {
+        Object.keys(row).forEach(function (key) {
+          if (names.indexOf(key) === -1) names.push(key);
+        });
+      });
+    });
+    return names;
+  }
+
+  function mrvsCell(rows, index, column) {
+    var row = rows[index];
+    if (!row) return "(no row)";
+    return row[column] || "(empty)";
+  }
+
+  function mrvsDetail(v, values) {
+    var stored = v.storedRows || [];
+    var live = v.liveRows || [];
+    var columns = mrvsColumns([stored, live]);
+    var detail = document.createElement("div");
+    detail.className = "dm-mrvs-detail";
+    detail.hidden = true;
+
+    var caption = document.createElement("div");
+    caption.className = "dm-mrvs-caption";
+    caption.textContent = v.comparison === "differs"
+      ? "Stored rows; a changed cell reads stored \u2192 live."
+      : "Stored and live rows, which match.";
+    detail.appendChild(caption);
+
+    var table = document.createElement("table");
+    table.className = "dm-mrvs-table";
+    var head = document.createElement("tr");
+    var indexHead = document.createElement("th");
+    indexHead.className = "dm-mrvs-index";
+    indexHead.scope = "col";
+    indexHead.textContent = "#";
+    head.appendChild(indexHead);
+    columns.forEach(function (column) {
+      var cell = document.createElement("th");
+      cell.scope = "col";
+      cell.textContent = column;
+      head.appendChild(cell);
+    });
+    var thead = document.createElement("thead");
+    thead.appendChild(head);
+    var body = document.createElement("tbody");
+    for (var index = 0; index < Math.max(stored.length, live.length); index += 1) {
+      var line = document.createElement("tr");
+      var indexCell = document.createElement("td");
+      indexCell.className = "dm-mrvs-index";
+      indexCell.textContent = String(index + 1);
+      line.appendChild(indexCell);
+      columns.forEach(function (column) {
+        var cell = document.createElement("td");
+        var storedText = mrvsCell(stored, index, column);
+        var liveText = mrvsCell(live, index, column);
+        if (storedText === liveText) {
+          cell.textContent = storedText;
+        } else {
+          cell.className = "dm-mrvs-differs";
+          cell.textContent = storedText + " \u2192 " + liveText;
+        }
+        line.appendChild(cell);
+      });
+      body.appendChild(line);
+    }
+    table.append(thead, body);
+    detail.appendChild(table);
+
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "dm-mrvs-toggle";
+    toggle.textContent = "Show rows";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", function () {
+      var open = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", open ? "false" : "true");
+      toggle.textContent = open ? "Show rows" : "Hide rows";
+      detail.hidden = open;
+    });
+    values.appendChild(toggle);
+    return detail;
   }
 
   function render() {
@@ -2446,6 +2636,8 @@ a { color: var(--teal); }
       String(list.filter(function (v) { return v.hidden; }).length);
     document.getElementById("dmvVisible").textContent =
       String(list.filter(function (v) { return !v.hidden; }).length);
+    document.getElementById("dmvDiffers").textContent =
+      String(list.filter(function (v) { return v.comparison === "differs"; }).length);
   }
 
   Array.prototype.forEach.call(

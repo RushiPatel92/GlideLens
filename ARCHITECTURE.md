@@ -256,6 +256,382 @@ Its dormant implementation and `TOGGLE_FIELD_NAMES` handler remain in
 
 ## Catalog and Service Portal behavior
 
+Variable Values is context-sensitive. It parses any top-frame Workspace record
+route before probing classic frames. On ordinary classic pages, a frame
+qualifies only when `sys_target` and `sys_uniqueValue` agree with
+`g_form.getTableName()` / `getUniqueValue()`. On a Workspace route, that
+intra-frame marker is not enough: the classic frame must also name the exact
+record in the top-frame route. A mismatched embedded classic form is ignored,
+even when it answers first. When no matching classic frame exists, failures in
+unrelated child frames are retained as diagnostics but do not suppress the
+independently gated Workspace path. Before a final classic value read on a
+Workspace shell, the route and expected identity are checked again.
+
+Classic live reads use exact `variables.<name>` field names. If every safe
+namespaced read is empty while a safe plain-name support probe is non-empty, the
+whole catalog-variable live source is unavailable; plain values are never used
+as fallback values because they may belong to record fields. Date/Time uses
+`g_tz` captured in the same final MAIN-world snapshot as the live value, not a
+separate `sys_user` or instance-property lookup. RITMs read
+`sc_item_option_mtom` / `sc_item_option`; other classic records qualify only
+when `question_answer` contains rows matching both the probed table and sys_id.
+A moved record or route aborts the comparison.
+
+A record opened as a **sub-tab** nests its route inside the route of the tab
+that owns it:
+`/now/<experience>/record/<owner>/<owner id>/params/.../sub/record/<table>/<id>`.
+The identity is the innermost record, because that is the one the form is
+showing, and the experience path is read up to the *first* `record/` so it stays
+the experience (`psm/workspace`) rather than swallowing the whole trail. Only a
+`sub/record/<table>/<id>` segment moves the identity; any other trailing path
+leaves the tab's own record in place. The owning record is deliberately not
+constrained — it takes part in neither half of the read, since the stored side
+queries the sub-record's own table and the live side is pinned to the
+sub-record's form and every corroborating ancestor. The sub-record is
+allowlisted on its own `(experience path, table)` pair like any other route: a
+supported owner never vouches for an unsupported sub-record.
+
+Supported Workspace records use a dedicated frame-0 MAIN-world snapshot; the
+reader never fans out across discovered frames. Support is allowlisted by the
+`(experience path, table)` **pair**, never by either half alone: today that is
+`sow` with `sc_req_item`, and `psm/workspace` with `sn_slm_case` or
+`sn_slm_task`. Segment count is not the rule — `sow` is one segment and
+`psm/workspace` is two — so `psm/workspace` with `sc_req_item`, `sow` with a
+supplier table, a path prefix such as `psm`, and any other experience are all
+refused with the truthful unsupported message. The pair also chooses the stored
+reader: an RITM route reads `sc_item_option` through its catalog item, and a
+supplier route reads the record's own `question_answer` rows, which is what
+both supplier tables actually store — a supplier task owns its answers rather
+than reading a parent's. A supplier route with no matching answer rows says so
+instead of presenting an empty panel.
+
+That allowlist exists twice, in `content.js` and again inside the MAIN-world
+snapshot function, because an injected function cannot close over extension
+scope and the service worker re-derives the route itself rather than trusting
+the message. A test asserts the two copies are identical; a silent drift would
+either start a read the snapshot then refuses, or let the snapshot answer for a
+surface the router never verified. Catalog forms
+are filtered by `sourceTable`/`sourceId` and corroborating composed-ancestor
+record identity before geometry is considered. One collapsed current form is
+valid; rectangle is used only to break same-record stale duplicates. A visible
+side panel for another record is ignored. With no qualifying catalog form, the
+stored-only path requires one unambiguous visible page-owned record identity;
+the URL alone never establishes identity. That state is labelled stored-only
+only after the stored read completes; a failed or truncated stored read reports
+that neither side was available and never claims to be showing stored values.
+
+Workspace live reads are exact pulls from `sn-catalog-form.fields` by
+`variables.<name>`, followed by question and record identity checks. Question
+id and exact entry name are mandatory. The entry-level
+`referringTable`/`referringRecordId` pair is optional on some field types; when
+both are absent the already-verified parent form remains authoritative, while a
+half-pair or any supplied mismatch refuses the complete snapshot. The request
+list is independently allowlisted and excludes secrets, sensitive names,
+duplicates, prototype collisions, malformed definitions, and unverified types
+before MAIN-world injection. Within a requested entry, `canRead === true` is
+required before either `value` or `displayValue` is touched.
+
+A value must be a string, with one measured exception. On the supplier
+surfaces a Checkbox that a UI policy hides settles into a real JavaScript
+`true`/`false` rather than a string, and stays that way: measured over 50
+seconds on a supplier case, the hidden checkbox read `boolean` throughout while
+a second checkbox on the same record read `string` throughout. Refusing it
+reported the live value as unavailable when the form held it all along —
+classic is unaffected because `g_form.getValue()` always returns a string. So a
+real boolean is accepted and normalised to `"true"`/`"false"`, which leaves one
+representation for the comparison and its validators. The allowance is decided
+by the content script and travels on the request as `booleanKind`, exactly as
+`dateKind` does, because it is a per-surface, per-policy judgement the snapshot
+must not make: only a variable whose own comparison mode is boolean, and only on
+a surface in `WORKSPACE_BOOLEAN_VALUE_SURFACES`. SOW is deliberately absent —
+no request item on either verified instance exposes a boolean-typed variable at
+all, so nothing proves its component behaves the same. A number, a null or a
+truthy object is still refused everywhere. The layer-1 type
+allowlist is **per surface**, keyed by the same pair, because per-type evidence
+never transfers between surfaces: every type was proven against one component
+on one route, and a surface with no map of its own compares nothing rather than
+inheriting another's. SOW RITMs support types 1, 2, 5, 6, 7, 8, 9, 10, 18, 21,
+26, 31, 33 and 34; the supplier surfaces support 1, 2, 5, 6, 7, 8, 10, 18, 21,
+26, 33 and 34, each with a runtime shape validator. Types 9 and 31 stay absent
+on the supplier surfaces because no probed supplier record stores one, so there
+is no evidence to allowlist from. Other types remain listed but uncompared.
+
+Yes/No (1) has no single stored spelling. One probed instance stored
+`Yes`/`No` and another `true`/`false`, and a single instance stored both —
+the spelling follows whichever write path produced the value, not the
+platform — which is why it is compared by boolean meaning rather than as a
+raw string. Lookup Select
+Box (18) is validated as a choice pair, not a reference: its raw value is the
+lookup table's own value column, which was free text in 256 of 293 stored rows
+on the configured instance, a sys_id in 28 and comma-bearing text in 9, so
+requiring a sys_id would have refused most real lookups. Attachment (33) is
+validated as a sys_id, which is what every observed stored and live value was.
+Both were re-proven on a second instance through a catalog fixture the
+platform itself ordered: the lookup read back its raw stored value in both
+shapes it takes — a free-text label and a sys_id — each against a display
+label, and the attachment read back its attachment sys_id against the file
+name. For Select Box (5), the
+raw string `value` is compared and a string `displayValue` is required only to
+validate the observed pair shape; the display label is never substituted for
+the raw choice value. Checkbox (7) compares by boolean meaning through its own
+`boolean-pair` validator. Both instances exposed `value` and `displayValue` as
+equal strings matching storage, so a rendered label disagreeing with the raw
+value is refused as unverified. Because a checkbox has a known value domain, an
+agreeing pair is additionally required to be a recognised boolean or empty: an
+unrecognised representation stays uncompared rather than falling through to a
+raw string comparison that could report a difference between identical states.
+
+Native stored values are metadata-first and default-deny. The
+`sc_item_option_mtom` read never requests a value column; a second, batched
+`sc_item_option` read requests values only for explicitly allowlisted variable
+types whose definition and stored metadata agree. Secret, unknown, structural,
+and MRVS values never enter that request. Empty values, missing stored rows,
+duplicates, failures, and row-cap truncation remain distinct states, and the
+stored side distinguishes "read and absent" from "never read" — only a lookup
+that actually ran may report a variable as not stored. Scalar
+types compare raw strings; Yes/No and Checkbox recognise `true`/`1`/`yes` and
+`false`/`0`/`no` as equivalent while keeping empty distinct; List Collector
+compares de-duplicated, non-empty comma-separated membership. Lookup Select Box
+and Lookup Multiple Choice are scalars despite the second one's name: both were
+verified live to store one raw value — whichever field `lookup_value` names, so
+a label as readily as a sys_id — and never a comma-separated list, so set
+membership would be the wrong comparison. Attachment is a scalar too: it stores
+the attachment's sys_id, so a replaced or cleared attachment reads as a
+difference. Multiple Choice, Wide Single Line Text, IP Address and Requested
+For are scalars on the same evidence. Date display text is normalised through
+the page's `getDateFromFormat` and captured user format. The helper verifies the
+wall-clock components survive the parse/local-getter round trip and refuses
+browser-local DST gaps or overlaps. Date/Time additionally proves that the raw
+layer-1 UTC value converts through same-snapshot `g_tz` to the normalised display
+wall clock before comparing raw-to-raw with storage. A missing format, parser,
+zone, malformed shape, or failed representation proof leaves the row
+uncompared. The browser timezone is never a fallback. Duration stays denied because its stored side is a
+`1970-01-01`-based internal value the form never echoes back, and HTML stays
+denied because either side may re-encode it; comparing either raw would turn
+a correct "not compared" into a false "differs".
+Every structural variable type is excluded from the panel altogether, on the
+native, producer, and portal paths: Break, Rich Text Label, Label, Container
+Start, Container End, Container Split, Custom, Custom with Label and UI Page.
+A layout divider, instructional HTML, a caption, a container boundary and an
+embedded widget have no value on either side, so none of them is listed. Their
+structural policy entries are kept so an unfiltered row would still never be
+fetched. Type names are matched alongside the numbers because types 14 and 17
+read "Custom" and "Custom with Label" on current releases and "Macro" and
+"Macro with Label" on older ones.
+Inactive variable definitions are
+still enumerated — an old record can hold stored data for a since-retired
+variable — but a row is listed only when something is stored for it, and then
+says so; a retired variable with nothing stored is dropped rather than reported
+as not stored, which read as a fault on a field that is not on the form at all.
+Prototype-collision names are not comparable. Neither is a duplicated name, and
+no duplicate is read at all: `g_form` resolves a shared name to whichever
+definition it chooses, so reading the ordinary twin of a masked variable could
+surface the masked value in a row not marked secret. A duplicate that shares its
+name with a secret is treated as secret itself, so the probe never touches the
+name.
+A record-producer-backed classic form makes **no visibility claim at all**.
+Its catalog variables are not fields `g_form` manages: measured on one such
+record, `getFieldNames` is undefined, `isVisible` answered false for all 115
+variables, and the element the reader measures by question id is an `<item>`
+wrapper that is `display:inline` and always 0x0. Both sources therefore reported
+every variable as hidden by a UI policy while the form was plainly showing them.
+Those rows are bucketed `visibility-unknown` and labelled "Visibility unknown";
+values and their comparison are untouched, which is what the panel is for.
+
+The record kind decides this, because it is a structural fact rather than a
+guess about the page. An aggregate "nothing on this form looked visible" test
+was tried first and is wrong: on that very record one multi-row parent did
+measure visible, which silently disarmed it — and a multi-row row shows its own
+bucket, so the disarming row was invisible in the result. Request items keep
+reporting what the form says, since their variables really are fields and
+surfacing a hidden one is the feature's own point.
+
+Record-producer targets apply the same rule to `question_answer`: the first read
+requests answer/question metadata without `value`, and the second requests
+`sys_id,value` only for allowlisted answer ids. No matching rows means the
+extension does not claim an arbitrary classic record is producer-backed.
+Variable-set metadata is resolved before that second read, so MRVS child-answer
+ids are excluded and each MRVS renders as one parent row.
+
+A multi-row variable set stores nothing on its own question row, so it gets a
+third read of its own against `sc_multi_row_question_answer`, keyed by
+`parent_id` (the RITM for a RITM target, the record itself for a
+producer-backed one). It follows the same two phases: cell and
+column identity first with no value column, then `sys_id,value` only for cells
+whose own column type is allowlisted, so a masked column inside a set stays
+unread. `row_index` is what groups cells into rows, so a set where any cell
+lacks a usable one is withheld and not compared: read order is not a
+substitute, and keying on it would split one real row into a fabricated
+single-column row per cell and then report those as row-count differences.
+Cells are grouped by `row_index` into the same array-of-objects shape
+`g_form.getValue()` returns, and compared structurally — row order matters, key
+order does not, an absent key equals an empty one, and each column uses its own
+comparison mode. A set with any withheld column is listed with those column
+names and not compared, rather than reported as a difference. When the read
+returns no rows at all for the record, the set is reported unstored and left
+uncompared. The live MRVS JSON is an all-columns read, so it is requested only
+when the complete set definition proves every child column positively safe and
+comparable and the stored metadata reveals no withheld column. Otherwise the
+set stays listed but `g_form.getValue()` is never called for it; this prevents a
+masked or sensitive child from crossing the MAIN-world boundary inside the
+parent JSON.
+
+A Date or Date/Time **column inside a set** blocks the live read on every path,
+classic included. The same type read as a standalone variable comes back as raw
+canonical UTC and the comparison converts storage into the form's timezone to
+meet it; inside a set it does not. The whole set arrives as one value with the
+date cell already formatted to the user's date format and shifted into the
+session timezone: one measured cell read `21-04-2026 07:13:37` where storage
+held `2026-04-21 14:13:37`, and the classic panel reported that record as
+differing when nothing about it had changed. Converting back was rejected, though not
+because it cannot be done — the standalone path already parses a displayed date
+with the page's own parser and fails closed when it cannot. The reason is that
+a set is compared as a whole: every date cell would have to normalise, each
+cell's type is known only from the set's column definitions, and any cell that
+failed would have to refuse the whole set anyway. The set is therefore listed
+with its stored rows and never compared, and the row says which column caused
+it.
+
+Workspace reads the same set through the catalog form rather than `g_form`. It
+is exposed as one container entry under `variables.<set internal name>`, keyed
+by the variable set's own sys_id — which is exactly the question id the parent
+row already carries, so the entry identity gate needs no special case. Its raw
+value is the JSON row array and its `displayValue` is the same array with
+display labels substituted, and the `mrvs-pair` validator requires both to
+parse as arrays of plain objects of equal length with identical column names
+row for row before the raw array is compared.
+
+Underneath that pair check sits a requirement that holds on **every** surface,
+the classic one included: each row is a plain object, every cell is a string,
+and every key is one of the set's own columns. That is what ties the array to
+this variable set rather than to any array of objects, and it keeps a number, a
+null or a nested object — which would stringify to `[object Object]` and report
+a meaningless difference — out of the comparison. It is representation-agnostic
+— a precondition for comparing strings at all rather than a claim about any one
+component — so applying it on both surfaces transfers no per-surface evidence,
+while the value/display pair check stays specific to the Workspace container.
+The classic path previously accepted any JSON array. A set with no resolved
+column names refuses everything, and nothing reaches that state today because a
+live read is only requested for a set whose columns were all named and
+allowlisted; the earlier "no columns known, so skip the key check" clause was
+the one allow-by-default hole in a deny-by-default validator.
+
+On top of the rules above, each
+Workspace surface carries its **own** allowlist of the column types it has seen
+the container render raw — `5`, `6` and `8` on SOW; `1`, `2`, `5`, `6`, `7`,
+`8` and `33` on the supplier surfaces — because the type allowlist a surface
+proves for standalone variables says nothing about what that container does
+with the same type. SOW's shorter list is not an oversight: the records that
+would widen it render no catalog form on that route at all, so their container
+values cannot be read to prove anything. A set holding any other column type is listed and never
+read, and the row names the type rather than implying the form was asked and
+had nothing.
+
+The panel never prints a set as its JSON array. Each side reports its row count
+and offers the rows as a table: one line per row, one column per variable in the
+set, with a column only one side carries still shown. The stored and live sides
+merge into a single table, where a changed cell reads `stored → live`, only
+where a verdict says a comparison actually ran. The cells it marks are the ones
+the comparison itself reported, carried on the row: the panel may not re-derive
+them by comparing the two strings, because a Yes/No or Checkbox column folds
+`Yes` and `true` into one bucket, and a raw string compare would paint a
+changed cell inside a set badged Match. a set that was listed rather
+than compared keeps its sides in separate labelled tables, so the rendering
+cannot imply a comparison that never happened. A row missing from one side reads
+as an absent row rather than an empty one. The copy output is deliberately not
+changed by any of this and still carries the whole JSON array, which is what
+someone pastes into a script. When answered direct
+questions expose one unique `question.cat_item`, the same catalog-item reader
+enumerates unanswered direct and attached-set definitions; an absent or
+ambiguous relationship remains answers-only instead of guessing through shared
+variable-set attachments.
+
+That enumerated list is then reconciled against the record's own answers,
+because the two can legitimately disagree. A catalog item's attached variable
+sets change over time, and a record answered before such a change holds answers
+against the old question rows while the item now defines new ones carrying the
+same names — observed live as an item attaching a 2024 variable set while a
+2025 case answered, and the form still bound, a different set's questions of
+exactly those names. The item is authoritative about which variables exist; the
+record's answers are authoritative about which question each of its own values
+belongs to. So where exactly one unanswered catalog definition and exactly one
+answer share a name, the answer's question id, type and variable set replace
+the catalog definition's, and the row says the definition came from the record's
+own answer. A catalog definition whose own id is answered is left alone, so a
+genuine duplicate name still reaches the duplicate-name guard rather than being
+resolved silently; two definitions or two answers sharing a name resolve
+nothing; multi-row parents are keyed by variable set and never substituted.
+Without this, storage held nothing under the enumerated id — so the row claimed
+the record had never answered a variable it plainly had — and on Workspace the
+live read asked the form for an id the form does not have, which refuses the
+whole snapshot and empties the panel.
+
+Both stored readers reconcile, because the swap is a property of the catalog
+item rather than of the table holding the values: the request-item reader reads
+its own `sc_item_option` rows before its definitions are settled and feeds the
+same function. That single read is authoritative: a **failed** one is final
+rather than retried, because the definitions have already been reconciled
+against the zero answers it returned, and a retry that succeeded would show
+stored values against definitions the swap was never repaired on. A
+**truncated** one skips reconciliation entirely, since "exactly one answer
+shares this name" is not a claim a partial answer list can support — which is
+what the producer reader already did by returning early.
+
+An answer's own variable set is resolved before it may substitute anything. The
+swap is by definition a set the item no longer attaches, so that set is absent
+from the item-derived map and its multi-row nature is unknowable from the item
+alone; the request-item reader therefore reads metadata for the answer sets its
+map is missing, exactly as the producer reader always did for every set its
+answers name. A set that cannot be resolved leaves its answers unsubstitutable
+rather than assumed ordinary, because a multi-row child answer must never
+replace a plain variable. Resolving it also supplies the set title a
+substituted row would otherwise leave blank. A substituted definition replaces
+the catalog one wholesale, so it carries the hidden-type and inactive flags
+computed from the answer's own type and `active` — hardcoding them put a
+substituted Hidden variable in the absent bucket. A substituted definition then has to be corroborated against the
+form. Workspace does that through the entry identity gate, which refuses when
+the form's entry id disagrees. The classic reader resolves `variables.<name>`,
+which cannot tell the two questions apart, so a substituted row whose question
+id is not rendered on the form is listed rather than compared — otherwise the
+value read back belongs to the item's new variable of the same name, and
+comparing it against this record's older answer compares two different
+variables.
+
+A record whose rows live under a set the item no longer attaches must not be
+indistinguishable from a record with no rows, or the panel compares zero stored
+rows against a populated form — a difference manufactured by the query. That is
+established by a **bounded existence probe**, `parent_id=<id>^variable_setNOT
+IN<enumerated ids>` at a limit of one row, while the metadata read itself stays
+filtered to the enumerated sets. The signal is tri-state — present, absent or
+unknown — never which sets or how many.
+
+Widening the metadata read instead and filtering afterwards was the obvious
+shape and the wrong one: detached cells then counted toward the row cap, so a
+record holding enough of them truncated the read and refused **every** set on
+it, over rows that were never going to be read. A probe that cannot be answered refuses exactly as a
+positive one does, but reports itself as unknown and says so in its own words:
+claiming the record holds rows under a dropped set would assert something about
+storage that no read established. A set with no stored rows on a record holding
+detached rows is listed rather than compared, and because the read is filtered,
+a record whose rows are *all* detached now reads as empty — so both detached
+reasons are checked ahead of the plain "nothing stored" one.
+
+They sit *behind* the withheld and index-incomplete reasons, though.
+`assembleNativeMrvsSets` creates a set's entry before the withheld
+early-return, so a set whose every column was withheld has an entry with zero
+rows; judged on "no rows" alone it would report that none were found, when rows
+were found and withheld. Both of those branches require the set entry to exist,
+so the all-detached record — which has no entry at all — still reaches the
+detached reason. `NOT IN` was verified live rather than assumed: on a
+record holding 44 rows across two sets, `IN` the first returned 26, `NOT IN` the
+first returned 18, `NOT IN` both returned 0, and `NOT IN` an unrelated id
+returned all 44, so the condition is applied rather than silently ignored.
+
+The Service Portal path remains live-only. Masked type `25` is treated as a
+secret and listed redacted. Numeric type `18` is not treated as Hidden; only an
+explicit Hidden type label may supply that bucket, avoiding the verified Lookup
+Select Box misclassification.
+
 Variable insight icons open Catalog Insight scoped to an individual variable's
 onChange client scripts and UI policy actions. The variable name and definition
 sys_id exist only in Service Portal's Angular field model, so a MAIN-world

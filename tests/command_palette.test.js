@@ -36,6 +36,7 @@ function loadBuiltCommands(debugTimelineUI) {
     "openRecordSearch", "openCurrentRecordPlaybookExecutions",
     "openCurrentPlaybookCustomerUpdates", "openCustomerUpdatesBySysId",
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
+    "showVariableValues",
     "showCatalogInsight", "refreshCodeSearchCoverage",
     contentSource.slice(commandStart, commandEnd) +
       contentSource.slice(helperStart, helperEnd) +
@@ -47,7 +48,7 @@ function loadBuiltCommands(debugTimelineUI) {
     { href: "https://example.service-now.com/incident.do", origin: "https://example.service-now.com" },
     { SNDebugTimelineUI: debugTimelineUI || null },
     () => [],
-    noop, noop, noop, noop, noop, noop, noop, noop
+    noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
 }
 
@@ -268,7 +269,7 @@ test("result panels use the same stable feature headings", () => {
     "record_search_ui.js": /<h2>Record Lens<\/h2>/,
     "catalog_insight_ui.js": /<h2 id="snh-catalog-insight-title">Catalog Logic<\/h2>/,
     "code_search_ui.js": /<h2>Code Search <span class="term"><\/span><\/h2>/,
-    "hidden_variables_ui.js": /<h2 id="snh-hidden-title">Variable Values /,
+    "hidden_variables_ui.js": /const panelTitle = workspaceMode[\s\S]*\["stored-only", "no-editor-empty", "no-candidate"\][\s\S]*\? "Stored Variables"[\s\S]*: "Variable Values"[\s\S]*<h2 id="snh-hidden-title">\$\{panelTitle\} /,
     "debug_timeline_ui.js": /<h2 id="snh-debug-title">Debug Timeline /,
   };
 

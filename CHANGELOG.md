@@ -10,6 +10,211 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [0.14.0] - 2026-09-03
+
+### Added
+- **Variable Values compares what is stored with what the form is holding,
+  rather than listing what the form shows.** On a classic RITM or
+  record-producer target it reads metadata-allowlisted stored values and the
+  exact `variables.<name>` live values, capturing record identity and the page
+  timezone with the form so a value can never be attributed to the wrong
+  record, never fetching a secret, and comparing each multi-row set row by row.
+  Reference and choice labels are not mistaken for differences, because the raw
+  value is what is compared. Layout types -- Break, Label, Rich Text Label, the
+  Container and Custom families and UI Page -- are dropped from the panel
+  entirely rather than listed as variables with no value.
+- **The comparison runs on Workspace records, one verified surface at a time.**
+  Service Operations Workspace request items, and supplier cases and supplier
+  tasks in Source-to-Pay Workspace. Route, record, form, read permission and
+  each raw value's shape are all checked before anything is read, and every
+  other Workspace experience and table is refused without any read at all. Each
+  supported surface carries its own verified type list rather than inheriting
+  another's, so a type proven against one component on one route is not assumed
+  elsewhere. Partial and stored-only results say plainly what was not compared,
+  and a stored-only panel is structurally incapable of claiming a comparison.
+- **Multi-row variable sets are compared on Workspace too.** Every one of them
+  used to read "No live multi-row value was available" -- a statement about a
+  form that had never been asked, because the live read only ever ran for
+  ordinary comparable variables. The set is now read as the single container
+  value the form exposes, and its rows are compared structurally against the
+  stored rows. A set that is *not* read now names the actual reason -- a
+  surface that compares no sets, a column that could not be verified as safe,
+  columns that were never enumerated, or a column type whose rendering inside a
+  set has not been proven on that surface -- and the panel's "all N were
+  checked" count is now exactly the set of rows a live read was requested for.
+- **More variable types compare, each on its own evidence.** Yes/No, Lookup
+  Select Box and Attachment on both Workspace surfaces, and Date/Time on the
+  supplier ones. Yes/No is compared by boolean meaning rather than as a raw
+  string, because storage has no single spelling for it -- `Yes`/`No` on one
+  probed instance and `true`/`false` on another, which a raw comparison would
+  have called a difference. Lookup Select Box is treated as a choice and not a
+  reference: its stored value is the lookup table's own value column, which was
+  free text in most sampled rows, so demanding a sys_id would have refused most
+  real lookups. Attachment is a single attachment record, and a value of any
+  other shape stays uncompared rather than being judged.
+
+### Changed
+- **A multi-row variable set is shown as a table, not as a JSON array.** The
+  whole set arrived as one line of `[{"...":"..."},{...}]` in a narrow column,
+  which is unreadable exactly when it matters -- a set with five columns and
+  four rows. Each side now reports its row count and offers the rows on demand
+  as a table: one line per row, one column per variable in the set, with a
+  column only one side carries still shown. Where a comparison actually ran the
+  two sides merge into one table and a changed cell reads `stored -> live`, so
+  the row and column that moved are visible at a glance rather than by reading
+  two JSON arrays against each other. Where no comparison ran the sides stay in
+  separate labelled tables, because a merged cell would claim one had. A row
+  present on one side only reads as an absent row rather than an empty one, and
+  the copy output is deliberately unchanged: it still carries the whole array,
+  which is what gets pasted into a script or a ticket.
+
+### Fixed
+- **A record opened as a sub-tab in Workspace is now supported.** Reported from
+  a supplier task opened inside its case. A sub-tab nests its route inside the
+  route of the tab that owns it, and the experience path used to swallow that
+  whole trail, so it matched no supported surface and the panel refused while
+  the form was plainly on screen. The identity is now the innermost record --
+  the one the form is showing -- and the experience path stops at the first
+  `record/`. Only a `sub/record/` segment moves the identity, the sub-record is
+  allowlisted on its own `(experience path, table)` pair so a supported owner
+  never vouches for an unsupported sub-record, and the live identity gate is
+  unchanged and still has to agree before anything is read. Verified on a
+  supplier task that stores 15 answers inside a case that stores 148: the panel
+  compares the task's 15, not the owner's.
+- **A multi-row set that was never read no longer says the form had nothing.**
+  Two variables sharing a name are never read at all -- the form would resolve
+  the name to whichever of them it chooses -- but a set in that position fell
+  through to the wording used for a form that answered and had no value. The
+  same sentence appeared for a set with no readable name and for one whose name
+  collides with the form API prototype. Every one of those rows now says which
+  of those things stopped the read, on the classic form as well as Workspace,
+  and the check sits ahead of the one that describes an actual read.
+- **The panel and the read agree on which rows were checked.** The request
+  builders treated a name as duplicated when two definitions carried it; the
+  panel also counted a name carried by two stored rows. A variable duplicated
+  only in storage was therefore read and then not counted, so the panel checked
+  something it never promised to check. Both now take the set of duplicate
+  names from one place.
+- **A changed cell in a multi-row table is one the comparison actually found.**
+  The table compared the two strings itself, while the comparison folds `Yes`
+  and `true` into one bucket for Yes/No and Checkbox columns -- so a supplier
+  set could render a red changed cell underneath a green Match badge. The
+  differing cells now travel with the row, computed once by the rules that
+  produced the verdict, and a cell that is equal by comparison but different as
+  text says so in its tooltip instead.
+- **The live multi-row representation check requires the shape it claims, on
+  both surfaces.** It verified that both sides were arrays of plain objects
+  with matching keys, but said nothing about the cells: a number, a null or a
+  nested object passed, and a nested object then stringified to
+  `[object Object]` and reported a difference that meant nothing. Cells must now
+  be strings, and every key must be one of that set's own columns, which is what
+  ties the value to this variable set rather than to any array of objects. The
+  classic form is held to the same requirement -- it previously accepted any
+  JSON array -- because this is a precondition for comparing strings at all
+  rather than a claim about any one component. A set whose columns were never
+  resolved is refused outright; it used to skip the key check entirely, which
+  was the one allow-by-default clause inside a deny-by-default rule.
+- **A record whose rows live under a swapped variable set no longer reads as
+  empty.** The multi-row read asked only for the sets the catalog item attaches
+  today, so a record answered before the item changed looked exactly like a
+  record with no rows -- and zero stored rows against a populated form is a
+  difference the query invented. Such a set is now listed rather than compared.
+- **Detached multi-row rows no longer truncate every set on the record.** The
+  fix above first established them by reading every row under the record and
+  filtering afterwards, which let rows that were never going to be read consume
+  the read's row cap: past it, the whole read reported truncated and refused
+  every multi-row set on that record. Their existence is only ever a yes/no, so
+  it is now a separate bounded one-row probe and the read itself stays filtered
+  to the sets the item attaches. A probe that cannot be answered refuses rather
+  than assuming there are none -- and says the check could not be completed,
+  rather than claiming the record holds rows that nothing established. A record
+  whose rows are *all* detached says so instead of reading as simply empty,
+  while a set whose every column was withheld still reports the withheld
+  columns: it has stored rows, and saying none were found was wrong.
+- **A failed answer read is final rather than retried behind the panel's
+  back.** The request-item reader reads the record's answers once and
+  reconciles the catalog definitions against them. When that read failed the
+  definitions were reconciled against nothing, and the stored read then quietly
+  tried again -- so a transient failure produced a panel showing stored values
+  against definitions whose swapped variable set had never been repaired, with
+  nothing on screen to say so.
+- **An answer under an unidentifiable variable set never substitutes.** The
+  reconciler refuses to let a multi-row set's child answer stand in for a plain
+  variable, but the request-item reader only knew about the sets the item
+  attaches -- and a swap is by definition a set it no longer attaches, so those
+  answers reached the guard looking like ordinary variables. Their sets are now
+  resolved first, exactly as the record-producer reader always did, which also
+  fills in the set name such a row used to leave blank. A set that cannot be
+  resolved leaves its answers alone.
+- **A substituted definition keeps the flags it was read with.** It replaces
+  the catalog definition wholesale but hardcoded "not a hidden type" and
+  dropped the retired state, so a substituted Hidden variable was reported as
+  absent from the form rather than as a type that has no on-screen value.
+- **Request items reconcile a swapped variable set too.** The repair added for
+  record-producer targets applies to the catalog item, not to the table holding
+  the values, so a request item on a changed item was still reporting variables
+  the record had plainly answered as unstored, and still emptying its Workspace
+  panel. Both readers now run the same reconciliation, and a substituted
+  definition is refused on the classic form when the form does not render its
+  question -- otherwise the value read back belongs to the item's new variable
+  of the same name.
+- **A producer-backed classic record no longer calls every variable hidden.**
+  Its catalog variables are not fields `g_form` manages, so `isVisible` answered
+  false for all of them and the element the reader measures is a zero-size
+  wrapper -- and the panel reported "Hidden by policy/script" for every variable
+  on a form that was showing them. Those rows now read "Visibility unknown",
+  which is what the page actually supports; the values and their comparison,
+  which are the point of the panel, are unchanged. Those rows carry an explicit
+  unknown visibility state, so the header counts them and the filter offers
+  them: without it they inherited the summary's default and were counted and
+  filtered as *visible* while their own badge said otherwise, and the count and
+  filter themselves were Workspace-only, which would have dropped 76 of 79 rows
+  out of the summary with no mention. Request items still report
+  what the form says, because their variables are real fields and surfacing a
+  hidden one is the feature's own point.
+- **A hidden Checkbox on a supplier record compares instead of reporting no
+  live value.** The Workspace component settles a checkbox that a UI policy
+  hides into a real JavaScript boolean rather than a string, and the reader
+  accepted only strings -- so the panel said the live value was unavailable
+  while the form held it all along. Measured over 50 seconds on a supplier case,
+  the hidden checkbox read as a boolean throughout while another checkbox on the
+  same record read as a string throughout. A real boolean is now normalised to
+  `true`/`false`, and only for a variable whose own comparison is boolean on a
+  surface where that representation was measured; a number, a null or an object
+  is still refused. Service Operations Workspace is deliberately excluded,
+  because no request item exposes a boolean-typed variable to prove it with.
+- **A multi-row column whose name could not be read is withheld, not dropped.**
+  Dropping it left the row one key short, where it would compare as empty
+  against a live side that had it.
+
+- **A date inside a multi-row set is no longer reported as a difference that
+  does not exist.** A Date/Time read as an ordinary variable comes back as raw
+  canonical UTC, and the comparison converts the stored value to meet it.
+  Inside a multi-row set it does not: the whole set arrives as one value with
+  the date cell already formatted to the user's date format and shifted into
+  the session timezone. One measured cell read `21-04-2026 07:13:37` where
+  storage held `2026-04-21 14:13:37`, and the panel called that record changed
+  when nothing about it had been touched. This was shipped classic behaviour,
+  not only a Workspace one. Converting the cell back was rejected as a fix,
+  because the set is compared as a whole and a format that failed to parse
+  would quietly become a difference again -- so a set holding a date or
+  date/time column is listed with its stored rows, uncompared, on every
+  surface, and the row names the column responsible.
+- **Variables whose catalog item has since swapped a variable set now show
+  their values.** A catalog item's attached variable sets change over time, so
+  a record answered before such a change holds its answers against the old
+  questions while the item now defines new ones carrying exactly the same
+  names. The panel enumerated the item and asked storage for values under ids
+  this record had never used: the classic panel reported five variables as
+  never answered when their values were sitting in storage all along, and the
+  Workspace panel refused to render at all, because the live read asked the
+  form for an id the form does not have. The item is still authoritative about
+  which variables exist; the record's own answers are now authoritative about
+  which question each of its values belongs to, and a row resolved that way
+  says so. It stays deliberately narrow -- a genuine duplicate name still goes
+  to the duplicate-name guard, two definitions or two answers sharing a name
+  resolve nothing, and multi-row parents are never substituted.
+
 ## [0.13.0] - 2026-08-29
 
 ### Added
@@ -637,6 +842,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.14.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.14.0
 [0.13.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.13.0
 [0.12.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.12.0
 [0.11.1]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.11.1
