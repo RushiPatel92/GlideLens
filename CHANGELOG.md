@@ -90,19 +90,51 @@ reconstructed version by version.
   differing cells now travel with the row, computed once by the rules that
   produced the verdict, and a cell that is equal by comparison but different as
   text says so in its tooltip instead.
-- **The live multi-row representation check requires the shape it claims.** It
-  verified that both sides were arrays of plain objects with matching keys, but
-  said nothing about the cells: a number, a null or a nested object passed, and
-  a nested object then stringified to `[object Object]` and reported a
-  difference that meant nothing. Cells must now be strings, and every key must
-  be one of that set's own columns, which is what ties the value to this
-  variable set rather than to any array of objects.
+- **The live multi-row representation check requires the shape it claims, on
+  both surfaces.** It verified that both sides were arrays of plain objects
+  with matching keys, but said nothing about the cells: a number, a null or a
+  nested object passed, and a nested object then stringified to
+  `[object Object]` and reported a difference that meant nothing. Cells must now
+  be strings, and every key must be one of that set's own columns, which is what
+  ties the value to this variable set rather than to any array of objects. The
+  classic form is held to the same requirement -- it previously accepted any
+  JSON array -- because this is a precondition for comparing strings at all
+  rather than a claim about any one component. A set whose columns were never
+  resolved is refused outright; it used to skip the key check entirely, which
+  was the one allow-by-default clause inside a deny-by-default rule.
 - **A record whose rows live under a swapped variable set no longer reads as
   empty.** The multi-row read asked only for the sets the catalog item attaches
   today, so a record answered before the item changed looked exactly like a
   record with no rows -- and zero stored rows against a populated form is a
-  difference the query invented. Those rows are now seen (though never read)
-  and such a set is listed rather than compared.
+  difference the query invented. Such a set is now listed rather than compared.
+- **Detached multi-row rows no longer truncate every set on the record.** The
+  fix above first established them by reading every row under the record and
+  filtering afterwards, which let rows that were never going to be read consume
+  the read's row cap: past it, the whole read reported truncated and refused
+  every multi-row set on that record. Their existence is only ever a yes/no, so
+  it is now a separate bounded one-row probe and the read itself stays filtered
+  to the sets the item attaches. A probe that cannot be answered refuses rather
+  than assuming there are none, and a record whose rows are *all* detached says
+  so instead of reading as simply empty.
+- **A failed answer read is final rather than retried behind the panel's
+  back.** The request-item reader reads the record's answers once and
+  reconciles the catalog definitions against them. When that read failed the
+  definitions were reconciled against nothing, and the stored read then quietly
+  tried again -- so a transient failure produced a panel showing stored values
+  against definitions whose swapped variable set had never been repaired, with
+  nothing on screen to say so.
+- **An answer under an unidentifiable variable set never substitutes.** The
+  reconciler refuses to let a multi-row set's child answer stand in for a plain
+  variable, but the request-item reader only knew about the sets the item
+  attaches -- and a swap is by definition a set it no longer attaches, so those
+  answers reached the guard looking like ordinary variables. Their sets are now
+  resolved first, exactly as the record-producer reader always did, which also
+  fills in the set name such a row used to leave blank. A set that cannot be
+  resolved leaves its answers alone.
+- **A substituted definition keeps the flags it was read with.** It replaces
+  the catalog definition wholesale but hardcoded "not a hidden type" and
+  dropped the retired state, so a substituted Hidden variable was reported as
+  absent from the form rather than as a type that has no on-screen value.
 - **Request items reconcile a swapped variable set too.** The repair added for
   record-producer targets applies to the catalog item, not to the table holding
   the values, so a request item on a changed item was still reporting variables

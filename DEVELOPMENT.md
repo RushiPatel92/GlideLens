@@ -104,10 +104,21 @@ The suites cover:
   request builders and the panel must treat identically — that a set which was
   never asked for says why rather than describing the form's state, that the
   live representation check requires string cells belonging to the set's own
-  columns, that a record holding rows under a set the item no longer attaches
-  refuses instead of reporting a difference, that a substituted definition is
+  columns — on the classic path too, where a nested-object cell used to reach
+  the comparison, and with no escape hatch for a set whose columns were never
+  resolved — that a record holding rows under a set the item no longer attaches
+  refuses instead of reporting a difference, that the detached rows behind that
+  refusal are found by a bounded limit-one probe so they cannot consume the
+  metadata read's row cap and truncate every set on the record, that a probe
+  which fails refuses rather than assuming there are none, that a record whose
+  rows are all detached says so instead of reading as simply empty, that a
+  substituted definition is
   refused on the classic form when the form does not render its question, that
-  the request item reconciles a swapped set exactly as a producer record does, and that a date column inside a set blocks the live read on
+  the request item reconciles a swapped set exactly as a producer record does,
+  that a failed answer preload is final rather than retried into a panel whose
+  definitions were never reconciled, that an answer under a variable set the
+  reader cannot identify never substitutes, and that a substituted definition
+  keeps the hidden-type and inactive flags it was read with, and that a date column inside a set blocks the live read on
   every path including the classic one, reconciling a catalog-item definition
   against the record's own answer when a swapped variable set leaves two
   questions sharing a name — including every ambiguous case it must refuse —

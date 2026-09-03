@@ -2367,6 +2367,10 @@ const NATIVE_STORED_METADATA_FIELDS = [
   // The answer's own variable set, so a definition reconciled from this row
   // reports the set the record actually answered rather than the stale one.
   "sc_item_option.item_option_new.variable_set",
+  // Metadata only, and the same flag the producer reader takes from
+  // question.active, so a definition reconciled from this row carries the
+  // retired state instead of silently reading as current.
+  "sc_item_option.item_option_new.active",
 ].join(",");
 
 function nativeStoredMetadataFromRow(row, definitionById) {
@@ -2397,6 +2401,8 @@ function nativeStoredMetadataFromRow(row, definitionById) {
     type,
     typeDisplay,
     variableSet: snFieldValue(row, prefix + ".variable_set"),
+    hiddenType: isHiddenVariableType(type, typeDisplay),
+    inactive: snFieldValue(row, prefix + ".active") === "false",
     secret,
     policy: metadataPolicy,
     fetchAllowed,
@@ -2436,8 +2442,21 @@ async function fetchNativeRitmStoredValues(
   // The reader has already read these to reconcile the definitions against the
   // record's own answers, and reading them twice would ask the same question of
   // the instance for no gain.
-  const preloaded = preloadedRows && !preloadedRows.failed ? preloadedRows : null;
-  const read = preloaded || (await readNativeRitmMetadataRows(requestItemSysId));
+  //
+  // A FAILED preload is final rather than retried. The caller reconciles against
+  // whatever that read returned, so a failure there means the definitions were
+  // reconciled against zero answers; retrying here and succeeding would show
+  // stored values against definitions the swap was never repaired on -- the
+  // pre-reconciliation behaviour returning silently on a transient failure, and
+  // the two reads disagreeing is the exact thing the shared read prevents.
+  if (preloadedRows && preloadedRows.failed) {
+    return {
+      storedReadStatus: "failed",
+      storedReadError: "Stored variable rows could not be read.",
+      metadataRows: [],
+    };
+  }
+  const read = preloadedRows || (await readNativeRitmMetadataRows(requestItemSysId));
   const metadataRows = read.rows;
   if (read.failed) {
     return {
@@ -2644,26 +2663,53 @@ function assembleNativeMrvsSets(cells) {
  */
 async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
   const setIds = Array.from(new Set((mrvsSetIds || []).filter(isSysId)));
+  let detachedRowsPresent = false;
   const withoutValues = (status, error) => ({
     mrvsReadStatus: status,
     mrvsReadError: error || "",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsSetIds: [],
+    detachedMrvsRowsPresent: detachedRowsPresent,
   });
   if (!isSysId(parentSysId) || !setIds.length) return withoutValues("skipped", "");
 
+  // Does this record hold rows under a set the catalog item no longer attaches?
+  // An item's attached sets change, and a record answered before such a change
+  // stores its rows under the old set; without knowing that, a set with no rows
+  // is indistinguishable from a record with none, and the panel compares zero
+  // stored rows against a populated form -- a difference manufactured by the
+  // query.
+  //
+  // Only the yes/no matters, never which sets or how many, so this is a bounded
+  // existence probe. It used to be a widened `parent_id=X` metadata read whose
+  // rows were filtered afterwards, which let detached cells consume the row cap:
+  // one record with enough of them truncated the read and refused EVERY set on
+  // the record over rows that were never going to be read.
+  //
+  // `NOT IN` verified live: on a record holding 44 rows across two sets, IN the
+  // first returned 26, NOT IN the first returned 18, NOT IN both returned 0, and
+  // NOT IN an unrelated id returned all 44 -- so the condition is applied rather
+  // than silently ignored.
+  try {
+    const detachedProbe = await snGetMany(
+      "sc_multi_row_question_answer",
+      "parent_id=" + parentSysId + "^variable_setNOT IN" + setIds.join(","),
+      "sys_id",
+      1,
+      { excludeRefLinks: true }
+    );
+    detachedRowsPresent = detachedProbe.length > 0;
+  } catch (error) {
+    // Unknown, so assume whichever state refuses more. A set with no stored rows
+    // then declines to compare rather than reporting a difference it cannot rule
+    // out having invented.
+    detachedRowsPresent = true;
+  }
+
   let metadataRows;
   try {
-    // Deliberately NOT filtered to the enumerated sets. The set ids come from
-    // the catalog item, and an item's attached sets change: a record answered
-    // before such a change stores its rows under the old set. Filtered, that
-    // record is indistinguishable from one with no rows at all, and the panel
-    // compares zero stored rows against a populated form -- a difference
-    // manufactured by the query. Reading them all lets the row refuse instead.
-    // Values are still fetched only for cells in an enumerated set.
     metadataRows = await snGetMany(
       "sc_multi_row_question_answer",
-      "parent_id=" + parentSysId,
+      "parent_id=" + parentSysId + "^variable_setIN" + setIds.join(","),
       NATIVE_MRVS_METADATA_FIELDS,
       NATIVE_MRVS_ANSWER_LIMIT,
       { displayAll: true, excludeRefLinks: true }
@@ -2676,17 +2722,12 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
     return withoutValues("truncated", "The multi-row answer list reached its read limit.");
   }
 
-  const allCells = metadataRows.map((row, index) => nativeMrvsCellFromRow(row, index));
   const enumerated = new Set(setIds);
-  // Rows belonging to a set this item does not attach. Their values are never
-  // read -- nothing would display them -- but their existence is what tells a
-  // set with no rows that it cannot claim the record simply has none.
-  const detachedSetIds = Array.from(new Set(
-    allCells
-      .filter((cell) => isSysId(cell.setId) && !enumerated.has(cell.setId))
-      .map((cell) => cell.setId)
-  )).sort();
-  const cells = allCells.filter((cell) => enumerated.has(cell.setId));
+  // The query already restricts this, but an ignored server condition returns
+  // unrelated rows rather than an error, so the set is re-checked here too.
+  const cells = metadataRows
+    .map((row, index) => nativeMrvsCellFromRow(row, index))
+    .filter((cell) => enumerated.has(cell.setId));
   const allowedIds = Array.from(
     new Set(cells.filter((cell) => cell.fetchAllowed).map((cell) => cell.answerId))
   );
@@ -2722,8 +2763,56 @@ async function fetchNativeMrvsStoredValues(parentSysId, mrvsSetIds) {
     mrvsReadStatus: "success",
     mrvsReadError: "",
     mrvsValuesBySetId: assembleNativeMrvsSets(cells),
-    detachedMrvsSetIds: detachedSetIds,
+    detachedMrvsRowsPresent: detachedRowsPresent,
   };
+}
+
+/*
+ * The column names this variable set actually defines. Binding a row's keys to
+ * them is what ties an array of objects to THIS set rather than to any array of
+ * objects a form might hand back.
+ */
+function nativeMrvsColumnNameSet(definition) {
+  return new Set(
+    (Array.isArray(definition && definition.mrvsColumnTypes)
+      ? definition.mrvsColumnTypes
+      : []
+    ).map((column) => column && column.name).filter(Boolean)
+  );
+}
+
+/*
+ * Is this parsed value a comparable multi-row shape: an array of plain objects
+ * whose every cell is a string and whose every key is one of the set's own
+ * columns?
+ *
+ * Representation-agnostic on purpose, so it applies on every surface without
+ * transferring any surface's per-type evidence. It is a precondition for the
+ * comparison itself being meaningful rather than a claim about a component: a
+ * number, a null or a nested object reaching the comparison stringifies to
+ * something like "[object Object]" and reports a difference that says nothing.
+ * An unknown key means the form and the enumerated definition disagree, which
+ * is a real inconsistency and refused rather than compared.
+ *
+ * An empty column set refuses everything. It used to pass the key check, which
+ * was an allow-by-default clause inside a deny-by-default validator; nothing
+ * reaches it today because a live read is only requested for a set whose named
+ * columns were all resolved, and it should stay unreachable rather than become
+ * the one hole in the rule.
+ */
+function nativeMrvsRowsWellFormed(rows, columnNames) {
+  const columns = columnNames || new Set();
+  return (
+    Array.isArray(rows) &&
+    rows.every((entry) => (
+      entry &&
+      typeof entry === "object" &&
+      !Array.isArray(entry) &&
+      Object.keys(entry).every((key) => (
+        typeof entry[key] === "string" && columns.has(key)
+      ))
+    ))
+  );
 }
 
 function parseNativeMrvsRows(raw) {
@@ -2917,7 +3006,12 @@ function nativeAnswerDefinitionsFromStoredRows(metadataRows) {
       variableSet: row.variableSet || "",
       setName: "",
       questionId: row.questionId,
-      hiddenType: false,
+      // Both computed, never assumed. A substituted definition replaces the
+      // catalog one wholesale, so hardcoding these put a Hidden variable in the
+      // absent bucket and dropped a retired variable's inactive state -- both of
+      // which the producer reader derives from the same two fields.
+      hiddenType: isHiddenVariableType(row.type, row.typeDisplay),
+      inactive: Boolean(row.inactive),
       isMrvs: false,
       sourceIndex: index,
     }));
@@ -2933,6 +3027,11 @@ function reconcileProducerDefinitionsWithAnswers(definitions, answerDefinitions,
   const answersByName = new Map();
   answers.forEach((answer) => {
     if (!answer || !answer.name || !isSysId(answer.questionId)) return;
+    // A named set the map cannot identify is refused rather than assumed
+    // ordinary: the multi-row check below is what keeps a set's child answer
+    // from substituting a plain variable, and it can only speak for sets it
+    // knows. A blank variable set is a direct variable and needs no entry.
+    if (isSysId(answer.variableSet) && !sets.has(answer.variableSet)) return;
     const info = sets.get(answer.variableSet);
     if (info && info.isMrvs) return;
     if (!answersByName.has(answer.name)) answersByName.set(answer.name, []);
@@ -3213,11 +3312,43 @@ async function fetchNativeRitmRecordData(requestItemSysId) {
       title: definition.setName || "",
     });
   });
-  definitionResult.definitions = reconcileProducerDefinitionsWithAnswers(
-    definitionResult.definitions,
-    answerDefinitions,
-    ritmSetMeta
-  );
+  // The map so far describes the sets the ITEM attaches, but the swap this
+  // reconciler repairs is precisely a set the item no longer attaches -- so an
+  // answer stored under one is a set the map has never heard of, and its
+  // multi-row nature is unknowable from the item alone. The producer reader
+  // does not have this gap because it reads metadata for every set its own
+  // answers name; this closes it the same way. It also supplies the set title
+  // that a substituted row would otherwise leave blank.
+  //
+  // An unresolved set stays absent from the map, and the reconciler refuses to
+  // substitute from a set it cannot identify.
+  const unknownAnswerSetIds = Array.from(new Set(
+    answerDefinitions
+      .map((answer) => answer.variableSet)
+      .filter((setId) => isSysId(setId) && !ritmSetMeta.has(setId))
+  ));
+  if (unknownAnswerSetIds.length) {
+    try {
+      (await fetchNativeVariableSetMeta(unknownAnswerSetIds)).forEach((info, setId) => {
+        ritmSetMeta.set(setId, info);
+      });
+    } catch (error) {
+      /* Left absent on purpose: unidentifiable, therefore not substitutable. */
+    }
+  }
+  // A truncated answer read cannot support reconciliation: the answer that
+  // would resolve a name may be one of the rows past the cap, and "exactly one
+  // answer shares this name" is then a statement about a partial list. The
+  // producer reader returns before reconciling for the same reason.
+  const answersTruncated =
+    metadataRead.rows.length >= NATIVE_STORED_METADATA_LIMIT;
+  if (!metadataRead.failed && !answersTruncated) {
+    definitionResult.definitions = reconcileProducerDefinitionsWithAnswers(
+      definitionResult.definitions,
+      answerDefinitions,
+      ritmSetMeta
+    );
+  }
 
   const storedResult = await fetchNativeRitmStoredValues(
     requestItemSysId,
@@ -3433,25 +3564,10 @@ function workspaceLiveValueForComparison(policy, live, timeZone, definition) {
     // stringifies to "[object Object]" and reports a difference that says
     // nothing. Binding the keys to this set's columns is what ties the array to
     // this variable set rather than to any array of objects.
-    const columnNames = new Set(
-      (Array.isArray(definition && definition.mrvsColumnTypes)
-        ? definition.mrvsColumnTypes
-        : []
-      ).map((column) => column && column.name).filter(Boolean)
-    );
+    const columnNames = nativeMrvsColumnNameSet(definition);
     const liveRows = parseNativeMrvsRows(value);
     const displayRows = displayAvailable ? parseNativeMrvsRows(displayValue) : null;
-    const plainRows = (rows) =>
-      Array.isArray(rows) &&
-      rows.every((entry) => (
-        entry &&
-        typeof entry === "object" &&
-        !Array.isArray(entry) &&
-        Object.keys(entry).every((key) => (
-          typeof entry[key] === "string" &&
-          (!columnNames.size || columnNames.has(key))
-        ))
-      ));
+    const plainRows = (rows) => nativeMrvsRowsWellFormed(rows, columnNames);
     if (
       !plainRows(liveRows) ||
       !plainRows(displayRows) ||
@@ -3635,10 +3751,25 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
           "Multi-row variable set values were not read.";
       } else if (mrvsStatus !== "success" && mrvsStatus !== "empty") {
         row.reason = "Multi-row variable set values were not read.";
+      } else if (
+        (!mrvsSet || !mrvsSet.rows.length) &&
+        storedResult.detachedMrvsRowsPresent
+      ) {
+        // This record stores multi-row rows under a set the catalog item does
+        // not attach, so "no stored rows" here is a statement about the item's
+        // current set list, not about the record. Comparing it against a
+        // populated form would report a difference that the read created.
+        //
+        // Ahead of the empty branch on purpose: the stored read is filtered to
+        // the enumerated sets, so a record whose rows are ALL detached reads as
+        // empty, which is exactly the case this reason exists to explain.
+        row.reason = "No stored rows were found for this set, and this record" +
+          " stores multi-row rows under a variable set the catalog item no" +
+          " longer attaches, so no comparison was run.";
       } else if (mrvsStatus === "empty") {
-        // Zero rows across every set on this record. That is a real state, but
-        // it is also what a wrong parent record would look like, so it is
-        // reported rather than compared against a populated live form.
+        // Zero rows across every enumerated set on this record. That is a real
+        // state, but it is also what a wrong parent record would look like, so
+        // it is reported rather than compared against a populated live form.
         row.reason = "No multi-row answers are stored for this record.";
       } else if (mrvsSet && mrvsSet.withheldColumns.length) {
         row.reason = "Columns were not read, so no comparison was run: " +
@@ -3646,17 +3777,6 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       } else if (mrvsSet && mrvsSet.indexIncomplete) {
         row.reason = "Stored rows are missing a row index, so they could not be" +
           " grouped and no comparison was run.";
-      } else if (
-        (!mrvsSet || !mrvsSet.rows.length) &&
-        (storedResult.detachedMrvsSetIds || []).length
-      ) {
-        // This record stores multi-row rows under a set the catalog item does
-        // not attach, so "no stored rows" here is a statement about the item's
-        // current set list, not about the record. Comparing it against a
-        // populated form would report a difference that the read created.
-        row.reason = "No stored rows were found for this set, and this record" +
-          " stores multi-row rows under a variable set the catalog item no" +
-          " longer attaches, so no comparison was run.";
       } else if (!liveReadRequested) {
         // Say what actually happened. This row's stored rows are real and its
         // live rows were never asked for, so anything that sounds like an
@@ -3674,9 +3794,21 @@ function buildNativeVariableRows(definitions, storedResult, liveResults, options
       } else if (!Array.isArray(liveMrvsRows)) {
         row.reason = "The live multi-row value was not a readable JSON array.";
       } else {
+        // The classic side used to accept any JSON array here, so a cell that
+        // was not a string reached the comparison and reported a meaningless
+        // "Differs". The shape requirement is representation-agnostic, so it
+        // applies on both surfaces without either inheriting the other's
+        // per-type evidence; the Workspace validator additionally checks the
+        // value/display pair, which is that component's own contract.
         const verified = workspaceMode
           ? workspaceLiveValueForComparison(policy, live, userTimeZone, definition)
-          : { ok: true, value: row.liveValue };
+          : nativeMrvsRowsWellFormed(liveMrvsRows, nativeMrvsColumnNameSet(definition))
+            ? { ok: true, value: row.liveValue }
+            : {
+              ok: false,
+              reason: "The live multi-row rows did not match this set's columns," +
+                " so no comparison was run.",
+            };
         if (!verified.ok) {
           row.reason = verified.reason;
         } else {

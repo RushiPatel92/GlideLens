@@ -408,7 +408,7 @@ ids are excluded and each MRVS renders as one parent row.
 A multi-row variable set stores nothing on its own question row, so it gets a
 third read of its own against `sc_multi_row_question_answer`, keyed by
 `parent_id` (the RITM for a RITM target, the record itself for a
-producer-backed one) and the set. It follows the same two phases: cell and
+producer-backed one). It follows the same two phases: cell and
 column identity first with no value column, then `sys_id,value` only for cells
 whose own column type is allowlisted, so a masked column inside a set stays
 unread. `row_index` is what groups cells into rows, so a set where any cell
@@ -451,11 +451,24 @@ row already carries, so the entry identity gate needs no special case. Its raw
 value is the JSON row array and its `displayValue` is the same array with
 display labels substituted, and the `mrvs-pair` validator requires both to
 parse as arrays of plain objects of equal length with identical column names
-row for row before the raw array is compared. Every cell must be a string and
-every key must be one of the set's own columns: that is what ties the array to
-this variable set rather than to any array of objects, and it keeps a number,
-a null or a nested object — which would stringify to `[object Object]` and
-report a meaningless difference — out of the comparison. On top of the rules above, each
+row for row before the raw array is compared.
+
+Underneath that pair check sits a requirement that holds on **every** surface,
+the classic one included: each row is a plain object, every cell is a string,
+and every key is one of the set's own columns. That is what ties the array to
+this variable set rather than to any array of objects, and it keeps a number, a
+null or a nested object — which would stringify to `[object Object]` and report
+a meaningless difference — out of the comparison. It is representation-agnostic
+— a precondition for comparing strings at all rather than a claim about any one
+component — so applying it on both surfaces transfers no per-surface evidence,
+while the value/display pair check stays specific to the Workspace container.
+The classic path previously accepted any JSON array. A set with no resolved
+column names refuses everything, and nothing reaches that state today because a
+live read is only requested for a set whose columns were all named and
+allowlisted; the earlier "no columns known, so skip the key check" clause was
+the one allow-by-default hole in a deny-by-default validator.
+
+On top of the rules above, each
 Workspace surface carries its **own** allowlist of the column types it has seen
 the container render raw — `5`, `6` and `8` on SOW; `1`, `2`, `5`, `6`, `7`,
 `8` and `33` on the supplier surfaces — because the type allowlist a surface
@@ -508,7 +521,26 @@ whole snapshot and empties the panel.
 Both stored readers reconcile, because the swap is a property of the catalog
 item rather than of the table holding the values: the request-item reader reads
 its own `sc_item_option` rows before its definitions are settled and feeds the
-same function. A substituted definition then has to be corroborated against the
+same function. That single read is authoritative: a **failed** one is final
+rather than retried, because the definitions have already been reconciled
+against the zero answers it returned, and a retry that succeeded would show
+stored values against definitions the swap was never repaired on. A
+**truncated** one skips reconciliation entirely, since "exactly one answer
+shares this name" is not a claim a partial answer list can support — which is
+what the producer reader already did by returning early.
+
+An answer's own variable set is resolved before it may substitute anything. The
+swap is by definition a set the item no longer attaches, so that set is absent
+from the item-derived map and its multi-row nature is unknowable from the item
+alone; the request-item reader therefore reads metadata for the answer sets its
+map is missing, exactly as the producer reader always did for every set its
+answers name. A set that cannot be resolved leaves its answers unsubstitutable
+rather than assumed ordinary, because a multi-row child answer must never
+replace a plain variable. Resolving it also supplies the set title a
+substituted row would otherwise leave blank. A substituted definition replaces
+the catalog one wholesale, so it carries the hidden-type and inactive flags
+computed from the answer's own type and `active` — hardcoding them put a
+substituted Hidden variable in the absent bucket. A substituted definition then has to be corroborated against the
 form. Workspace does that through the entry identity gate, which refuses when
 the form's entry id disagrees. The classic reader resolves `variables.<name>`,
 which cannot tell the two questions apart, so a substituted row whose question
@@ -517,13 +549,26 @@ value read back belongs to the item's new variable of the same name, and
 comparing it against this record's older answer compares two different
 variables.
 
-The multi-row stored read is deliberately **not** filtered to the enumerated
-set ids for the same reason. Filtered, a record whose rows live under a set the
-item no longer attaches is indistinguishable from a record with no rows, and
-the panel compares zero stored rows against a populated form — a difference
-manufactured by the query. Unfiltered, those rows are seen but never read (no
-value request is made for them), and a set with no rows on a record that holds
-detached rows is listed rather than compared.
+A record whose rows live under a set the item no longer attaches must not be
+indistinguishable from a record with no rows, or the panel compares zero stored
+rows against a populated form — a difference manufactured by the query. That is
+established by a **bounded existence probe**, `parent_id=<id>^variable_setNOT
+IN<enumerated ids>` at a limit of one row, while the metadata read itself stays
+filtered to the enumerated sets. Only the yes/no is ever used, never which sets
+or how many.
+
+Widening the metadata read instead and filtering afterwards was the obvious
+shape and the wrong one: detached cells then counted toward the row cap, so a
+record holding enough of them truncated the read and refused **every** set on
+it, over rows that were never going to be read. A probe that cannot be answered
+is treated as detached-present, because that is the direction that refuses. A
+set with no stored rows on a record holding detached rows is listed rather than
+compared, and because the read is filtered, a record whose rows are *all*
+detached now reads as empty — so that reason is checked ahead of the plain
+"nothing stored" one. `NOT IN` was verified live rather than assumed: on a
+record holding 44 rows across two sets, `IN` the first returned 26, `NOT IN` the
+first returned 18, `NOT IN` both returned 0, and `NOT IN` an unrelated id
+returned all 44, so the condition is applied rather than silently ignored.
 
 The Service Portal path remains live-only. Masked type `25` is treated as a
 secret and listed redacted. Numeric type `18` is not treated as Hidden; only an

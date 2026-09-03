@@ -169,6 +169,28 @@ function rowsFor(definitions, metadataRows, liveResults, status = "success", ext
 
 const MRVS_SET_ID = id(700);
 
+/*
+ * Every column a multi-row set defines carries a name: nativeMrvsColumnTypes
+ * reads it off the column row, and nativeMrvsColumnsSafe refuses a set with any
+ * unnamed column. So `mrvsColumnsSafe: true` beside a nameless column list is a
+ * state the reader cannot produce, and a fixture in that state was what let the
+ * representation check's since-removed empty-column-set escape hatch look
+ * exercised. A row may still omit a column — an absent key compares as empty —
+ * so a set defining more columns than a fixture row shows is ordinary.
+ */
+function mrvsColumns(names, type, label) {
+  return names.map((name) => ({
+    name,
+    type: type || "6",
+    label: label || "Single Line Text",
+  }));
+}
+
+const MRVS_DEFAULT_COLUMNS = [
+  "a", "b", "plain", "approved", "note", "flag", "first", "second",
+  "bank_name", "bank_country", "country", "due", "secret_column",
+];
+
 function mrvsDefinition(overrides) {
   return definition(Object.assign({
     name: "example_rows",
@@ -178,10 +200,11 @@ function mrvsDefinition(overrides) {
     variableSet: MRVS_SET_ID,
     questionId: MRVS_SET_ID,
     isMrvs: true,
-    // applyNativeMrvsLiveReadPolicy sets both on every multi-row definition
-    // before the rows are built, so a fixture without them models a state the
-    // reader cannot produce.
+    // applyNativeMrvsLiveReadPolicy sets all three on every multi-row
+    // definition before the rows are built, so a fixture without them models a
+    // state the reader cannot produce.
     mrvsColumnsSafe: true,
+    mrvsColumnTypes: mrvsColumns(MRVS_DEFAULT_COLUMNS),
     liveReadAllowed: true,
     liveReadBlockedReason: "",
   }, overrides || {}));
@@ -1916,10 +1939,11 @@ test("an empty ordinary stored read is the one case that reports absence", () =>
 
 test("MRVS values are read in two phases and only for allowlisted columns", async () => {
   const queries = [];
-  const helpers = loadNativeHelpers(async (table, query, fields) => {
-    queries.push({ table, query, fields });
+  const helpers = loadNativeHelpers(async (table, query, fields, limit) => {
+    queries.push({ table, query, fields, limit });
     if (table !== "sc_multi_row_question_answer") return [];
-    if (query.startsWith("parent_id=")) {
+    if (query.indexOf("NOT IN") >= 0) return [];
+    if (query.indexOf("^variable_setIN") >= 0) {
       return [
         mrvsAnswerRow(id(801), "plain", 1),
         mrvsAnswerRow(id(802), "password", 1, {
@@ -1933,11 +1957,21 @@ test("MRVS values are read in two phases and only for allowlisted columns", asyn
   const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
   assert.strictEqual(result.mrvsReadStatus, "success");
 
-  const [metadataRead, valueRead] = queries;
+  const [detachedProbe, metadataRead, valueRead] = queries;
+  // Detached rows are established by a bounded existence probe rather than by
+  // widening the metadata read, so they cannot consume its row cap.
+  assert.strictEqual(
+    detachedProbe.query,
+    "parent_id=" + RITM_ID + "^variable_setNOT IN" + MRVS_SET_ID
+  );
+  assert.strictEqual(detachedProbe.limit, 1);
+  assert.strictEqual(detachedProbe.fields, "sys_id");
   assert.doesNotMatch(metadataRead.fields, /(^|,)value(,|$)/);
-  // The metadata read covers every set on the record, not only the enumerated
-  // ones: a set the item no longer attaches has to be visible to be refused.
-  assert.strictEqual(metadataRead.query, "parent_id=" + RITM_ID);
+  // And the metadata read itself is filtered to the enumerated sets.
+  assert.strictEqual(
+    metadataRead.query,
+    "parent_id=" + RITM_ID + "^variable_setIN" + MRVS_SET_ID
+  );
   assert.strictEqual(valueRead.fields, "sys_id,value");
   // The masked column's answer id must never enter the value request.
   assert.match(valueRead.query, new RegExp(id(801)));
@@ -2800,6 +2834,14 @@ test("a producer-backed record reads its multi-row sets instead of reporting the
     questionId: id(1102),
     variableSet: MRVS_SET_ID,
   });
+  // The set's OTHER column. Storage and the form both carry it, so leaving it
+  // out of the enumeration would model a set whose column list disagrees with
+  // its own rows -- which the representation check refuses, correctly.
+  const mrvsChildTwo = definition({
+    name: "bank_country",
+    questionId: id(1103),
+    variableSet: MRVS_SET_ID,
+  });
   const setRow = {
     sys_id: MRVS_SET_ID,
     name: "bank_accounts",
@@ -2821,11 +2863,17 @@ test("a producer-backed record reads its multi-row sets instead of reporting the
     }
     if (table === "io_set_item") return [{ variable_set: MRVS_SET_ID, order: "100" }];
     if (table === "item_option_new" && query.startsWith("variable_setIN")) {
-      return [nativeDefinitionRow(mrvsChild)];
+      return [nativeDefinitionRow(mrvsChild), nativeDefinitionRow(mrvsChildTwo)];
+    }
+    if (table === "sc_multi_row_question_answer" && query.indexOf("NOT IN") >= 0) {
+      return [];
     }
     if (table === "sc_multi_row_question_answer" && query.startsWith("parent_id=")) {
-      // Every set on the record, so a detached one can be seen and refused.
-      assert.strictEqual(query, "parent_id=" + RECORD_ID);
+      // Filtered to the enumerated sets; detached rows are a separate probe.
+      assert.strictEqual(
+        query,
+        "parent_id=" + RECORD_ID + "^variable_setIN" + MRVS_SET_ID
+      );
       assert.doesNotMatch(fields, /(^|,)value(,|$)/);
       return [
         mrvsAnswerRow(id(1301), "bank_name", 1, { parent_id: RECORD_ID }),
@@ -2885,8 +2933,8 @@ function workspaceMrvsDefinition(overrides) {
     liveReadBlockedReason: "",
     mrvsColumnsSafe: true,
     mrvsColumnTypes: [
-      { type: "6", label: "Single Line Text" },
-      { type: "8", label: "Reference" },
+      { name: "bank_name", type: "6", label: "Single Line Text" },
+      { name: "bank_country", type: "8", label: "Reference" },
     ],
   }, overrides || {}));
 }
@@ -3007,8 +3055,8 @@ test("a Workspace multi-row set is never read when a column type is unproven the
   // report a difference in a record where none exists.
   const withDateTime = workspaceMrvsDefinition({
     mrvsColumnTypes: [
-      { type: "6", label: "Single Line Text" },
-      { type: "10", label: "Date/Time" },
+      { name: "bank_name", type: "6", label: "Single Line Text" },
+      { name: "due", type: "10", label: "Date/Time" },
     ],
   });
   assert.deepStrictEqual(api.workspaceLiveValueRequests([withDateTime], SUPPLIER_CASE), []);
@@ -3021,8 +3069,8 @@ test("a Workspace multi-row set is never read when a column type is unproven the
   // column is proven inside a supplier set and not inside a SOW one.
   const withCheckbox = workspaceMrvsDefinition({
     mrvsColumnTypes: [
-      { type: "6", label: "Single Line Text" },
-      { type: "7", label: "Checkbox" },
+      { name: "bank_name", type: "6", label: "Single Line Text" },
+      { name: "approved", type: "7", label: "Checkbox" },
     ],
   });
   assert.strictEqual(
@@ -3063,11 +3111,34 @@ test("the Workspace multi-row representation is verified before any comparison",
     liveDisplayValueAvailable: displayValue != null,
     liveDisplayValue: displayValue == null ? "" : displayValue,
   });
+  // The definition is not optional: the check binds a row's keys to this set's
+  // own columns, and the reader always has it here. Calling without one modelled
+  // a state the reader cannot produce, and it was the only thing exercising the
+  // since-removed empty-column-set escape hatch.
+  const def = workspaceMrvsDefinition();
   const verify = (value, displayValue) =>
-    helpers.workspaceLiveValueForComparison(policy, source(value, displayValue), "");
+    helpers.workspaceLiveValueForComparison(policy, source(value, displayValue), "", def);
 
   assert.deepStrictEqual(verify(MRVS_RAW, MRVS_DISPLAY), { ok: true, value: MRVS_RAW });
   assert.deepStrictEqual(verify("[]", "[]"), { ok: true, value: "[]" });
+
+  // A key that is not one of this set's columns is refused, not compared: the
+  // form and the enumerated definition disagreeing is a real inconsistency.
+  const foreign = '[{"bank_name":"HJ","not_a_column":"x"}]';
+  assert.strictEqual(verify(foreign, foreign).ok, false);
+
+  // And with no columns resolved at all, nothing is comparable. This used to
+  // skip the key check entirely -- an allow-by-default clause inside a
+  // deny-by-default validator.
+  assert.strictEqual(
+    helpers.workspaceLiveValueForComparison(
+      policy,
+      source(MRVS_RAW, MRVS_DISPLAY),
+      "",
+      workspaceMrvsDefinition({ mrvsColumnTypes: null })
+    ).ok,
+    false
+  );
 
   // Every way the pair can fail to be the observed shape refuses rather than
   // falling through to a raw string comparison.
@@ -3087,7 +3158,6 @@ test("the Workspace multi-row representation is verified before any comparison",
   });
 
   // And the same refusal reaches the panel row rather than a comparison.
-  const def = workspaceMrvsDefinition();
   const row = workspaceMrvsRow(
     def,
     MRVS_STORED,
@@ -3159,16 +3229,16 @@ test("a date column inside a multi-row set stops the live read on every surface"
   const helpers = loadNativeHelpers();
   const withDate = mrvsDefinition({ mrvsColumnsSafe: true });
   withDate.mrvsColumnTypes = [
-    { type: "6", label: "Single Line Text" },
-    { type: "10", label: "Date/Time" },
+    { name: "plain", type: "6", label: "Single Line Text" },
+    { name: "due", type: "10", label: "Date/Time" },
   ];
   const withoutDate = mrvsDefinition({ mrvsColumnsSafe: true });
   withoutDate.mrvsColumnTypes = [
-    { type: "6", label: "Single Line Text" },
-    { type: "8", label: "Reference" },
+    { name: "plain", type: "6", label: "Single Line Text" },
+    { name: "bank_country", type: "8", label: "Reference" },
   ];
   const unsafe = mrvsDefinition({ mrvsColumnsSafe: false });
-  unsafe.mrvsColumnTypes = [{ type: "10", label: "Date/Time" }];
+  unsafe.mrvsColumnTypes = [{ name: "due", type: "10", label: "Date/Time" }];
 
   helpers.applyNativeMrvsLiveReadPolicy(
     [withDate, withoutDate, unsafe],
@@ -3781,30 +3851,106 @@ test("the panel derives no cell verdict of its own", () => {
   assert.doesNotMatch(source, /if [(]stored === live[)]/);
 });
 
-test("rows stored under a set the item no longer attaches are seen but never read", async () => {
+test("detached rows are found by a bounded probe and never widen the metadata read", async () => {
+  // Regression: the detached signal used to come from reading EVERY row under
+  // the parent and filtering afterwards, so cells in sets the item no longer
+  // attaches counted toward the row cap. One record with enough of them
+  // truncated the read and refused every set on the record -- over rows that
+  // were never going to be read. The signal is only ever a yes/no, so it is a
+  // limit-1 existence probe and the metadata read stays filtered.
   const detachedSet = id(777);
   const queries = [];
-  const helpers = loadNativeHelpers(async (table, query, fields) => {
-    queries.push({ table, query, fields });
+  const helpers = loadNativeHelpers(async (table, query, fields, limit) => {
+    queries.push({ table, query, fields, limit });
     if (table !== "sc_multi_row_question_answer") return [];
-    if (query.startsWith("parent_id=")) {
-      return [
-        mrvsAnswerRow(id(801), "plain", 1),
-        // Same record, a set the catalog item does not attach any more.
-        Object.assign(mrvsAnswerRow(id(803), "orphan", 1), { variable_set: detachedSet }),
-      ];
+    if (query.indexOf("NOT IN") >= 0) {
+      // The probe sees one row and stops; it never enumerates them.
+      return [{ sys_id: id(803) }];
+    }
+    if (query.indexOf("^variable_setIN") >= 0) {
+      return [mrvsAnswerRow(id(801), "plain", 1)];
     }
     return [{ sys_id: id(801), value: "kept" }];
   });
 
   const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
-  assert.deepStrictEqual(result.detachedMrvsSetIds, [detachedSet]);
-  // Its value is never requested: nothing would show it.
-  const valueRead = queries[1];
+  assert.strictEqual(result.detachedMrvsRowsPresent, true);
+  assert.strictEqual(result.mrvsReadStatus, "success");
+
+  const probe = queries.find((entry) => entry.query.indexOf("NOT IN") >= 0);
+  assert.strictEqual(probe.limit, 1);
+  assert.strictEqual(probe.fields, "sys_id");
+  assert.strictEqual(
+    probe.query,
+    "parent_id=" + RITM_ID + "^variable_setNOT IN" + MRVS_SET_ID
+  );
+
+  // The metadata read asks only for the enumerated sets, so a detached cell
+  // cannot consume its cap.
+  const metadata = queries.find((entry) => entry.query.indexOf("^variable_setIN") >= 0);
+  assert.strictEqual(
+    metadata.query,
+    "parent_id=" + RITM_ID + "^variable_setIN" + MRVS_SET_ID
+  );
+  assert.strictEqual(metadata.limit, 1000);
+
+  // The detached rows' values are never requested, and they do not contaminate
+  // the enumerated set.
+  const valueRead = queries.find((entry) => entry.fields === "sys_id,value");
   assert.doesNotMatch(valueRead.query, new RegExp(id(803)));
-  // And it does not contaminate the enumerated set's rows.
   assert.deepStrictEqual(result.mrvsValuesBySetId.get(MRVS_SET_ID).rows, [{ plain: "kept" }]);
   assert.strictEqual(result.mrvsValuesBySetId.has(detachedSet), false);
+});
+
+test("detached rows past the cap no longer truncate the whole record", async () => {
+  // The exact regression: enough detached cells to exceed the row cap, and a
+  // small enumerated set. Filtered, this is an ordinary successful read.
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.indexOf("NOT IN") >= 0) return [{ sys_id: id(900) }];
+    if (query.indexOf("^variable_setIN") >= 0) {
+      return [mrvsAnswerRow(id(801), "plain", 1)];
+    }
+    return [{ sys_id: id(801), value: "kept" }];
+  });
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  assert.strictEqual(result.mrvsReadStatus, "success");
+  assert.deepStrictEqual(result.mrvsValuesBySetId.get(MRVS_SET_ID).rows, [{ plain: "kept" }]);
+});
+
+test("a detached probe that fails refuses rather than assuming there are none", async () => {
+  const helpers = loadNativeHelpers(async (table, query) => {
+    if (table !== "sc_multi_row_question_answer") return [];
+    if (query.indexOf("NOT IN") >= 0) throw new Error("no");
+    if (query.indexOf("^variable_setIN") >= 0) return [];
+    return [];
+  });
+  const result = await helpers.fetchNativeMrvsStoredValues(RITM_ID, [MRVS_SET_ID]);
+  // Unknown, so the state that refuses more is assumed: an empty set on this
+  // record cannot claim the record simply has no rows.
+  assert.strictEqual(result.detachedMrvsRowsPresent, true);
+  assert.strictEqual(result.mrvsReadStatus, "empty");
+});
+
+test("a record whose rows are ALL detached says so instead of reading as empty", () => {
+  // With the read filtered to the enumerated sets, this record now comes back
+  // empty -- which is exactly the case the detached reason exists to explain,
+  // so it has to outrank the plain empty message.
+  const def = mrvsDefinition();
+  const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "empty",
+    mrvsValuesBySetId: new Map(),
+    detachedMrvsRowsPresent: true,
+  });
+  assert.strictEqual(row.comparison, "not-comparable");
+  assert.match(row.reason, /no longer attaches/);
+
+  const [plain] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
+    mrvsReadStatus: "empty",
+    mrvsValuesBySetId: new Map(),
+    detachedMrvsRowsPresent: false,
+  });
+  assert.match(plain.reason, /No multi-row answers are stored for this record/);
 });
 
 test("a set with no stored rows refuses while the record holds detached rows", () => {
@@ -3813,7 +3959,7 @@ test("a set with no stored rows refuses while the record holds detached rows", (
   const [row] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
     mrvsReadStatus: "success",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsSetIds: [id(778)],
+    detachedMrvsRowsPresent: true,
   });
   assert.strictEqual(row.comparison, "not-comparable");
   assert.match(row.reason, /no longer attaches/);
@@ -3822,7 +3968,7 @@ test("a set with no stored rows refuses while the record holds detached rows", (
   const [plain] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", {
     mrvsReadStatus: "success",
     mrvsValuesBySetId: new Map(),
-    detachedMrvsSetIds: [],
+    detachedMrvsRowsPresent: false,
   });
   assert.strictEqual(plain.comparison, "differs");
 });
@@ -3849,13 +3995,25 @@ test("a request item reconciles a swapped variable set exactly as a producer rec
     if (table === "item_option_new" && query === "cat_item=" + ITEM) return [];
     if (table === "io_set_item") return [{ variable_set: OLD_SET_ID, order: "100" }];
     if (table === "item_option_new_set") {
-      return [{
-        sys_id: OLD_SET_ID,
-        name: "",
-        internal_name: "old_set",
-        title: "Old Set",
-        type: { value: "one_to_one", display_value: "One to One" },
-      }];
+      // Answered by id: the reconciler now resolves the answer's own set too,
+      // which is the set the item has since dropped.
+      const rows = [
+        {
+          sys_id: OLD_SET_ID,
+          name: "",
+          internal_name: "old_set",
+          title: "Old Set",
+          type: { value: "one_to_one", display_value: "One to One" },
+        },
+        {
+          sys_id: NEW_SET_ID,
+          name: "",
+          internal_name: "new_set",
+          title: "New Set",
+          type: { value: "one_to_one", display_value: "One to One" },
+        },
+      ];
+      return rows.filter((row) => query.indexOf(row.sys_id) >= 0);
     }
     if (table === "item_option_new" && query.startsWith("variable_setIN")) {
       return [nativeDefinitionRow(catalogRow)];
@@ -3895,6 +4053,179 @@ test("a request item reconciles a swapped variable set exactly as a producer rec
   assert.strictEqual(row.storedLookup, "found");
   assert.strictEqual(row.storedValue, "steel");
   assert.match(row.reason, /taken from this record's own answer/);
+});
+
+test("a failed preload is final rather than retried into an unreconciled panel", async () => {
+  // The caller reconciles the definitions against whatever this read returned,
+  // so a failure there means they were reconciled against zero answers.
+  // Retrying here and succeeding showed stored values against definitions the
+  // swap was never repaired on -- the pre-reconciliation behaviour returning
+  // silently on a transient failure.
+  let reads = 0;
+  const helpers = loadNativeHelpers(async (table) => {
+    if (table === "sc_item_option_mtom") reads += 1;
+    return [];
+  });
+  const result = await helpers.fetchNativeRitmStoredValues(
+    RITM_ID,
+    [],
+    "success",
+    { rows: [], failed: true }
+  );
+  assert.strictEqual(result.storedReadStatus, "failed");
+  assert.deepStrictEqual(result.metadataRows, []);
+  // And no second attempt was made at all.
+  assert.strictEqual(reads, 0);
+});
+
+test("an answer under a set the reader cannot identify never substitutes", async () => {
+  // The swap this reconciler repairs is a set the item no longer attaches, so
+  // the answer's set is one the item-derived map has never heard of and whose
+  // multi-row nature is unknowable from the item alone. Unresolved means not
+  // substitutable, because a multi-row child answer must never replace a plain
+  // variable.
+  const REQUEST_ITEM = id(1700);
+  const ITEM = id(1701);
+  const catalogQuestion = id(1710);
+  const answeredQuestion = id(1711);
+  const catalogRow = definition({
+    name: "commodities",
+    questionId: catalogQuestion,
+    variableSet: OLD_SET_ID,
+  });
+  const build = (setReadable) => loadNativeHelpers(async (table, query) => {
+    if (table === "sc_req_item") return [{ sys_id: REQUEST_ITEM, cat_item: ITEM }];
+    if (table === "item_option_new" && query === "cat_item=" + ITEM) return [];
+    if (table === "io_set_item") return [{ variable_set: OLD_SET_ID, order: "100" }];
+    if (table === "item_option_new_set") {
+      const rows = [{
+        sys_id: OLD_SET_ID,
+        name: "",
+        internal_name: "old_set",
+        title: "Old Set",
+        type: { value: "one_to_one", display_value: "One to One" },
+      }];
+      if (setReadable) {
+        rows.push({
+          sys_id: NEW_SET_ID,
+          name: "",
+          internal_name: "new_set",
+          title: "New Set",
+          type: { value: "one_to_one", display_value: "One to One" },
+        });
+      }
+      return rows.filter((row) => query.indexOf(row.sys_id) >= 0);
+    }
+    if (table === "item_option_new" && query.startsWith("variable_setIN")) {
+      return [nativeDefinitionRow(catalogRow)];
+    }
+    if (table === "sc_item_option_mtom") {
+      return [{
+        "sc_item_option.sys_id": id(1720),
+        "sc_item_option.item_option_new": answeredQuestion,
+        "sc_item_option.item_option_new.name": "commodities",
+        "sc_item_option.item_option_new.question_text": "Commodities",
+        "sc_item_option.item_option_new.type": { value: "6", display_value: "Single Line Text" },
+        "sc_item_option.item_option_new.variable_set": NEW_SET_ID,
+        "sc_item_option.item_option_new.active": "true",
+      }];
+    }
+    if (table === "sc_item_option") return [{ sys_id: id(1720), value: "steel" }];
+    return [];
+  });
+
+  // Readable: the set is identified as an ordinary one, so the swap is repaired
+  // and the row even carries the answer's own set title.
+  const repaired = await build(true).fetchNativeRitmRecordData(REQUEST_ITEM);
+  const good = repaired.definitions.find((entry) => entry.name === "commodities");
+  assert.strictEqual(good.questionId, answeredQuestion);
+  assert.strictEqual(good.setName, "New Set");
+
+  // Unreadable: unidentifiable, therefore not substituted.
+  const refused = await build(false).fetchNativeRitmRecordData(REQUEST_ITEM);
+  const held = refused.definitions.find((entry) => entry.name === "commodities");
+  assert.strictEqual(held.questionId, catalogQuestion);
+  assert.notStrictEqual(held.definitionFromAnswer, true);
+});
+
+test("a multi-row answer never substitutes a plain variable of the same name", () => {
+  const helpers = loadNativeHelpers();
+  const catalogRow = definition({
+    name: "commodities",
+    questionId: id(810),
+    variableSet: OLD_SET_ID,
+  });
+  const sets = reconcileSetMeta();
+  sets.set(NEW_SET_ID, {
+    id: NEW_SET_ID, internalName: "new_set", name: "", title: "New Set", isMrvs: true,
+  });
+  const [result] = helpers.reconcileProducerDefinitionsWithAnswers(
+    [catalogRow],
+    [answerDefinition()],
+    sets
+  );
+  assert.strictEqual(result.questionId, id(810));
+});
+
+test("a substituted definition keeps the hidden and inactive flags it was read with", () => {
+  const helpers = loadNativeHelpers();
+  // Hardcoding these put a substituted Hidden variable in the absent bucket and
+  // dropped a retired variable's state, both of which the producer path derives
+  // from the same two fields.
+  const hiddenAnswer = answerDefinition({
+    type: "hidden",
+    typeDisplay: "Hidden",
+    hiddenType: true,
+    inactive: true,
+  });
+  const [result] = helpers.reconcileProducerDefinitionsWithAnswers(
+    [definition({ name: "commodities", questionId: id(810), variableSet: OLD_SET_ID })],
+    [hiddenAnswer],
+    reconcileSetMeta()
+  );
+  assert.strictEqual(result.questionId, hiddenAnswer.questionId);
+  assert.strictEqual(result.hiddenType, true);
+  assert.strictEqual(result.inactive, true);
+
+  // Source guard: the request-item reader computes both rather than asserting
+  // them, and it reads the field that decides the second one.
+  assert.match(contentSource, /hiddenType: isHiddenVariableType\(row\.type, row\.typeDisplay\)/);
+  assert.match(contentSource, /sc_item_option\.item_option_new\.active/);
+});
+
+test("the classic multi-row comparison requires this set's own string cells", () => {
+  // The classic side used to accept any JSON array, so a cell that was not a
+  // string reached the comparison and reported a meaningless "Differs" -- a
+  // nested object stringifies to "[object Object]".
+  const def = mrvsDefinition();
+  const stored = mrvsResult(MRVS_SET_ID, mrvsStored([{ a: "1" }]));
+
+  const [nested] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"a":{"deep":"1"}}]')],
+    "success",
+    stored
+  );
+  assert.strictEqual(nested.comparison, "not-comparable");
+  assert.match(nested.reason, /did not match this set's columns/);
+
+  const [numeric] = rowsFor([def], [], [liveRow(def, '[{"a":1}]')], "success", stored);
+  assert.strictEqual(numeric.comparison, "not-comparable");
+
+  const [foreign] = rowsFor(
+    [def],
+    [],
+    [liveRow(def, '[{"not_a_column":"1"}]')],
+    "success",
+    stored
+  );
+  assert.strictEqual(foreign.comparison, "not-comparable");
+
+  // The ordinary shape still compares, so the rule refuses representations
+  // rather than sets.
+  const [ok] = rowsFor([def], [], [liveRow(def, '[{"a":"1"}]')], "success", stored);
+  assert.strictEqual(ok.comparison, "match");
 });
 
 test("a substituted definition is not compared when the classic form binds the other question", () => {
