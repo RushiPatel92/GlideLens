@@ -7,7 +7,10 @@ const path = require("node:path");
 function loadContextHelpers() {
   const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
   const contextStart = source.indexOf("function decodedVariants");
-  const contextEnd = source.indexOf("function isTechnicalFieldName", contextStart);
+  /* isTechnicalFieldName was the end sentinel until the Workspace field walker
+   * was deleted with the translation icons. parseClassicLabel immediately
+   * follows the same block and is kept. */
+  const contextEnd = source.indexOf("function parseClassicLabel", contextStart);
   const sysIdStart = source.indexOf("function sysIdFromText");
   const sysIdEnd = source.indexOf("async function getCurrentRecordSysId", sysIdStart);
   assert.ok(contextStart >= 0 && contextEnd > contextStart, "record context helpers not found");

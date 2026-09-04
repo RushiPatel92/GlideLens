@@ -84,13 +84,21 @@ test("current built-ins expose the accepted unique command labels", () => {
   assert.deepStrictEqual(
     builtIns.map((item) => item.label),
     [
-      "Translations", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
+      "Translation Lens", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
       "Customer Updates", "Variable Prefill", "Variable Values", "Catalog Logic",
       "Variable Insight", "Code Search", "Search Sources", "Table List", "New Record",
     ]
   );
   assert.ok(builtIns.every((item) => item.description));
   assert.ok(builtIns.filter((item) => item.input).every((item) => item.inputLabel));
+});
+
+test("Translation Lens preserves the retired translation-toggle favorite key", () => {
+  const translationLens = loadBuiltCommands().find((item) => item.id === "translation-lens");
+  assert.ok(translationLens);
+  assert.strictEqual(translationLens.favoriteKey, "toggle-translations");
+  assert.strictEqual(palette.paletteFavoriteKey(translationLens), "toggle-translations");
+  assert.strictEqual(translationLens.keepOpen, true);
 });
 
 test("groups render in the declared order while preserving order within a group", () => {
