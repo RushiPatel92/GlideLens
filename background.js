@@ -5,10 +5,10 @@
  *
  * There is no `chrome.commands.onCommand` listener any more: the only
  * registered command is `_execute_action`, which Chrome handles itself.
- * `toggle-field-names` (Alt+Shift+F) was unregistered in 0.10.0 along with its
- * palette command — the toggle itself still lives in content.js behind the
- * TOGGLE_FIELD_NAMES message, so restoring it means re-adding the manifest
- * command and a listener that posts that message.
+ * `toggle-field-names` (Alt+Shift+F) was unregistered in 0.10.0 and the toggle
+ * itself was deleted with the translation icons — field names are permanently
+ * out of scope because snUtils covers them, so the dormant path was dead
+ * weight rather than a feature waiting to be re-listed. Git history has it.
  */
 
 importScripts("debug_timeline_main.js");
@@ -731,6 +731,17 @@ function codeSearchTableGet(tabId, request) {
  * result requests out across every ServiceNow frame. */
 function recordSearchTableGet(tabId, request) {
   return codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table);
+}
+
+/* Translation Lens performs several bounded reads per panel. Keep all of them
+ * on the same resolved token-bearing frame; the fan-out SN_TABLE_GET route
+ * would multiply every store query by the number of ServiceNow frames. */
+function translationTableGet(tabId, request) {
+  return withTimeout(
+    codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table),
+    PAGE_READ_TIMEOUT_MS,
+    "Translation Lens read for " + request.table
+  );
 }
 
 /*
@@ -3012,6 +3023,158 @@ function inspectPortalVariableDebug() {
   return report;
 }
 
+/*
+ * Self-contained MAIN-world Translation Lens form probe. It deliberately has
+ * its own new-record contract: ServiceNow can preallocate a 32-character
+ * identity on an unsaved form, so g_form.isNewRecord() is authoritative when
+ * present while -1 and empty identities remain supported.
+ */
+function inspectFormTranslationContext(requestedFields) {
+  const result = {
+    foundGForm: false,
+    identity: { table: "", sysId: "" },
+    isNewRecord: false,
+    recordMarkerMatched: false,
+    labelIds: [],
+    values: {},
+  };
+  let form = null;
+  try {
+    if (typeof g_form !== "undefined" && g_form) form = g_form;
+  } catch (e) {}
+  if (!form) return result;
+  result.foundGForm = true;
+
+  try {
+    if (typeof form.getTableName === "function") {
+      result.identity.table = String(form.getTableName() || "").toLowerCase();
+    }
+  } catch (e) {}
+  try {
+    if (typeof form.getUniqueValue === "function") {
+      result.identity.sysId = String(form.getUniqueValue() || "").toLowerCase();
+    }
+  } catch (e) {}
+  try {
+    if (typeof form.isNewRecord === "function" && form.isNewRecord()) {
+      result.isNewRecord = true;
+    }
+  } catch (e) {}
+  if (result.identity.sysId === "-1" || !result.identity.sysId) {
+    result.isNewRecord = true;
+  }
+
+  try {
+    const tableMarker = document.querySelector('input[name="sys_target"],#sys_target');
+    const idMarker = document.querySelector('input[name="sys_uniqueValue"],#sys_uniqueValue');
+    const markersPresent = Boolean(tableMarker && idMarker);
+    const tableMatches = Boolean(
+      tableMarker &&
+      String(tableMarker.value || "").toLowerCase() === result.identity.table
+    );
+    const idMatches = Boolean(
+      idMarker &&
+      String(idMarker.value || "").toLowerCase() === result.identity.sysId
+    );
+    result.recordMarkerMatched = Boolean(
+      markersPresent &&
+      tableMatches &&
+      (result.isNewRecord || idMatches)
+    );
+  } catch (e) {}
+
+  try {
+    result.labelIds = Array.from(document.querySelectorAll('[id^="label."]'))
+      .map((element) => String(element.id || ""))
+      .filter(Boolean)
+      .slice(0, 1000);
+  } catch (e) {}
+
+  const fields = Array.isArray(requestedFields) ? requestedFields.slice(0, 500) : [];
+  fields.forEach((field) => {
+    const name = String(field || "").toLowerCase();
+    if (!/^[a-z][a-z0-9_]*$/.test(name)) return;
+    try {
+      result.values[name] = typeof form.getValue === "function"
+        ? String(form.getValue(name) || "")
+        : "";
+    } catch (e) {
+      result.values[name] = "";
+    }
+  });
+  return result;
+}
+
+function translationExpectedIdentity(value) {
+  if (!value || !/^[a-z][a-z0-9_]*$/.test(String(value.table || ""))) return null;
+  const sysId = String(value.sysId == null ? "" : value.sysId).toLowerCase();
+  const isNewRecord = Boolean(value.isNewRecord);
+  if (!isNewRecord && !/^[0-9a-f]{32}$/i.test(sysId)) return null;
+  if (
+    isNewRecord && sysId && sysId !== "-1" &&
+    !/^[0-9a-f]{32}$/i.test(sysId)
+  ) return null;
+  return {
+    table: String(value.table).toLowerCase(),
+    sysId,
+    isNewRecord,
+    frameId: Number.isInteger(value.frameId) ? value.frameId : null,
+  };
+}
+
+function selectTranslationFormFrame(candidates, expectedIdentity) {
+  const expected = translationExpectedIdentity(expectedIdentity);
+  return (candidates || []).find((candidate) => {
+    const value = candidate && candidate.value;
+    if (
+      !value || !value.foundGForm || !value.recordMarkerMatched ||
+      !value.identity ||
+      !/^[a-z][a-z0-9_]*$/.test(String(value.identity.table || ""))
+    ) return false;
+    const sysId = String(value.identity.sysId == null ? "" : value.identity.sysId).toLowerCase();
+    if (
+      !value.isNewRecord && !/^[0-9a-f]{32}$/i.test(sysId)
+    ) return false;
+    if (
+      value.isNewRecord && sysId && sysId !== "-1" &&
+      !/^[0-9a-f]{32}$/i.test(sysId)
+    ) return false;
+    if (!expected) return true;
+    if (Number.isInteger(expected.frameId) && candidate.frameId !== expected.frameId) return false;
+    if (String(value.identity.table).toLowerCase() !== expected.table) return false;
+    if (Boolean(value.isNewRecord) !== expected.isNewRecord) return false;
+    return sysId === expected.sysId;
+  }) || null;
+}
+
+async function readTranslationFormContext(tabId, requestedFields, expectedIdentity) {
+  const frameIds = await discoverContentFrames(tabId, "translation form context");
+  const outcomes = await Promise.all(frameIds.map((frameId) =>
+    injectInFrame(
+      tabId,
+      frameId,
+      { world: "MAIN", func: inspectFormTranslationContext, args: [requestedFields] },
+      "inspect Translation Lens form context",
+      FRAME_INJECT_TIMEOUT_MS
+    ).then(
+      (raw) => ({
+        frameId,
+        ok: true,
+        value: (raw || []).map((item) => item && item.result).find((item) => item),
+      }),
+      (error) => ({ frameId, ok: false, error: errorText(error) })
+    )
+  ));
+  const candidates = outcomes.filter((item) => item.ok && item.value);
+  return {
+    selected: selectTranslationFormFrame(candidates, expectedIdentity),
+    failures: outcomes.filter((item) => !item.ok).map((item) => ({
+      frameId: item.frameId,
+      error: item.error,
+    })),
+  };
+}
+
 // Self-contained MAIN-world reader for classic RITM variables. The caller
 // supplies the definition list because g_form cannot enumerate these fields.
 // Every g_form call is isolated: one throwing prototype-collision key must not
@@ -4593,13 +4756,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
-  if (
-    msg &&
-    sender.tab &&
-    (msg.type === "TOGGLE_FIELD_NAMES" ||
-      msg.type === "TOGGLE_TRANSLATIONS" ||
-      msg.type === "TOGGLE_VARIABLE_INSIGHT")
-  ) {
+  if (msg && sender.tab && msg.type === "TOGGLE_VARIABLE_INSIGHT") {
     postWindowMessageInFrames(sender.tab.id, msg.type);
   }
   if (msg && msg.type === "SN_TABLE_GET" && sender.tab) {
@@ -4639,6 +4796,72 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
     });
+    return true;
+  }
+  if (msg && msg.type === "SN_TRANSLATION_GET" && sender.tab) {
+    translationTableGet(sender.tab.id, {
+      table: msg.table,
+      query: msg.query,
+      fields: msg.fields,
+      limit: msg.limit,
+      options: msg.options || {},
+    })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, status: 0, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "GET_FORM_TRANSLATION_CONTEXT" && sender.tab) {
+    const fields = Array.isArray(msg.fields)
+      ? msg.fields
+          .map((field) => String(field || "").toLowerCase())
+          .filter((field) => /^[a-z][a-z0-9_]*$/.test(field))
+          .slice(0, 500)
+      : [];
+    readTranslationFormContext(sender.tab.id, fields, msg.expectedIdentity || null)
+      .then(({ selected, failures }) => {
+        if (!selected) {
+          sendResponse({
+            ok: true,
+            found: false,
+            probeInconclusive: failures.length > 0,
+            unreachableFrameCount: failures.length,
+            table: "",
+            sysId: "",
+            isNewRecord: false,
+            frameId: null,
+            labelIds: [],
+            values: {},
+          });
+          return;
+        }
+        const value = selected.value;
+        sendResponse({
+          ok: true,
+          found: true,
+          probeInconclusive: false,
+          unreachableFrameCount: failures.length,
+          table: value.identity.table,
+          sysId: value.identity.sysId,
+          isNewRecord: Boolean(value.isNewRecord),
+          frameId: selected.frameId,
+          labelIds: value.labelIds || [],
+          values: value.values || {},
+        });
+      })
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "INJECT_TRANSLATION_LENS" && sender.tab) {
+    /* Engine and panel together, into the frame that asked, isolated world.
+     * Both no-op when already present, so a repeated palette run is free, and
+     * content.js still validates the six-method UI contract afterwards. */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["translation_lens.js", "translation_lens_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true, uiIncluded: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
   if (msg && msg.type === "INJECT_CODE_SEARCH" && sender.tab) {

@@ -89,7 +89,146 @@ function loadSharedFrameHelpers(options) {
   };
 }
 
+function loadTranslationFrameHelpers(options) {
+  const file = path.join(__dirname, "..", "background.js");
+  const source = fs.readFileSync(file, "utf8");
+  const start = source.indexOf("function inspectFormTranslationContext");
+  const end = source.indexOf("// Self-contained MAIN-world reader for classic RITM variables", start);
+  assert.ok(start >= 0 && end > start, "translation form helper block not found");
+  const opts = options || {};
+  const calls = [];
+  const discoverContentFrames = async (tabId, purpose, discoveryOptions) => {
+    calls.push({ kind: "discover", tabId, purpose, options: discoveryOptions });
+    return opts.frameIds || [0, 7];
+  };
+  const injectInFrame = async (tabId, frameId, injection, label, timeoutMs) => {
+    calls.push({ kind: "inject", tabId, frameId, injection, label, timeoutMs });
+    if (opts.rejectingFrame === frameId) throw new Error("frame unavailable");
+    return [{ frameId, result: opts.frameResults && opts.frameResults[frameId] }];
+  };
+  const factory = new Function(
+    "discoverContentFrames", "injectInFrame", "errorText", "g_form", "document",
+    "const FRAME_INJECT_TIMEOUT_MS = 5000;\n" + source.slice(start, end) +
+      "\nreturn { inspectFormTranslationContext, translationExpectedIdentity, " +
+      "selectTranslationFormFrame, readTranslationFormContext };"
+  );
+  return {
+    api: factory(
+      discoverContentFrames,
+      injectInFrame,
+      (error) => String(error && error.message || error),
+      opts.gForm,
+      opts.document || { querySelector: () => null, querySelectorAll: () => [] }
+    ),
+    calls,
+  };
+}
+
 const broadcasts = (calls) => calls.filter((call) => call.kind === "broadcast");
+
+test("Translation Lens uses the shared single-token-frame transport", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
+  const start = source.indexOf("function translationTableGet");
+  const end = source.indexOf("\n}", start) + 2;
+  const block = source.slice(start, end);
+  assert.ok(block.includes("codeSearchFrameGet(tabId, tableApiGetInPage"));
+  assert.ok(block.includes("withTimeout("));
+  assert.ok(block.includes("PAGE_READ_TIMEOUT_MS"));
+  assert.ok(!block.includes("readFromPageFrames"));
+  assert.ok(source.includes('msg.type === "SN_TRANSLATION_GET"'));
+});
+
+test("Translation Lens form probe detects preallocated and empty new records", () => {
+  const preallocated = "00000000000000000000000000000009";
+  const markers = {
+    '[name="sys_target"]': { value: "example_record" },
+    '#sys_target': { value: "example_record" },
+    '[name="sys_uniqueValue"]': { value: preallocated },
+    '#sys_uniqueValue': { value: preallocated },
+  };
+  const document = {
+    querySelector: (selector) => selector.includes("sys_target")
+      ? markers['[name="sys_target"]']
+      : markers['[name="sys_uniqueValue"]'],
+    querySelectorAll: () => [{ id: "label.example_record.title" }],
+  };
+  const { api } = loadTranslationFrameHelpers({
+    document,
+    gForm: {
+      getTableName: () => "example_record",
+      getUniqueValue: () => preallocated,
+      isNewRecord: () => true,
+      getValue: (field) => field === "title" ? "Base source" : "",
+    },
+  });
+  const result = api.inspectFormTranslationContext(["title", "bad^field"]);
+  assert.strictEqual(result.foundGForm, true);
+  assert.strictEqual(result.isNewRecord, true);
+  assert.strictEqual(result.recordMarkerMatched, true);
+  assert.deepStrictEqual(result.labelIds, ["label.example_record.title"]);
+  assert.deepStrictEqual(Object.keys(result.values), ["title"]);
+
+  const empty = loadTranslationFrameHelpers({
+    document: {
+      querySelector: (selector) => selector.includes("sys_target")
+        ? { value: "example_record" }
+        : { value: "" },
+      querySelectorAll: () => [],
+    },
+    gForm: {
+      getTableName: () => "example_record",
+      getUniqueValue: () => "",
+      getValue: () => "",
+    },
+  }).api.inspectFormTranslationContext([]);
+  assert.strictEqual(empty.isNewRecord, true);
+  assert.strictEqual(empty.recordMarkerMatched, true);
+});
+
+test("Translation Lens rejects markerless and expected-identity-mismatched frames", () => {
+  const saved = (table, sysId, marker, isNewRecord) => ({
+    foundGForm: true,
+    identity: { table, sysId },
+    recordMarkerMatched: marker,
+    isNewRecord: Boolean(isNewRecord),
+    labelIds: [],
+    values: {},
+  });
+  const id = "00000000000000000000000000000001";
+  const other = "00000000000000000000000000000002";
+  const { api } = loadTranslationFrameHelpers();
+  const candidates = [
+    { frameId: 0, value: saved("example_record", id, false) },
+    { frameId: 3, value: saved("other_record", id, true) },
+    { frameId: 7, value: saved("example_record", id, true) },
+  ];
+  assert.strictEqual(api.selectTranslationFormFrame(candidates, null).frameId, 3);
+  assert.strictEqual(api.selectTranslationFormFrame(candidates, {
+    table: "example_record", sysId: id, isNewRecord: false, frameId: 7,
+  }).frameId, 7);
+  assert.strictEqual(api.selectTranslationFormFrame(candidates, {
+    table: "example_record", sysId: other, isNewRecord: false, frameId: 7,
+  }), null);
+});
+
+test("Translation Lens form context always discovers fresh and returns the matching frame id", async () => {
+  const id = "00000000000000000000000000000001";
+  const markerless = {
+    foundGForm: true, identity: { table: "example_record", sysId: id },
+    recordMarkerMatched: false, isNewRecord: false, labelIds: [], values: {},
+  };
+  const matched = Object.assign({}, markerless, { recordMarkerMatched: true });
+  const { api, calls } = loadTranslationFrameHelpers({
+    frameIds: [0, 7], frameResults: { 0: markerless, 7: matched },
+  });
+  const result = await api.readTranslationFormContext(41, ["title"], {
+    table: "example_record", sysId: id, isNewRecord: false, frameId: 7,
+  });
+  assert.strictEqual(result.selected.frameId, 7);
+  const discovery = calls.find((call) => call.kind === "discover");
+  assert.strictEqual(discovery.options, undefined, "context discovery must not opt into the cache");
+  assert.ok(calls.filter((call) => call.kind === "inject").every((call) => call.timeoutMs === 5000));
+});
 
 test("discovery collects every content-script frame that answers", async () => {
   const { api, calls } = loadSharedFrameHelpers({ frameIds: [7, 0] });
