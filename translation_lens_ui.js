@@ -578,10 +578,28 @@
    * beside them whenever the two can differ. Both, never one.
    * ------------------------------------------------------------------ */
 
+  /* Held for the duration of one paint. Every row asks for the scope up to
+   * four times -- coverage cell, tags, evidence, gaps filter -- and deriving
+   * it allocates two arrays each time. On the configured instance one item
+   * renders four hundred rows and over ten thousand chips, so recomputing it
+   * per row is the difference between a free lookup and a few thousand
+   * pointless array builds per repaint. paint() is the only entry point that
+   * can change the answer, so clearing it there is sufficient. */
+  let scopeCached = false;
+  let scopeValue = null;
+
+  function invalidateLanguageScope() {
+    scopeCached = false;
+    scopeValue = null;
+  }
+
   function languageScope() {
+    if (scopeCached) return scopeValue;
     const counted = countedLanguageIds();
     const visible = visibleLanguageIds();
-    return visible.length === counted.length ? null : visible;
+    scopeValue = visible.length === counted.length ? null : visible;
+    scopeCached = true;
+    return scopeValue;
   }
 
   /* Takes anything carrying states beside a precomputed coverage: a section
@@ -1040,6 +1058,7 @@
 
   function paint() {
     if (!panel || !panel.refs) return;
+    invalidateLanguageScope();
     renderSubtitle();
     renderSummary();
     renderStatus();

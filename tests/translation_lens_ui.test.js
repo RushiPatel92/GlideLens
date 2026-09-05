@@ -772,6 +772,32 @@ test("an engine that ignores the language scope is never trusted to label a scop
   );
 });
 
+test("re-selecting a language restores the unscoped score rather than a cached one", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  assert.strictEqual(scoreText(harness.shadow()), "50%", "the baseline counts both languages");
+
+  let shadow = hideGerman(harness);
+  assert.strictEqual(scoreText(shadow), "100%");
+
+  /* Back on again. The scope is derived once per paint and held for that
+   * paint, so a missing invalidation would pin this at 100% forever -- the
+   * panel would keep reporting a selection the reader had already undone. */
+  const boxes = findAll(shadow, (node) => node.tagName === "INPUT" && node.attributes["aria-label"]);
+  const german = boxes.find((box) => String(box.attributes["aria-label"]).includes("German"));
+  assert.ok(german, "the picker still lists the language");
+  german.checked = true;
+  (german.handlers.change || []).forEach((handler) => handler({ target: german }));
+  shadow = harness.shadow();
+
+  assert.strictEqual(scoreText(shadow), "50%", "the score returns to every counted language");
+  assert.ok(
+    !shadow.textContent.includes("all 2 languages:"),
+    "and the all-language line is dropped once nothing is deselected: " + shadow.textContent
+  );
+});
+
 test("the shipped engine honours the scope argument the panel sends it", () => {
   const harness = load({ withEngine: true });
   const engine = harness.sandbox.SNTranslationLens;
