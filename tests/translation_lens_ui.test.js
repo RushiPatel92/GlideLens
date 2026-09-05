@@ -798,6 +798,157 @@ test("re-selecting a language restores the unscoped score rather than a cached o
   );
 });
 
+
+/* ------------------------------------------------------------------ *
+ * Minor rows and per-section coverage
+ * ------------------------------------------------------------------ */
+
+function listedRows(shadow) {
+  return findAll(shadow, (node) => node.className === "row");
+}
+
+function sectionScores(shadow) {
+  return findAll(shadow, (node) => node.className === "group-cov").map((node) => node.textContent);
+}
+
+function coveredRow(over) {
+  return makeRow(Object.assign({
+    id: "covered:widget",
+    states: {
+      fr: { state: "direct", direct: true, duplicateCount: 0 },
+      de: { state: "direct", direct: true, duplicateCount: 0 },
+    },
+    coverage: { covered: 2, counted: 2, percent: 100, missing: [], unavailable: [] },
+  }, over || {}));
+}
+
+test("help_tag and example_text rows are folded away, and the toggle says how many", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeSection("values", "Catalog Text", [
+        makeRow(),
+        makeRow({ id: "help:widget", aspect: "help_tag" }),
+        makeRow({ id: "eg:widget", aspect: "example_text" }),
+      ])],
+    }),
+  });
+
+  let shadow = harness.shadow();
+  const toggle = buttonContaining(shadow, "Minor rows");
+  assert.ok(toggle, "the toggle is offered");
+  assert.ok(toggle.textContent.includes("(2)"), "it counts what it folded: " + toggle.textContent);
+  assert.strictEqual(listedRows(shadow).length, 1, "only the row worth working from is listed");
+
+  click(toggle);
+  shadow = harness.shadow();
+  assert.strictEqual(listedRows(shadow).length, 3, "the toggle brings them back");
+  assert.ok(buttonContaining(shadow, "Hide minor rows"), "and offers to fold them away again");
+});
+
+test("a choice row whose options come from a table is folded away with them", () => {
+  const harness = load();
+  openPanel(harness);
+  /* What the engine now emits for a List Collector: not applicable, not
+   * unverified, and flagged so the panel can fold it. */
+  const tableSourced = makeRow({
+    id: "choices:collector",
+    aspect: "choices",
+    states: {
+      fr: { state: "not_applicable" },
+      de: { state: "not_applicable" },
+    },
+    coverage: { covered: 0, counted: 0, percent: null, missing: [], unavailable: [] },
+    evidence: {
+      notApplicable: true,
+      notApplicableReason: "this variable's options are records in another table",
+      minor: true,
+    },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeSection("choices", "Choices", [makeRow({ aspect: "choices" }), tableSourced])],
+    }),
+  });
+
+  let shadow = harness.shadow();
+  assert.strictEqual(listedRows(shadow).length, 1, "the table-sourced row is not listed");
+  assert.ok(buttonContaining(shadow, "Minor rows").textContent.includes("(1)"));
+
+  click(buttonContaining(shadow, "Minor rows"));
+  shadow = harness.shadow();
+  assert.strictEqual(listedRows(shadow).length, 2);
+});
+
+test("the minor toggle is disabled when a surface has nothing to fold", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  const toggle = buttonContaining(harness.shadow(), "Minor rows");
+  assert.strictEqual(toggle.disabled, true);
+  assert.ok(!toggle.textContent.includes("("), "no count is claimed: " + toggle.textContent);
+});
+
+test("folding a row away changes what is listed, never what was counted", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeSection("values", "Catalog Text", [
+        coveredRow(),
+        makeRow({ id: "help:widget", aspect: "help_tag" }),
+      ])],
+    }),
+  });
+  /* One row fully covered, one half covered: 3 of 4 slots, whether or not the
+   * half-covered one is on screen. A hidden gap is still a gap. */
+  const hidden = harness.shadow();
+  assert.strictEqual(listedRows(hidden).length, 1);
+  assert.deepStrictEqual(sectionScores(hidden), ["75%"], "the folded row is still counted");
+
+  click(buttonContaining(hidden, "Minor rows"));
+  assert.deepStrictEqual(sectionScores(harness.shadow()), ["75%"], "and revealing it changes nothing");
+});
+
+test("each section carries its own score in its header", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [
+        makeSection("labels", "Field Labels", [makeRow()]),
+        makeSection("choices", "Choices", [coveredRow({ aspect: "choices" })]),
+      ],
+    }),
+  });
+  assert.deepStrictEqual(
+    sectionScores(harness.shadow()), ["50%", "100%"],
+    "one section is half done and the other finished, and each says so"
+  );
+});
+
+test("section scores follow the language selection like the headline does", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [makeRow()])] }),
+  });
+  assert.deepStrictEqual(sectionScores(harness.shadow()), ["50%"]);
+
+  const shadow = hideGerman(harness);
+  assert.deepStrictEqual(
+    sectionScores(shadow), ["100%"],
+    "a section must never disagree with the headline above it"
+  );
+  assert.strictEqual(scoreText(shadow), "100%");
+});
+
 test("the shipped engine honours the scope argument the panel sends it", () => {
   const harness = load({ withEngine: true });
   const engine = harness.sandbox.SNTranslationLens;

@@ -7,6 +7,7 @@ const path = require("node:path");
 const contentSource = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
 const packageSource = fs.readFileSync(path.join(__dirname, "..", "package.mjs"), "utf8");
+const translationLensSource = fs.readFileSync(path.join(__dirname, "..", "translation_lens.js"), "utf8");
 const manifestSource = fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8");
 
 /* Line endings are normalised before the search. `core.autocrlf=true` gives a
@@ -21,6 +22,34 @@ function between(source, startText, endText) {
   assert.ok(start >= 0 && end > start, "source block not found: " + startText);
   return text.slice(start, end);
 }
+
+test("a table-sourced catalog choice is not applicable, not unverified", () => {
+  /* List Collector and the lookup types draw options from a table, so there is
+   * no choice list to translate. Reporting that as "unverified" claimed a read
+   * had failed when it was never applicable, and put a row nobody can act on
+   * in front of the reader. analyzeCatalogChoice is not exported -- the engine
+   * surface is a deliberate contract -- so this is pinned at the source. */
+  const branch = between(
+    translationLensSource,
+    "if (DYNAMIC_CATALOG_TYPES.has(String(variable.type",
+    "const activeChoices"
+  );
+  assert.ok(branch.includes('"not_applicable"'), "the state must be not applicable");
+  assert.ok(branch.includes("minor: true"), "and flagged so the panel can fold it away");
+  assert.ok(!branch.includes('"unverified"'), "and must no longer claim a failed read");
+  assert.ok(
+    /notApplicableReason/.test(branch),
+    "a not-applicable row must name its reason rather than leaving it blank"
+  );
+});
+
+test("Reference variables are left out of the table-sourced set on purpose", () => {
+  /* Type 8 produces no choice row at all today. Adding it to the set would
+   * invent rows only to hide them, which is the opposite of the intent. */
+  const set = between(translationLensSource, "const DYNAMIC_CATALOG_TYPES", ");");
+  assert.ok(set.includes('"21"'), "List Collector is in the set");
+  assert.ok(!/"8"/.test(set), "Reference must not be added to it");
+});
 
 test("content script pins the complete six-method Opus UI contract", () => {
   const contract = between(

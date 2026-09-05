@@ -1745,6 +1745,16 @@
         languages,
       }, unavailableStates(languages, "catalog choice read unavailable"), { unavailable: true });
     }
+    /* List Collector, Lookup Select Box and Lookup Multiple Choice draw their
+     * options from a table: the options are records, not question_choice rows,
+     * so there is nothing here for a translator to do. Calling that
+     * "unverified" said the read had failed, when in truth the read was never
+     * applicable. Reference (type 8) is deliberately absent from the set --
+     * it produces no choice row at all today, and adding it would invent rows
+     * rather than remove noise.
+     *
+     * Marked minor so the panel folds it away by default; still emitted, so
+     * the copied report can show the variable was considered. */
     if (DYNAMIC_CATALOG_TYPES.has(String(variable.type || "").toLowerCase())) {
       return makeRow({
         element: variable.name,
@@ -1752,9 +1762,11 @@
         aspect: "choices",
         store: "sys_translated",
         languages,
-      }, fixedStates(languages, "unverified", "dynamic choice source"), {
-        unverified: true,
-        unverifiedReason: "dynamic choice source",
+      }, fixedStates(languages, "not_applicable", "options come from a table"), {
+        notApplicable: true,
+        notApplicableReason:
+          "this variable's options are records in another table, so it has no choice list to translate",
+        minor: true,
       });
     }
     const activeChoices = (choices || []).filter((choice) => includeInactive || !choice.inactive);

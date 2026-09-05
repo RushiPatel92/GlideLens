@@ -274,6 +274,10 @@
       color:color-mix(in srgb, var(--teal) 55%, white);
       border:1px solid color-mix(in srgb, var(--teal) 30%, transparent);
     }
+    .group-cov{
+      flex:none;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:700;
+      background:#20202f;color:#c9c9e0;border:1px solid #2e2e46;
+    }
     .section-note{
       padding:9px 20px;font-size:11px;color:#8f8fa8;line-height:1.55;
       border-bottom:1px solid #23233a;background:#20202f;
@@ -622,13 +626,21 @@
    * Result reading
    * ------------------------------------------------------------------ */
 
+  /* Recurses, because a catalog run nests its native form fields in a
+   * subsection and a walker that stopped at the top level would undercount
+   * every one of those rows. */
   function forEachRow(visit) {
     if (!panel) return;
-    panel.sections.forEach((section) => {
-      (section && section.rows || []).forEach((row) => {
-        if (row) visit(row, section);
+    const walk = (sections) => {
+      (sections || []).forEach((section) => {
+        if (!section) return;
+        (section.rows || []).forEach((row) => {
+          if (row) visit(row, section);
+        });
+        walk(section.subsections);
       });
-    });
+    };
+    walk(panel.sections);
   }
 
   function activeContext() {
@@ -727,7 +739,28 @@
     return parts.filter(Boolean).join(" ").toLowerCase();
   }
 
+  /* Rows that are real but that nobody works from. help_tag and example_text
+   * repeat the same boilerplate under every question on an item, and a
+   * table-sourced choice row has nothing to translate at all. They are folded
+   * away by default and counted in the toggle's label -- never dropped, so
+   * the copied report still carries them and the score still counts whatever
+   * they contribute. Hiding is a view, not a measurement. */
+  const MINOR_ASPECTS = new Set(["help_tag", "example_text"]);
+
+  function isMinorRow(row) {
+    if (!row) return false;
+    if (MINOR_ASPECTS.has(str(row.aspect))) return true;
+    return Boolean(row.evidence && row.evidence.minor);
+  }
+
+  function minorRowCount() {
+    let count = 0;
+    forEachRow((row) => { if (isMinorRow(row)) count++; });
+    return count;
+  }
+
   function matchesControls(row, groupId) {
+    if (!panel.showMinor && isMinorRow(row)) return false;
     if (panel.search && rowSearchText(row).indexOf(panel.search) < 0) return false;
     if (panel.filter === "all") return true;
     if (panel.filter === "missing") return rowHasGap(row);
@@ -853,6 +886,12 @@
     try { callbacks.onClose({ reason: str(reason) || "user" }); } catch (error) { /* ignore */ }
   }
 
+  function toggleShowMinor() {
+    if (!panel) return;
+    panel.showMinor = !panel.showMinor;
+    paint();
+  }
+
   function toggleExpandAll() {
     panel.expandAll = !panel.expandAll;
     if (!panel.expandAll) panel.expanded.clear();
@@ -954,6 +993,15 @@
     inactiveButton.addEventListener("click", toggleIncludeInactive);
     controls.appendChild(inactiveButton);
 
+    const minorButton = el("button", "toggle");
+    minorButton.type = "button";
+    minorButton.setAttribute("aria-pressed", "false");
+    minorButton.appendChild(el("span", "dot"));
+    const minorLabel = el("span", "", "Minor rows");
+    minorButton.appendChild(minorLabel);
+    minorButton.addEventListener("click", toggleShowMinor);
+    controls.appendChild(minorButton);
+
     const expandButton = el("button", "toggle", "Expand all");
     expandButton.type = "button";
     expandButton.setAttribute("aria-pressed", "false");
@@ -1018,7 +1066,7 @@
 
     panel.refs = {
       overlay, section, subtitle, summary, status, controls, filterButtons,
-      langButton, langSlot, inactiveButton, expandButton, search, rows, lookup,
+      langButton, langSlot, inactiveButton, minorButton, minorLabel, expandButton, search, rows, lookup,
       storeButtons, copyButton, closeButton,
     };
 
@@ -1317,6 +1365,18 @@
     refs.inactiveButton.title = canRerun
       ? "Include inactive variables and choices, and read them again"
       : "Inactive rows are excluded before the read, so this needs a re-run that this build cannot request";
+
+    const minorCount = minorRowCount();
+    refs.minorLabel.textContent = panel.showMinor
+      ? "Hide minor rows"
+      : "Minor rows" + (minorCount ? " (" + minorCount + ")" : "");
+    refs.minorButton.disabled = !minorCount;
+    refs.minorButton.className = panel.showMinor ? "toggle active" : "toggle";
+    refs.minorButton.setAttribute("aria-pressed", panel.showMinor ? "true" : "false");
+    refs.minorButton.title = minorCount
+      ? "help_tag and example_text rows, and choice rows whose options come from a table " +
+        "rather than a choice list. Hidden by default; they are still counted and still copied."
+      : "Nothing on this surface is folded away";
 
     refs.expandButton.textContent = panel.expandAll ? "Collapse all" : "Expand all";
     refs.expandButton.className = panel.expandAll ? "toggle active" : "toggle";
@@ -1632,11 +1692,6 @@
         " exist outside the counted set" +
         (languageList(evidence.extras) ? " (" + languageList(evidence.extras) + ")" : "") + ".");
     }
-    if (evidence.sharedElements && Number(evidence.sharedElements.count)) {
-      evidenceLine(list, "This source string is shared by " +
-        plural(Number(evidence.sharedElements.count), "other element") +
-        ", so one translation covers all of them.");
-    }
     if (Number(evidence.choiceCount)) {
       evidenceLine(list, plural(Number(evidence.choiceCount), "base choice") + " were assessed.");
     }
@@ -1816,6 +1871,25 @@
       "span", "group-count",
       shownCount === totalCount ? String(totalCount) : shownCount + " of " + totalCount
     ));
+    /* Each section carries its own score, counted over the same language
+     * selection as the headline so the two can never disagree. Counted over
+     * every row the section holds, including any folded away -- hiding a row
+     * changes what is listed, never what was measured. */
+    const sectionSummary = summaryOf(section.rows || [], languageScope());
+    if (sectionSummary.counted) {
+      const cov = el("span", "group-cov", sectionSummary.percent + "%");
+      cov.setAttribute(
+        "aria-label",
+        (str(section.label) || humanize(id)) + ": " + sectionSummary.percent +
+        " percent covered, " + sectionSummary.covered + " of " + sectionSummary.counted +
+        " language slots"
+      );
+      cov.title =
+        sectionSummary.covered + "/" + sectionSummary.counted + " language slots · " +
+        sectionSummary.complete + " complete · " + sectionSummary.partial + " partial · " +
+        sectionSummary.none + " missing";
+      head.appendChild(cov);
+    }
     head.addEventListener("click", () => {
       if (collapsed) panel.collapsedSections.delete(id);
       else panel.collapsedSections.add(id);
@@ -2274,6 +2348,7 @@
       expanded: new Set(),
       expandAll: false,
       filter: "all",
+      showMinor: false,
       search: "",
       searchTimer: null,
       selection: null,
