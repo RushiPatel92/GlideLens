@@ -479,7 +479,48 @@
     return api && typeof api === "object" ? api : null;
   }
 
-  function localSectionSummary(rows) {
+  /* Mirrors COVERED_STATES / EXCLUDED_STATES in translation_lens.js. The
+   * engine is the authority and is used whenever it is present; this copy
+   * exists only for the engine-less fallback below, and the two must be
+   * changed together. Letting them drift would make a scoped count disagree
+   * with the row it was counted from. */
+  const LOCAL_COVERED_STATES = new Set(["direct", "same_as_source"]);
+  const LOCAL_EXCLUDED_STATES = new Set(["unavailable", "unverified", "not_applicable"]);
+
+  function localCoverage(states, languageIds) {
+    let covered = 0;
+    let counted = 0;
+    const missing = [];
+    const unavailable = [];
+    (languageIds || []).forEach((id) => {
+      const state = (states && states[id]) ? str(states[id].state) : "missing";
+      if (LOCAL_EXCLUDED_STATES.has(state)) {
+        if (state === "unavailable") unavailable.push(id);
+        return;
+      }
+      counted++;
+      if (LOCAL_COVERED_STATES.has(state)) covered++;
+      else missing.push(id);
+    });
+    return {
+      covered,
+      counted,
+      percent: counted ? Math.round((covered / counted) * 100) : null,
+      missing,
+      unavailable,
+    };
+  }
+
+  function coverageFor(states, languageIds) {
+    const api = engineApi();
+    if (api && isFn(api.coverageFromStates)) {
+      try { return api.coverageFromStates(states, languageIds); } catch (error) { /* fall through */ }
+    }
+    return localCoverage(states, languageIds);
+  }
+
+  function localSectionSummary(rows, languageIds) {
+    const scope = Array.isArray(languageIds) ? languageIds : null;
     const list = Array.isArray(rows) ? rows : [];
     let covered = 0;
     let counted = 0;
@@ -487,7 +528,7 @@
     let partial = 0;
     let none = 0;
     list.forEach((row) => {
-      const coverage = row && row.coverage;
+      const coverage = scope ? localCoverage(row && row.states, scope) : (row && row.coverage);
       if (!coverage || !Number(coverage.counted)) return;
       covered += Number(coverage.covered) || 0;
       counted += Number(coverage.counted) || 0;
@@ -503,15 +544,52 @@
       partial,
       none,
       rowCount: list.length,
+      scoped: !!scope,
+      scopeCount: scope ? scope.length : null,
     };
   }
 
-  function summaryOf(rows) {
+  function summaryOf(rows, languageIds) {
+    const scope = Array.isArray(languageIds) ? languageIds : null;
     const api = engineApi();
     if (api && isFn(api.sectionSummary)) {
-      try { return api.sectionSummary(rows); } catch (error) { /* fall through */ }
+      try {
+        const summary = api.sectionSummary(rows, scope || undefined);
+        /* An engine predating the scope argument would ignore it and hand back
+         * the all-language number, which must never be painted as the
+         * selected-language one. The flag is the proof it was honoured. */
+        if (!scope || (summary && summary.scoped === true)) return summary;
+      } catch (error) { /* fall through */ }
     }
-    return localSectionSummary(rows);
+    return localSectionSummary(rows, scope);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Language scope.
+   *
+   * The picker began as a pure display filter, and the panel promised the
+   * score would never move with it, so that hiding a column could not hide a
+   * gap. That guarantee survives; it is simply no longer the only number on
+   * screen. Twenty-odd active languages make "0 complete" the headline for an
+   * item that is finished in every language anyone ships, which tells the
+   * reader nothing they can act on.
+   *
+   * So the counts follow the selection, and the all-language score is drawn
+   * beside them whenever the two can differ. Both, never one.
+   * ------------------------------------------------------------------ */
+
+  function languageScope() {
+    const counted = countedLanguageIds();
+    const visible = visibleLanguageIds();
+    return visible.length === counted.length ? null : visible;
+  }
+
+  /* Takes anything carrying states beside a precomputed coverage: a section
+   * row, or one of a row's choice entries. */
+  function scopedCoverage(entry) {
+    const scope = languageScope();
+    if (!scope) return (entry && entry.coverage) || {};
+    return coverageFor(entry && entry.states, scope);
   }
 
   /* ------------------------------------------------------------------ *
@@ -607,8 +685,10 @@
     return (entry.evidence && entry.evidence.nearDuplicates) || null;
   }
 
+  /* Scoped, so the gaps filter cannot offer a row whose only gap is in a
+   * language the reader has deselected. */
   function rowHasGap(row) {
-    const coverage = row && row.coverage;
+    const coverage = scopedCoverage(row);
     return Boolean(coverage && Number(coverage.counted) > 0 && coverage.covered < coverage.counted);
   }
 
@@ -1021,24 +1101,41 @@
     return counts;
   }
 
-  function mainSummary() {
-    if (panel.status === "complete" && panel.result && panel.result.summary) {
-      return panel.result.summary;
-    }
+  function mainSectionRows() {
     const rows = [];
     panel.sections.forEach((section) => {
       if (str(section.id) === "messages") return;
       (section.rows || []).forEach((row) => rows.push(row));
     });
-    return summaryOf(rows);
+    return rows;
+  }
+
+  function messageSectionRows() {
+    const section = panel.sections.find((item) => str(item.id) === "messages");
+    return (section && section.rows) || [];
+  }
+
+  /* The engine's own aggregate is the all-language one, so it can be taken
+   * verbatim only while nothing is deselected. */
+  function overallMainSummary() {
+    if (panel.status === "complete" && panel.result && panel.result.summary) {
+      return panel.result.summary;
+    }
+    return summaryOf(mainSectionRows());
+  }
+
+  function mainSummary() {
+    const scope = languageScope();
+    return scope ? summaryOf(mainSectionRows(), scope) : overallMainSummary();
   }
 
   function messagesSummary() {
+    const scope = languageScope();
+    if (scope) return summaryOf(messageSectionRows(), scope);
     if (panel.status === "complete" && panel.result && panel.result.messageSummary) {
       return panel.result.messageSummary;
     }
-    const section = panel.sections.find((item) => str(item.id) === "messages");
-    return summaryOf((section && section.rows) || []);
+    return summaryOf(messageSectionRows());
   }
 
   function addCount(parent, value, word) {
@@ -1062,6 +1159,7 @@
       return;
     }
 
+    const scope = languageScope();
     const summary = mainSummary();
     const complete = panel.status === "complete";
     const scoreText = summary.counted ? summary.percent + "%" : "—";
@@ -1069,12 +1167,16 @@
     score.setAttribute(
       "aria-label",
       summary.counted
-        ? summary.percent + " percent of counted language slots covered"
+        ? summary.percent + " percent covered across " +
+          (scope ? "the " + scope.length + " selected languages" : "every counted language")
         : "No coverage has been counted yet"
     );
     node.appendChild(score);
     if (!summary.counted) {
-      node.appendChild(el("span", "muted", "nothing counted yet"));
+      node.appendChild(el(
+        "span", "muted",
+        scope ? "nothing counted in the selected languages" : "nothing counted yet"
+      ));
     }
 
     addCount(node, summary.complete, "complete");
@@ -1092,6 +1194,24 @@
         ? visible.length + " of " + counted.length + " languages shown"
         : "languages not read yet"
     ));
+
+    /* The counts above follow the selection. This one never does, and it is
+     * drawn whenever the two can differ, so narrowing the picker can never be
+     * mistaken for closing a gap. */
+    if (scope) {
+      const overall = overallMainSummary();
+      separator(node);
+      const all = el(
+        "span", "muted",
+        overall.counted
+          ? "all " + counted.length + " languages: " + overall.percent + "%"
+          : "all " + counted.length + " languages: nothing counted"
+      );
+      all.title =
+        "Coverage across every counted language. Hiding a language moves the " +
+        "score on the left, never this one.";
+      node.appendChild(all);
+    }
 
     if (!complete && !panel.errorMessage) {
       node.appendChild(el("span", "chip-msg", "still reading — counts are partial"));
@@ -1160,7 +1280,8 @@
     refs.langButton.setAttribute(
       "aria-label",
       "Language filter: " + visible.length + " of " + counted.length +
-      " languages shown. The score is always counted over all of them."
+      " languages shown. The score counts the shown languages; the " +
+      "all-language score is kept beside it."
     );
     refs.langButton.disabled = !counted.length;
     refs.langButton.className = panel.selection && panel.selection.size !== counted.length
@@ -1195,8 +1316,10 @@
     popover.setAttribute("aria-label", "Languages shown");
     popover.appendChild(el(
       "div", "pop-note",
-      "Hiding a language hides its detail only. The score stays counted over all " +
-      counted.length + " non-base languages, so a saved selection cannot hide a gap."
+      "The score counts the languages you leave selected, so you can see whether " +
+      "the ones you ship are done. The score across all " + counted.length +
+      " non-base languages stays on screen beside it, so narrowing this list " +
+      "can never hide a gap."
     ));
 
     const actions = el("div", "pop-actions");
@@ -1286,7 +1409,7 @@
 
   function coverageCell(row) {
     const cell = el("span", "cov");
-    const coverage = row.coverage || {};
+    const coverage = scopedCoverage(row);
     const counted = Number(coverage.counted) || 0;
     if (!counted) {
       cell.appendChild(el("span", "cov-word", uncountedWord(row)));
@@ -1311,7 +1434,7 @@
   function tagCell(row) {
     const cell = el("span", "row-tags");
     const evidence = row.evidence || {};
-    const coverage = row.coverage || {};
+    const coverage = scopedCoverage(row);
     const values = stateValues(row);
     const add = (tone, text) => cell.appendChild(el("span", "tag " + tone, text));
 
@@ -1428,7 +1551,7 @@
 
   function renderEvidence(detail, row) {
     const evidence = row.evidence || {};
-    const coverage = row.coverage || {};
+    const coverage = scopedCoverage(row);
     const list = el("ul", "evidence");
 
     if (evidence.skippedForNewRecord) {
@@ -1515,7 +1638,7 @@
       if (technical.length) label.appendChild(el("span", "choice-value", technical.join(" · ")));
       line.appendChild(label);
 
-      const coverage = entry.coverage || {};
+      const coverage = scopedCoverage(entry);
       line.appendChild(el(
         "div", "choice-cov",
         Number(coverage.counted)

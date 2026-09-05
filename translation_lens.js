@@ -1132,18 +1132,39 @@
     return byField;
   }
 
-  function sectionSummary(rows) {
-    const applicable = (rows || []).filter((row) => row && row.coverage && row.coverage.counted > 0);
+  /*
+   * Called with rows alone, this counts every language the run counted. That
+   * is the number nobody can move by hiding a column, and it stays the
+   * definition of the overall score.
+   *
+   * Called with an explicit language list, it re-counts the same rows over
+   * just those languages. On an instance carrying twenty-odd languages almost
+   * no row is complete in all of them, so the unscoped "complete" count reads
+   * as zero for an item that is finished in every language the team actually
+   * ships -- true, and useless as a headline. The scoped count answers the
+   * question a reader has instead.
+   *
+   * Both paths derive coverage through coverageFromStates, so a scoped count
+   * can never end up applying a different rule about what "covered" means.
+   * The caller is expected to show both numbers: a selection that silently
+   * replaced the denominator would be a selection that can hide a gap.
+   */
+  function sectionSummary(rows, languageIds) {
+    const scope = Array.isArray(languageIds) ? languageIds : null;
+    const list = rows || [];
     let covered = 0;
     let counted = 0;
     let complete = 0;
     let partial = 0;
     let none = 0;
-    applicable.forEach((row) => {
-      covered += row.coverage.covered;
-      counted += row.coverage.counted;
-      if (row.coverage.covered === row.coverage.counted) complete++;
-      else if (row.coverage.covered > 0) partial++;
+    list.forEach((row) => {
+      if (!row) return;
+      const coverage = scope ? coverageFromStates(row.states, scope) : row.coverage;
+      if (!coverage || !coverage.counted) return;
+      covered += coverage.covered;
+      counted += coverage.counted;
+      if (coverage.covered === coverage.counted) complete++;
+      else if (coverage.covered > 0) partial++;
       else none++;
     });
     return {
@@ -1153,7 +1174,12 @@
       complete,
       partial,
       none,
-      rowCount: (rows || []).length,
+      rowCount: list.length,
+      /* Proof the scope argument was honoured, so a panel running against an
+       * engine that predates it cannot label an all-language number as a
+       * selected-language one. */
+      scoped: !!scope,
+      scopeCount: scope ? scope.length : null,
     };
   }
 

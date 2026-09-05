@@ -820,3 +820,84 @@ test("without a usable origin nothing offers a link at all", () => {
   });
   assert.strictEqual(unsafe.links, null, "a non-ServiceNow origin is refused");
 });
+
+
+/* ------------------------------------------------------------------ *
+ * Language-scoped summaries
+ *
+ * The unscoped summary is the number nobody can move by hiding a column.
+ * The scoped one answers the question a reader on a twenty-language
+ * instance actually has: is this done for the languages we ship? Both are
+ * derived from the same states through the same coverage rule, and the
+ * panel shows them together.
+ * ------------------------------------------------------------------ */
+
+function summaryRow(states, countedIds) {
+  return { states, coverage: TL.coverageFromStates(states, countedIds) };
+}
+
+test("an unscoped section summary counts every language the run counted", () => {
+  const counted = ["fr", "de"];
+  const rows = [
+    summaryRow({ fr: { state: "direct" }, de: { state: "missing" } }, counted),
+    summaryRow({ fr: { state: "direct" }, de: { state: "direct" } }, counted),
+  ];
+  const summary = TL.sectionSummary(rows);
+  assert.strictEqual(summary.covered, 3);
+  assert.strictEqual(summary.counted, 4);
+  assert.strictEqual(summary.percent, 75);
+  assert.strictEqual(summary.complete, 1);
+  assert.strictEqual(summary.partial, 1);
+  assert.strictEqual(summary.none, 0);
+  assert.strictEqual(summary.scoped, false, "an unscoped summary must declare itself unscoped");
+  assert.strictEqual(summary.scopeCount, null);
+});
+
+test("a scoped summary re-counts the same rows over only the languages asked for", () => {
+  const counted = ["fr", "de"];
+  const rows = [
+    summaryRow({ fr: { state: "direct" }, de: { state: "missing" } }, counted),
+    summaryRow({ fr: { state: "direct" }, de: { state: "missing" } }, counted),
+  ];
+  const all = TL.sectionSummary(rows);
+  assert.strictEqual(all.percent, 50);
+  assert.strictEqual(all.complete, 0, "neither row is complete in both languages");
+
+  const scoped = TL.sectionSummary(rows, ["fr"]);
+  assert.strictEqual(scoped.percent, 100);
+  assert.strictEqual(scoped.complete, 2, "both rows are finished in the language asked for");
+  assert.strictEqual(scoped.partial, 0);
+  assert.strictEqual(scoped.none, 0);
+  assert.strictEqual(scoped.scoped, true);
+  assert.strictEqual(scoped.scopeCount, 1);
+
+  assert.strictEqual(rows[0].coverage.counted, 2, "scoping must not rewrite the row it counted");
+  assert.strictEqual(TL.sectionSummary(rows).percent, 50, "and the unscoped answer is unchanged");
+});
+
+test("a scoped summary applies the same excluded-state rule as the unscoped one", () => {
+  const counted = ["fr", "de"];
+  const rows = [summaryRow({ fr: { state: "unavailable" }, de: { state: "direct" } }, counted)];
+  const scoped = TL.sectionSummary(rows, ["fr"]);
+  assert.strictEqual(scoped.counted, 0, "an unavailable language is unknown, never missing");
+  assert.strictEqual(scoped.percent, null);
+  assert.strictEqual(scoped.none, 0, "and an uncounted row is not a row with no coverage");
+  assert.strictEqual(scoped.rowCount, 1, "the row still exists, it is simply uncounted");
+});
+
+test("scoping to a language the row never carried counts it missing, not covered", () => {
+  const rows = [summaryRow({ fr: { state: "direct" } }, ["fr"])];
+  const scoped = TL.sectionSummary(rows, ["fr", "de"]);
+  assert.strictEqual(scoped.counted, 2);
+  assert.strictEqual(scoped.covered, 1);
+  assert.strictEqual(scoped.partial, 1, "absence of a state is a gap, never a pass");
+});
+
+test("an empty scope counts nothing rather than silently meaning every language", () => {
+  const rows = [summaryRow({ fr: { state: "direct" }, de: { state: "missing" } }, ["fr", "de"])];
+  const scoped = TL.sectionSummary(rows, []);
+  assert.strictEqual(scoped.counted, 0);
+  assert.strictEqual(scoped.percent, null);
+  assert.strictEqual(scoped.scoped, true, "deselecting everything is still a selection");
+  assert.strictEqual(scoped.scopeCount, 0);
+});

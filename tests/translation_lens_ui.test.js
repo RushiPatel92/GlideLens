@@ -37,6 +37,13 @@ const SOURCE = fs.readFileSync(
   path.join(__dirname, "..", "translation_lens_ui.js"),
   "utf8"
 );
+/* Loaded only by load({ withEngine: true }). Every other test here runs the
+ * panel with no engine on purpose, which exercises its local fallbacks; the
+ * engine-backed tests exist to pin the contract between the two files. */
+const ENGINE_SOURCE = fs.readFileSync(
+  path.join(__dirname, "..", "translation_lens.js"),
+  "utf8"
+);
 const ORIGIN = "https://example.service-now.com";
 const HOST_ID = "snh-translation-lens-results";
 
@@ -211,7 +218,11 @@ function load(options) {
     };
   }
   sandbox.globalThis = sandbox;
+  sandbox.URLSearchParams = URLSearchParams;
   vm.createContext(sandbox);
+  if (opts.withEngine) {
+    vm.runInContext(ENGINE_SOURCE, sandbox, { filename: "translation_lens.js" });
+  }
   vm.runInContext(SOURCE, sandbox, { filename: "translation_lens_ui.js" });
   return {
     sandbox,
@@ -656,25 +667,142 @@ test("the filters narrow the list and the language picker reports n of m", () =>
   assert.ok(shadow.textContent.includes("state"));
 });
 
-test("hiding a language hides its chip without moving the score", () => {
-  const harness = load();
-  openPanel(harness);
-  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+/* The default fixture is covered in French and missing in German, so
+ * deselecting German is exactly the difference between "half done" and
+ * "done in the language I ship". */
+function openPicker(harness) {
   let shadow = harness.shadow();
   click(buttonWithText(shadow, "Expand all"));
   shadow = harness.shadow();
   click(buttonContaining(shadow, "Languages "));
-  shadow = harness.shadow();
+  return harness.shadow();
+}
+
+function hideGerman(harness) {
+  const shadow = openPicker(harness);
   const boxes = findAll(shadow, (node) => node.tagName === "INPUT" && node.attributes["aria-label"]);
   const german = boxes.find((box) => String(box.attributes["aria-label"]).includes("German"));
   assert.ok(german, "the picker lists every counted language");
   german.checked = false;
   (german.handlers.change || []).forEach((handler) => handler({ target: german }));
-  shadow = harness.shadow();
+  return harness.shadow();
+}
+
+function scoreText(shadow) {
+  const score = findAll(shadow, (node) => String(node.className).indexOf("score") === 0)[0];
+  assert.ok(score, "the headline score is rendered");
+  return score.textContent;
+}
+
+test("deselecting a language rescopes the score and keeps the all-language score beside it", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  const shadow = hideGerman(harness);
+
   assert.ok(shadow.textContent.includes("1 of 2 languages shown"));
-  assert.ok(shadow.textContent.includes("50%"), "the denominator is unchanged by a display filter");
+  assert.strictEqual(scoreText(shadow), "100%", "the headline counts only the selected language");
+  assert.ok(
+    shadow.textContent.includes("all 2 languages: 50%"),
+    "the all-language score must stay on screen: " + shadow.textContent
+  );
   const chips = findAll(shadow, (node) => node.className === "chip gap");
   assert.ok(!chips.some((chip) => chip.textContent.includes("de")), "the hidden language has no chip");
+});
+
+test("the complete count follows the selection, which is the whole point of scoping it", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+
+  const before = harness.shadow().textContent;
+  assert.ok(before.includes("0 complete"), "nothing is complete across both languages: " + before);
+
+  const after = hideGerman(harness).textContent;
+  assert.ok(after.includes("1 complete"), "the row is complete in the selected language: " + after);
+});
+
+test("the per-row bar follows the selection so it cannot contradict the headline", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  assert.ok(harness.shadow().textContent.includes("1/2"), "the row starts counted over both");
+
+  const shadow = hideGerman(harness);
+  const cells = findAll(shadow, (node) => node.className === "cov-num");
+  assert.ok(cells.length, "the row still renders a coverage cell");
+  const text = cells.map((cell) => cell.textContent).join(" ");
+  assert.ok(text.includes("1/1"), "the row is counted over the selection: " + text);
+  assert.ok(!text.includes("1/2"), "and never over both while the headline says otherwise");
+});
+
+test("deselecting every language counts nothing rather than reporting completion", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  const opened = openPicker(harness);
+  click(buttonWithText(opened, "None"));
+  const shadow = harness.shadow();
+
+  assert.strictEqual(scoreText(shadow), "—", "an empty selection scores nothing, not 100%");
+  assert.ok(shadow.textContent.includes("nothing counted in the selected languages"));
+  assert.ok(
+    shadow.textContent.includes("all 2 languages: 50%"),
+    "the gap is still on screen: " + shadow.textContent
+  );
+});
+
+test("an engine that ignores the language scope is never trusted to label a scoped score", () => {
+  const harness = load();
+  /* Stands in for a stale engine loaded from a service worker that has not
+   * restarted: it accepts the second argument and quietly ignores it. Its
+   * all-language answer must not be painted as the selected-language one. */
+  harness.sandbox.SNTranslationLens = {
+    sectionSummary: () => ({
+      covered: 1, counted: 2, percent: 50,
+      complete: 0, partial: 1, none: 0, rowCount: 1,
+    }),
+  };
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  const shadow = hideGerman(harness);
+  assert.strictEqual(
+    scoreText(shadow), "100%",
+    "the panel recounts locally rather than mislabelling the engine's number"
+  );
+});
+
+test("the shipped engine honours the scope argument the panel sends it", () => {
+  const harness = load({ withEngine: true });
+  const engine = harness.sandbox.SNTranslationLens;
+  assert.ok(engine, "the engine must be present in this sandbox");
+
+  /* The contract, asserted against the real file rather than a stub: a scoped
+   * call recounts, and says so, which is the flag the panel checks before it
+   * dares label the number as the selected-language one. */
+  const rows = [makeRow()];
+  const all = engine.sectionSummary(rows);
+  assert.strictEqual(all.percent, 50);
+  assert.strictEqual(all.scoped, false);
+  const scoped = engine.sectionSummary(rows, ["fr"]);
+  assert.strictEqual(scoped.percent, 100);
+  assert.strictEqual(scoped.complete, 1);
+  assert.strictEqual(scoped.scoped, true);
+});
+
+test("the panel and the engine agree once both are loaded together", () => {
+  const harness = load({ withEngine: true });
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  assert.ok(harness.shadow().textContent.includes("0 complete"));
+
+  const shadow = hideGerman(harness);
+  assert.strictEqual(scoreText(shadow), "100%", "the engine's scoped answer reaches the headline");
+  assert.ok(shadow.textContent.includes("1 complete"));
+  assert.ok(
+    shadow.textContent.includes("all 2 languages: 50%"),
+    "and the all-language score is still drawn beside it: " + shadow.textContent
+  );
 });
 
 test("Include inactive stays disabled while no re-run callback exists", () => {
