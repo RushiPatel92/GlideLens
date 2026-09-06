@@ -444,7 +444,9 @@ test("plain-text report includes keys and states but excludes sources, translati
     rows: [{ name: "example_record", value: "DO_NOT_COPY_SOURCE", language: "fr", label: "DO_NOT_COPY_TRANSLATION" }],
     languages: languageContext,
   });
-  const message = TL.analyzeMessages(["Example message key"], [], languageContext)[0];
+  /* A technical key survives verbatim; anything that is not a bare
+   * identifier does not -- see the test below. */
+  const message = TL.analyzeMessages(["example_message_key"], [], languageContext)[0];
   const result = TL.summarizeResult({
     context: { mode: "form", table: "example_record", sysId: "00000000000000000000000000000001", origin: "https://secret.service-now.com" },
     languages: languageContext,
@@ -456,13 +458,115 @@ test("plain-text report includes keys and states but excludes sources, translati
   });
   const report = TL.formatResultsAsText(result);
   assert.ok(report.includes("summary [value]"));
-  assert.ok(report.includes("Example message key"));
+  assert.ok(report.includes("example_message_key"));
   assert.ok(report.includes("missing="));
   assert.ok(!report.includes("DO_NOT_COPY_SOURCE"));
   assert.ok(!report.includes("DO_NOT_COPY_TRANSLATION"));
   assert.ok(!report.includes("secret.service-now.com"));
   assert.ok(!report.includes("00000000000000000000000000000001"));
   assert.ok(!report.includes("https://"));
+});
+
+test("a report replaces any element that is not a bare technical name", () => {
+  const languageContext = languages();
+  /* Both vectors are real. A getMessage key is whatever the calling script
+   * passed -- a URL, or a whole sentence of instance text. And an unnamed
+   * catalog variable's element is its own sys_id, because runCatalog falls
+   * back to the id when name is empty. Neither may reach a report that is
+   * meant to be handed to someone who was never on the instance. */
+  const urlKey = TL.analyzeMessages(
+    ["https://secret.service-now.com/nav_to.do"], [], languageContext)[0];
+  const sentenceKey = TL.analyzeMessages(
+    ["Please contact the service desk"], [], languageContext)[0];
+  const unnamedVariable = TL.analyzeStringRows({
+    element: "0123456789abcdef0123456789abcdef",
+    aspect: "source",
+    source: "Example question text",
+    effectiveTable: "question",
+    rows: [],
+    languages: languageContext,
+  });
+  const result = TL.summarizeResult({
+    context: { mode: "catalog", table: "sc_cat_item" },
+    languages: languageContext,
+    sections: [
+      { id: "values", label: "Catalog Text", rows: [unnamedVariable] },
+      { id: "messages", label: "Messages", rows: [urlKey, sentenceKey] },
+    ],
+    failures: [],
+  });
+  const report = TL.formatResultsAsText(result);
+
+  assert.ok(!report.includes("https://"), "a URL-shaped key must not reach the report");
+  assert.ok(!report.includes("secret.service-now.com"), "nor the host inside it");
+  assert.ok(!report.includes("Please contact"), "nor a sentence-shaped key");
+  assert.ok(!report.includes("0123456789abcdef0123456789abcdef"),
+    "nor an unnamed variable's sys_id");
+
+  /* Replaced by position, so a reader can still line each line up against the
+   * panel on screen rather than losing the row entirely. */
+  assert.ok(report.includes("message #1"), "the first message is positional: " + report);
+  assert.ok(report.includes("message #2"), "and so is the second");
+  assert.ok(report.includes("source #1"), "and so is the unnamed variable");
+});
+
+test("a failed choice translation read is unavailable, never a missing translation", async () => {
+  /* The choice DEFINITIONS read cleanly here; only the sys_translated chunk
+   * carrying their text is denied. Before this was propagated, the row scored
+   * the choice as an untranslated gap -- a failed read counted as coverage,
+   * which is the one thing this panel must never do. */
+  const itemId = "00000000000000000000000000000010";
+  const variableId = "00000000000000000000000000000011";
+  const choiceId = "00000000000000000000000000000012";
+  const transport = async (request) => {
+    if (request.table === "sys_language") return [
+      { sys_id: "00000000000000000000000000000001", id: "en", active: "true" },
+      { sys_id: "00000000000000000000000000000002", id: "fr", active: "true" },
+    ];
+    if (request.table === "sys_properties") return [{ name: "glide.sys.language", value: "en" }];
+    if (request.table === "sc_cat_item") return [{
+      sys_id: itemId, sys_class_name: "sc_cat_item", name: "Example item",
+      short_description: "", description: "",
+    }];
+    if (request.table === "sys_db_object") return [{ name: "sc_cat_item", "super_class.name": "" }];
+    if (request.table === "io_set_item") return [];
+    if (request.table === "item_option_new_set") return [];
+    if (request.table === "item_option_new") return [{
+      sys_id: variableId, name: "example_topic", question_text: "Example topic",
+      type: "5", active: "true", variable_set: "",
+    }];
+    if (request.table === "question_choice") return [{
+      sys_id: choiceId, question: variableId, text: "Choice A", value: "a", inactive: "false",
+    }];
+    if (request.table === "sys_translated") {
+      if (request.query.includes("element=text")) {
+        return { ok: false, status: 403, error: "Denied" };
+      }
+      return [];
+    }
+    if (request.table === "sys_translated_text") return [];
+    if (request.table === "sys_ui_message") return [];
+    return [];
+  };
+
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: itemId, sysId: itemId,
+  }, transport);
+
+  const choices = result.sections.find((section) => section.id === "choices");
+  assert.ok(choices && choices.rows.length, "the choices section still has its row");
+  const row = choices.rows[0];
+  assert.strictEqual(row.states.fr.state, "unavailable",
+    "an unread translation is unknown, not missing");
+  assert.strictEqual(row.coverage.counted, 0, "and it is kept out of the denominator");
+  assert.ok(row.evidence.unavailable, "the row says the read did not complete");
+
+  /* The question_text chunk read fine, so it must not be dragged down with it. */
+  const values = result.sections.find((section) => section.id === "values");
+  const question = (values.rows || []).find((entry) => entry.aspect === "source");
+  assert.ok(question, "the question text row still exists");
+  assert.notStrictEqual(question.states.fr.state, "unavailable",
+    "a healthy chunk is unaffected by a failure in another");
 });
 
 function formTransport(options) {

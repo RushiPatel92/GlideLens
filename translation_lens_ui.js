@@ -626,16 +626,24 @@
    * Result reading
    * ------------------------------------------------------------------ */
 
-  /* Recurses, because a catalog run nests its native form fields in a
-   * subsection and a walker that stopped at the top level would undercount
-   * every one of those rows. */
+  /* Recurses into subsections, but visits a row object at most once.
+   *
+   * A catalog result holds its native form rows TWICE on purpose: flattened
+   * into form-fields.rows, which is what the summaries count, and again inside
+   * that section's subsections, which is what actually renders. Visiting both
+   * double-counts every warning and every folded row. Identity settles it, so
+   * the walker is correct whether a row is listed once, twice, or only in a
+   * subsection. */
   function forEachRow(visit) {
     if (!panel) return;
+    const seen = new Set();
     const walk = (sections) => {
       (sections || []).forEach((section) => {
         if (!section) return;
         (section.rows || []).forEach((row) => {
-          if (row) visit(row, section);
+          if (!row || seen.has(row)) return;
+          seen.add(row);
+          visit(row, section);
         });
         walk(section.subsections);
       });
@@ -759,12 +767,25 @@
     return count;
   }
 
-  function matchesControls(row, groupId) {
-    if (!panel.showMinor && isMinorRow(row)) return false;
+  function matchesQuery(row, groupId) {
     if (panel.search && rowSearchText(row).indexOf(panel.search) < 0) return false;
     if (panel.filter === "all") return true;
     if (panel.filter === "missing") return rowHasGap(row);
     return str(groupId) === panel.filter;
+  }
+
+  function matchesControls(row, groupId) {
+    if (!panel.showMinor && isMinorRow(row)) return false;
+    return matchesQuery(row, groupId);
+  }
+
+  /* Rows that the query WOULD have matched had they not been folded away.
+   * Without this an item whose every match is minor reads as "nothing found",
+   * which is a different and wrong answer. */
+  function foldedMatchCount(section, groupId) {
+    if (!panel || panel.showMinor) return 0;
+    return ((section && section.rows) || [])
+      .filter((row) => isMinorRow(row) && matchesQuery(row, groupId)).length;
   }
 
   /* ------------------------------------------------------------------ *
@@ -1912,10 +1933,14 @@
       const note = sectionNote(section);
       if (note) group.appendChild(el("div", "section-note", note));
       if (!rows.length) {
+        const folded = foldedMatchCount(section, id);
         group.appendChild(el(
           "div", "section-note",
           total
-            ? "No row in this section matches the current filter or search."
+            ? (folded
+              ? plural(folded, "matching row") + " " + (folded === 1 ? "is" : "are") +
+                " folded away. Use Minor rows to show " + (folded === 1 ? "it" : "them") + "."
+              : "No row in this section matches the current filter or search.")
             : "The engine produced no rows of this kind for this surface."
         ));
       }
@@ -2022,6 +2047,10 @@
 
   function renderRows() {
     const node = panel.refs.rows;
+    /* The debounced search calls this directly, without a paint, so the scope
+     * is refreshed here as well. Both entry points that rebuild the list start
+     * from a freshly derived selection. */
+    invalidateLanguageScope();
     clearNode(node);
     const languages = visibleLanguageIds();
     let shown = 0;
@@ -2177,6 +2206,31 @@
   /* Deliberately free of translated text, raw record values, hostnames, URLs
    * and sys_ids. It carries element names, aspects, counts and language ids
    * only -- the same shape the engine's own formatter produces. */
+  /* Mirrors SAFE_REPORT_ELEMENT / reportIdentifier in translation_lens.js.
+   * The engine is used whenever it is present; this copy serves localReport
+   * below, which runs only when the engine is absent. Both must stay strict:
+   * a getMessage key can be a URL or a sentence, and an unnamed catalog
+   * variable's element is its sys_id. */
+  const SAFE_REPORT_ELEMENT = /^[A-Za-z0-9_.-]{1,120}$/;
+  const REPORT_SYS_ID = /^[0-9a-f]{32}$/i;
+
+  function localReportIdentifier(row, index) {
+    const element = str(row && row.element);
+    const aspect = str(row && row.aspect) || "row";
+    const position = aspect + " #" + (Number(index) + 1);
+    if (!element) return position;
+    if (REPORT_SYS_ID.test(element)) return position;
+    return SAFE_REPORT_ELEMENT.test(element) ? element : position;
+  }
+
+  function reportIdentifierFor(row, index) {
+    const api = engineApi();
+    if (api && isFn(api.reportIdentifier)) {
+      try { return api.reportIdentifier(row, index); } catch (error) { /* fall through */ }
+    }
+    return localReportIdentifier(row, index);
+  }
+
   function localReport(result) {
     const lines = ["Translation Lens"];
     const context = (result && result.context) || {};
@@ -2199,11 +2253,11 @@
     ((result && result.sections) || []).forEach((section) => {
       lines.push("");
       lines.push(str(section.label) || str(section.id));
-      (section.rows || []).forEach((row) => {
+      (section.rows || []).forEach((row, index) => {
         const coverage = row.coverage || {};
         const missing = (coverage.missing || []).join(",") || "none";
         const warnings = reportWarnings(row);
-        lines.push("- " + str(row.element) + " [" + str(row.aspect) + "]: " +
+        lines.push("- " + reportIdentifierFor(row, index) + " [" + str(row.aspect) + "]: " +
           (coverage.covered || 0) + "/" + (coverage.counted || 0) +
           "; missing=" + missing +
           (warnings.length ? "; warnings=" + warnings.join(",") : ""));

@@ -49,6 +49,8 @@ test("Reference variables are left out of the table-sourced set on purpose", () 
   const set = between(translationLensSource, "const DYNAMIC_CATALOG_TYPES", ");");
   assert.ok(set.includes('"21"'), "List Collector is in the set");
   assert.ok(!/"8"/.test(set), "Reference must not be added to it");
+  assert.ok(!/"reference"/.test(set),
+    "and the string alias must be absent too, or the exclusion holds only for the numeric form");
 });
 
 test("content script pins the complete six-method Opus UI contract", () => {

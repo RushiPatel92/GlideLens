@@ -949,6 +949,53 @@ test("section scores follow the language selection like the headline does", () =
   assert.strictEqual(scoreText(shadow), "100%");
 });
 
+test("a row listed in both a section and its subsection is counted once", () => {
+  const harness = load();
+  openPanel(harness);
+  /* A catalog result holds its native form rows twice on purpose: flattened
+   * into form-fields.rows, which the summaries count, and again inside the
+   * subsection that actually renders. A walker visiting both reports two
+   * conflicts where the reader can see only one row. */
+  const conflicted = makeRow({
+    id: "labels:dup",
+    states: {
+      fr: { state: "conflict", direct: false, duplicateCount: 2 },
+      de: { state: "direct", direct: true, duplicateCount: 0 },
+    },
+    coverage: { covered: 1, counted: 2, percent: 50, missing: [], unavailable: [] },
+  });
+  const inner = makeSection("labels", "Field Labels", [conflicted]);
+  const outer = makeSection("form-fields", "Form fields", [conflicted]);
+  outer.subsections = [inner];
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [outer] }),
+  });
+
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("1 row with a conflict"), "counted once: " + text);
+  assert.ok(!text.includes("2 rows with a conflict"), "and never twice");
+});
+
+test("a section whose every match is folded says so instead of reading as empty", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeSection("values", "Catalog Text", [
+        makeRow({ id: "help:a", aspect: "help_tag" }),
+        makeRow({ id: "help:b", aspect: "help_tag" }),
+      ])],
+    }),
+  });
+
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("2 matching rows are folded away"),
+    "an empty list must not be confused with a folded one: " + text);
+  assert.ok(!text.includes("No row in this section matches"));
+});
+
 test("the shipped engine honours the scope argument the panel sends it", () => {
   const harness = load({ withEngine: true });
   const engine = harness.sandbox.SNTranslationLens;

@@ -44,8 +44,14 @@
   const TRANSLATED_FIELD_TYPES = new Set(["translated_field"]);
   const TRANSLATED_TEXT_TYPES = new Set(["translated_text", "translated_html"]);
   const UNKNOWN_TRANSLATED_TYPES = new Set(["translated"]);
+  /* Types arrive from the Table API as numbers; the names are defensive
+   * aliases for a caller that builds its own variable objects. Reference
+   * (8 / "reference") is deliberately absent from BOTH spellings: this set
+   * also decides which variables get a Choices row at all, and a Reference
+   * variable produces none today, so listing it would invent rows only to fold
+   * them away again. */
   const DYNAMIC_CATALOG_TYPES = new Set([
-    "lookup_select_box", "reference", "list_collector", "lookup_multiple_choice",
+    "lookup_select_box", "list_collector", "lookup_multiple_choice",
     "18", "21", "22",
   ]);
 
@@ -1195,6 +1201,27 @@
     return result;
   }
 
+  /* A report exists to be handed to someone who was never on the instance,
+   * so it may carry technical keys and coverage states and nothing else.
+   * row.element is NOT safe by construction: a getMessage key is whatever the
+   * script passed -- a whole sentence, or a URL -- and an unnamed catalog
+   * variable falls back to its own sys_id in runCatalog's variables map.
+   * Anything that is not a bare technical identifier is replaced by its
+   * position, which still lets a reader line the line up against the panel on
+   * screen. Deliberately strict: no spaces, colons or slashes, so a URL or a
+   * sentence can never satisfy it. */
+  const SAFE_REPORT_ELEMENT = /^[A-Za-z0-9_.-]{1,120}$/;
+
+  function reportIdentifier(row, index) {
+    const element = String((row && row.element) || "");
+    const aspect = String((row && row.aspect) || "row");
+    const position = aspect + " #" + (Number(index) + 1);
+    if (!element) return position;
+    /* A sys_id would satisfy the pattern, so it is refused by name. */
+    if (SYS_ID_PATTERN.test(element)) return position;
+    return SAFE_REPORT_ELEMENT.test(element) ? element : position;
+  }
+
   function reportWarnings(row) {
     const evidence = row.evidence || {};
     const warnings = [];
@@ -1218,11 +1245,11 @@
     (result && result.sections || []).forEach((section) => {
       lines.push("");
       lines.push(section.label || section.id);
-      (section.rows || []).forEach((row) => {
+      (section.rows || []).forEach((row, index) => {
         const missing = (row.coverage && row.coverage.missing || []).join(",") || "none";
         const warnings = reportWarnings(row);
         lines.push(
-          "- " + row.element + " [" + row.aspect + "]: " +
+          "- " + reportIdentifier(row, index) + " [" + row.aspect + "]: " +
           row.coverage.covered + "/" + row.coverage.counted +
           "; missing=" + missing +
           (warnings.length ? "; warnings=" + warnings.join(",") : "")
@@ -1735,7 +1762,13 @@
     "question", "item_option_new", "question_choice", "item_option_new_set",
   ];
 
-  function analyzeCatalogChoice(variable, choices, stringRows, mirrorRows, languages, includeInactive, unavailable, origin) {
+  /* unavailableSources is the set of source strings whose sys_translated read
+   * failed or was truncated. It is separate from `unavailable`, which reports
+   * only on the question_choice DEFINITION read: the definitions can read
+   * perfectly while the translation read behind them fails, and without this
+   * the choice would be scored as a missing translation rather than excluded
+   * as unknown. Absent data is never coverage. */
+  function analyzeCatalogChoice(variable, choices, stringRows, mirrorRows, languages, includeInactive, unavailable, origin, unavailableSources) {
     if (unavailable) {
       return makeRow({
         element: variable.name,
@@ -1796,11 +1829,20 @@
       linkKey: queryValueStatus(choice.text).ok
         ? { name: "question_choice", element: "text", value: choice.text }
         : null,
+      unavailable: Boolean(unavailableSources && unavailableSources.has(choice.text)),
+      unavailableReason: "catalog choice translation read unavailable",
     }));
     const states = Object.create(null);
     languages.countedLanguageIds.forEach((id) => {
       const items = analyzed.map((row) => row.states[id]);
-      if (items.some((state) => state.state === "conflict")) states[id] = { state: "conflict" };
+      /* Checked first and deliberately: this one state stands for every choice
+       * under the variable, so a single unknown makes the verdict unknown.
+       * Claiming "missing" here would turn a failed read into a counted gap,
+       * which is the one thing this panel must never do. */
+      if (items.some((state) => state.state === "unavailable")) {
+        states[id] = { state: "unavailable", reason: "choice translation read unavailable" };
+      }
+      else if (items.some((state) => state.state === "conflict")) states[id] = { state: "conflict" };
       else if (items.every((state) => COVERED_STATES.has(state.state))) states[id] = { state: "direct" };
       else if (items.every((state) => state.state === "missing")) states[id] = { state: "missing" };
       else states[id] = { state: "partial" };
@@ -1812,7 +1854,11 @@
       store: "sys_translated",
       effectiveTable: "question_choice",
       languages,
-    }, states, { choices: analyzed, choiceCount: analyzed.length });
+    }, states, {
+      choices: analyzed,
+      choiceCount: analyzed.length,
+      unavailable: analyzed.some((row) => row.evidence && row.evidence.unavailable),
+    });
   }
 
   async function runCatalog(context, transport, shared) {
@@ -2129,7 +2175,8 @@
         languages,
         Boolean(context.includeInactive),
         !choiceRead.ok || choiceRead.truncated,
-        origin
+        origin,
+        unavailableStringSources
       ));
 
     const scripts = await Promise.all([
@@ -2349,6 +2396,7 @@
     dictionaryByField,
     sectionSummary,
     summarizeResult,
+    reportIdentifier,
     formatResultsAsText,
     readChunked,
     runForm,
