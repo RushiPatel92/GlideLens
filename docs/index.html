@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GlideLens — a lens on ServiceNow forms, catalogs and code</title>
-<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, code search across 14 sources, catalog debugging, a form Debug Timeline, and translation records." />
+<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, code search across 14 sources, catalog debugging, a form Debug Timeline, and a translation coverage report." />
 
 <!-- Served from /docs, so the site root is this folder — icons are copied in
      beside this file rather than referenced out of ../icons. -->
@@ -16,7 +16,7 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="GlideLens" />
 <meta property="og:title" content="GlideLens — a lens on ServiceNow forms, catalogs and code" />
-<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and translation records." />
+<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and a translation coverage report." />
 <meta property="og:url" content="https://rushipatel92.github.io/GlideLens/" />
 <meta name="twitter:card" content="summary" />
 
@@ -649,6 +649,49 @@ a { color: var(--teal); }
 }
 .dm-grp-head .dm-st { margin-left: auto; font-weight: 500; font-size: 11px; color: #9d9dba; }
 .dm-grp-head .dm-st.warn { color: #e0c187; }
+
+/* --- Translation Lens rows --- */
+.dm-tl-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 15px; border: 0; border-bottom: 1px solid #23233a;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.dm-tl-row:hover { background: #26263c; }
+.dm-tl-row .dm-caret { width: 9px; font-size: 9px; color: #7d7d9c; flex: none; }
+.dm-tl-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.dm-tl-el { font: 11.5px var(--mono); color: #cfcfe4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-lab { font-size: 10.5px; color: #8585a0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-cov { flex: none; display: flex; align-items: center; gap: 8px; }
+.dm-tl-bar { width: 60px; height: 6px; border-radius: 3px; background: #3a3a5e; overflow: hidden; }
+.dm-tl-bar span { display: block; height: 100%; background: var(--teal); }
+.dm-tl-bar.part span { background: #e0c187; }
+.dm-tl-bar.none span { background: #e08787; }
+.dm-tl-num { font: 10.5px var(--mono); color: #9d9dba; min-width: 62px; text-align: right; }
+.dm-tl-word { font-size: 10.5px; color: #8585a0; }
+.dm-tl-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 15px 11px 40px; }
+.dm-tl-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: 9px; font-size: 10.5px; border: 1px solid #34344f;
+  background: #26263c; color: #b9b9d0;
+}
+.dm-tl-chip b { font: 10.5px var(--mono); font-weight: 600; }
+.dm-tl-chip.ok { color: #8fe3d6; border-color: #2f5f59; background: #1f3733; }
+.dm-tl-chip.gap { color: #e8a9a9; border-color: #5f3232; background: #3a2323; }
+.dm-tl-chip.na { color: #82829c; border-style: dashed; }
+.dm-tl-score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dm-tl-big { font-size: 21px; font-weight: 700; color: #f0f0fa; line-height: 1; }
+.dm-tl-all {
+  font-size: 10.5px; color: #a8a8c4; border: 1px dashed #4a4b70;
+  border-radius: 9px; padding: 2px 8px;
+}
+.dm-tl-pop {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 10px 15px; border-bottom: 1px solid #2e2e4e; background: #242438;
+}
+.dm-tl-pop p { margin: 0; flex: 1 0 100%; font-size: 10.5px; color: #8f8faa; line-height: 1.5; }
+.dm-tl-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: #b9b9d0; }
+.dm-tl-opt code { font: 10.5px var(--mono); color: #7fded2; }
+.dm-tl-note { padding: 9px 15px; font-size: 11px; color: #8f8fa8; border-bottom: 1px solid #23233a; }
 
 /* --- Code search rows --- */
 .dm-hit {
@@ -1582,30 +1625,66 @@ a { color: var(--teal); }
           <dl>
             <dt>Reads</dt>
             <dd>sys_documentation</dd>
-            <dd>sys_translated_text</dd>
+            <dd>sys_translated</dd>
+            <dd>sys_choice</dd>
+            <dd>sys_ui_message</dd>
             <dt>Resolves</dt>
             <dd class="plain">inherited fields</dd>
           </dl>
         </div>
         <div class="feature-body">
-          <h2>Translation records, one click away</h2>
+          <h2>Which translations are missing, and where they would go</h2>
           <p>
-            A globe on every label, for the label, plural and hint. Alongside it, a
-            languages glyph — but only on fields whose dictionary type can actually
-            hold per-record value translations, so an icon appearing means there is
-            somewhere for it to go. The defining table is resolved by walking
-            <strong>super_class</strong>, so a field inherited from <code>task</code>
-            lands on the right dictionary record rather than a dead end.
+            A read-only report over every field, catalog variable, choice and
+            <code>getMessage</code> key on the surface in front of you, against
+            every active language. A gap links to the record that would hold the
+            translation, prefilled with the exact keys &mdash; so closing it is a
+            save, not a search.
+          </p>
+          <p>
+            The store depends on the dictionary type, and getting that wrong is
+            silent: <strong>translated_field</strong> values live in
+            <code>sys_translated</code> keyed by the <em>source string</em>, not in
+            <code>sys_translated_text</code>. Labels resolve through
+            <strong>super_class</strong>, so a field inherited from
+            <code>task</code> lands on the right dictionary record.
+            Absent data is never counted as coverage: a denied read stays
+            Unavailable and stays out of the denominator.
           </p>
           <div class="tags">
-            <span class="tag">label · plural · hint</span>
-            <span class="tag">value translations</span>
+            <span class="tag">per-language chips</span>
+            <span class="tag">prefilled gaps</span>
+            <span class="tag">coverage per section</span>
+            <span class="tag is-ok">read-only</span>
           </div>
-          <div class="shot is-media is-shot">
-            <img
-              src="https://github.com/user-attachments/assets/465b4156-b22f-4969-9e4b-4afdd9be3ac2"
-              width="1005" height="657" loading="lazy" decoding="async"
-              alt="A ServiceNow form with a globe icon beside every field label, and a languages glyph beside Name only — the one field on the form that can hold value translations." />
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
+            <div class="dm" id="dmTl">
+              <div class="dm-head">
+                <h3 class="dm-title">Translation Lens</h3>
+                <p class="dm-sub">Catalog definition form &middot; <span>sc_cat_item</span> &middot; Base language en</p>
+              </div>
+              <div class="dm-sum dm-tl-score">
+                <span class="dm-tl-big" id="dmtScore">0%</span>
+                <span><strong id="dmtComplete">0</strong>complete</span>
+                <span><strong id="dmtPartial">0</strong>partial</span>
+                <span><strong id="dmtNone">0</strong>missing / none</span>
+                <span id="dmtShown">0 of 0 languages shown</span>
+                <span class="dm-tl-all" id="dmtAll" hidden></span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tlfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-tlfilter="missing" aria-pressed="false">Missing only</button>
+                <button class="dm-btn" type="button" data-tlfilter="values" aria-pressed="false">Catalog Text</button>
+                <button class="dm-btn" type="button" data-tlfilter="choices" aria-pressed="false">Choices</button>
+                <button class="dm-btn" type="button" data-tlfilter="messages" aria-pressed="false">Messages</button>
+                <button class="dm-tog" type="button" id="dmtLangs" aria-pressed="false" aria-expanded="false"><span class="dot"></span>Languages</button>
+                <button class="dm-tog" type="button" id="dmtMinor" aria-pressed="false"><span class="dot"></span><span id="dmtMinorLabel">Minor rows</span></button>
+              </div>
+              <div class="dm-tl-pop" id="dmtPicker" hidden></div>
+              <div class="dm-rows" id="dmtRows"></div>
+              <p class="dm-foot">Reports where a translation is missing. It never writes one.</p>
+            </div>
           </div>
         </div>
       </article>
@@ -1745,7 +1824,7 @@ a { color: var(--teal); }
   ];
 
   var COMMANDS = [
-    { group: "Tools",    name: "Translations",     desc: "Show or hide field translation controls",                    key: "",        go: "#translations" },
+    { group: "Tools",    name: "Translation Lens", desc: "Audit translations on this form",                            key: "",        go: "#translations" },
     { group: "Tools",    name: "Debug Timeline",   desc: "Start recording form activity, GlideAjax calls, and errors", key: "",        go: "#debug-timeline" },
     { group: "Tools",    name: "Code Search",      desc: "Search verified code and configuration…",                    key: "",        go: "#code-search" },
     { group: "Tools",    name: "Search Sources",   desc: "Refresh available Code Search sources",                      key: "",        go: "#code-search" },
@@ -2666,6 +2745,371 @@ a { color: var(--teal); }
   });
 
   find.addEventListener("input", render);
+  render();
+})();
+
+
+/* ---------------------------------------------------------------------------
+   Demo 6 — the Translation Lens report.
+
+   States and their arithmetic are the engine's: COVERED_STATES and
+   EXCLUDED_STATES from translation_lens.js, copied rather than approximated,
+   because the whole point of the panel is that an unread language is not a
+   missing one. Coverage is recomputed here from the states exactly as
+   coverageFromStates does, so the demo cannot drift into showing a total the
+   real panel could never produce.
+
+   The language picker rescopes the score and keeps the all-language score
+   beside it, and minor rows fold away without changing what was counted —
+   both behaviours the panel itself is tested for.
+   --------------------------------------------------------------------------- */
+(function () {
+  var LANGS = [
+    { id: "fr", name: "French" },
+    { id: "de", name: "German" },
+    { id: "es", name: "Spanish" },
+    { id: "it", name: "Italian" },
+    { id: "nl", name: "Dutch" }
+  ];
+  var COVERED = { direct: 1, same_as_source: 1 };
+  var EXCLUDED = { not_applicable: 1, unavailable: 1, unverified: 1 };
+  var STATE_WORD = {
+    direct: "Translated",
+    same_as_source: "Same as source",
+    missing: "Missing",
+    blank: "Blank row",
+    not_applicable: "Not applicable",
+    unavailable: "Not read"
+  };
+
+  function row(element, label, aspect, group, states, extra) {
+    var item = {
+      element: element, label: label, aspect: aspect, group: group, states: states,
+      minor: false, word: ""
+    };
+    if (extra) { for (var key in extra) { if (extra.hasOwnProperty(key)) item[key] = extra[key]; } }
+    return item;
+  }
+
+  var ROWS = [
+    row("delivery_date", "Question text", "Question text", "values",
+      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" }),
+    row("contact_email", "Question text", "Question text", "values",
+      { fr: "direct", de: "direct", es: "same_as_source", it: "missing", nl: "missing" }),
+    row("cost_centre", "Question text", "Question text", "values",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }),
+    row("urgency_note", "Help text", "Help text", "values",
+      { fr: "missing", de: "missing", es: "blank", it: "missing", nl: "missing" }),
+    row("contact_email", "Help tag", "Help tag", "values",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" },
+      { minor: true }),
+    row("cost_centre", "Help tag", "Help tag", "values",
+      { fr: "missing", de: "missing", es: "missing", it: "missing", nl: "missing" },
+      { minor: true }),
+    row("urgency", "Choices", "Choices", "choices",
+      { fr: "direct", de: "direct", es: "missing", it: "missing", nl: "same_as_source" }),
+    row("site_list", "Choices", "Choices", "choices",
+      { fr: "not_applicable", de: "not_applicable", es: "not_applicable", it: "not_applicable", nl: "not_applicable" },
+      { minor: true, word: "Not applicable — options come from a table" }),
+    row("invalid_email", "Message key", "Message", "messages",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }),
+    row("order_submitted", "Message key", "Message", "messages",
+      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" })
+  ];
+
+  var GROUPS = [
+    { id: "values", label: "Catalog Text" },
+    { id: "choices", label: "Choices" },
+    { id: "messages", label: "Messages" }
+  ];
+
+  var host = document.getElementById("dmtRows");
+  var picker = document.getElementById("dmtPicker");
+  var langBtn = document.getElementById("dmtLangs");
+  var minorBtn = document.getElementById("dmtMinor");
+  if (!host || !picker || !langBtn || !minorBtn) return;
+
+  var filter = "all";
+  var showMinor = false;
+  var selected = {};
+  LANGS.forEach(function (lang) { selected[lang.id] = true; });
+  var open = {};
+
+  function scope() {
+    return LANGS.filter(function (lang) { return selected[lang.id]; })
+      .map(function (lang) { return lang.id; });
+  }
+
+  /* coverageFromStates, verbatim in behaviour. */
+  function coverage(item, ids) {
+    var covered = 0;
+    var counted = 0;
+    ids.forEach(function (id) {
+      var state = item.states[id] || "missing";
+      if (EXCLUDED[state]) return;
+      counted += 1;
+      if (COVERED[state]) covered += 1;
+    });
+    return {
+      covered: covered,
+      counted: counted,
+      percent: counted ? Math.round((covered / counted) * 100) : null
+    };
+  }
+
+  function summarise(items, ids) {
+    var covered = 0, counted = 0, complete = 0, partial = 0, none = 0;
+    items.forEach(function (item) {
+      var cov = coverage(item, ids);
+      if (!cov.counted) return;
+      covered += cov.covered;
+      counted += cov.counted;
+      if (cov.covered === cov.counted) complete += 1;
+      else if (cov.covered > 0) partial += 1;
+      else none += 1;
+    });
+    return {
+      covered: covered, counted: counted, complete: complete, partial: partial, none: none,
+      percent: counted ? Math.round((covered / counted) * 100) : null
+    };
+  }
+
+  function matchesQuery(item) {
+    if (filter === "all") return true;
+    if (filter === "missing") {
+      var cov = coverage(item, scope());
+      return cov.counted > 0 && cov.covered < cov.counted;
+    }
+    return item.group === filter;
+  }
+
+  function visibleRows(group) {
+    return ROWS.filter(function (item) {
+      if (item.group !== group) return false;
+      if (!showMinor && item.minor) return false;
+      return matchesQuery(item);
+    });
+  }
+
+  function chip(id, state) {
+    var node = document.createElement("span");
+    var tone = COVERED[state] ? "ok" : (EXCLUDED[state] ? "na" : "gap");
+    node.className = "dm-tl-chip " + tone;
+    var code = document.createElement("b");
+    code.textContent = id;
+    node.appendChild(code);
+    node.appendChild(document.createTextNode(STATE_WORD[state] || state));
+    return node;
+  }
+
+  function renderRow(item, index) {
+    var ids = scope();
+    var cov = coverage(item, ids);
+    var key = item.group + ":" + item.element + ":" + item.aspect;
+    var line = document.createElement("button");
+    line.type = "button";
+    line.className = "dm-tl-row";
+    line.setAttribute("aria-expanded", open[key] ? "true" : "false");
+
+    var caret = document.createElement("span");
+    caret.className = "dm-caret";
+    caret.textContent = open[key] ? "\u25be" : "\u25b8";
+    line.appendChild(caret);
+
+    var name = document.createElement("span");
+    name.className = "dm-tl-name";
+    var el = document.createElement("span");
+    el.className = "dm-tl-el";
+    el.textContent = item.element;
+    var lab = document.createElement("span");
+    lab.className = "dm-tl-lab";
+    lab.textContent = item.aspect + (item.minor ? " · minor" : "");
+    name.appendChild(el);
+    name.appendChild(lab);
+    line.appendChild(name);
+
+    var cell = document.createElement("span");
+    cell.className = "dm-tl-cov";
+    if (!cov.counted) {
+      var word = document.createElement("span");
+      word.className = "dm-tl-word";
+      word.textContent = item.word || "Not counted";
+      cell.appendChild(word);
+    } else {
+      var bar = document.createElement("span");
+      bar.className = "dm-tl-bar" + (cov.covered === cov.counted ? "" : (cov.covered ? " part" : " none"));
+      var fill = document.createElement("span");
+      fill.style.width = cov.percent + "%";
+      bar.appendChild(fill);
+      var num = document.createElement("span");
+      num.className = "dm-tl-num";
+      num.textContent = cov.covered + "/" + cov.counted + "  " + cov.percent + "%";
+      cell.appendChild(bar);
+      cell.appendChild(num);
+    }
+    line.appendChild(cell);
+
+    line.addEventListener("click", function () {
+      open[key] = !open[key];
+      render();
+    });
+
+    host.appendChild(line);
+
+    if (open[key]) {
+      var chips = document.createElement("div");
+      chips.className = "dm-tl-chips";
+      ids.forEach(function (id) {
+        chips.appendChild(chip(id, item.states[id] || "missing"));
+      });
+      if (!ids.length) {
+        var empty = document.createElement("span");
+        empty.className = "dm-tl-word";
+        empty.textContent = "No language is selected.";
+        chips.appendChild(empty);
+      }
+      host.appendChild(chips);
+    }
+  }
+
+  function renderPicker() {
+    picker.innerHTML = "";
+    if (langBtn.getAttribute("aria-expanded") !== "true") {
+      picker.hidden = true;
+      return;
+    }
+    picker.hidden = false;
+    var note = document.createElement("p");
+    note.textContent = "The score counts the languages you leave selected, so you can see whether the ones you ship are done. " +
+      "The score across all " + LANGS.length + " stays beside it, so narrowing this list can never hide a gap.";
+    picker.appendChild(note);
+    LANGS.forEach(function (lang) {
+      var label = document.createElement("label");
+      label.className = "dm-tl-opt";
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = !!selected[lang.id];
+      box.addEventListener("change", function () {
+        selected[lang.id] = box.checked;
+        render();
+      });
+      var code = document.createElement("code");
+      code.textContent = lang.id;
+      label.appendChild(box);
+      label.appendChild(code);
+      label.appendChild(document.createTextNode(lang.name));
+      picker.appendChild(label);
+    });
+  }
+
+  function render() {
+    var ids = scope();
+    var scoped = ids.length !== LANGS.length;
+    var main = ROWS.filter(function (item) { return item.group !== "messages"; });
+
+    var summary = summarise(main, ids);
+    document.getElementById("dmtScore").textContent = summary.counted ? summary.percent + "%" : "—";
+    document.getElementById("dmtComplete").textContent = String(summary.complete);
+    document.getElementById("dmtPartial").textContent = String(summary.partial);
+    document.getElementById("dmtNone").textContent = String(summary.none);
+    document.getElementById("dmtShown").textContent = ids.length + " of " + LANGS.length + " languages shown";
+
+    var all = document.getElementById("dmtAll");
+    if (scoped) {
+      var overall = summarise(main, LANGS.map(function (lang) { return lang.id; }));
+      all.hidden = false;
+      all.textContent = "all " + LANGS.length + " languages: " +
+        (overall.counted ? overall.percent + "%" : "nothing counted");
+    } else {
+      all.hidden = true;
+    }
+
+    var folded = showMinor ? 0 : ROWS.filter(function (item) {
+      return item.minor && matchesQuery(item);
+    }).length;
+    document.getElementById("dmtMinorLabel").textContent = showMinor
+      ? "Hide minor rows"
+      : "Minor rows" + (folded ? " (" + folded + ")" : "");
+
+    host.innerHTML = "";
+    GROUPS.forEach(function (group) {
+      var rows = visibleRows(group.id);
+      var total = ROWS.filter(function (item) { return item.group === group.id; }).length;
+      if (!rows.length && filter !== "all" && filter !== group.id && filter !== "missing") return;
+
+      var head = document.createElement("div");
+      head.className = "dm-grp-head";
+      var caret = document.createElement("span");
+      caret.className = "dm-caret";
+      caret.textContent = "\u25be";
+      var name = document.createElement("span");
+      name.textContent = group.label;
+      var count = document.createElement("span");
+      count.className = "dm-n";
+      count.textContent = rows.length === total ? String(total) : rows.length + " of " + total;
+      var stat = document.createElement("span");
+      stat.className = "dm-st";
+      var groupRows = ROWS.filter(function (item) { return item.group === group.id; });
+      var groupSummary = summarise(groupRows, ids);
+      stat.textContent = groupSummary.counted ? groupSummary.percent + "%" : "not counted";
+      head.appendChild(caret);
+      head.appendChild(name);
+      head.appendChild(count);
+      head.appendChild(stat);
+      host.appendChild(head);
+
+      if (!rows.length) {
+        var note = document.createElement("div");
+        note.className = "dm-tl-note";
+        var hidden = showMinor ? 0 : groupRows.filter(function (item) {
+          return item.minor && matchesQuery(item);
+        }).length;
+        note.textContent = hidden
+          ? hidden + (hidden === 1 ? " matching row is" : " matching rows are") +
+            " folded away. Use Minor rows to show " + (hidden === 1 ? "it" : "them") + "."
+          : "No row in this section matches the current filter.";
+        host.appendChild(note);
+        return;
+      }
+      rows.forEach(renderRow);
+    });
+
+    renderPicker();
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#dmTl .dm-btn[data-tlfilter]"),
+    function (button) {
+      button.addEventListener("click", function () {
+        filter = button.getAttribute("data-tlfilter");
+        Array.prototype.forEach.call(
+          document.querySelectorAll("#dmTl .dm-btn[data-tlfilter]"),
+          function (other) {
+            var on = other === button;
+            other.classList.toggle("on", on);
+            other.setAttribute("aria-pressed", on ? "true" : "false");
+          }
+        );
+        render();
+      });
+    }
+  );
+
+  langBtn.addEventListener("click", function () {
+    var on = langBtn.getAttribute("aria-expanded") !== "true";
+    langBtn.setAttribute("aria-expanded", on ? "true" : "false");
+    langBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    langBtn.classList.toggle("on", on);
+    render();
+  });
+
+  minorBtn.addEventListener("click", function () {
+    showMinor = !showMinor;
+    minorBtn.setAttribute("aria-pressed", showMinor ? "true" : "false");
+    minorBtn.classList.toggle("on", showMinor);
+    render();
+  });
+
   render();
 })();
 
