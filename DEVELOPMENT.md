@@ -312,8 +312,10 @@ selection. If either changes in `record_search.js`, change the demo too —
 including grouping, search fields, counts, buckets, and category labels.
 Change a panel and its demonstration in the same change.
 
-Translation and variable-insight icons modify ServiceNow's own form chrome and
-should use real screenshots rather than a fabricated platform form. Keep demo
+Variable Insight icons modify ServiceNow's own form chrome and should use real
+screenshots rather than a fabricated platform form; a panel such as
+Translation Lens is demonstrated with a `dm-` mock built from its real
+state constants, which the demo comment names. Keep demo
 CSS names under the `dm-` prefix to avoid collisions with landing-page styles.
 
 Media belongs on GitHub's attachment CDN rather than in the repository so the

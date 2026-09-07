@@ -10,6 +10,54 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **Translation Lens replaces the translation icons.** One palette command,
+  keeping the icons' favourite key so a pinned command survives the change,
+  opens a read-only report over every field, catalog variable, choice and
+  `getMessage` key on the surface in front of you, against every active
+  language: a classic form, a catalog item's definition form, or a Service
+  Portal catalog item. Each row expands to one chip per language, and a
+  missing chip opens the platform record that would hold the translation,
+  prefilled with the exact keys, so closing a gap is a save rather than a
+  search. Five footer buttons open each translation table filtered to the
+  current context, and the report copies as plain text that carries states
+  and keys but never a translated string, a record value, a sys_id, a hostname
+  or a URL.
+- **The score is honest about what it could not read.** Direct and
+  same-as-source rows count as covered; a fallback row is shown beside the
+  count but not in it; a denied, timed-out or truncated read stays
+  Unavailable and out of the denominator instead of being reported as
+  Missing; a key the Table API cannot express is named Unverified. Messages
+  keep their own denominator so a client script full of `getMessage` calls
+  cannot sink the form's score. Duplicate rows, stranded rows, near-duplicates
+  and conflicting translations are each reported as what they are. A language
+  picker narrows the section scores for the session while the all-language
+  score stays on screen, so narrowing a selection cannot hide a gap. Nothing
+  about the selection is stored.
+- **On a Workspace record the same command opens the classic form.** The
+  Workspace form itself cannot be read yet, so on a Workspace route the
+  command says so in its description and opens the record's classic form in
+  a tab beside the current one, where Translation Lens runs. The classic form
+  renders its own view, so the audited field set is the classic form's;
+  labels and choices are per field and table, so every field both views
+  share gets the same answer.
+
+### Removed
+- **The translation icons.** The globe and the languages icon beside every
+  classic form label are gone, and so are the Workspace field walker and the
+  rerender-persistence observer they needed. This is a correction, not only a
+  reduction: the languages icon opened `sys_translated_text` for every
+  translatable field type, and for a `translated_field` that is the wrong
+  table. Those values live in `sys_translated`, keyed by the source string,
+  so the icon opened an empty list for a field that could be fully
+  translated. Translation Lens routes each field to the store its dictionary
+  type actually uses. The worker relay for the toggle messages and the
+  dormant field-name badge code went with it. A tab that was open across the
+  update has its leftover icons removed once at load; that cleanup is deleted
+  in the release after this one.
+
 ## [0.14.0] - 2026-09-03
 
 ### Added

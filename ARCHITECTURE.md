@@ -20,8 +20,8 @@ top frame or broadcast expensive work indiscriminately.
 
 ## Message and REST flow
 
-- Popup to content script uses `chrome.tabs.sendMessage`. Translation toggles
-  are delivered to all frames and the frame containing the form does the work.
+- The popup talks only to the service worker (`GET_TAB_FRAMES`); it sends
+  nothing to content scripts.
 - Content scripts ask the service worker to open tabs with the `OPEN_URL`
   message because content scripts cannot call `chrome.tabs.create`.
   `openUrlTabOptions` derives the new tab's placement from `sender.tab` so the
@@ -234,25 +234,76 @@ does not replay the broader server prefilter or open a Workspace route.
 Table metadata caches only in page memory. A newer search or a closed panel
 invalidates older work so stale results cannot replace the current search.
 
-## Translation icons
+## Translation Lens
 
-Classic labels can receive two translation actions:
+Translation Lens is a read-only coverage report. `translation_lens.js` (a
+DOM-free engine exporting `globalThis.SNTranslationLens`) and
+`translation_lens_ui.js` (the panel) are injected on first use through
+`INJECT_TRANSLATION_LENS` and are not in `manifest.json`. The palette command
+keeps the retired translation icons' favourite key, `toggle-translations`,
+so a pinned command survived the replacement.
 
-- A globe opens `sys_documentation` for label, plural, and hint records. The
-  defining table is resolved by following `sys_db_object.super_class` and
-  checking `sys_dictionary`, so inherited fields target the right table.
-- A languages action opens `sys_translated_text` for record-value translations.
-  It is shown only for dictionary types that can contain translated values:
-  `translated`, `translated_text`, `translated_html`, and `translated_field`.
+Context resolution runs in the top frame only, in a fixed order. A Workspace
+record route is refused before any probe; on such a route the command instead
+opens the record's classic form through `OPEN_URL`, built only from a
+validated table name and a 32-hex sys_id from the route. The classic form
+renders its own view, so the audited field set is the classic form's; labels
+and choices are per field and table, so every field both views share gets the
+same answer. Otherwise `GET_FORM_TRANSLATION_CONTEXT` probes every concrete
+frame in the MAIN world and accepts only a frame whose `sys_target` and
+`sys_uniqueValue` markers agree with `g_form`; a new record is a distinct
+`isNewRecord` state, never a coerced sys_id, and drops the per-record
+aspects. A catalog item id from the URL or page is trusted only after its
+`sc_cat_item` row is read and its class confirmed by walking `super_class`.
+With both answers in hand: a corroborated item without a classic form is
+Catalog mode (Service Portal catalog item); a classic form whose hierarchy
+contains `sc_cat_item` is Catalog mode with the form's own fields in a
+collapsed "Form fields" section; any other classic form is Form mode. A
+fingerprint (surface, table, sys_id, frame) is captured with the first probe
+and re-checked before results are committed; a changed page discards the run.
 
-The translatable-field set is fetched once per table hierarchy and cached for
-the page lifetime. Resolve it away from the synchronous toggle path. A failed
-lookup should leave a potentially useful icon visible rather than claiming the
-field cannot be translated.
+Store routing follows the dictionary type, which is the fact the old icons got
+wrong. Labels live in `sys_documentation` on the defining table, resolved by
+walking `super_class`. Choices live in `sys_choice`. `translated_field`
+values live in `sys_translated`, keyed by the source string and not by
+record; `translated_text` and `translated_html` values live in
+`sys_translated_text`, keyed by document. Catalog question text, choices and
+set titles are string-keyed in `sys_translated` under their defining table.
+`getMessage` keys are scanned from the surface's client scripts and UI
+policies and checked in `sys_ui_message`. Rows found in a store the type
+does not use are reported as stranded, never counted.
 
-The old field-name badge UI is intentionally retired because snUtils covers it.
-Its dormant implementation and `TOGGLE_FIELD_NAMES` handler remain in
-`content.js`; do not relist the feature without an explicit request.
+Every element, aspect and language cell has one state. Direct and Same as
+source count as covered; Fallback is shown beside the count but not in it;
+Missing, Blank and Partial are gaps; Conflict is flagged; Unverified,
+Unavailable and Not applicable are excluded from the denominator and named.
+Absent data is never coverage: a denied, timed-out or truncated read stays
+Unavailable and never becomes Missing. Messages keep their own denominator and
+never move the main score. The language picker is a per-session display
+filter, not stored anywhere: it rescopes the section scores while the
+all-language score stays drawn beside them, so narrowing a selection cannot
+hide a gap.
+
+Reads go through `SN_TRANSLATION_GET`, which delegates to the single
+token-bearing-frame path Record Lens uses rather than `SN_TABLE_GET` into
+every frame. Identifiers are validated before any query; a value containing
+`^`, a newline or more than 255 characters is refused and its row is
+Unverified; encoded queries are chunked under 6000 characters; the content
+columns of `sys_translated_text` and `sys_ui_message` are never requested.
+Each read has a 30 s ceiling and the panel 60 s; past that the remaining
+sections are Unavailable. The panel mounts before the first read and fills
+section by section; a result whose fingerprint no longer matches the open
+panel is discarded rather than rendered. Every link is same-origin through
+`OPEN_URL`; a missing chip opens a prefilled new record; nothing is written.
+The copied report carries states and keys but no translated text, record
+value, sys_id, hostname or URL.
+
+The translation icons and the field-name badges are both gone from
+`content.js`, along with the Workspace field walker and the toggle
+persistence observer they needed; snUtils covers field names. One line of
+orphan cleanup at content-script init removes icon elements left in tabs that
+were open across the update; delete it in the release after the one that
+removed the icons. Do not relist either feature without an explicit request.
 
 ## Catalog and Service Portal behavior
 

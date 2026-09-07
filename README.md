@@ -22,7 +22,8 @@ walkthrough.
   fields or an exact `sys_id` without downloading whole records.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
-- **Translation icons** on classic form labels, resolving inherited fields.
+- **Translation Lens**: a read-only report of which translations a form or
+  catalog item is missing, and where each one would go.
 - A best-effort **Debug Timeline** recorder for `g_form` calls, field events,
   GlideAjax and JavaScript errors — GlideAjax rows show the Script Include,
   method, parameters and decoded response, so you don't go digging in the
@@ -190,7 +191,7 @@ line is the description shown beside it.
 
 | Command | Description |
 | --- | --- |
-| Translations | *Show or hide field translation controls.* Per-label icons on classic forms: a globe for `sys_documentation` (label/plural/hint) and a languages glyph for `sys_translated_text` (per-record value translations). |
+| Translation Lens | *Audit translations on this form.* A read-only report of which labels, choices, catalog text and messages have a translation in each active language, with every gap linking to the record that would hold it. Works on a classic form, a catalog item's definition form and a Service Portal catalog item; on a Workspace record it opens the record's classic form instead. |
 | Debug Timeline | *Start recording form activity, GlideAjax calls, and errors* — and, while it is recording, *Stop recording and view captured activity.* Records a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then opens a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
 | Code Search | *Search verified code and configuration…* Searches all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
 | Search Sources | *Refresh available Code Search sources.* Re-reads this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
