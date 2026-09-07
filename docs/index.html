@@ -678,6 +678,15 @@ a { color: var(--teal); }
 .dm-tl-chip.ok { color: #8fe3d6; border-color: #2f5f59; background: #1f3733; }
 .dm-tl-chip.gap { color: #e8a9a9; border-color: #5f3232; background: #3a2323; }
 .dm-tl-chip.na { color: #82829c; border-style: dashed; }
+.dm-tl-choices { display: grid; gap: 6px; padding: 0 15px 11px 40px; }
+.dm-tl-choice {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px;
+  border: 1px solid #2e2e4e; border-radius: 6px; background: #1d1d2e;
+}
+.dm-tl-choice-label { display: flex; flex-direction: column; gap: 1px; min-width: 120px; font-size: 11.5px; color: #d6d6ea; }
+.dm-tl-choice-value { font: 10px var(--mono); color: #8585a0; }
+.dm-tl-choice-cov { font: 10.5px var(--mono); color: #9d9dba; min-width: 28px; }
+.dm-tl-choices .dm-tl-chips { padding: 0; }
 .dm-tl-score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .dm-tl-big { font-size: 21px; font-weight: 700; color: #f0f0fa; line-height: 1; }
 .dm-tl-all {
@@ -1296,7 +1305,7 @@ a { color: var(--teal); }
             <span class="tag is-ok">read-only</span>
           </div>
           <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
+            <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Two rows are open to show the per-language chips. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
             <div class="dm" id="dmTr">
               <div class="dm-head">
                 <h3 class="dm-title">Translation Lens</h3>
@@ -2781,6 +2790,7 @@ a { color: var(--teal); }
     same_as_source: "Same as source",
     missing: "Missing",
     blank: "Blank row",
+    partial: "Partial",
     not_applicable: "Not applicable",
     unavailable: "Not read"
   };
@@ -2793,6 +2803,29 @@ a { color: var(--teal); }
     if (extra) { for (var key in extra) { if (extra.hasOwnProperty(key)) item[key] = extra[key]; } }
     return item;
   }
+
+  /* A choices row carries one state per language derived from its base
+   * values the way the engine does it: every value covered is Translated,
+   * every value missing is Missing, anything in between is Partial. The
+   * values are hand-written; the row is not. */
+  function choiceRowStates(choices) {
+    var states = {};
+    LANGS.forEach(function (lang) {
+      var each = choices.map(function (choice) { return choice.states[lang.id] || "missing"; });
+      if (each.every(function (s) { return COVERED[s]; })) states[lang.id] = "direct";
+      else if (each.every(function (s) { return s === "missing"; })) states[lang.id] = "missing";
+      else states[lang.id] = "partial";
+    });
+    return states;
+  }
+  var URGENCY_CHOICES = [
+    { label: "Low", value: "low",
+      states: { fr: "direct", de: "direct", es: "direct", it: "missing", nl: "same_as_source" } },
+    { label: "Medium", value: "medium",
+      states: { fr: "direct", de: "direct", es: "missing", it: "missing", nl: "same_as_source" } },
+    { label: "High", value: "high",
+      states: { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "same_as_source" } }
+  ];
 
   var ROWS = [
     row("delivery_date", "Question text", "Question text", "values",
@@ -2810,7 +2843,7 @@ a { color: var(--teal); }
       { fr: "missing", de: "missing", es: "missing", it: "missing", nl: "missing" },
       { minor: true }),
     row("urgency", "Choices", "Choices", "choices",
-      { fr: "direct", de: "direct", es: "missing", it: "missing", nl: "same_as_source" }),
+      choiceRowStates(URGENCY_CHOICES), { choices: URGENCY_CHOICES }),
     row("site_list", "Choices", "Choices", "choices",
       { fr: "not_applicable", de: "not_applicable", es: "not_applicable", it: "not_applicable", nl: "not_applicable" },
       { minor: true, word: "Not applicable — options come from a table" }),
@@ -2836,7 +2869,13 @@ a { color: var(--teal); }
   var showMinor = false;
   var selected = {};
   LANGS.forEach(function (lang) { selected[lang.id] = true; });
-  var open = {};
+  /* One text row and the choices row start expanded so the per-language
+   * chips are visible without a click; both carry covered and missing
+   * languages, so green and red are both on screen. */
+  var open = {
+    "values:contact_email:Question text": true,
+    "choices:urgency:Choices": true
+  };
 
   function scope() {
     return LANGS.filter(function (lang) { return selected[lang.id]; })
@@ -2972,6 +3011,36 @@ a { color: var(--teal); }
         chips.appendChild(empty);
       }
       host.appendChild(chips);
+
+      if (item.choices) {
+        var list = document.createElement("div");
+        list.className = "dm-tl-choices";
+        item.choices.forEach(function (choice) {
+          var line = document.createElement("div");
+          line.className = "dm-tl-choice";
+          var label = document.createElement("div");
+          label.className = "dm-tl-choice-label";
+          var text = document.createElement("span");
+          text.textContent = choice.label;
+          var value = document.createElement("span");
+          value.className = "dm-tl-choice-value";
+          value.textContent = "value " + choice.value;
+          label.appendChild(text);
+          label.appendChild(value);
+          line.appendChild(label);
+          var ccov = coverage(choice, ids);
+          var covText = document.createElement("span");
+          covText.className = "dm-tl-choice-cov";
+          covText.textContent = ccov.counted ? ccov.covered + "/" + ccov.counted : "not counted";
+          line.appendChild(covText);
+          var cchips = document.createElement("div");
+          cchips.className = "dm-tl-chips";
+          ids.forEach(function (id) { cchips.appendChild(chip(id, choice.states[id] || "missing")); });
+          line.appendChild(cchips);
+          list.appendChild(line);
+        });
+        host.appendChild(list);
+      }
     }
   }
 
