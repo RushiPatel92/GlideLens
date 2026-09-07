@@ -242,10 +242,10 @@ test("a capitalisation-only key never covers a store whose lookup is unverified"
   assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0);
 });
 
-test("a presence-only store reports the keys it refused rather than a bare Missing", () => {
-  /* A getMessage key scanned as "Supplier" against rows keyed "supplier": the
-   * read returns them, because the platform's own query ignores
-   * capitalisation, and the panel must not discard them silently. */
+test("a message key scanned in another capitalisation is covered by its rows", () => {
+  /* A getMessage key scanned as "Supplier" against rows keyed "supplier".
+   * gs.getMessage answers that key in any capitalisation -- probed on the PDI
+   * -- and the read already returns the rows, so they count. */
   const row = TL.analyzeStringRows({
     element: "Supplier",
     aspect: "value",
@@ -259,10 +259,34 @@ test("a presence-only store reports the keys it refused rather than a bare Missi
       { key: "supplier", language: "de", message: "Lieferant" },
     ],
   });
+  assert.strictEqual(row.states.fr.state, "direct");
+  assert.strictEqual(row.states.fr.capitalisationVariantKey, true);
+  assert.strictEqual(row.coverage.covered, 2);
+  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 2);
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 0);
+});
+
+test("a presence-only store that was never probed still reports what it refused", () => {
+  /* The capitalisation check used to be skipped whenever the text column is
+   * never read, which left a bare Missing beside a list button that opens the
+   * rows. Reported, but not counted: this store's lookup is untested. */
+  const row = TL.analyzeStringRows({
+    element: "short_description",
+    aspect: "value",
+    store: "sys_translated_text",
+    tableField: "tablename",
+    keyField: "fieldname",
+    effectiveTable: "example_record",
+    presenceOnly: true,
+    source: "short_description",
+    languages: languages(),
+    rows: [
+      { tablename: "example_record", fieldname: "Short_Description", language: "fr", value: "x" },
+    ],
+  });
   assert.strictEqual(row.states.fr.state, "missing");
-  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 2);
-  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0,
-    "unverified for this store, so never counted as covered");
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 1);
+  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0);
 });
 
 test("a language covered by both spellings is not reported as a capitalisation variant", () => {

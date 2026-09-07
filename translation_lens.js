@@ -11,6 +11,22 @@
   if (globalThis.SNTranslationLens) return;
 
   const VERSION = 1;
+  /* Stores whose key the platform resolves regardless of capitalisation, each
+   * verified on a live instance rather than assumed:
+   *
+   * - sys_translated, 2026-09-07 on a configured instance. Catalog variables
+   *   whose only row was keyed with a different capitalisation of the question
+   *   text rendered their translation, with no record-keyed row and no
+   *   same-cased variable on the item that could have supplied it.
+   * - sys_ui_message, 2026-09-07 on the PDI. A row keyed "glidelens_probe_key"
+   *   answered gs.getMessage() for that key, for its upper-case form and for
+   *   its title-case form, while an absent key came back as itself -- which is
+   *   what getMessage returns when it resolves nothing, so the three matches
+   *   were real.
+   *
+   * sys_choice is deliberately absent: it is keyed by a stored choice value
+   * rather than by a display string, and nothing here has tested it. */
+  const CAPITALISATION_FOLDING_STORES = ["sys_translated", "sys_ui_message"];
   const MAX_QUERY_LENGTH = 6000;
   const MAX_VALUE_CHUNK = 40;
   const MAX_MESSAGE_KEYS = 200;
@@ -533,25 +549,16 @@
     const tableField = opts.tableField || "name";
     const effectiveTable = opts.effectiveTable || "";
     const all = Array.isArray(opts.rows) ? opts.rows : [];
-    /* sys_translated is keyed by the source string itself, and the platform
-     * resolves that key regardless of capitalisation. Verified on a configured
-     * instance on 2026-09-07: on a Service Portal catalog item, three variables
-     * whose only row was keyed with a different capitalisation of the question
-     * text all rendered their translation, alongside an exactly-keyed control
-     * on the same form, with no record-keyed row and no same-cased variable
-     * anywhere on the item that could have supplied the text instead. The
-     * platform's own query semantics agree: `value=` on this table matches
-     * regardless of capitalisation. So a key differing only in capitalisation
-     * covers the row, and the read already returns it. It is still
-     * reported, because inconsistent keys are worth normalising, but as a
-     * capitalisation note rather than as a gap.
-     *
-     * Only this store ignores capitalisation. sys_choice is keyed by a stored
-     * choice value
-     * rather than a display string and nothing here has verified how the
-     * platform resolves that, so its near-duplicate handling is unchanged. */
+    /* These stores are keyed by a string -- the source text, or a message key
+     * -- and the platform resolves that key regardless of capitalisation. See
+     * CAPITALISATION_FOLDING_STORES for what was verified where. The platform's
+     * own query semantics agree, which is also why the read already returns
+     * these rows: an encoded `value=` or `key=` matches without regard to
+     * capitalisation. So a key differing only in capitalisation covers the row.
+     * It is still reported, because inconsistent keys are worth normalising,
+     * but as a capitalisation note rather than as a gap. */
     const sourceKey = String(opts.source);
-    const foldsCapitalisation = opts.store === "sys_translated";
+    const foldsCapitalisation = CAPITALISATION_FOLDING_STORES.includes(opts.store);
     const onTable = (row) =>
       !effectiveTable || fieldValue(row, tableField) === effectiveTable;
     const keyMatches = (value) => value === sourceKey ||

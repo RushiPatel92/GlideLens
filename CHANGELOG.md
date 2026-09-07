@@ -45,10 +45,10 @@ reconstructed version by version.
   of the question text rendered their translation with nothing else on the
   item able to supply it. Those rows were previously scored as Missing and
   reported as uncounted near-duplicates. They now count, the chip says the
-  key capitalises the source differently, and the row explains why once. Only
-  this store ignores capitalisation; `sys_choice` is keyed by a stored value
-  whose lookup nothing here has verified, so its near-duplicates are still
-  uncounted.
+  key capitalises the source differently, and the row explains why once. The
+  same holds for `sys_ui_message`, probed separately; `sys_choice` is keyed by
+  a stored value rather than a display string and has not been probed, so its
+  near-duplicates are still uncounted.
 
 - **A form with a variable editor says what it did not check.** A request
   item, a catalog task or a case raised through a record producer renders
@@ -76,13 +76,17 @@ reconstructed version by version.
   duplicate row that did not exist, and inflating the near-duplicate count.
   Rows are now de-duplicated by `sys_id` as they are pooled.
 
-- **A key refused only over capitalisation is now reported, in every store.**
-  The check was skipped for the stores whose text column is never read, so a
-  `getMessage` key scanned as `Supplier` against rows keyed `supplier` reported
-  Missing with nothing said about the rows that exist -- next to a list button
-  that opens them, because the platform's own query ignores capitalisation.
-  Those rows are now reported on the row, still uncounted, with a warning to
-  open them before adding a row keyed the way the surface spells it.
+- **A `getMessage` key scanned in another capitalisation counts too.** The
+  capitalisation check was skipped entirely for the stores whose text column is
+  never read, so a key scanned as `Supplier` against fifteen `sys_ui_message`
+  rows keyed `supplier` reported 0/2 Missing and said nothing about them --
+  next to a list button that opens all fifteen, because the platform's own
+  query ignores capitalisation. `gs.getMessage` was then probed on the PDI: a
+  row keyed `glidelens_probe_key` answered that key, its upper-case form and
+  its title-case form, while an absent key came back as itself. So these count
+  as covered. Where a store's lookup has not been probed the rows are now at
+  least reported rather than silently dropped, with a warning to open them
+  before adding a row keyed the way the surface spells it.
 
 ### Removed
 - **The translation icons.** The globe and the languages icon beside every
