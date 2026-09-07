@@ -653,7 +653,12 @@ test("form run uses verified defining registration and keeps translated-field mi
   assert.strictEqual(title.evidence.alternateRegistrations.rowCount, 1);
   assert.strictEqual(title.evidence.stranded.rowCount, 1);
   assert.strictEqual(description.states.fr.state, "direct");
-  assert.strictEqual(plain.states.fr.state, "not_applicable");
+  /* A field whose type cannot hold a translation gets no value row at all;
+   * a section of Not applicable rows said nothing a reader could act on. */
+  assert.strictEqual(plain, undefined, "a plain string field has no value row");
+  assert.ok(!values.some((row) => row.element === "state"), "nor does a choice-typed string");
+  assert.strictEqual(result.sections.find((section) => section.id === "values").note, "",
+    "a populated section carries no explanatory note");
   const choices = result.sections.find((section) => section.id === "choices").rows;
   assert.strictEqual(choices[0].registrationTable, "example_parent");
   assert.strictEqual(choices[0].states.fr.state, "direct");
@@ -667,6 +672,54 @@ test("form run uses verified defining registration and keeps translated-field mi
   const messageRequest = fixture.requests.find((request) => request.table === "sys_ui_message");
   assert.ok(messageRequest.query.startsWith("messageISNOTEMPTY^"));
   assert.ok(!messageRequest.fields.split(",").includes("message"));
+});
+
+test("a form with no translatable value type gets an empty, explained Field Values section", async () => {
+  /* Owner finding on a customer case form: every field showed as Not
+   * applicable under a section nobody could name. The section is now empty
+   * and says why, rather than listing what is not there. */
+  const fixture = formTransport();
+  const result = await TL.run({
+    mode: "form",
+    table: "example_child",
+    sysId: "00000000000000000000000000000009",
+    fields: ["state", "plain"],
+    loadValues: async () => ({ values: {} }),
+  }, fixture.transport);
+  const values = result.sections.find((section) => section.id === "values");
+  assert.strictEqual(values.label, "Field Values");
+  assert.deepStrictEqual(Array.from(values.rows), []);
+  assert.match(values.note, /No field on this form has a value type that can hold a translation/);
+  assert.match(values.note, /translated_field, translated_text or translated_html/);
+  assert.ok(!fixture.requests.some((request) => request.table === "sys_translated"),
+    "nothing string-keyed was read for a form with nothing to read");
+});
+
+test("a catalog choices row links to the list of its choice translations", async () => {
+  /* Owner finding on a customer record producer: the choices row had no
+   * "open the matching rows" link, although each chip did. The row now links
+   * to every sys_translated row for its choice texts, in the same ORed shape
+   * the read used, so the list opened is the list that was counted. */
+  const fixture = catalogTransport({ choiceText: "Choice A" });
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+    origin: "https://example.service-now.com",
+  }, fixture.transport);
+  const row = result.sections.find((section) => section.id === "choices").rows[0];
+  assert.ok(row.links && row.links.list, "the row has a list link");
+  assert.ok(row.links.list.startsWith("https://example.service-now.com/sys_translated_list.do?sysparm_query="));
+  const query = decodeURIComponent(row.links.list.split("sysparm_query=")[1]);
+  assert.strictEqual(query, "name=question_choice^element=text^value=Choice A");
+  assert.deepStrictEqual(Object.keys(row.links.newRecord), [], "the row itself offers no prefill; the chips do");
+
+  /* A text the query language cannot express is out of the link as it is out
+   * of the count; with no expressible text there is no link at all. */
+  const unsafe = catalogTransport({ choiceText: "Choice^A" });
+  const unsafeResult = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: unsafe.itemId, sysId: unsafe.itemId,
+    origin: "https://example.service-now.com",
+  }, unsafe.transport);
+  assert.strictEqual(unsafeResult.sections.find((section) => section.id === "choices").rows[0].links, null);
 });
 
 test("new form skips all per-record translation reads even with a preallocated identity", async () => {

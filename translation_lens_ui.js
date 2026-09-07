@@ -1482,8 +1482,13 @@
   }
 
   function sectionNote(section) {
-    if (str(section.id) !== "messages") return "";
-    const parts = [MESSAGE_SCOPE_NOTE];
+    /* An engine-supplied note comes first for any section: it is how an empty
+     * section explains itself (no field of a translatable type) instead of
+     * reading as a failed read. Messages then add their scope caveats. */
+    const parts = [];
+    if (str(section.note)) parts.push(str(section.note));
+    if (str(section.id) !== "messages") return parts.join(" ");
+    parts.push(MESSAGE_SCOPE_NOTE);
     const scan = section.scan;
     if (scan) {
       if (Number(scan.dynamicCount)) {
@@ -1948,15 +1953,15 @@
       if (note) group.appendChild(el("div", "section-note", note));
       if (!rows.length) {
         const folded = foldedMatchCount(section, id);
-        group.appendChild(el(
-          "div", "section-note",
-          total
-            ? (folded
-              ? plural(folded, "matching row") + " " + (folded === 1 ? "is" : "are") +
-                " folded away. Use Minor rows to show " + (folded === 1 ? "it" : "them") + "."
-              : "No row in this section matches the current filter or search.")
-            : "The engine produced no rows of this kind for this surface."
-        ));
+        /* An engine note already explains an empty section; the generic line
+         * is for a section the engine left empty without saying why. */
+        const emptyText = total
+          ? (folded
+            ? plural(folded, "matching row") + " " + (folded === 1 ? "is" : "are") +
+              " folded away. Use Minor rows to show " + (folded === 1 ? "it" : "them") + "."
+            : "No row in this section matches the current filter or search.")
+          : (str(section.note) ? "" : "The engine produced no rows of this kind for this surface.");
+        if (emptyText) group.appendChild(el("div", "section-note", emptyText));
       }
       rows.forEach((row) => renderRow(group, row, id, languages));
     }

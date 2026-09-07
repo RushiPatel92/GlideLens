@@ -1628,15 +1628,11 @@
           candidateStores: route.candidateStores,
         });
       }
-      if (!route.applicable) {
-        return makeRow({
-          element: entry.field, label: entry.label, aspect: "value",
-          internalType: descriptor.internalType, definingTable: descriptor.definingTable,
-          concreteTable: table, languages,
-        }, fixedStates(languages, "not_applicable", "field type is not translatable"), {
-          notApplicable: true,
-        });
-      }
+      /* A field whose type cannot hold a translation gets no row at all. On an
+       * ordinary form that is nearly every field, and a section of Not
+       * applicable rows says nothing a reader can act on; the section note
+       * below explains an empty section instead. */
+      if (!route.applicable) return null;
       if (route.primary === "sys_translated") {
         const source = loadedValues[entry.field];
         const mirror = textRead.rows.filter((row) =>
@@ -1693,10 +1689,17 @@
         unavailable: textRead.unavailableTargets.has(entry.field),
         unavailableReason: "record-keyed translation read unavailable",
       });
-    });
+    }).filter(Boolean);
 
     emitSection(context, emitted, {
-      id: "values", label: "Translated Names / Fields and Text", rows: valueRows,
+      id: "values",
+      label: "Field Values",
+      rows: valueRows,
+      note: valueRows.length
+        ? ""
+        : "No field on this form has a value type that can hold a translation " +
+          "(translated_field, translated_text or translated_html). Labels and " +
+          "choices are covered above.",
     });
     const choiceRows = choiceFields.map((field) => {
       const descriptor = dictionary[field];
@@ -1902,6 +1905,28 @@
       else if (items.every((state) => state.state === "missing")) states[id] = { state: "missing" };
       else states[id] = { state: "partial" };
     });
+    /* The row-level list: every sys_translated row for this variable's choice
+     * texts, in the same ORed shape the read itself used, so the list the
+     * user opens is the list the panel counted. Catalog choices are keyed by
+     * text under question_choice, not by the variable, so there is no
+     * narrower key to filter on. A text the query language cannot express is
+     * left out of the link, as it is out of the count. */
+    let list = "";
+    const expressible = activeChoices
+      .map((choice) => choice.text)
+      .filter((text) => queryValueStatus(text).ok);
+    if (origin && expressible.length) {
+      try {
+        const plan = buildValueQueryChunks(
+          "name=question_choice^element=text", "value", expressible,
+          { maxItems: 200, maxLength: MAX_QUERY_LENGTH }
+        );
+        if (plan.chunks[0]) {
+          list = safeOrigin(origin) + "/sys_translated_list.do?sysparm_query=" +
+            encodeURIComponent(plan.chunks[0].query);
+        }
+      } catch (error) { list = ""; }
+    }
     return makeRow({
       element: variable.name,
       label: variable.questionText || variable.name,
@@ -1909,6 +1934,7 @@
       store: "sys_translated",
       effectiveTable: "question_choice",
       languages,
+      links: list ? { list, newRecord: Object.create(null), existing: Object.create(null) } : null,
     }, states, {
       choices: analyzed,
       choiceCount: analyzed.length,

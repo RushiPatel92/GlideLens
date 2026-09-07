@@ -684,6 +684,23 @@ test("a context-change error discards the sections already drawn", () => {
   assert.ok(!text.includes("Everything else is unknown, not covered."), "nothing is presented as read");
 });
 
+test("an engine-supplied section note is shown and replaces the generic empty line", () => {
+  const harness = load();
+  openPanel(harness);
+  const note = "No field on this form has a value type that can hold a translation.";
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeSection("values", "Field Values", [], { note }),
+    ] }),
+  });
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes(note), "the engine's explanation is on screen");
+  assert.ok(!text.includes("The engine produced no rows of this kind"), "and the generic line is not stacked under it");
+  assert.ok(text.includes("Field Values"), "the section heading stays so the reader knows it was considered");
+});
+
 test("an empty section says the engine produced no rows rather than showing coverage", () => {
   const harness = load();
   openPanel(harness);

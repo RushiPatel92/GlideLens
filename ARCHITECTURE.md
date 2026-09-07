@@ -269,7 +269,9 @@ wrong. Labels live in `sys_documentation` on the defining table, resolved by
 walking `super_class`. Choices live in `sys_choice`. `translated_field`
 values live in `sys_translated`, keyed by the source string and not by
 record; `translated_text` and `translated_html` values live in
-`sys_translated_text`, keyed by document. Catalog question text, choices and
+`sys_translated_text`, keyed by document. A field of any other type gets no
+value row at all, and an empty Field Values section carries a note saying so
+rather than a list of Not applicable rows. Catalog question text, choices and
 set titles are string-keyed in `sys_translated` under their defining table.
 `getMessage` keys are scanned from the surface's client scripts and UI
 policies and checked in `sys_ui_message`. For every string-keyed text, a row
