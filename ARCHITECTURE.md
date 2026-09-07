@@ -263,6 +263,12 @@ contains `sc_cat_item` is Catalog mode with the form's own fields in a
 collapsed "Form fields" section; any other classic form is Form mode. A
 fingerprint (surface, table, sys_id, frame) is captured with the first probe
 and re-checked before results are committed; a changed page discards the run.
+A classic form that carries a variable editor (a request item, a catalog
+task, a case raised through a record producer) is still Form mode, and its
+catalog variables are not checked there: their label ids carry the question
+ids, one bounded read resolves the owning item, and the panel shows a
+prominent notice saying how many variables were not checked with a link to
+the item or producer definition form, where the catalog run does check them.
 
 Store routing follows the dictionary type, which is the fact the old icons got
 wrong. Labels live in `sys_documentation` on the defining table, resolved by

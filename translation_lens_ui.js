@@ -181,6 +181,14 @@
     }
     .banner.progress{color:#cfeee9;background:color-mix(in srgb, var(--teal) 10%, #21283a)}
     .banner.error{color:#ffc9c9;background:#39222c;border-bottom-color:#5c3a48}
+    .banner.notice{color:#ffe3b0;background:#3a3122;border-bottom-color:#5c4b2a;display:block}
+    .banner.notice .what{display:block;margin-bottom:4px}
+    .banner.notice .links{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .banner.notice button{
+      background:#4a3d25;color:#ffe3b0;border:1px solid #6b5630;border-radius:6px;
+      padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;
+    }
+    .banner.notice button:hover,.banner.notice button:focus{background:#5c4b2a;color:#fff;outline:none}
     .banner .what{font-weight:650;padding-right:6px}
     .bar-indeterminate{
       height:2px;background:#2b2b46;border-radius:2px;overflow:hidden;margin-top:7px;
@@ -1347,8 +1355,10 @@
         ));
       }
       node.appendChild(banner);
+      renderNotices(node);
       return;
     }
+    renderNotices(node);
     if (panel.status === "complete") return;
     const banner = el("div", "banner progress");
     banner.appendChild(el("span", "what", "Reading…"));
@@ -1360,6 +1370,33 @@
     bar.appendChild(el("span"));
     banner.appendChild(bar);
     node.appendChild(banner);
+  }
+
+  /* Engine notices: what this run deliberately did not check, said where the
+   * score is read, so a 100% cannot be taken for "everything on this form".
+   * Links go through the same same-origin gate as every other URL. */
+  function renderNotices(node) {
+    (panel.notices || []).forEach((notice) => {
+      if (!notice || !str(notice.text)) return;
+      const banner = el("div", "banner notice");
+      banner.setAttribute("role", "note");
+      banner.appendChild(el("span", "what", "Not checked by this run"));
+      banner.appendChild(el("span", "", str(notice.text)));
+      const links = (Array.isArray(notice.links) ? notice.links : [])
+        .map((link) => ({ label: str(link && link.label), url: validatedUrl(link && link.url) }))
+        .filter((link) => link.label && link.url);
+      if (links.length) {
+        const row = el("div", "links");
+        links.forEach((link) => {
+          const button = el("button", "", link.label);
+          button.type = "button";
+          button.addEventListener("click", () => openUrl(link.url));
+          row.appendChild(button);
+        });
+        banner.appendChild(row);
+      }
+      node.appendChild(banner);
+    });
   }
 
   function renderControlState() {
@@ -2433,11 +2470,20 @@
       lookupKey: "",
       lookupStatus: "",
       lookupError: "",
+      notices: [],
       refs: null,
     };
     mount();
     paint();
     return true;
+  }
+
+  function upsertNotice(notice) {
+    if (!notice || !str(notice.id)) return;
+    const id = str(notice.id);
+    const index = panel.notices.findIndex((item) => str(item.id) === id);
+    if (index < 0) panel.notices.push(notice);
+    else panel.notices[index] = notice;
   }
 
   function setProgress(options) {
@@ -2456,9 +2502,11 @@
       upsertSection(request.section);
       if (panel.status !== "complete") panel.status = "partial";
     }
+    if (request.notice) upsertNotice(request.notice);
     if (request.result) {
       const result = request.result;
       panel.result = result;
+      (Array.isArray(result.notices) ? result.notices : []).forEach(upsertNotice);
       (result.sections || []).forEach(registerSection);
       panel.sections = Array.isArray(result.sections) ? result.sections.slice() : [];
       panel.status = request.partial === true ? "partial" : "complete";
@@ -2476,6 +2524,7 @@
      * timeout, a failed read -- what was read stays on screen, named partial. */
     if (request.discard === true) {
       panel.sections = [];
+      panel.notices = [];
       panel.result = null;
     }
     panel.errorMessage = str(request.message) || "Translation Lens could not finish.";

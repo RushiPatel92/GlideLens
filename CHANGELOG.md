@@ -37,6 +37,14 @@ reconstructed version by version.
   picker narrows the section scores for the session while the all-language
   score stays on screen, so narrowing a selection cannot hide a gap. Nothing
   about the selection is stored.
+- **A form with a variable editor says what it did not check.** A request
+  item, a catalog task or a case raised through a record producer renders
+  catalog variables that a form run never checks, because their text, choices
+  and set titles belong to the item, not the record. The panel now opens with
+  a prominent notice giving the count of variables not checked and a link to
+  the item or record producer definition form, where Translation Lens does
+  check them, so a 100% on such a form cannot be read as covering the
+  variables.
 - **On a Workspace record the same command offers a link to the classic
   form.** The Workspace form itself cannot be read yet, so on a Workspace
   route the command says so and shows a link to the record's classic form in

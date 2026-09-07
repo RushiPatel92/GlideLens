@@ -722,6 +722,90 @@ test("a catalog choices row links to the list of its choice translations", async
   assert.strictEqual(unsafeResult.sections.find((section) => section.id === "choices").rows[0].links, null);
 });
 
+test("a form with a variable editor gets a notice naming what was not checked, linked to the definition", async () => {
+  /* Owner finding on a customer case raised through a record producer: the
+   * classic form carries a variable editor whose variables a form run never
+   * checks, and nothing said so. The editor's label ids carry the question
+   * ids; one bounded read resolves the owning item for the link. */
+  const producerId = "00000000000000000000000000000030";
+  const questionA = "00000000000000000000000000000031";
+  const questionB = "00000000000000000000000000000032";
+  const fixture = formTransport();
+  const events = [];
+  const transport = async (request) => {
+    if (request.table === "item_option_new") {
+      assert.ok(request.query.startsWith("sys_idIN"), "questions are read by id");
+      return [
+        { sys_id: questionA, cat_item: producerId, variable_set: "" },
+        { sys_id: questionB, cat_item: "", variable_set: "00000000000000000000000000000033" },
+      ];
+    }
+    if (request.table === "sc_cat_item") {
+      assert.ok(request.query.includes(producerId));
+      return [{ sys_id: producerId, sys_class_name: "sc_cat_item_producer" }];
+    }
+    return fixture.transport(request);
+  };
+  const result = await TL.run({
+    mode: "form",
+    table: "example_child",
+    sysId: "00000000000000000000000000000009",
+    fields: ["title", "state"],
+    variableQuestionIds: [questionA, questionB.toUpperCase(), questionA, "not-a-sys-id"],
+    loadValues: async () => ({ values: { title: "Base title" } }),
+    origin: "https://example.service-now.com",
+    onNotice: (notice) => events.push("notice:" + notice.id),
+    onSection: (section) => events.push("section:" + section.id),
+  }, transport);
+  assert.strictEqual(result.notices.length, 1);
+  const notice = result.notices[0];
+  assert.strictEqual(notice.id, "variable-editor");
+  assert.strictEqual(notice.count, 2, "deduplicated, case-folded, invalid ids dropped");
+  assert.match(notice.text, /variable editor with 2 catalog variables that this run does not check/);
+  assert.match(notice.text, /open its definition form and run Translation Lens there, or run it on the item in the Service Portal/);
+  assert.deepStrictEqual(Array.from(notice.links, (link) => link.label), ["Open the record producer definition"]);
+  assert.strictEqual(notice.links[0].url, "https://example.service-now.com/sc_cat_item_producer.do?sys_id=" + producerId);
+  assert.strictEqual(events[0], "notice:variable-editor", "the notice is handed over before any section");
+  assert.ok(TL.formatResultsAsText(result).includes("Note: This form has a variable editor with 2 catalog variables"));
+  assert.ok(!TL.formatResultsAsText(result).includes(producerId), "the report carries the note, never the link");
+});
+
+test("a form without a variable editor gets no notice and makes no extra read", async () => {
+  const fixture = formTransport();
+  const result = await TL.run({
+    mode: "form",
+    table: "example_child",
+    sysId: "00000000000000000000000000000009",
+    fields: ["title"],
+    loadValues: async () => ({ values: { title: "Base title" } }),
+  }, fixture.transport);
+  assert.deepStrictEqual(Array.from(result.notices), []);
+  assert.ok(!fixture.requests.some((request) => request.table === "item_option_new" || request.table === "sc_cat_item"));
+  assert.ok(!TL.formatResultsAsText(result).includes("Note:"));
+});
+
+test("a variable editor whose item cannot be resolved still gets the notice, without a link", async () => {
+  const fixture = formTransport();
+  const transport = async (request) => {
+    if (request.table === "item_option_new") return [{ sys_id: "00000000000000000000000000000031", cat_item: "", variable_set: "00000000000000000000000000000033" }];
+    if (request.table === "sc_cat_item") throw new Error("must not be read with no item id");
+    return fixture.transport(request);
+  };
+  const result = await TL.run({
+    mode: "form",
+    table: "example_child",
+    sysId: "00000000000000000000000000000009",
+    fields: ["title"],
+    variableQuestionIds: ["00000000000000000000000000000031"],
+    loadValues: async () => ({ values: { title: "Base title" } }),
+    origin: "https://example.service-now.com",
+  }, transport);
+  const notice = result.notices[0];
+  assert.ok(notice);
+  assert.deepStrictEqual(Array.from(notice.links), []);
+  assert.match(notice.text, /could not be resolved from the variables on this form/);
+});
+
 test("new form skips all per-record translation reads even with a preallocated identity", async () => {
   const fixture = formTransport();
   const result = await TL.run({

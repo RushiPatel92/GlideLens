@@ -5531,6 +5531,28 @@ function translationFormFields(probe) {
   return fields;
 }
 
+/*
+ * A classic variable editor renders each catalog variable with a label id of
+ * the form `label.IO:<question sys_id>`. Those ids are collected by the same
+ * probe as the field labels and are not fields, so translationFormFields
+ * drops them; here they are the signal that the form carries catalog
+ * variables this run does not check, and the ids let the engine find the
+ * owning item for the notice's link.
+ */
+function translationVariableQuestionIds(probe) {
+  const seen = new Set();
+  const ids = [];
+  (probe && probe.labelIds || []).forEach((id) => {
+    const match = /^label\.(?:ni\.)?IO:([0-9a-f]{32})$/i.exec(String(id || ""));
+    if (!match) return;
+    const questionId = match[1].toLowerCase();
+    if (seen.has(questionId)) return;
+    seen.add(questionId);
+    ids.push(questionId);
+  });
+  return ids;
+}
+
 function translationExpectedFormIdentity(probe) {
   return {
     table: String(probe.table || "").toLowerCase(),
@@ -5673,6 +5695,7 @@ function translationFormEngineContext(resolved) {
     sysId: form.sysId,
     isNewRecord: Boolean(form.isNewRecord),
     fields: translationFormFields(form),
+    variableQuestionIds: translationVariableQuestionIds(form),
     loadValues: async (fields) => {
       const second = await getFormTranslationContext(fields, expected);
       if (!second.found) {
@@ -5884,8 +5907,7 @@ async function readTranslationLens(resolved, ui, engine, session) {
       discard: true,
     });
   };
-  engineContext.onSection = (section) => {
-    if (!isCurrent()) return;
+  const deliver = (paint) => {
     sectionGate = sectionGate.then(async () => {
       if (!isCurrent()) return;
       let stillCurrent = false;
@@ -5899,12 +5921,27 @@ async function readTranslationLens(resolved, ui, engine, session) {
         contextChanged();
         return;
       }
-      ui.showResults({
-        fingerprint: resolved.fingerprint,
-        section,
-        partial: true,
-      });
+      paint();
     }).catch(() => {});
+  };
+  engineContext.onSection = (section) => {
+    if (!isCurrent()) return;
+    deliver(() => ui.showResults({
+      fingerprint: resolved.fingerprint,
+      section,
+      partial: true,
+    }));
+  };
+  /* A notice -- today, the variable editor this run does not check -- goes
+   * through the same gate as a section, so it can never outlive the page it
+   * describes. */
+  engineContext.onNotice = (notice) => {
+    if (!isCurrent()) return;
+    deliver(() => ui.showResults({
+      fingerprint: resolved.fingerprint,
+      notice,
+      partial: true,
+    }));
   };
 
   try {

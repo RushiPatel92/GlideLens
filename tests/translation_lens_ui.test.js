@@ -684,6 +684,40 @@ test("a context-change error discards the sections already drawn", () => {
   assert.ok(!text.includes("Everything else is unknown, not covered."), "nothing is presented as read");
 });
 
+test("an engine notice is shown prominently, before any section, and its link opens through onOpenUrl", () => {
+  const harness = load();
+  const calls = openPanel(harness);
+  const url = ORIGIN + "/sc_cat_item_producer.do?sys_id=00000000000000000000000000000030";
+  const notice = {
+    id: "variable-editor",
+    tone: "warn",
+    count: 2,
+    text: "This form has a variable editor with 2 catalog variables that this run does not check.",
+    links: [
+      { label: "Open the record producer definition", url },
+      { label: "Elsewhere", url: "https://elsewhere.example/x" },
+    ],
+  };
+  harness.ui.showResults({ fingerprint: "run-1", notice, partial: true });
+  let text = harness.shadow().textContent;
+  assert.ok(text.includes("Not checked by this run"), "the banner is labelled");
+  assert.ok(text.includes(notice.text), "and carries the engine's wording while still reading");
+  assert.ok(!text.includes("Elsewhere"), "a cross-origin link is dropped, not shown");
+
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ notices: [notice], sections: [makeSection("labels", "Field Labels", [makeRow()])] }),
+  });
+  text = harness.shadow().textContent;
+  assert.ok(text.includes(notice.text), "the notice survives the final result");
+  assert.ok(text.indexOf(notice.text) < text.indexOf("widget_name"), "and sits above the sections");
+  click(buttonWithText(harness.shadow(), "Open the record producer definition"));
+  assert.deepStrictEqual(calls.open, [url]);
+
+  harness.ui.showError({ fingerprint: "run-1", message: "The page context changed.", discard: true });
+  assert.ok(!harness.shadow().textContent.includes(notice.text), "a discarded run takes its notice with it");
+});
+
 test("an engine-supplied section note is shown and replaces the generic empty line", () => {
   const harness = load();
   openPanel(harness);

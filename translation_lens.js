@@ -1285,6 +1285,11 @@
       lines.push("Languages: " + languages.shownCount + " shown; " +
         languages.countedLanguageIds.length + " counted; base " + languages.baseLanguage);
     }
+    /* A notice's text is the engine's own wording plus a count; it names no
+     * item, value, host or id, so it is safe in the report. Its links are not. */
+    (result && result.notices || []).forEach((notice) => {
+      if (notice && notice.text) lines.push("Note: " + notice.text);
+    });
     (result && result.sections || []).forEach((section) => {
       lines.push("");
       lines.push(section.label || section.id);
@@ -1387,6 +1392,63 @@
     return section;
   }
 
+  /* A classic form with a variable editor -- a request item, a catalog task,
+   * a case raised through a record producer -- renders catalog variables that
+   * a form run never checks: their text, choices and set titles are keyed on
+   * the item, not on this record. The notice says so plainly and links to the
+   * definition form, where the catalog run does check them. The editor's
+   * label ids carry the question ids, so one bounded read finds the item. */
+  async function describeVariableEditor(context, transport, shared) {
+    const ids = unique((context.variableQuestionIds || []).map((id) => String(id || "").toLowerCase()))
+      .filter((id) => SYS_ID_PATTERN.test(id));
+    if (!ids.length) return null;
+    const readOptions = { displayAll: true, excludeRefLinks: true };
+    const questions = await readChunked(transport, chunkSysIds(ids, 50).map((chunk) => ({
+      table: "item_option_new",
+      query: "sys_idIN" + chunk.join(","),
+      fields: "sys_id,cat_item,variable_set",
+      limit: STORE_CAPS.item_option_new,
+      options: readOptions,
+      targets: chunk,
+    })), "item_option_new", shared.failures, STORE_CAPS.item_option_new);
+    const itemIds = unique(questions.rows.map((row) => fieldValue(row, "cat_item").toLowerCase()))
+      .filter((id) => SYS_ID_PATTERN.test(id));
+    let items = [];
+    if (itemIds.length) {
+      const read = await readChunked(transport, chunkSysIds(itemIds, 50).map((chunk) => ({
+        table: "sc_cat_item",
+        query: "sys_idIN" + chunk.join(","),
+        fields: "sys_id,sys_class_name",
+        limit: STORE_CAPS.sc_cat_item,
+        options: readOptions,
+        targets: chunk,
+      })), "sc_cat_item", shared.failures, STORE_CAPS.sc_cat_item);
+      items = read.rows;
+    }
+    const links = [];
+    items.forEach((row) => {
+      const id = fieldValue(row, "sys_id").toLowerCase();
+      const table = fieldValue(row, "sys_class_name").toLowerCase() || "sc_cat_item";
+      if (!SYS_ID_PATTERN.test(id) || !TABLE_PATTERN.test(table)) return;
+      try {
+        links.push({
+          label: "Open the " + (table === "sc_cat_item_producer" ? "record producer" : "catalog item") + " definition",
+          url: safeOrigin(shared.origin) + "/" + table + ".do?sys_id=" + id,
+        });
+      } catch (error) { /* an unusable origin gives no link; the notice still stands */ }
+    });
+    const count = ids.length;
+    let text = "This form has a variable editor with " + count + " catalog " +
+      (count === 1 ? "variable" : "variables") + " that this run does not check. " +
+      "Variable text, choices and set titles are keyed on the catalog item or record " +
+      "producer, not on this record: open its definition form and run Translation Lens " +
+      "there, or run it on the item in the Service Portal.";
+    if (!links.length) {
+      text += " The owning item could not be resolved from the variables on this form.";
+    }
+    return { id: "variable-editor", tone: "warn", count, text, links };
+  }
+
   function normalizedFormFields(context) {
     const seen = new Set();
     const out = [];
@@ -1426,6 +1488,11 @@
       return [{ id: "labels", label: "Field Labels", rows: unavailable }];
     }
     const chain = hierarchy.tables;
+    const editorNotice = await describeVariableEditor(context, transport, shared);
+    if (editorNotice) {
+      if (Array.isArray(shared.notices)) shared.notices.push(editorNotice);
+      if (typeof context.onNotice === "function") context.onNotice(editorNotice);
+    }
     const fieldChunkSize = derivedFieldChunkSize(
       languages.countedLanguageIds.length, chain.length, STORE_CAPS.sys_dictionary
     );
@@ -2434,7 +2501,7 @@
         unavailable: true,
       });
     }
-    const shared = { languages, failures, origin, linkTargets: null };
+    const shared = { languages, failures, origin, linkTargets: null, notices: [] };
     let sections;
     if (mode === "catalog") {
       sections = await runCatalog(input, transport, shared);
@@ -2482,6 +2549,7 @@
       },
       languages,
       sections,
+      notices: shared.notices,
       failures,
       links: buildFooterLinks(origin, shared.linkTargets),
       unavailable: false,

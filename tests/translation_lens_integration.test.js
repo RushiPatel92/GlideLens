@@ -191,6 +191,32 @@ test("classic label ids are marker-table matched and non-field ids are rejected"
   assert.deepStrictEqual(result.map((item) => item.field), ["title"]);
 });
 
+test("variable editor question ids are lifted from the probe's label ids and handed to the engine", () => {
+  const factory = new Function(
+    between(contentSource, "function translationVariableQuestionIds", "function translationExpectedFormIdentity") +
+      "\nreturn translationVariableQuestionIds;"
+  );
+  const lift = factory();
+  const a = "00000000000000000000000000000031";
+  const b = "00000000000000000000000000000032";
+  assert.deepStrictEqual(lift({ labelIds: [
+    "label.example_record.title",
+    "label.IO:" + a,
+    "label.ni.IO:" + b.toUpperCase(),
+    "label.IO:" + a,
+    "label.IO:not-a-sys-id",
+    "label.IO:",
+  ] }), [a, b]);
+  assert.deepStrictEqual(lift({ labelIds: [] }), []);
+  assert.deepStrictEqual(lift(null), []);
+
+  const context = between(contentSource, "function translationFormEngineContext", "function translationEngineContext");
+  assert.ok(context.includes("variableQuestionIds: translationVariableQuestionIds(form)"));
+  const block = between(contentSource, "async function readTranslationLens", "/* =====================================================================\n * RECORD SEARCH");
+  const notice = block.indexOf("engineContext.onNotice");
+  assert.ok(notice >= 0 && block.indexOf("deliver(", notice) > notice, "a notice goes through the same context gate as a section");
+});
+
 test("form value reread is constrained to expected table, identity, and frame", () => {
   const block = between(contentSource, "function translationFormEngineContext", "function translationEngineContext");
   assert.ok(block.includes("translationExpectedFormIdentity(form)"));
