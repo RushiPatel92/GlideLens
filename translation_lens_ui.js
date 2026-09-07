@@ -125,10 +125,10 @@
     button,input{font:inherit}
     .overlay{
       position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
-      display:flex;align-items:center;justify-content:center;padding:24px;
+      display:flex;align-items:center;justify-content:center;padding:12px;
     }
     .panel{
-      width:min(980px,calc(100vw - 32px));height:min(720px,calc(100vh - 40px));
+      width:min(1360px,calc(100vw - 24px));height:min(1100px,calc(100vh - 24px));
       display:flex;flex-direction:column;overflow:hidden;
       background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
       box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;
@@ -223,7 +223,7 @@
     .langwrap{position:relative}
     .popover{
       position:absolute;top:calc(100% + 6px);left:0;z-index:5;width:300px;
-      max-height:320px;overflow:auto;padding:8px;border-radius:8px;
+      max-height:min(520px,60vh);overflow:auto;padding:8px;border-radius:8px;
       background:#26263d;border:1px solid #4a4a72;box-shadow:0 18px 40px rgba(0,0,0,.55);
     }
     .popover .pop-note{font-size:10px;color:#8686a0;padding:2px 4px 7px;line-height:1.45}
@@ -246,7 +246,7 @@
       min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a8a8c2;
     }
     .search{
-      margin-left:auto;width:220px;max-width:38vw;background:#313150;
+      margin-left:auto;width:260px;max-width:38vw;background:#313150;
       border:1px solid #575780;border-radius:6px;color:#f0f0fa;
       outline:none;padding:7px 9px;font-size:12px;
     }
