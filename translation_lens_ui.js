@@ -1781,8 +1781,11 @@
         " exist for this element on another table.");
     }
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) {
-      evidenceLine(list, plural(evidence.nearDuplicates.rowCount, "near-duplicate row") +
-        " differ from the source only in capitalisation. Never counted; whether the platform resolves them is unverified.");
+      evidenceLine(list, plural(evidence.nearDuplicates.rowCount, "row") +
+        " carry this key with a different capitalisation. They are not counted," +
+        " because whether this store resolves a key regardless of capitalisation" +
+        " is unverified. Open them before adding a row keyed the way this surface" +
+        " spells it, or a second row ends up competing with them.");
     }
     if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) {
       evidenceLine(list, plural(evidence.capitalisationVariants.rowCount, "row") +

@@ -557,7 +557,13 @@
     const keyMatches = (value) => value === sourceKey ||
       (foldsCapitalisation && value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase());
     const exact = all.filter((row) => onTable(row) && keyMatches(fieldValue(row, keyField)));
-    const variantRows = opts.presenceOnly ? [] : all.filter((row) => {
+    /* Computed for every store, including the presence-only ones. A message
+     * key scanned as "Supplier" against rows keyed "supplier" is the case
+     * that matters: the read returns those rows, because the platform matches
+     * the query without regard to capitalisation, and discarding them without
+     * a word left the panel reporting Missing beside a list button that opens
+     * the very rows it would not count. */
+    const variantRows = all.filter((row) => {
       const value = fieldValue(row, keyField);
       return onTable(row) && value !== sourceKey &&
         value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase();

@@ -242,6 +242,29 @@ test("a capitalisation-only key never covers a store whose lookup is unverified"
   assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0);
 });
 
+test("a presence-only store reports the keys it refused rather than a bare Missing", () => {
+  /* A getMessage key scanned as "Supplier" against rows keyed "supplier": the
+   * read returns them, because the platform's own query ignores
+   * capitalisation, and the panel must not discard them silently. */
+  const row = TL.analyzeStringRows({
+    element: "Supplier",
+    aspect: "value",
+    store: "sys_ui_message",
+    keyField: "key",
+    presenceOnly: true,
+    source: "Supplier",
+    languages: languages(),
+    rows: [
+      { key: "supplier", language: "fr", message: "Fournisseur" },
+      { key: "supplier", language: "de", message: "Lieferant" },
+    ],
+  });
+  assert.strictEqual(row.states.fr.state, "missing");
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 2);
+  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0,
+    "unverified for this store, so never counted as covered");
+});
+
 test("a language covered by both spellings is not reported as a capitalisation variant", () => {
   const row = TL.analyzeStringRows({
     element: "title",

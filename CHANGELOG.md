@@ -76,6 +76,14 @@ reconstructed version by version.
   duplicate row that did not exist, and inflating the near-duplicate count.
   Rows are now de-duplicated by `sys_id` as they are pooled.
 
+- **A key refused only over capitalisation is now reported, in every store.**
+  The check was skipped for the stores whose text column is never read, so a
+  `getMessage` key scanned as `Supplier` against rows keyed `supplier` reported
+  Missing with nothing said about the rows that exist -- next to a list button
+  that opens them, because the platform's own query ignores capitalisation.
+  Those rows are now reported on the row, still uncounted, with a warning to
+  open them before adding a row keyed the way the surface spells it.
+
 ### Removed
 - **The translation icons.** The globe and the languages icon beside every
   classic form label are gone, and so are the Workspace field walker and the
