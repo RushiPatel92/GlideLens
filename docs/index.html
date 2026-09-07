@@ -1254,6 +1254,261 @@ a { color: var(--teal); }
     <div class="wrap">
 
       <!-- 1 -->
+      <article class="feature" id="translations">
+        <div class="feature-rail">
+          <p class="eyebrow">Forms</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>sys_documentation</dd>
+            <dd>sys_translated</dd>
+            <dd>sys_choice</dd>
+            <dd>sys_ui_message</dd>
+            <dt>Resolves</dt>
+            <dd class="plain">inherited fields</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Which translations are missing, and where they would go</h2>
+          <p>
+            A read-only report over every field, catalog variable, choice and
+            <code>getMessage</code> key on the surface in front of you, against
+            every active language. A gap links to the record that would hold the
+            translation, prefilled with the exact keys &mdash; so closing it is a
+            save, not a search. It runs on a classic form, a catalog item's
+            definition form and a Service Portal catalog item; on a Workspace
+            record the same command offers a link to the record's classic form,
+            where it runs.
+          </p>
+          <p>
+            The store depends on the dictionary type, and getting that wrong is
+            silent: <strong>translated_field</strong> values live in
+            <code>sys_translated</code> keyed by the <em>source string</em>, not in
+            <code>sys_translated_text</code>. Labels resolve through
+            <strong>super_class</strong>, so a field inherited from
+            <code>task</code> lands on the right dictionary record.
+            Absent data is never counted as coverage: a denied read stays
+            Unavailable and stays out of the denominator.
+          </p>
+          <div class="tags">
+            <span class="tag">per-language chips</span>
+            <span class="tag">prefilled gaps</span>
+            <span class="tag">coverage per section</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
+            <div class="dm" id="dmTl">
+              <div class="dm-head">
+                <h3 class="dm-title">Translation Lens</h3>
+                <p class="dm-sub">Catalog definition form &middot; <span>sc_cat_item</span> &middot; Base language en</p>
+              </div>
+              <div class="dm-sum dm-tl-score">
+                <span class="dm-tl-big" id="dmtScore">0%</span>
+                <span><strong id="dmtComplete">0</strong>complete</span>
+                <span><strong id="dmtPartial">0</strong>partial</span>
+                <span><strong id="dmtNone">0</strong>missing / none</span>
+                <span id="dmtShown">0 of 0 languages shown</span>
+                <span class="dm-tl-all" id="dmtAll" hidden></span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tlfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-tlfilter="missing" aria-pressed="false">Missing only</button>
+                <button class="dm-btn" type="button" data-tlfilter="values" aria-pressed="false">Catalog Text</button>
+                <button class="dm-btn" type="button" data-tlfilter="choices" aria-pressed="false">Choices</button>
+                <button class="dm-btn" type="button" data-tlfilter="messages" aria-pressed="false">Messages</button>
+                <button class="dm-tog" type="button" id="dmtLangs" aria-pressed="false" aria-expanded="false"><span class="dot"></span>Languages</button>
+                <button class="dm-tog" type="button" id="dmtMinor" aria-pressed="false"><span class="dot"></span><span id="dmtMinorLabel">Minor rows</span></button>
+              </div>
+              <div class="dm-tl-pop" id="dmtPicker" hidden></div>
+              <div class="dm-rows" id="dmtRows"></div>
+              <p class="dm-foot">Reports where a translation is missing. It never writes one.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 2 -->
+      <article class="feature" id="variable-values">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+           <dl>
+             <dt>Covers</dt>
+            <dd class="plain">Stored vs live</dd>
+            <dd class="plain">record movement</dd>
+            <dd class="plain">secret-safe reads</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Variable Values, including the ones you cannot see</h2>
+          <p>
+            On a classic RITM or record-producer target, compare the raw value
+            stored in the database with the raw value now held by
+            <code>g_form</code>, so an onLoad change is visible without mistaking
+            reference or choice labels for differences.
+            On a verified Workspace record &mdash; a Service Operations Workspace
+            request item, or a supplier case or supplier task in Source-to-Pay
+            Workspace &mdash; the same command checks a narrower evidence-backed
+            set after confirming the visible record, the Variable Editor, read
+            permission, and each raw value's shape. Each supported surface has
+            its own verified type list rather than inheriting another's. Partial
+            and stored-only results say plainly what was not compared; every
+            other Workspace experience and table remains unsupported.
+            On an ordering form, the same command keeps its current best-effort
+            live-value and hidden-variable view.
+          </p>
+          <div class="tags">
+            <span class="tag">hidden / visible filter</span>
+            <span class="tag">differing filter</span>
+            <span class="tag">Workspace guarded comparison</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, native RITM panel. Switch to <em>Differing</em>, or try <em>Non-empty</em>.</p>
+            <div class="dm" id="dmVars">
+              <div class="dm-head">
+                <h3 class="dm-title">Variable Values <span class="dm-be">Best effort</span></h3>
+                <p class="dm-sub">Stored Table API values compared with raw live g_form values on this RITM. Values are read-only; reference and choice labels are not compared.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmvTotal">0</strong>variables</span>
+                <span><strong id="dmvHidden">0</strong>hidden</span>
+                <span><strong id="dmvVisible">0</strong>visible</span>
+                <span><strong id="dmvDiffers">0</strong>differing</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-vfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-vfilter="hidden" aria-pressed="false">Hidden</button>
+                <button class="dm-btn" type="button" data-vfilter="visible" aria-pressed="false">Visible</button>
+                <button class="dm-btn" type="button" data-vfilter="differs" aria-pressed="false">Differing</button>
+                <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
+                <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmvRows"></div>
+              <p class="dm-foot">Read-only inspector — does not modify the live form.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 3 -->
+      <article class="feature" id="debug-timeline">
+        <div class="feature-rail">
+          <p class="eyebrow">Debugging</p>
+          <dl>
+            <dt>Captures</dt>
+            <dd>g_form</dd>
+            <dd>GlideAjax</dd>
+            <dd class="plain">field events, errors</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Debug Timeline</h2>
+          <p>
+            Record one page's interaction and read back what happened: public
+            <code>g_form</code> calls, native field events, GlideAjax timing, and
+            JavaScript errors on a filterable timeline. Best-effort by design — it
+            shows you <strong>what ran, not which script ran it</strong>, and says so
+            rather than guessing.
+          </p>
+          <p>
+            GlideAjax rows carry what you would otherwise open the Network tab
+            for: the <strong>Script Include, the method, every parameter added,
+            and the decoded response</strong>, next to how long the call took and
+            in order with the rest of the interaction — rather than pieced back
+            together from a list of XHRs. Parameter and response names that read
+            like secrets are redacted before anything is shown.
+          </p>
+          <div class="tags">
+            <span class="tag">single page</span>
+            <span class="tag">params · response</span>
+            <span class="tag">reversible patches</span>
+            <span class="tag">secrets redacted</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Open a <em>GlideAjax</em> row for its params and response.</p>
+            <div class="dm" id="dmTl">
+              <div class="dm-head">
+                <h3 class="dm-title">Debug Timeline <span class="dm-be">Best effort</span></h3>
+                <p class="dm-sub">ServiceNow form activity correlated across the frames that were available during this interaction.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmtEvents">0</strong>events</span>
+                <span><strong>2</strong>frames</span>
+                <span><strong>2.4s</strong>duration</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-tfilter="g_form" aria-pressed="false">g_form</button>
+                <button class="dm-btn" type="button" data-tfilter="field" aria-pressed="false">Fields</button>
+                <button class="dm-btn" type="button" data-tfilter="glideajax" aria-pressed="false">GlideAjax</button>
+                <button class="dm-btn" type="button" data-tfilter="error" aria-pressed="false">Errors</button>
+                <button class="dm-tog" type="button" id="dmtLowSig" aria-pressed="false"><span class="dot"></span>Show low-signal (2)</button>
+                <input class="dm-find" id="dmtFind" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmtRows"></div>
+              <p class="dm-foot">Stacks identify runtime calls, not guaranteed Client Script or UI Policy names.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 4 -->
+      <article class="feature" id="catalog-insight">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>catalog_script_client</dd>
+            <dd>catalog_ui_policy</dd>
+            <dd>catalog_ui_policy_action</dd>
+            <dt>Where</dt>
+            <dd class="plain">Service Portal</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Catalog Logic: what actually affects this item</h2>
+          <p>
+            Open a catalog item and get every client script and UI policy bound to
+            it or its variable sets, grouped by the variable they watch. Rows that
+            cannot fire while ordering — inactive, or scoped to RITM and Task views
+            only — are flagged, so <strong>"why isn't my script running"</strong>
+            answers itself before you open a single record.
+          </p>
+          <div class="tags">
+            <span class="tag">group by variable</span>
+            <span class="tag is-warn">⚠ won't run here</span>
+            <span class="tag">open in platform</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em>, <em>Active only</em>, or search <em>laptop_model</em>.</p>
+            <div class="dm" id="dmCat">
+              <div class="dm-head">
+                <h3 class="dm-title">Catalog Logic</h3>
+                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmcTotal">0</strong>shown</span>
+                <span><strong id="dmcActive">0</strong>active</span>
+                <span><strong id="dmcInactive">0</strong>inactive</span>
+                <span class="warn" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong id="dmcBlocked">0</strong>won't run here</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-kind="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-kind="client" aria-pressed="false">Client scripts</button>
+                <button class="dm-btn" type="button" data-kind="uip" aria-pressed="false">UI policies</button>
+                <button class="dm-tog" type="button" id="dmcActiveOnly" aria-pressed="false"><span class="dot"></span>Active only</button>
+                <button class="dm-tog" type="button" id="dmcGroup" aria-pressed="false"><span class="dot"></span>Group by variable</button>
+                <input class="dm-find" id="dmcFind" type="search" placeholder="Search name, type, variable…" aria-label="Search" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmcRows"></div>
+              <p class="dm-foot">Rows flagged ⚠ are active but scoped away from the catalog form — the usual answer to "why isn't my script running".</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 5 -->
       <article class="feature" id="record-search">
         <div class="feature-rail">
           <p class="eyebrow">Records</p>
@@ -1331,7 +1586,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 2 -->
+      <!-- 6 -->
       <article class="feature" id="code-search">
         <div class="feature-rail">
           <p class="eyebrow">Search</p>
@@ -1402,63 +1657,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 2 -->
-      <article class="feature" id="catalog-insight">
-        <div class="feature-rail">
-          <p class="eyebrow">Catalog</p>
-          <dl>
-            <dt>Reads</dt>
-            <dd>catalog_script_client</dd>
-            <dd>catalog_ui_policy</dd>
-            <dd>catalog_ui_policy_action</dd>
-            <dt>Where</dt>
-            <dd class="plain">Service Portal</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Catalog Logic: what actually affects this item</h2>
-          <p>
-            Open a catalog item and get every client script and UI policy bound to
-            it or its variable sets, grouped by the variable they watch. Rows that
-            cannot fire while ordering — inactive, or scoped to RITM and Task views
-            only — are flagged, so <strong>"why isn't my script running"</strong>
-            answers itself before you open a single record.
-          </p>
-          <div class="tags">
-            <span class="tag">group by variable</span>
-            <span class="tag is-warn">⚠ won't run here</span>
-            <span class="tag">open in platform</span>
-            <span class="tag is-ok">read-only</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em>, <em>Active only</em>, or search <em>laptop_model</em>.</p>
-            <div class="dm" id="dmCat">
-              <div class="dm-head">
-                <h3 class="dm-title">Catalog Logic</h3>
-                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
-              </div>
-              <div class="dm-sum">
-                <span><strong id="dmcTotal">0</strong>shown</span>
-                <span><strong id="dmcActive">0</strong>active</span>
-                <span><strong id="dmcInactive">0</strong>inactive</span>
-                <span class="warn" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong id="dmcBlocked">0</strong>won't run here</span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-kind="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-kind="client" aria-pressed="false">Client scripts</button>
-                <button class="dm-btn" type="button" data-kind="uip" aria-pressed="false">UI policies</button>
-                <button class="dm-tog" type="button" id="dmcActiveOnly" aria-pressed="false"><span class="dot"></span>Active only</button>
-                <button class="dm-tog" type="button" id="dmcGroup" aria-pressed="false"><span class="dot"></span>Group by variable</button>
-                <input class="dm-find" id="dmcFind" type="search" placeholder="Search name, type, variable…" aria-label="Search" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="dm-rows" id="dmcRows"></div>
-              <p class="dm-foot">Rows flagged ⚠ are active but scoped away from the catalog form — the usual answer to "why isn't my script running".</p>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 3 -->
+      <!-- 7 -->
       <article class="feature" id="variable-icons">
         <div class="feature-rail">
           <p class="eyebrow">Catalog</p>
@@ -1489,205 +1688,6 @@ a { color: var(--teal); }
               width="1280" height="720"
               autoplay muted loop playsinline preload="metadata"
               aria-label="Alt + double-click reveals an icon beside every catalog variable; clicking one opens the insight panel scoped to that variable."></video>
-          </div>
-        </div>
-      </article>
-
-      <!-- 4 -->
-      <article class="feature" id="variable-values">
-        <div class="feature-rail">
-          <p class="eyebrow">Catalog</p>
-           <dl>
-             <dt>Covers</dt>
-            <dd class="plain">Stored vs live</dd>
-            <dd class="plain">record movement</dd>
-            <dd class="plain">secret-safe reads</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Variable Values, including the ones you cannot see</h2>
-          <p>
-            On a classic RITM or record-producer target, compare the raw value
-            stored in the database with the raw value now held by
-            <code>g_form</code>, so an onLoad change is visible without mistaking
-            reference or choice labels for differences.
-            On a verified Workspace record &mdash; a Service Operations Workspace
-            request item, or a supplier case or supplier task in Source-to-Pay
-            Workspace &mdash; the same command checks a narrower evidence-backed
-            set after confirming the visible record, the Variable Editor, read
-            permission, and each raw value's shape. Each supported surface has
-            its own verified type list rather than inheriting another's. Partial
-            and stored-only results say plainly what was not compared; every
-            other Workspace experience and table remains unsupported.
-            On an ordering form, the same command keeps its current best-effort
-            live-value and hidden-variable view.
-          </p>
-          <div class="tags">
-            <span class="tag">hidden / visible filter</span>
-            <span class="tag">differing filter</span>
-            <span class="tag">Workspace guarded comparison</span>
-            <span class="tag is-ok">read-only</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, native RITM panel. Switch to <em>Differing</em>, or try <em>Non-empty</em>.</p>
-            <div class="dm" id="dmVars">
-              <div class="dm-head">
-                <h3 class="dm-title">Variable Values <span class="dm-be">Best effort</span></h3>
-                <p class="dm-sub">Stored Table API values compared with raw live g_form values on this RITM. Values are read-only; reference and choice labels are not compared.</p>
-              </div>
-              <div class="dm-sum">
-                <span><strong id="dmvTotal">0</strong>variables</span>
-                <span><strong id="dmvHidden">0</strong>hidden</span>
-                <span><strong id="dmvVisible">0</strong>visible</span>
-                <span><strong id="dmvDiffers">0</strong>differing</span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-vfilter="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-vfilter="hidden" aria-pressed="false">Hidden</button>
-                <button class="dm-btn" type="button" data-vfilter="visible" aria-pressed="false">Visible</button>
-                <button class="dm-btn" type="button" data-vfilter="differs" aria-pressed="false">Differing</button>
-                <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
-                <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="dm-rows" id="dmvRows"></div>
-              <p class="dm-foot">Read-only inspector — does not modify the live form.</p>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 5 -->
-      <article class="feature" id="debug-timeline">
-        <div class="feature-rail">
-          <p class="eyebrow">Debugging</p>
-          <dl>
-            <dt>Captures</dt>
-            <dd>g_form</dd>
-            <dd>GlideAjax</dd>
-            <dd class="plain">field events, errors</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Debug Timeline</h2>
-          <p>
-            Record one page's interaction and read back what happened: public
-            <code>g_form</code> calls, native field events, GlideAjax timing, and
-            JavaScript errors on a filterable timeline. Best-effort by design — it
-            shows you <strong>what ran, not which script ran it</strong>, and says so
-            rather than guessing.
-          </p>
-          <p>
-            GlideAjax rows carry what you would otherwise open the Network tab
-            for: the <strong>Script Include, the method, every parameter added,
-            and the decoded response</strong>, next to how long the call took and
-            in order with the rest of the interaction — rather than pieced back
-            together from a list of XHRs. Parameter and response names that read
-            like secrets are redacted before anything is shown.
-          </p>
-          <div class="tags">
-            <span class="tag">single page</span>
-            <span class="tag">params · response</span>
-            <span class="tag">reversible patches</span>
-            <span class="tag">secrets redacted</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Open a <em>GlideAjax</em> row for its params and response.</p>
-            <div class="dm" id="dmTl">
-              <div class="dm-head">
-                <h3 class="dm-title">Debug Timeline <span class="dm-be">Best effort</span></h3>
-                <p class="dm-sub">ServiceNow form activity correlated across the frames that were available during this interaction.</p>
-              </div>
-              <div class="dm-sum">
-                <span><strong id="dmtEvents">0</strong>events</span>
-                <span><strong>2</strong>frames</span>
-                <span><strong>2.4s</strong>duration</span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-tfilter="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-tfilter="g_form" aria-pressed="false">g_form</button>
-                <button class="dm-btn" type="button" data-tfilter="field" aria-pressed="false">Fields</button>
-                <button class="dm-btn" type="button" data-tfilter="glideajax" aria-pressed="false">GlideAjax</button>
-                <button class="dm-btn" type="button" data-tfilter="error" aria-pressed="false">Errors</button>
-                <button class="dm-tog" type="button" id="dmtLowSig" aria-pressed="false"><span class="dot"></span>Show low-signal (2)</button>
-                <input class="dm-find" id="dmtFind" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="dm-rows" id="dmtRows"></div>
-              <p class="dm-foot">Stacks identify runtime calls, not guaranteed Client Script or UI Policy names.</p>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 6 -->
-      <article class="feature" id="translations">
-        <div class="feature-rail">
-          <p class="eyebrow">Forms</p>
-          <dl>
-            <dt>Reads</dt>
-            <dd>sys_documentation</dd>
-            <dd>sys_translated</dd>
-            <dd>sys_choice</dd>
-            <dd>sys_ui_message</dd>
-            <dt>Resolves</dt>
-            <dd class="plain">inherited fields</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Which translations are missing, and where they would go</h2>
-          <p>
-            A read-only report over every field, catalog variable, choice and
-            <code>getMessage</code> key on the surface in front of you, against
-            every active language. A gap links to the record that would hold the
-            translation, prefilled with the exact keys &mdash; so closing it is a
-            save, not a search. It runs on a classic form, a catalog item's
-            definition form and a Service Portal catalog item; on a Workspace
-            record the same command offers a link to the record's classic form,
-            where it runs.
-          </p>
-          <p>
-            The store depends on the dictionary type, and getting that wrong is
-            silent: <strong>translated_field</strong> values live in
-            <code>sys_translated</code> keyed by the <em>source string</em>, not in
-            <code>sys_translated_text</code>. Labels resolve through
-            <strong>super_class</strong>, so a field inherited from
-            <code>task</code> lands on the right dictionary record.
-            Absent data is never counted as coverage: a denied read stays
-            Unavailable and stays out of the denominator.
-          </p>
-          <div class="tags">
-            <span class="tag">per-language chips</span>
-            <span class="tag">prefilled gaps</span>
-            <span class="tag">coverage per section</span>
-            <span class="tag is-ok">read-only</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
-            <div class="dm" id="dmTl">
-              <div class="dm-head">
-                <h3 class="dm-title">Translation Lens</h3>
-                <p class="dm-sub">Catalog definition form &middot; <span>sc_cat_item</span> &middot; Base language en</p>
-              </div>
-              <div class="dm-sum dm-tl-score">
-                <span class="dm-tl-big" id="dmtScore">0%</span>
-                <span><strong id="dmtComplete">0</strong>complete</span>
-                <span><strong id="dmtPartial">0</strong>partial</span>
-                <span><strong id="dmtNone">0</strong>missing / none</span>
-                <span id="dmtShown">0 of 0 languages shown</span>
-                <span class="dm-tl-all" id="dmtAll" hidden></span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-tlfilter="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-tlfilter="missing" aria-pressed="false">Missing only</button>
-                <button class="dm-btn" type="button" data-tlfilter="values" aria-pressed="false">Catalog Text</button>
-                <button class="dm-btn" type="button" data-tlfilter="choices" aria-pressed="false">Choices</button>
-                <button class="dm-btn" type="button" data-tlfilter="messages" aria-pressed="false">Messages</button>
-                <button class="dm-tog" type="button" id="dmtLangs" aria-pressed="false" aria-expanded="false"><span class="dot"></span>Languages</button>
-                <button class="dm-tog" type="button" id="dmtMinor" aria-pressed="false"><span class="dot"></span><span id="dmtMinorLabel">Minor rows</span></button>
-              </div>
-              <div class="dm-tl-pop" id="dmtPicker" hidden></div>
-              <div class="dm-rows" id="dmtRows"></div>
-              <p class="dm-foot">Reports where a translation is missing. It never writes one.</p>
-            </div>
           </div>
         </div>
       </article>
