@@ -84,7 +84,9 @@ reconstructed version by version.
   query ignores capitalisation. `gs.getMessage` was then probed on the PDI: a
   row keyed `glidelens_probe_key` answered that key, its upper-case form and
   its title-case form, while an absent key came back as itself. So these count
-  as covered. Where a store's lookup has not been probed the rows are now at
+  as covered. The message rows are also grouped by key without regard to
+  capitalisation before they are judged; grouping them exactly had been
+  discarding the very rows the read returned. Where a store's lookup has not been probed the rows are now at
   least reported rather than silently dropped, with a warning to open them
   before adding a row keyed the way the surface spells it.
 

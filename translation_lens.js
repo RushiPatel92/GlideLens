@@ -967,7 +967,15 @@
 
   function analyzeMessages(keys, rows, languageContext, unavailable, origin) {
     return (keys || []).map((key) => {
-      const exact = (rows || []).filter((row) => fieldValue(row, "key") === key);
+      /* Group the read's rows by key without regard to capitalisation and let
+       * analyzeStringRows rule on them. Filtering exactly here would drop the
+       * rows that cover the key before anything could count them: the read
+       * asks the platform for `key=`, which matches every capitalisation, and
+       * gs.getMessage resolves them all the same way. */
+      const folded = String(key).toLocaleLowerCase();
+      const forKey = (rows || []).filter(
+        (row) => fieldValue(row, "key").toLocaleLowerCase() === folded
+      );
       return analyzeStringRows({
         id: "message:" + key,
         element: key,
@@ -975,7 +983,7 @@
         aspect: "message",
         store: "sys_ui_message",
         source: key,
-        rows: exact,
+        rows: forKey,
         languages: languageContext,
         keyField: "key",
         origin: origin || "",

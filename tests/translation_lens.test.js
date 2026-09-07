@@ -499,7 +499,27 @@ test("scanned messages have a separate denominator from the form headline", () =
   assert.strictEqual(messageRows[0].states.fr.duplicateRows, true);
 });
 
-test("manual message lookup uses the same safe, exact, presence-only pipeline", async () => {
+test("analyzeMessages keeps the rows the read returned for another capitalisation", () => {
+  /* Regression: this grouping filter compared the key exactly, so the rows a
+   * capitalisation-insensitive read had just returned were thrown away one
+   * step before anything could count them. The store-level rule was correct
+   * and unreachable, and the panel reported 0/2 beside a list button that
+   * opened every one of the discarded rows. */
+  const rows = [
+    { key: "supplier", language: "fr", application: "" },
+    { key: "supplier", language: "de", application: "" },
+    { key: "unrelated", language: "fr", application: "" },
+  ];
+  const analysed = TL.analyzeMessages(["Supplier"], rows, languages(), null, "");
+  assert.strictEqual(analysed.length, 1);
+  assert.strictEqual(analysed[0].coverage.covered, 2);
+  assert.strictEqual(analysed[0].states.fr.state, "direct");
+  assert.strictEqual(analysed[0].states.fr.capitalisationVariantKey, true);
+  assert.strictEqual(analysed[0].evidence.capitalisationVariants.rowCount, 2,
+    "the unrelated key is still not this row's");
+});
+
+test("manual message lookup uses the same safe, presence-only pipeline", async () => {
   const languageContext = languages();
   const requests = [];
   const found = await TL.lookupMessage("Example Key", languageContext, async (request) => {
@@ -511,7 +531,11 @@ test("manual message lookup uses the same safe, exact, presence-only pipeline", 
   });
   assert.strictEqual(found.ok, true);
   assert.strictEqual(found.row.states.fr.state, "direct");
-  assert.strictEqual(found.row.states.fr.duplicateRows, false);
+  /* Both rows answer getMessage for this key, so French really is served by
+   * two rows and the platform picks between them. That is a duplicate worth
+   * reporting, not a row to discard for spelling the key differently. */
+  assert.strictEqual(found.row.states.fr.duplicateRows, true);
+  assert.strictEqual(found.row.evidence.capitalisationVariants.rowCount, 1);
   assert.strictEqual(requests[0].query, "messageISNOTEMPTY^key=Example Key");
   assert.ok(!requests[0].fields.split(",").includes("message"));
   let called = false;
