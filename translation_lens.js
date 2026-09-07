@@ -1088,9 +1088,12 @@
 
   /* Row-level links. The list link names the row's key across every language;
    * a prefilled new record is offered only for a language that is actually
-   * Missing, because that is the only gap creating a row would close. A key
-   * the query language cannot express simply yields no link -- never a
-   * half-built one. */
+   * Missing, because that is the only gap creating a row would close. A Blank
+   * language already has a row with an empty translation, so it is offered
+   * the list of its existing rows instead: creating a second record with the
+   * same keys would not repair the blank one, only sit beside it. A key the
+   * query language cannot express simply yields no link -- never a half-built
+   * one. */
   function buildRowLinks(options, states) {
     const opts = options || {};
     const origin = opts.origin;
@@ -1102,21 +1105,28 @@
       list = buildListUrl(origin, store, key, opts.linkListOptions || { omitLanguage: true });
     } catch (error) { list = ""; }
     const newRecord = Object.create(null);
+    const existing = Object.create(null);
     let offered = 0;
     if (!opts.linkListOnly) {
       Object.keys(states || {}).forEach((language) => {
         const state = states[language];
         if (!state || state.state !== "missing") return;
         try {
-          newRecord[language] = buildNewRecordUrl(
-            origin, store, Object.assign({}, key, { language })
-          );
+          if (state.blank === true) {
+            existing[language] = buildListUrl(
+              origin, store, Object.assign({}, key, { language })
+            );
+          } else {
+            newRecord[language] = buildNewRecordUrl(
+              origin, store, Object.assign({}, key, { language })
+            );
+          }
           offered++;
-        } catch (error) { /* an unexpressible key offers no prefill */ }
+        } catch (error) { /* an unexpressible key offers no link */ }
       });
     }
     if (!list && !offered) return null;
-    return { list, newRecord };
+    return { list, newRecord, existing };
   }
 
   function dictionaryByField(rows, chain, fields) {
@@ -1208,17 +1218,20 @@
    * variable falls back to its own sys_id in runCatalog's variables map.
    * Anything that is not a bare technical identifier is replaced by its
    * position, which still lets a reader line the line up against the panel on
-   * screen. Deliberately strict: no spaces, colons or slashes, so a URL or a
-   * sentence can never satisfy it. */
-  const SAFE_REPORT_ELEMENT = /^[A-Za-z0-9_.-]{1,120}$/;
+   * screen. Deliberately strict: letters, digits and underscores only. Dots
+   * and hyphens are excluded on purpose -- a hostname is made of nothing else
+   * -- so a dotted message key prints as its position too. A 32-hex run
+   * anywhere in the name is refused as well, since an id can be embedded in
+   * an otherwise plain key. */
+  const SAFE_REPORT_ELEMENT = /^[A-Za-z][A-Za-z0-9_]{0,119}$/;
+  const EMBEDDED_SYS_ID = /[0-9a-f]{32}/i;
 
   function reportIdentifier(row, index) {
     const element = String((row && row.element) || "");
     const aspect = String((row && row.aspect) || "row");
     const position = aspect + " #" + (Number(index) + 1);
     if (!element) return position;
-    /* A sys_id would satisfy the pattern, so it is refused by name. */
-    if (SYS_ID_PATTERN.test(element)) return position;
+    if (EMBEDDED_SYS_ID.test(element)) return position;
     return SAFE_REPORT_ELEMENT.test(element) ? element : position;
   }
 

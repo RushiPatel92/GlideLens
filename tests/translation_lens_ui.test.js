@@ -538,6 +538,45 @@ test("a blank translation row renders as Blank, not as ordinary Missing", () => 
   );
 });
 
+test("a Blank chip opens the existing rows for that language, never a new record", () => {
+  /* Review finding: a blank translation row already exists, so a prefilled
+   * new record would sit beside it as a duplicate. The chip must route to the
+   * engine's existing-rows list and must not fall back to the new-record URL
+   * even when one is present in the links. */
+  const harness = load();
+  const calls = openPanel(harness);
+  const existing = ORIGIN + "/sys_documentation_list.do?sysparm_query=name%3Ddemo_widget%5Eelement%3Dwidget_name%5Elanguage%3Dfr";
+  const prefill = ORIGIN + "/sys_documentation.do?sys_id=-1&sysparm_query=language%3Dfr";
+  const row = makeRow({
+    states: {
+      fr: { state: "missing", direct: false, blank: true, duplicateCount: 0 },
+      de: { state: "missing", direct: false, duplicateCount: 0 },
+    },
+    coverage: { covered: 0, counted: 2, percent: 0, missing: ["fr", "de"], unavailable: [] },
+    links: {
+      list: ORIGIN + "/sys_documentation_list.do",
+      newRecord: { fr: prefill, de: ORIGIN + "/sys_documentation.do?sys_id=-1&sysparm_query=language%3Dde" },
+      existing: { fr: existing },
+    },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [row])] }),
+  });
+  click(buttonWithText(harness.shadow(), "Expand all"));
+  const chips = findAll(harness.shadow(), (node) =>
+    node.tagName === "BUTTON" && node.className && String(node.className).startsWith("chip "));
+  const blank = chips.find((chip) => chip.textContent.includes("fr") && chip.textContent.includes("Blank"));
+  assert.ok(blank, "the blank chip is actionable");
+  assert.ok(String(blank.getAttribute("aria-label")).includes("existing"), "and says it opens the existing row");
+  click(blank);
+  assert.deepStrictEqual(calls.open, [existing], "it opened the existing rows, not the prefill");
+
+  const missing = chips.find((chip) => chip.textContent.includes("de") && chip.textContent.includes("Missing"));
+  click(missing);
+  assert.ok(calls.open[1].includes("sys_id=-1"), "a genuinely missing language still opens a prefilled new record");
+});
+
 test("an unavailable row is named, excluded from the count, and never shown as covered", () => {
   const harness = load();
   openPanel(harness);
@@ -620,6 +659,29 @@ test("a fatal error keeps the sections already read and says the rest is unknown
   assert.ok(text.includes("Translation reads exceeded 60 seconds."));
   assert.ok(text.includes("widget_name"), "what was read stays on screen");
   assert.ok(text.includes("Everything else is unknown, not covered."));
+});
+
+test("a context-change error discards the sections already drawn", () => {
+  /* Review finding: when the record under the form changes mid-read, the
+   * sections drawn so far describe a record that is no longer on screen.
+   * They must go, not stay under the banner as if they were partial truth. */
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    section: makeSection("labels", "Field Labels", [makeRow()]),
+    partial: true,
+  });
+  assert.ok(harness.shadow().textContent.includes("widget_name"), "drawn before the change");
+  harness.ui.showError({
+    fingerprint: "run-1",
+    message: "The page context changed while Translation Lens was reading it. Run it again.",
+    discard: true,
+  });
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("The page context changed"));
+  assert.ok(!text.includes("widget_name"), "the stale section is gone");
+  assert.ok(!text.includes("Everything else is unknown, not covered."), "nothing is presented as read");
 });
 
 test("an empty section says the engine produced no rows rather than showing coverage", () => {
@@ -1191,6 +1253,22 @@ test("the report carries no value, URL, hostname or sys_id", () => {
   assert.ok(!text.includes("sys_id"), "no record identifier");
   assert.ok(text.includes("widget_name [label]: 1/2"), "counts and element names are the payload");
   assert.ok(text.includes("warnings=near-duplicate"));
+});
+
+test("the local report refuses a hostname-shaped element and an embedded sys_id", () => {
+  /* The engine-absent formatter mirrors the engine's rule and must fail the
+   * same two review vectors: a getMessage key that is a bare hostname, and a
+   * key with a 32-hex id embedded in it. */
+  const harness = load();
+  const host = makeRow({ element: "example.service-now.com" });
+  const embedded = makeRow({ element: "key.00000000000000000000000000000009" });
+  const plain = makeRow({ element: "invalid_email" });
+  const result = makeResult({ sections: [makeSection("messages", "Messages", [host, embedded, plain])] });
+  const text = harness.ui.formatResultsAsText(result);
+  assert.ok(!text.includes("service-now.com"), "no hostname-shaped key");
+  assert.ok(!text.includes("00000000000000000000000000000009"), "no embedded sys_id");
+  assert.ok(text.includes("#1") && text.includes("#2"), "both print as their position");
+  assert.ok(text.includes("invalid_email"), "a plain key survives");
 });
 
 test("a report taken mid-run says it is partial rather than implying a final score", () => {

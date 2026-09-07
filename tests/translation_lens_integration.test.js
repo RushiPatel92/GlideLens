@@ -141,13 +141,34 @@ test("panel opens and receives progress before engine data reads", () => {
   assert.ok(block.includes("partial: true"));
 });
 
+test("a partial section is drawn only after the record is confirmed unchanged", () => {
+  /* Review finding: sections used to be drawn on the run id alone, with the
+   * record checked only once at the end, so a record change mid-read left
+   * stale sections on screen under the error. */
+  const block = between(contentSource, "async function readTranslationLens", "/* =====================================================================\n * RECORD SEARCH");
+  const gate = block.indexOf("sectionGate = sectionGate.then(");
+  const check = block.indexOf("translationContextStillCurrent(resolved)", gate);
+  const draw = block.indexOf("partial: true", gate);
+  assert.ok(gate >= 0 && check > gate && draw > check, "check before draw, inside the serialised gate");
+  assert.ok(block.includes("discard: true"), "a context change discards what was drawn");
+  assert.ok(block.includes("translationLensRunSequence++"), "and cancels the rest of the run");
+  assert.ok(block.indexOf("await sectionGate") < block.lastIndexOf("partial: false"), "the final result waits for pending section checks");
+});
+
 test("late results are checked against run id and context fingerprint", () => {
   const block = between(contentSource, "async function showTranslationLens", "/* =====================================================================\n * RECORD SEARCH");
   assert.ok(block.includes("translationLensRunSequence"));
   assert.ok(block.includes("if (!isCurrent()) return"));
   assert.ok(block.includes("translationContextStillCurrent(resolved)"));
-  assert.ok(block.includes("if (!isCurrent() || !stillCurrent)"));
-  assert.ok(block.indexOf("translationContextStillCurrent(resolved)") < block.lastIndexOf("partial: false"));
+  /* The final result is committed only when the run is still current AND the
+   * page is still the same record; a changed page goes through contextChanged,
+   * which discards and cancels. */
+  const finalCheck = block.lastIndexOf("translationContextStillCurrent(resolved)");
+  const commit = block.lastIndexOf("partial: false");
+  assert.ok(finalCheck >= 0 && finalCheck < commit);
+  const tail = block.slice(finalCheck, commit);
+  assert.ok(tail.includes("if (!isCurrent()) return"));
+  assert.ok(tail.includes("if (!stillCurrent) {") && tail.includes("contextChanged()"));
 });
 
 test("classic label ids are marker-table matched and non-field ids are rejected", () => {

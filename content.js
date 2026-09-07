@@ -5846,6 +5846,9 @@ async function showTranslationLens() {
   await readTranslationLens(resolved, ui, engine, session);
 }
 
+const TRANSLATION_LENS_CONTEXT_CHANGED =
+  "The page context changed while Translation Lens was reading it. Run it again.";
+
 async function readTranslationLens(resolved, ui, engine, session) {
   const runId = ++translationLensRunSequence;
   const isCurrent = () => runId === translationLensRunSequence;
@@ -5866,13 +5869,42 @@ async function readTranslationLens(resolved, ui, engine, session) {
     if (!isCurrent()) return;
     ui.setProgress(Object.assign({ fingerprint: resolved.fingerprint }, progress));
   };
+  /* A section is drawn only after the page is confirmed to still be the
+   * record the run started on. The checks are serialised so sections land in
+   * engine order, and a changed page discards everything drawn and cancels
+   * the run's remaining results rather than leaving stale rows under an
+   * error banner. */
+  let sectionGate = Promise.resolve();
+  const contextChanged = () => {
+    if (!isCurrent()) return;
+    translationLensRunSequence++;
+    ui.showError({
+      fingerprint: resolved.fingerprint,
+      message: TRANSLATION_LENS_CONTEXT_CHANGED,
+      discard: true,
+    });
+  };
   engineContext.onSection = (section) => {
     if (!isCurrent()) return;
-    ui.showResults({
-      fingerprint: resolved.fingerprint,
-      section,
-      partial: true,
-    });
+    sectionGate = sectionGate.then(async () => {
+      if (!isCurrent()) return;
+      let stillCurrent = false;
+      try {
+        stillCurrent = await translationContextStillCurrent(resolved);
+      } catch (error) {
+        stillCurrent = false;
+      }
+      if (!isCurrent()) return;
+      if (!stillCurrent) {
+        contextChanged();
+        return;
+      }
+      ui.showResults({
+        fingerprint: resolved.fingerprint,
+        section,
+        partial: true,
+      });
+    }).catch(() => {});
   };
 
   try {
@@ -5880,14 +5912,12 @@ async function readTranslationLens(resolved, ui, engine, session) {
       engine.run(engineContext, engine.tableGet)
     );
     if (!isCurrent()) return;
+    await sectionGate;
+    if (!isCurrent()) return;
     const stillCurrent = await translationContextStillCurrent(resolved);
-    if (!isCurrent() || !stillCurrent) {
-      if (isCurrent()) {
-        ui.showError({
-          fingerprint: resolved.fingerprint,
-          message: "The page context changed while Translation Lens was reading it. Run it again.",
-        });
-      }
+    if (!isCurrent()) return;
+    if (!stillCurrent) {
+      contextChanged();
       return;
     }
     session.latestResult = result;

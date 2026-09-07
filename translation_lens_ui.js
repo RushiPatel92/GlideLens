@@ -829,6 +829,14 @@
     return validatedUrl(map[languageId]);
   }
 
+  /* A Blank language has a row already; the engine offers the list of those
+   * rows rather than a prefilled new one, which would only duplicate it. */
+  function existingRowsUrl(links, languageId) {
+    const map = links && links.existing;
+    if (!map || typeof map !== "object") return "";
+    return validatedUrl(map[languageId]);
+  }
+
   function storeListUrl(store) {
     const links = (panel && panel.result && panel.result.links) || null;
     if (!links || typeof links !== "object") return "";
@@ -1596,15 +1604,21 @@
     const entry = (opts.states || {})[languageId] || null;
     const kind = stateKind(entry);
     const meta = metaFor(kind);
-    const url = (kind === "missing" || kind === "blank")
-      ? newRecordUrl(opts.links, languageId) : "";
+    /* Missing opens a prefilled new record; Blank opens the existing row(s)
+     * for that language, never a new record beside them. */
+    let url = "";
+    if (kind === "missing") url = newRecordUrl(opts.links, languageId);
+    else if (kind === "blank") url = existingRowsUrl(opts.links, languageId);
     const node = url ? el("button", "chip " + meta.tone) : el("span", "chip " + meta.tone);
     if (url) {
       node.type = "button";
       node.setAttribute(
         "aria-label",
-        "Open a prefilled new " + storeLabel(opts.store) + " record for " +
-        languageName(languageId)
+        kind === "blank"
+          ? "Open the existing blank " + storeLabel(opts.store) + " row for " +
+            languageName(languageId)
+          : "Open a prefilled new " + storeLabel(opts.store) + " record for " +
+            languageName(languageId)
       );
       node.addEventListener("click", (event) => {
         if (event && isFn(event.stopPropagation)) event.stopPropagation();
@@ -2209,17 +2223,19 @@
   /* Mirrors SAFE_REPORT_ELEMENT / reportIdentifier in translation_lens.js.
    * The engine is used whenever it is present; this copy serves localReport
    * below, which runs only when the engine is absent. Both must stay strict:
-   * a getMessage key can be a URL or a sentence, and an unnamed catalog
-   * variable's element is its sys_id. */
-  const SAFE_REPORT_ELEMENT = /^[A-Za-z0-9_.-]{1,120}$/;
-  const REPORT_SYS_ID = /^[0-9a-f]{32}$/i;
+   * a getMessage key can be a URL, a sentence or a bare hostname, and an
+   * unnamed catalog variable's element is its sys_id. Letters, digits and
+   * underscores only; no dots or hyphens, which is all a hostname is made of;
+   * and no 32-hex run anywhere in the name. */
+  const SAFE_REPORT_ELEMENT = /^[A-Za-z][A-Za-z0-9_]{0,119}$/;
+  const EMBEDDED_SYS_ID = /[0-9a-f]{32}/i;
 
   function localReportIdentifier(row, index) {
     const element = str(row && row.element);
     const aspect = str(row && row.aspect) || "row";
     const position = aspect + " #" + (Number(index) + 1);
     if (!element) return position;
-    if (REPORT_SYS_ID.test(element)) return position;
+    if (EMBEDDED_SYS_ID.test(element)) return position;
     return SAFE_REPORT_ELEMENT.test(element) ? element : position;
   }
 
@@ -2450,6 +2466,13 @@
   function showError(options) {
     const request = options || {};
     if (!sameRun(request.fingerprint)) return false;
+    /* discard: the page is no longer the record the drawn sections describe,
+     * so they are removed rather than left under the banner. Without it -- a
+     * timeout, a failed read -- what was read stays on screen, named partial. */
+    if (request.discard === true) {
+      panel.sections = [];
+      panel.result = null;
+    }
     panel.errorMessage = str(request.message) || "Translation Lens could not finish.";
     panel.status = "error";
     paint();

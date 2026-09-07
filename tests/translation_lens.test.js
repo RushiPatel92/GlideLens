@@ -478,6 +478,15 @@ test("a report replaces any element that is not a bare technical name", () => {
     ["https://secret.service-now.com/nav_to.do"], [], languageContext)[0];
   const sentenceKey = TL.analyzeMessages(
     ["Please contact the service desk"], [], languageContext)[0];
+  /* Two more vectors from review: a key that is a bare hostname satisfies a
+   * dots-and-hyphens allowlist, and a key with a sys_id embedded in it is
+   * not "entirely a sys_id". Neither may pass. A plain key still does. */
+  const hostKey = TL.analyzeMessages(
+    ["example.service-now.com"], [], languageContext)[0];
+  const embeddedKey = TL.analyzeMessages(
+    ["key.00000000000000000000000000000009"], [], languageContext)[0];
+  const plainKey = TL.analyzeMessages(
+    ["invalid_email"], [], languageContext)[0];
   const unnamedVariable = TL.analyzeStringRows({
     element: "0123456789abcdef0123456789abcdef",
     aspect: "source",
@@ -491,7 +500,7 @@ test("a report replaces any element that is not a bare technical name", () => {
     languages: languageContext,
     sections: [
       { id: "values", label: "Catalog Text", rows: [unnamedVariable] },
-      { id: "messages", label: "Messages", rows: [urlKey, sentenceKey] },
+      { id: "messages", label: "Messages", rows: [urlKey, sentenceKey, hostKey, embeddedKey, plainKey] },
     ],
     failures: [],
   });
@@ -502,11 +511,16 @@ test("a report replaces any element that is not a bare technical name", () => {
   assert.ok(!report.includes("Please contact"), "nor a sentence-shaped key");
   assert.ok(!report.includes("0123456789abcdef0123456789abcdef"),
     "nor an unnamed variable's sys_id");
+  assert.ok(!report.includes("service-now.com"), "nor a key that is a bare hostname");
+  assert.ok(!report.includes("00000000000000000000000000000009"), "nor a sys_id embedded in a key");
 
   /* Replaced by position, so a reader can still line each line up against the
    * panel on screen rather than losing the row entirely. */
   assert.ok(report.includes("message #1"), "the first message is positional: " + report);
   assert.ok(report.includes("message #2"), "and so is the second");
+  assert.ok(report.includes("message #3"), "and the hostname-shaped one");
+  assert.ok(report.includes("message #4"), "and the one with an embedded id");
+  assert.ok(report.includes("invalid_email"), "a plain key is the payload and survives");
   assert.ok(report.includes("source #1"), "and so is the unnamed variable");
 });
 
@@ -828,6 +842,35 @@ test("row links name the key across languages and prefill only the missing ones"
   assert.ok(label.links.newRecord.de.includes("sys_id=-1"));
   /* fr-CA falls back to fr, and a fallback is not a gap to create a row for. */
   assert.ok(!label.links.newRecord["fr-CA"]);
+});
+
+test("a blank language is linked to its existing rows, never to a new record", () => {
+  /* Review finding: a blank row already exists for that key and language, so
+   * a prefilled new record would sit beside it as a duplicate and never repair
+   * it. The link for a Blank chip is the list of the rows that are there. */
+  const origin = "https://example.service-now.com";
+  const row = TL.analyzeStringRows({
+    element: "cost_centre",
+    aspect: "source",
+    store: "sys_translated",
+    effectiveTable: "question",
+    source: "Cost centre",
+    languages: languages(),
+    origin,
+    linkKey: { name: "question", element: "question_text", value: "Cost centre" },
+    rows: [
+      { name: "question", element: "question_text", value: "Cost centre", label: "", language: "de" },
+    ],
+  });
+  assert.strictEqual(row.states.de.state, "missing");
+  assert.strictEqual(row.states.de.blank, true);
+  assert.ok(!row.links.newRecord.de, "no prefilled new record for a blank language");
+  const existingQuery = decodeURIComponent(row.links.existing.de.split("sysparm_query=")[1]);
+  assert.strictEqual(existingQuery, "name=question^element=question_text^value=Cost centre^language=de");
+  assert.ok(row.links.existing.de.includes("sys_translated_list.do"), "it is a list, not a form");
+  /* A genuinely missing language keeps its prefill and gets no existing link. */
+  assert.ok(row.links.newRecord.fr && row.links.newRecord.fr.includes("sys_id=-1"));
+  assert.ok(!row.links.existing.fr);
 });
 
 test("a choices row links to the whole list while each value prefills its own row", () => {
