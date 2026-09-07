@@ -310,7 +310,9 @@ keeps value/body/content/script/password-like fields out of the automatic
 selection. If either changes in `record_search.js`, change the demo too —
 `sys_properties.value` showing as "manual only" is the visible proof. Read the source rather than recreating panel behavior from memory,
 including grouping, search fields, counts, buckets, and category labels.
-Change a panel and its demonstration in the same change.
+Change a panel and its demonstration in the same change. Give each demo its
+own id prefix: `getElementById` returns the first match in the document, so an
+id shared between two demos only works by accident of article order.
 
 Variable Insight icons modify ServiceNow's own form chrome and should use real
 screenshots rather than a fabricated platform form; a panel such as

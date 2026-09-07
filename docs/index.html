@@ -1297,18 +1297,18 @@ a { color: var(--teal); }
           </div>
           <div class="shot is-live">
             <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
-            <div class="dm" id="dmTl">
+            <div class="dm" id="dmTr">
               <div class="dm-head">
                 <h3 class="dm-title">Translation Lens</h3>
                 <p class="dm-sub">Catalog definition form &middot; <span>sc_cat_item</span> &middot; Base language en</p>
               </div>
               <div class="dm-sum dm-tl-score">
-                <span class="dm-tl-big" id="dmtScore">0%</span>
-                <span><strong id="dmtComplete">0</strong>complete</span>
-                <span><strong id="dmtPartial">0</strong>partial</span>
-                <span><strong id="dmtNone">0</strong>missing / none</span>
-                <span id="dmtShown">0 of 0 languages shown</span>
-                <span class="dm-tl-all" id="dmtAll" hidden></span>
+                <span class="dm-tl-big" id="dmtrScore">0%</span>
+                <span><strong id="dmtrComplete">0</strong>complete</span>
+                <span><strong id="dmtrPartial">0</strong>partial</span>
+                <span><strong id="dmtrNone">0</strong>missing / none</span>
+                <span id="dmtrShown">0 of 0 languages shown</span>
+                <span class="dm-tl-all" id="dmtrAll" hidden></span>
               </div>
               <div class="dm-ctl">
                 <button class="dm-btn on" type="button" data-tlfilter="all" aria-pressed="true">All</button>
@@ -1316,11 +1316,11 @@ a { color: var(--teal); }
                 <button class="dm-btn" type="button" data-tlfilter="values" aria-pressed="false">Catalog Text</button>
                 <button class="dm-btn" type="button" data-tlfilter="choices" aria-pressed="false">Choices</button>
                 <button class="dm-btn" type="button" data-tlfilter="messages" aria-pressed="false">Messages</button>
-                <button class="dm-tog" type="button" id="dmtLangs" aria-pressed="false" aria-expanded="false"><span class="dot"></span>Languages</button>
-                <button class="dm-tog" type="button" id="dmtMinor" aria-pressed="false"><span class="dot"></span><span id="dmtMinorLabel">Minor rows</span></button>
+                <button class="dm-tog" type="button" id="dmtrLangs" aria-pressed="false" aria-expanded="false"><span class="dot"></span>Languages</button>
+                <button class="dm-tog" type="button" id="dmtrMinor" aria-pressed="false"><span class="dot"></span><span id="dmtrMinorLabel">Minor rows</span></button>
               </div>
-              <div class="dm-tl-pop" id="dmtPicker" hidden></div>
-              <div class="dm-rows" id="dmtRows"></div>
+              <div class="dm-tl-pop" id="dmtrPicker" hidden></div>
+              <div class="dm-rows" id="dmtrRows"></div>
               <p class="dm-foot">Reports where a translation is missing. It never writes one.</p>
             </div>
           </div>
@@ -2826,10 +2826,10 @@ a { color: var(--teal); }
     { id: "messages", label: "Messages" }
   ];
 
-  var host = document.getElementById("dmtRows");
-  var picker = document.getElementById("dmtPicker");
-  var langBtn = document.getElementById("dmtLangs");
-  var minorBtn = document.getElementById("dmtMinor");
+  var host = document.getElementById("dmtrRows");
+  var picker = document.getElementById("dmtrPicker");
+  var langBtn = document.getElementById("dmtrLangs");
+  var minorBtn = document.getElementById("dmtrMinor");
   if (!host || !picker || !langBtn || !minorBtn) return;
 
   var filter = "all";
@@ -3011,13 +3011,13 @@ a { color: var(--teal); }
     var main = ROWS.filter(function (item) { return item.group !== "messages"; });
 
     var summary = summarise(main, ids);
-    document.getElementById("dmtScore").textContent = summary.counted ? summary.percent + "%" : "—";
-    document.getElementById("dmtComplete").textContent = String(summary.complete);
-    document.getElementById("dmtPartial").textContent = String(summary.partial);
-    document.getElementById("dmtNone").textContent = String(summary.none);
-    document.getElementById("dmtShown").textContent = ids.length + " of " + LANGS.length + " languages shown";
+    document.getElementById("dmtrScore").textContent = summary.counted ? summary.percent + "%" : "—";
+    document.getElementById("dmtrComplete").textContent = String(summary.complete);
+    document.getElementById("dmtrPartial").textContent = String(summary.partial);
+    document.getElementById("dmtrNone").textContent = String(summary.none);
+    document.getElementById("dmtrShown").textContent = ids.length + " of " + LANGS.length + " languages shown";
 
-    var all = document.getElementById("dmtAll");
+    var all = document.getElementById("dmtrAll");
     if (scoped) {
       var overall = summarise(main, LANGS.map(function (lang) { return lang.id; }));
       all.hidden = false;
@@ -3030,7 +3030,7 @@ a { color: var(--teal); }
     var folded = showMinor ? 0 : ROWS.filter(function (item) {
       return item.minor && matchesQuery(item);
     }).length;
-    document.getElementById("dmtMinorLabel").textContent = showMinor
+    document.getElementById("dmtrMinorLabel").textContent = showMinor
       ? "Hide minor rows"
       : "Minor rows" + (folded ? " (" + folded + ")" : "");
 
@@ -3081,12 +3081,12 @@ a { color: var(--teal); }
   }
 
   Array.prototype.forEach.call(
-    document.querySelectorAll("#dmTl .dm-btn[data-tlfilter]"),
+    document.querySelectorAll("#dmTr .dm-btn[data-tlfilter]"),
     function (button) {
       button.addEventListener("click", function () {
         filter = button.getAttribute("data-tlfilter");
         Array.prototype.forEach.call(
-          document.querySelectorAll("#dmTl .dm-btn[data-tlfilter]"),
+          document.querySelectorAll("#dmTr .dm-btn[data-tlfilter]"),
           function (other) {
             var on = other === button;
             other.classList.toggle("on", on);
