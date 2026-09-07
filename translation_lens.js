@@ -534,35 +534,36 @@
     const effectiveTable = opts.effectiveTable || "";
     const all = Array.isArray(opts.rows) ? opts.rows : [];
     /* sys_translated is keyed by the source string itself, and the platform
-     * resolves that key without regard to case. Verified on a configured
+     * resolves that key regardless of capitalisation. Verified on a configured
      * instance on 2026-09-07: on a Service Portal catalog item, three variables
      * whose only row was keyed with a different capitalisation of the question
      * text all rendered their translation, alongside an exactly-keyed control
      * on the same form, with no record-keyed row and no same-cased variable
      * anywhere on the item that could have supplied the text instead. The
      * platform's own query semantics agree: `value=` on this table matches
-     * without regard to case. So a key differing only in case covers the row,
-     * and the read already returns it. It is still
+     * regardless of capitalisation. So a key differing only in capitalisation
+     * covers the row, and the read already returns it. It is still
      * reported, because inconsistent keys are worth normalising, but as a
-     * case-variant note rather than as a gap.
+     * capitalisation note rather than as a gap.
      *
-     * Only this store folds case. sys_choice is keyed by a stored choice value
+     * Only this store ignores capitalisation. sys_choice is keyed by a stored
+     * choice value
      * rather than a display string and nothing here has verified how the
      * platform resolves that, so its near-duplicate handling is unchanged. */
     const sourceKey = String(opts.source);
-    const foldsCase = opts.store === "sys_translated";
+    const foldsCapitalisation = opts.store === "sys_translated";
     const onTable = (row) =>
       !effectiveTable || fieldValue(row, tableField) === effectiveTable;
     const keyMatches = (value) => value === sourceKey ||
-      (foldsCase && value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase());
+      (foldsCapitalisation && value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase());
     const exact = all.filter((row) => onTable(row) && keyMatches(fieldValue(row, keyField)));
     const variantRows = opts.presenceOnly ? [] : all.filter((row) => {
       const value = fieldValue(row, keyField);
       return onTable(row) && value !== sourceKey &&
         value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase();
     });
-    const near = foldsCase ? [] : variantRows;
-    const caseVariants = foldsCase ? variantRows : [];
+    const near = foldsCapitalisation ? [] : variantRows;
+    const capitalisationVariants = foldsCapitalisation ? variantRows : [];
     const states = Object.create(null);
     ids.forEach((id) => {
       const forLanguage = exact.filter((row) => fieldValue(row, "language") === id);
@@ -572,11 +573,11 @@
         source: opts.source,
       });
       /* The reader is owed the difference between a row they will find under
-       * the key they searched for and one they will only find under another
-       * capitalisation of it. */
-      if (foldsCase && forLanguage.length &&
+       * the key they searched for and one they will only find under a
+       * different capitalisation of it. */
+      if (foldsCapitalisation && forLanguage.length &&
         forLanguage.every((row) => fieldValue(row, keyField) !== sourceKey)) {
-        state.caseVariantKey = true;
+        state.capitalisationVariantKey = true;
       }
       states[id] = state;
     });
@@ -587,7 +588,7 @@
     );
     return makeRow(opts, withFallback, {
       nearDuplicates: summarizeEvidence(near, languages),
-      caseVariants: summarizeEvidence(caseVariants, languages),
+      capitalisationVariants: summarizeEvidence(capitalisationVariants, languages),
       alternateRegistrations: summarizeEvidence(alternateRows, languages),
       stranded: summarizeEvidence(opts.strandedRows || [], languages),
       extras: summarizeEvidence(exact.filter((row) => {
@@ -1296,7 +1297,7 @@
     const evidence = row.evidence || {};
     const warnings = [];
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) warnings.push("near-duplicate");
-    if (evidence.caseVariants && evidence.caseVariants.rowCount) warnings.push("case-variant-key");
+    if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) warnings.push("capitalisation-variant");
     if (evidence.stranded && evidence.stranded.rowCount) warnings.push("stranded");
     if (evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) warnings.push("alternate-registration");
     if (Object.values(row.states || {}).some((item) => item.state === "conflict")) warnings.push("conflict");
@@ -2170,7 +2171,7 @@
     });
     const stringRows = [];
     /* One row can arrive from more than one chunk. The source strings are
-     * chunked, and the platform matches `value=` without regard to case, so a
+     * chunked, and the platform matches `value=` regardless of capitalisation, so a
      * chunk asking for "Base source" also returns the row keyed "Base Source"
      * that another chunk asked for. Counting that row once per chunk matching it
      * inflates both the duplicate count on a language and the near-duplicate

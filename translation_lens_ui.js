@@ -732,12 +732,12 @@
   }
 
   /* Catalog choice entries are analysed rows against sys_translated, where a
-   * key differing only in case still resolves. Those are reported apart from
-   * the sys_choice near-duplicates above, which are not counted. */
-  function entryCaseVariants(entry) {
+   * key differing only in capitalisation still resolves. Those are reported
+   * apart from the sys_choice near-duplicates above, which are not counted. */
+  function entryCapitalisationVariants(entry) {
     if (!entry) return null;
-    if (entry.caseVariants) return entry.caseVariants;
-    return (entry.evidence && entry.evidence.caseVariants) || null;
+    if (entry.capitalisationVariants) return entry.capitalisationVariants;
+    return (entry.evidence && entry.evidence.capitalisationVariants) || null;
   }
 
   /* Scoped, so the gaps filter cannot offer a row whose only gap is in a
@@ -1606,8 +1606,8 @@
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) {
       add("flag", plural(evidence.nearDuplicates.rowCount, "near-duplicate"));
     }
-    if (evidence.caseVariants && evidence.caseVariants.rowCount) {
-      add("info", plural(evidence.caseVariants.rowCount, "case-variant key"));
+    if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) {
+      add("info", plural(evidence.capitalisationVariants.rowCount, "differently capitalised key"));
     }
     if (evidence.stranded && evidence.stranded.rowCount) {
       add("flag", plural(evidence.stranded.rowCount, "stranded row"));
@@ -1641,7 +1641,9 @@
     }
     /* The row covers this language, but a reader searching the store for the
      * source string as the form spells it will not find it. */
-    if (entry && entry.caseVariantKey === true) words += " · key case differs";
+    if (entry && entry.capitalisationVariantKey === true) {
+      words += " · different capitalisation";
+    }
     return words;
   }
 
@@ -1651,8 +1653,8 @@
     if (PRESENCE_ONLY_STORES.has(str(store)) && entry && Number(entry.duplicateCount)) {
       parts.push("Repeated rows are counted but never compared: this store's text column is never read.");
     }
-    if (entry && entry.caseVariantKey === true) {
-      parts.push("Covered by a row keyed with different capitalisation of the source string. The platform matches the key without regard to case.");
+    if (entry && entry.capitalisationVariantKey === true) {
+      parts.push("Covered by a row whose key capitalises the source string differently. The platform matches the key regardless of capitalisation.");
     }
     if (kind === "unavailable") parts.push("The read did not complete, so this is unknown — not missing.");
     return parts.join(" — ");
@@ -1780,13 +1782,13 @@
     }
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) {
       evidenceLine(list, plural(evidence.nearDuplicates.rowCount, "near-duplicate row") +
-        " differ from the source only by case. Never counted; whether the platform resolves them is unverified.");
+        " differ from the source only in capitalisation. Never counted; whether the platform resolves them is unverified.");
     }
-    if (evidence.caseVariants && evidence.caseVariants.rowCount) {
-      evidenceLine(list, plural(evidence.caseVariants.rowCount, "row") +
-        " are keyed with different capitalisation of the source string. The platform" +
-        " matches the key without regard to case, so these count as covered; they are" +
-        " listed because the key is not what this form spells.");
+    if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) {
+      evidenceLine(list, plural(evidence.capitalisationVariants.rowCount, "row") +
+        " capitalise the source string differently in the key. The platform matches" +
+        " the key regardless of capitalisation, so these count as covered; they are" +
+        " listed because the key is not spelled the way this form spells it.");
     }
     if (evidence.extras && evidence.extras.rowCount) {
       evidenceLine(list, plural(evidence.extras.rowCount, "extra row") +
@@ -1834,9 +1836,9 @@
       if (near && near.rowCount) {
         chips.appendChild(el("span", "tag flag", plural(near.rowCount, "near-duplicate")));
       }
-      const variants = entryCaseVariants(entry);
+      const variants = entryCapitalisationVariants(entry);
       if (variants && variants.rowCount) {
-        chips.appendChild(el("span", "tag info", plural(variants.rowCount, "case-variant key")));
+        chips.appendChild(el("span", "tag info", plural(variants.rowCount, "differently capitalised key")));
       }
       line.appendChild(chips);
       wrap.appendChild(line);
@@ -2277,7 +2279,7 @@
     const evidence = row.evidence || {};
     const warnings = [];
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) warnings.push("near-duplicate");
-    if (evidence.caseVariants && evidence.caseVariants.rowCount) warnings.push("case-variant-key");
+    if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) warnings.push("capitalisation-variant");
     if (evidence.stranded && evidence.stranded.rowCount) warnings.push("stranded");
     if (evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) {
       warnings.push("alternate-registration");

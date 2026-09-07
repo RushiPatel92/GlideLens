@@ -198,7 +198,7 @@ test("atom states distinguish direct, same-source, blank, conflict, and duplicat
   assert.strictEqual(presence.duplicateRows, true);
 });
 
-test("a sys_translated key differing only by case covers the language and is flagged", () => {
+test("a sys_translated key differing only in capitalisation covers the language", () => {
   const row = TL.analyzeStringRows({
     element: "title",
     aspect: "value",
@@ -214,18 +214,18 @@ test("a sys_translated key differing only by case covers the language and is fla
     ],
   });
   assert.strictEqual(row.states.fr.state, "direct");
-  assert.strictEqual(row.states.fr.caseVariantKey, undefined);
-  /* The platform resolves the key without regard to case, so "base source"
-   * covers a form spelling it "Base Source" -- marked, not scored as a gap. */
+  assert.strictEqual(row.states.fr.capitalisationVariantKey, undefined);
+  /* The platform resolves the key regardless of capitalisation, so "base
+   * source" covers a form spelling it "Base Source" -- marked, not a gap. */
   assert.strictEqual(row.states.de.state, "direct");
-  assert.strictEqual(row.states.de.caseVariantKey, true);
-  assert.strictEqual(row.evidence.caseVariants.rowCount, 1);
+  assert.strictEqual(row.states.de.capitalisationVariantKey, true);
+  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 1);
   assert.strictEqual(row.evidence.nearDuplicates.rowCount, 0);
   assert.strictEqual(row.evidence.alternateRegistrations.rowCount, 1);
   assert.deepStrictEqual(own(row.evidence.extras.languages), ["it"]);
 });
 
-test("a case-only key never covers a store whose lookup is unverified", () => {
+test("a capitalisation-only key never covers a store whose lookup is unverified", () => {
   const row = TL.analyzeStringRows({
     element: "state",
     aspect: "value",
@@ -239,10 +239,10 @@ test("a case-only key never covers a store whose lookup is unverified", () => {
   });
   assert.strictEqual(row.states.de.state, "missing");
   assert.strictEqual(row.evidence.nearDuplicates.rowCount, 1);
-  assert.strictEqual(row.evidence.caseVariants.rowCount, 0);
+  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0);
 });
 
-test("a language covered by both spellings is not reported as a case variant", () => {
+test("a language covered by both spellings is not reported as a capitalisation variant", () => {
   const row = TL.analyzeStringRows({
     element: "title",
     aspect: "value",
@@ -256,7 +256,7 @@ test("a language covered by both spellings is not reported as a case variant", (
     ],
   });
   assert.strictEqual(row.states.de.state, "direct");
-  assert.strictEqual(row.states.de.caseVariantKey, undefined);
+  assert.strictEqual(row.states.de.capitalisationVariantKey, undefined);
   assert.strictEqual(row.states.de.duplicateCount, 1);
 });
 

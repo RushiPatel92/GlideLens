@@ -1306,17 +1306,17 @@ test("the report carries no value, URL, hostname or sys_id", () => {
   assert.ok(text.includes("warnings=near-duplicate"));
 });
 
-test("a case-variant key reads as covered, marked on the chip and explained once", () => {
+test("a differently capitalised key reads as covered, marked on the chip and explained once", () => {
   const harness = load();
   openPanel(harness);
   const row = makeRow({
     store: "sys_translated",
     states: {
       fr: { state: "direct", direct: true },
-      de: { state: "direct", direct: true, caseVariantKey: true },
+      de: { state: "direct", direct: true, capitalisationVariantKey: true },
     },
     coverage: { covered: 2, counted: 2, percent: 100, missing: [], unavailable: [] },
-    evidence: { caseVariants: { rowCount: 1, languages: ["de"], inactiveLanguages: [] } },
+    evidence: { capitalisationVariants: { rowCount: 1, languages: ["de"], inactiveLanguages: [] } },
   });
   harness.ui.showResults({
     fingerprint: "run-1",
@@ -1326,24 +1326,24 @@ test("a case-variant key reads as covered, marked on the chip and explained once
   click(buttonWithText(shadow, "Expand all"));
   shadow = harness.shadow();
   const text = shadow.textContent;
-  assert.ok(text.includes("key case differs"), "the covering row's key is not the form's spelling");
-  assert.ok(text.includes("2/2"), "a case-variant key is counted, not scored as a gap");
-  assert.ok(text.includes("1 case-variant key"), "the row carries an informational tag");
+  assert.ok(text.includes("different capitalisation"), "the covering row's key is not the form's spelling");
+  assert.ok(text.includes("2/2"), "a differently capitalised key is counted, not scored as a gap");
+  assert.ok(text.includes("1 differently capitalised key"), "the row carries an informational tag");
   assert.ok(
-    text.includes("matches the key without regard to case"),
+    text.includes("regardless of capitalisation"),
     "the reason is stated once, in the row's evidence"
   );
 });
 
-test("the report names a case-variant key as its own warning token", () => {
+test("the report names a capitalisation variant as its own warning token", () => {
   const harness = load();
   const row = makeRow({
-    evidence: { caseVariants: { rowCount: 2, languages: ["fr"], inactiveLanguages: [] } },
+    evidence: { capitalisationVariants: { rowCount: 2, languages: ["fr"], inactiveLanguages: [] } },
   });
   const text = harness.ui.formatResultsAsText(
     makeResult({ sections: [makeSection("labels", "Field Labels", [row])] })
   );
-  assert.ok(text.includes("warnings=case-variant-key"));
+  assert.ok(text.includes("warnings=capitalisation-variant"));
   assert.ok(!text.includes("near-duplicate"), "the two are not the same finding");
 });
 
