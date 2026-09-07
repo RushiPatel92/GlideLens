@@ -21,7 +21,8 @@ reconstructed version by version.
   Portal catalog item. Each row expands to one chip per language, and a
   missing chip opens the platform record that would hold the translation,
   prefilled with the exact keys, so closing a gap is a save rather than a
-  search. Five footer buttons open each translation table filtered to the
+  search; a blank one opens the existing row instead, so no duplicate is
+  created. Five footer buttons open each translation table filtered to the
   current context, and the report copies as plain text that carries states
   and keys but never a translated string, a record value, a sys_id, a hostname
   or a URL.

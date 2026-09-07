@@ -272,13 +272,22 @@ record; `translated_text` and `translated_html` values live in
 `sys_translated_text`, keyed by document. Catalog question text, choices and
 set titles are string-keyed in `sys_translated` under their defining table.
 `getMessage` keys are scanned from the surface's client scripts and UI
-policies and checked in `sys_ui_message`. Rows found in a store the type
-does not use are reported as stranded, never counted.
+policies and checked in `sys_ui_message`. For every string-keyed text, a row
+found in the record-keyed store instead is reported as stranded, never
+counted. The reverse check is not made for `translated_text` and
+`translated_html`: their values are long text that is rarely expressible as
+a query key.
 
 Every element, aspect and language cell has one state. Direct and Same as
 source count as covered; Fallback is shown beside the count but not in it;
 Missing, Blank and Partial are gaps; Conflict is flagged; Unverified,
 Unavailable and Not applicable are excluded from the denominator and named.
+Blank is decidable only where the content column is read
+(`sys_documentation`, `sys_choice`, `sys_translated`); `sys_translated_text`
+and `sys_ui_message` are queried with their content non-empty, so a blank
+row there reads as Missing. A key the query language cannot express, a
+choice value or dependent value included, is Unverified rather than a
+counted gap.
 Absent data is never coverage: a denied, timed-out or truncated read stays
 Unavailable and never becomes Missing. Messages keep their own denominator and
 never move the main score. The language picker is a per-session display
@@ -295,8 +304,11 @@ columns of `sys_translated_text` and `sys_ui_message` are never requested.
 Each read has a 30 s ceiling and the panel 60 s; past that the remaining
 sections are Unavailable. The panel mounts before the first read and fills
 section by section; a result whose fingerprint no longer matches the open
-panel is discarded rather than rendered. Every link is same-origin through
-`OPEN_URL`; a missing chip opens a prefilled new record; nothing is written.
+panel is discarded rather than rendered, and a page that stops being the
+record the run started on discards what was drawn and cancels the rest.
+Every link is same-origin through `OPEN_URL`; a Missing chip opens a
+prefilled new record, a Blank chip opens the existing rows for that language
+so no duplicate is created; nothing is written.
 The copied report carries states and keys but no translated text, record
 value, sys_id, hostname or URL.
 
