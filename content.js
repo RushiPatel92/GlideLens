@@ -5164,13 +5164,20 @@ function buildCommands() {
   const isPlaybookDefinitionPage = decodedVariants(location.href).some(
     (url) => url.includes("sys_pd_process_definition")
   );
+  /* On a Workspace record route the command keeps its label, keywords and
+   * favourite key but opens the record's classic form instead of reading the
+   * Workspace form, which the probe cannot read. See
+   * openClassicFormForTranslationLens. */
+  const workspaceTranslationRoute = workspaceRecordContextFromText(location.href);
 
   const cmds = [
     {
       id: "translation-lens",
       favoriteKey: "toggle-translations",
       label: "Translation Lens",
-      description: "Audit translations on this form",
+      description: workspaceTranslationRoute
+        ? "Open this record's classic form to audit translations"
+        : "Audit translations on this form",
       keywords: [
         "translation", "translations", "i18n", "l10n", "language", "coverage",
         "missing", "sys_documentation", "sys_translated", "sys_translated_text",
@@ -5178,7 +5185,9 @@ function buildCommands() {
       ],
       group: "Tools",
       keepOpen: true,
-      run: showTranslationLens,
+      run: workspaceTranslationRoute
+        ? openClassicFormForTranslationLens
+        : showTranslationLens,
     },
     ...(debugTimelineRecording
       ? [{
@@ -5570,7 +5579,7 @@ async function resolveTranslationLensContext(engine) {
    * can contain a real marker-matched classic frame, so checking later would
    * accidentally claim R1 support. */
   if (workspaceRecordContextFromText(location.href)) {
-    return { refused: true, message: "Translation Lens does not support Workspace forms yet." };
+    return { refused: true, message: TRANSLATION_LENS_WORKSPACE_MESSAGE };
   }
 
   const form = await getFormTranslationContext([], null);
@@ -5694,10 +5703,52 @@ function openTranslationUrl(url) {
   return chrome.runtime.sendMessage({ type: "OPEN_URL", url: target.href });
 }
 
+const TRANSLATION_LENS_WORKSPACE_MESSAGE =
+  "Translation Lens does not read Workspace forms yet. Open the record's " +
+  "classic form and run it there.";
+
+/*
+ * Workspace fallback. The form probe needs a page-level g_form with the
+ * record markers and label ids that encode table and field; a Workspace form
+ * exposes neither, and reading it would need a per-surface shadow-DOM walker
+ * verified the way Variable Values verifies each experience and table pair.
+ * The route does name the record, so its classic form is one tab away.
+ *
+ * Honest limits: the classic form renders its own view, so the audited field
+ * set is the classic form's rather than the Workspace form's -- labels and
+ * choices are per field and table, so every field both views share gets the
+ * same answer. An unsaved Workspace record has no sys_id in the route and is
+ * not offered a form.
+ */
+function classicFormUrlForWorkspaceRoute(route, origin) {
+  if (!route) return "";
+  const table = String(route.table || "").toLowerCase();
+  const sysId = String(route.sysId || "").toLowerCase();
+  if (!/^[a-z][a-z0-9_]*$/.test(table) || !/^[0-9a-f]{32}$/.test(sysId)) return "";
+  return String(origin || "") + "/" + table + ".do?sys_id=" + sysId;
+}
+
+async function openClassicFormForTranslationLens() {
+  const route = workspaceRecordContextFromText(location.href);
+  const url = classicFormUrlForWorkspaceRoute(route, location.origin);
+  if (!url) {
+    showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
+    return;
+  }
+  closePalette();
+  showToast(
+    "Opening this record's classic form in a tab beside this one. Run " +
+    "Translation Lens there.",
+    false,
+    7000
+  );
+  await openTranslationUrl(url);
+}
+
 async function showTranslationLens() {
   if (window !== window.top) return;
   if (workspaceRecordContextFromText(location.href)) {
-    showToast("Translation Lens does not support Workspace forms yet", true, 7000);
+    showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
     return;
   }
   showToast("Checking Translation Lens contextâ€¦", false, 6000);

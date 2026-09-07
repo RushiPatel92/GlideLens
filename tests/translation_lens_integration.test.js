@@ -81,6 +81,40 @@ test("Workspace is refused before loading or probing Translation Lens", () => {
   );
 });
 
+test("the Workspace fallback builds only a same-origin classic form URL for a saved record", () => {
+  const factory = new Function(
+    between(contentSource, "function classicFormUrlForWorkspaceRoute", "async function openClassicFormForTranslationLens") +
+      "\nreturn classicFormUrlForWorkspaceRoute;"
+  );
+  const build = factory();
+  const origin = "https://example.service-now.com";
+  const sysId = "00000000000000000000000000000001";
+  assert.strictEqual(
+    build({ experiencePath: ["sow"], table: "incident", sysId }, origin),
+    origin + "/incident.do?sys_id=" + sysId
+  );
+  assert.strictEqual(
+    build({ experiencePath: ["psm", "workspace"], table: "SN_PSM_Supplier_Case", sysId: sysId.toUpperCase() }, origin),
+    origin + "/sn_psm_supplier_case.do?sys_id=" + sysId
+  );
+  /* No route, no record, or an identifier that is not a table name: nothing
+   * is opened, rather than a guessed URL. */
+  assert.strictEqual(build(null, origin), "");
+  assert.strictEqual(build({ table: "incident", sysId: "-1" }, origin), "");
+  assert.strictEqual(build({ table: "incident", sysId: "" }, origin), "");
+  assert.strictEqual(build({ table: "incident.do?x=1&y", sysId }, origin), "");
+  assert.strictEqual(build({ table: "../sys_user", sysId }, origin), "");
+});
+
+test("the Workspace fallback opens through the same-origin translation URL route", () => {
+  const block = between(contentSource, "async function openClassicFormForTranslationLens", "async function showTranslationLens");
+  assert.ok(block.includes("workspaceRecordContextFromText(location.href)"));
+  assert.ok(block.includes("classicFormUrlForWorkspaceRoute(route, location.origin)"));
+  assert.ok(block.includes("openTranslationUrl(url)"));
+  assert.ok(!block.includes("chrome.runtime.sendMessage"), "must not bypass the same-origin check");
+  assert.ok(!block.includes("ensureTranslationLensLoaded"), "the fallback must not load the engine");
+});
+
 test("panel opens and receives progress before engine data reads", () => {
   const block = between(contentSource, "async function showTranslationLens", "/* =====================================================================\n * RECORD SEARCH");
   const open = block.indexOf("ui.open({");

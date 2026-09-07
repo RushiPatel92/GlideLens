@@ -23,7 +23,8 @@ function loadPaletteHelpers() {
 
 const palette = loadPaletteHelpers();
 
-function loadBuiltCommands(debugTimelineUI) {
+function loadBuiltCommands(debugTimelineUI, options) {
+  const opts = options || {};
   const commandStart = contentSource.indexOf("const DEV_LINKS");
   const commandEnd = contentSource.indexOf("let recordSearchSession", commandStart);
   const helperStart = contentSource.indexOf("const PALETTE_GROUP_ORDER");
@@ -33,6 +34,7 @@ function loadBuiltCommands(debugTimelineUI) {
   const noop = () => {};
   const factory = new Function(
     "chrome", "location", "globalThis", "decodedVariants",
+    "workspaceRecordContextFromText",
     "openRecordSearch", "openCurrentRecordPlaybookExecutions",
     "openCurrentPlaybookCustomerUpdates", "openCustomerUpdatesBySysId",
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
@@ -48,6 +50,7 @@ function loadBuiltCommands(debugTimelineUI) {
     { href: "https://example.service-now.com/incident.do", origin: "https://example.service-now.com" },
     { SNDebugTimelineUI: debugTimelineUI || null },
     () => [],
+    opts.workspaceRoute ? () => opts.workspaceRoute : () => null,
     noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
 }
@@ -99,6 +102,29 @@ test("Translation Lens preserves the retired translation-toggle favorite key", (
   assert.strictEqual(translationLens.favoriteKey, "toggle-translations");
   assert.strictEqual(palette.paletteFavoriteKey(translationLens), "toggle-translations");
   assert.strictEqual(translationLens.keepOpen, true);
+  assert.strictEqual(translationLens.description, "Audit translations on this form");
+  assert.strictEqual(translationLens.run.name, "showTranslationLens");
+});
+
+test("Translation Lens on a Workspace route opens the classic form instead of reading", () => {
+  /* Same id, label, keywords and favourite key, so a pinned command and a
+   * typed search behave identically on both surfaces; only what Enter does
+   * changes, and the description says so before it is pressed. */
+  const route = {
+    experiencePath: ["sow"],
+    table: "incident",
+    sysId: "00000000000000000000000000000001",
+  };
+  const classic = loadBuiltCommands().find((item) => item.id === "translation-lens");
+  const workspace = loadBuiltCommands(null, { workspaceRoute: route })
+    .find((item) => item.id === "translation-lens");
+  assert.ok(workspace);
+  assert.strictEqual(workspace.label, classic.label);
+  assert.strictEqual(workspace.favoriteKey, classic.favoriteKey);
+  assert.deepStrictEqual(workspace.keywords, classic.keywords);
+  assert.strictEqual(workspace.group, classic.group);
+  assert.strictEqual(workspace.description, "Open this record's classic form to audit translations");
+  assert.strictEqual(workspace.run.name, "openClassicFormForTranslationLens");
 });
 
 test("groups render in the declared order while preserving order within a group", () => {
