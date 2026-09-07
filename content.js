@@ -12,8 +12,6 @@
  */
 
 const SNH = {
-  fieldNamesOn: false,
-  transIconsOn: false,
   varInsightOn: false,
   // Cached affecting-logic for the open catalog item, so every icon click and
   // re-apply reuses one fetch: { rows, setCount, setIds, itemName, itemSysId, index }.
@@ -27,65 +25,8 @@ const SNH_PREFILL_PROGRESS_SOURCE = "SN_DEV_HELPER_PREFILL_PROGRESS";
 /* Deliberately far above the worker's own inactivity bound: this only catches
  * a reply that never arrives at all, never a fill that is merely slow. */
 const PREFILL_REPLY_CEILING_MS = 900000;
-const WORKSPACE_FIELD_ATTRS = [
-  "data-field-name",
-  "data-fieldname",
-  "data-field",
-  "field-name",
-  "fieldname",
-  "field",
-  "data-column-name",
-  "data-column",
-  "column-name",
-  "column",
-  "data-name",
-  "name",
-];
-const WORKSPACE_FIELD_DENYLIST = new Set([
-  "actions",
-  "append",
-  "backward",
-  "bottom",
-  "button",
-  "checkbox",
-  "clear",
-  "combobox",
-  "content",
-  "control",
-  "controls",
-  "default",
-  "end",
-  "error",
-  "footer",
-  "form",
-  "forward",
-  "header",
-  "help",
-  "icon",
-  "input",
-  "label",
-  "leading",
-  "left",
-  "list",
-  "menu",
-  "message",
-  "prepend",
-  "record",
-  "right",
-  "search",
-  "start",
-  "suffix",
-  "table",
-  "text",
-  "top",
-  "trailing",
-  "trigger",
-  "value",
-]);
 
 function handleFrameCommand(type) {
-  if (type === "TOGGLE_FIELD_NAMES") return toggleFieldNames();
-  if (type === "TOGGLE_TRANSLATIONS") return toggleTranslationIcons();
   if (type === "TOGGLE_VARIABLE_INSIGHT") {
     // Service Portal catalog forms live in the top frame; only it owns the icons.
     if (window === window.top) toggleVariableInsightIcons().catch(() => {});
@@ -225,6 +166,20 @@ function workspaceRecordContextFromText(text) {
 }
 
 /*
+ * Translation Lens refuses every Workspace record route, saved or not, while
+ * the classic-form link it offers instead needs a saved record's sys_id.
+ * workspaceRecordContextFromText answers only the second question: its id
+ * group is 32-hex, so a new record's route (`record/<table>/-1`) returns null
+ * there and would otherwise fall through to the classic-frame probe, where an
+ * embedded marker-matched classic frame could be accepted as the form.
+ */
+function isWorkspaceRecordRoute(text) {
+  return decodedVariants(text).some((value) =>
+    /\/now\/(?:[^/?#]+\/)*?record\/[^/?#]+\/[^/?#]+(?:[/?#]|$)/i.test(value)
+  );
+}
+
+/*
  * Workspace Variable Values is allowlisted per (experience path, table) PAIR,
  * never by either half alone. Widening this list is a deliberate act: each
  * entry means that surface's live rendering and its stored-side routing were
@@ -276,13 +231,6 @@ function workspaceRecordContextMatches(left, right) {
   );
 }
 
-function isTechnicalFieldName(value) {
-  if (!value) return false;
-  const text = String(value).trim();
-  if (!/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)?$/i.test(text)) return false;
-  return !WORKSPACE_FIELD_DENYLIST.has(text.toLowerCase());
-}
-
 function parseClassicLabel(labelEl) {
   const parts = labelEl.id.split(".");
   if (parts.length < 3) return null;
@@ -301,126 +249,10 @@ function walkRoots(root, visit) {
   });
 }
 
-function getWorkspaceFieldInfo(el, context) {
-  for (const attr of WORKSPACE_FIELD_ATTRS) {
-    const raw = el.getAttribute && el.getAttribute(attr);
-    if (!raw) continue;
-
-    let value = raw.trim();
-    if (value.includes(".") && context.table && value.startsWith(context.table + ".")) {
-      value = value.slice(context.table.length + 1);
-    }
-    if (!isTechnicalFieldName(value)) continue;
-
-    if (
-      ["name", "field", "data-name"].includes(attr) &&
-      !isLikelyWorkspaceFieldElement(el)
-    ) {
-      continue;
-    }
-    return {
-      table: context.table,
-      field: value,
-      target: findWorkspaceInsertTarget(el),
-    };
-  }
-  return null;
-}
-
-function isServiceNowComponent(el) {
-  const name = el.localName || "";
-  return name.startsWith("now-") || name.startsWith("sn-") || name.includes("record");
-}
-
-function isInsideServiceNowShadow(el) {
-  const root = el.getRootNode && el.getRootNode();
-  return root && root.host && isServiceNowComponent(root.host);
-}
-
-function isLikelyWorkspaceFieldElement(el) {
-  if (isServiceNowComponent(el) || isInsideServiceNowShadow(el)) return true;
-
-  const role = el.getAttribute && el.getAttribute("role");
-  if (["textbox", "combobox", "checkbox", "spinbutton"].includes(role)) return true;
-
-  const tag = el.localName || "";
-  if (["input", "textarea", "select"].includes(tag)) return true;
-
-  return Boolean(
-    el.closest &&
-      el.closest(
-        'now-record-form-field,now-record-reference,sn-record-form-field,[data-component-id*="field" i],[class*="field" i]'
-      )
-  );
-}
-
-function findWorkspaceInsertTarget(el) {
-  if (el.shadowRoot) {
-    const label = el.shadowRoot.querySelector(
-      'label,[part~="label"],[class*="label" i],[data-label]'
-    );
-    if (label) return label;
-  }
-
-  const labelled = el.closest &&
-    el.closest('label,[data-field-name],[data-fieldname],[data-field],[field-name],[fieldname],[field]');
-  if (labelled) return labelled;
-
-  const root = el.getRootNode && el.getRootNode();
-  if (root && root.querySelector) {
-    const label = root.querySelector(
-      'label,[part~="label"],[class*="label" i],[data-label]'
-    );
-    if (label) return label;
-  }
-
-  if (["input", "textarea", "select"].includes(el.localName)) {
-    return el.parentElement || (root && root.host) || el;
-  }
-  return el;
-}
-
-function appendFieldBadge(target, field, extraClass) {
-  const badge = document.createElement("span");
-  badge.className = "snh-fieldname" + (extraClass ? " " + extraClass : "");
-  badge.textContent = " [" + field + "]";
-  badge.style.cssText =
-    "color:#0a7d4f;font-size:11px;font-weight:700;margin-left:5px;" +
-    "font-family:monospace;letter-spacing:.2px;";
-  target.appendChild(badge);
-}
-
 function getClassicFields() {
   return Array.from(document.querySelectorAll('[id^="label."]'))
     .map(parseClassicLabel)
     .filter(Boolean);
-}
-
-function getWorkspaceFields() {
-  const context = recordContextFromText(location.href);
-  if (!context.table) return [];
-
-  const fields = [];
-  const seen = new WeakMap();
-  walkRoots(document, (root) => {
-    root.querySelectorAll("*").forEach((el) => {
-      if (el.classList && (el.classList.contains("snh-fieldname") || el.classList.contains("snh-trans-icon"))) {
-        return;
-      }
-      const info = getWorkspaceFieldInfo(el, context);
-      if (!info || !info.target) return;
-
-      let targetFields = seen.get(info.target);
-      if (!targetFields) {
-        targetFields = new Set();
-        seen.set(info.target, targetFields);
-      }
-      if (targetFields.has(info.field)) return;
-      targetFields.add(info.field);
-      fields.push(info);
-    });
-  });
-  return fields;
 }
 
 function removeSnhElements(selector) {
@@ -430,66 +262,6 @@ function removeSnhElements(selector) {
     root.querySelectorAll(selector).forEach((n) => n.remove());
   });
 }
-
-function toggleFieldNames(force) {
-  const turnOn = typeof force === "boolean" ? force : !SNH.fieldNamesOn;
-  SNH.fieldNamesOn = turnOn;
-
-  removeSnhElements(".snh-fieldname");
-  if (!turnOn) {
-    syncToggleObserver();
-    return 0;
-  }
-
-  let count = 0;
-  getClassicFields().forEach(({ field, target }) => {
-    appendFieldBadge(target, field);
-    count++;
-  });
-
-  getWorkspaceFields().forEach(({ field, target }) => {
-    appendFieldBadge(target, field, "snh-workspace-fieldname");
-    count++;
-  });
-  syncToggleObserver();
-  return count;
-}
-
-/*
- * Translation icons: two clickable icons next to each form label.
- *
- *  1. Globe  -> sys_documentation  (per-language LABEL / plural / hint).
- *               Keyed by table.field, NOT per record.
- *  2. Glyph  -> sys_translated_text (per-record translated VALUES, for fields
- *               flagged translatable). Keyed by the record's sys_id.
- *
- * Inheritance: a field shown on a form may be defined on a PARENT table
- * (e.g. task.short_description on an incident form), and its sys_documentation
- * rows are keyed to the parent. So before opening, we resolve the field's
- * DEFINING table by walking the sys_db_object.super_class chain and checking
- * sys_dictionary at each level. This uses same-origin authenticated GETs from
- * the gsft_main frame (the session cookie carries auth). If an instance
- * enforces a CSRF token on GET, the calls fail and we fall back to the form
- * table — never worse than before.
- */
-
-// Lucide "globe" (label/documentation translations).
-const ICON_DOC =
-  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
-  'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-  'stroke-linejoin="round" aria-hidden="true">' +
-  '<circle cx="12" cy="12" r="9"></circle>' +
-  '<path d="M3 12h18"></path>' +
-  '<path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"></path></svg>';
-
-// Lucide "languages" (data-value translations).
-const ICON_VALUE =
-  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
-  'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-  'stroke-linejoin="round" aria-hidden="true">' +
-  '<path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path>' +
-  '<path d="M2 5h12"></path><path d="M7 2h1"></path>' +
-  '<path d="m22 22-5-10-5 10"></path><path d="M14 18h6"></path></svg>';
 
 // Lucide "workflow" (client scripts / UI policy actions affecting a variable).
 const ICON_VAR_LOGIC =
@@ -506,7 +278,7 @@ const ICON_VAR_LOGIC =
  * This used to fetch directly from the isolated world. That carries the session
  * cookie but NOT the CSRF token, and an instance that enforces the token on REST
  * GETs answers 401 — observed on a real instance for every call. The failure was
- * silent: resolveDefiningTable() caught it and fell back to the form table, so
+ * silent: the caller of the day caught it and fell back to the form table, so
  * inherited fields resolved to the wrong table and their translations looked
  * absent rather than misfiled.
  *
@@ -5246,20 +5018,6 @@ function syncVarInsightObserver() {
   snhVarObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
-// Walk up the table hierarchy to find where the field's dictionary entry lives.
-async function resolveDefiningTable(startTable, field) {
-  let table = startTable;
-  for (let hop = 0; hop < 8 && table; hop++) {
-    const dict = await snGet("sys_dictionary", `name=${table}^element=${field}`, "sys_id");
-    if (dict.length) return table; // defined directly on this table
-    const obj = await snGet("sys_db_object", `name=${table}`, "super_class.name");
-    const parent = obj.length && snFieldValue(obj[0], "super_class.name");
-    if (!parent) break;
-    table = parent;
-  }
-  return null;
-}
-
 function openList(table, query) {
   const url =
     location.origin + "/" + table + "_list.do?sysparm_query=" +
@@ -5347,344 +5105,6 @@ async function openCurrentRecordPlaybookExecutions() {
   openPlaybookExecutionsBySysId(sysId);
 }
 
-async function openLabelTranslations(formTable, field) {
-  let table = formTable;
-  try {
-    const resolved = await resolveDefiningTable(formTable, field);
-    if (resolved) table = resolved;
-  } catch (e) {
-    /* token-enforced GET or network error: fall back to form table */
-  }
-  openList("sys_documentation", `name=${table}^element=${field}`);
-}
-
-function openValueTranslations(formTable, field) {
-  // Prefer the current record's sys_id (from the form URL) so we land on the
-  // values for THIS record; documentkey + fieldname is table-agnostic.
-  const sysId = sysIdFromText(location.href);
-  const query =
-    sysId && /^[0-9a-f]{32}$/i.test(sysId)
-      ? `documentkey=${sysId}^fieldname=${field}`
-      : `tablename=${formTable}^fieldname=${field}`;
-  openList("sys_translated_text", query);
-}
-
-function makeIcon(svg, title, color, onClick) {
-  const btn = document.createElement("span");
-  btn.className = "snh-trans-icon";
-  btn.setAttribute("role", "button");
-  btn.tabIndex = 0;
-  btn.title = title;
-  btn.innerHTML = svg;
-  btn.style.cssText =
-    "display:inline-flex;align-items:center;vertical-align:middle;" +
-    "margin-left:5px;color:" + color + ";cursor:pointer;line-height:0;";
-  const handler = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onClick();
-  };
-  btn.addEventListener("click", handler);
-  btn.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") handler(e);
-  });
-  btn.addEventListener("mouseenter", () => (btn.style.opacity = "0.65"));
-  btn.addEventListener("mouseleave", () => (btn.style.opacity = "1"));
-  return btn;
-}
-
-/* =====================================================================
- * WHICH FIELDS CAN HAVE VALUE TRANSLATIONS
- *
- * sys_translated_text only ever holds rows for fields whose dictionary type is
- * translatable. Verified against a live instance: task, incident, sc_req_item
- * and change_request have ZERO such fields between them, so the value icon used
- * to render beside every label on every form and always open an empty list.
- *
- * The lookup is one query per table hierarchy, cached for the page's life, and
- * it is deliberately kept OFF the synchronous toggle path: toggleTranslationIcons
- * still returns its count immediately, renders the globe everywhere, and value
- * icons arrive when the query lands. That keeps the popup's response contract
- * and the re-apply path unchanged.
- * ===================================================================== */
-
-const SNH_TRANSLATABLE_TYPES =
-  "translated,translated_text,translated_html,translated_field";
-
-// table -> Set<field> once known, or null when the lookup failed. A missing
-// entry means "not fetched yet". Failure maps to null rather than an empty set
-// so a broken lookup shows the icon everywhere instead of hiding a working one.
-const snhTranslatableFields = new Map();
-const snhTranslatablePending = new Map();
-
-// The defining table matters here: a translatable field on a parent shows up on
-// a child's form, so the whole chain has to be queried, not just the form table.
-async function tableHierarchy(startTable) {
-  const chain = [];
-  let table = startTable;
-  for (let hop = 0; hop < 8 && table; hop++) {
-    if (chain.includes(table)) break; // a cyclic super_class would spin forever
-    chain.push(table);
-    const obj = await snGet("sys_db_object", `name=${table}`, "super_class.name");
-    const parent = obj.length && snFieldValue(obj[0], "super_class.name");
-    if (!parent) break;
-    table = parent;
-  }
-  return chain;
-}
-
-async function fetchTranslatableFields(table) {
-  const chain = await tableHierarchy(table);
-  if (!chain.length) return new Set();
-  const rows = await snGetMany(
-    "sys_dictionary",
-    `nameIN${chain.join(",")}^internal_typeIN${SNH_TRANSLATABLE_TYPES}`,
-    "element",
-    500
-  );
-  const fields = new Set();
-  rows.forEach((row) => {
-    const element = snFieldValue(row, "element");
-    if (element) fields.add(element);
-  });
-  return fields;
-}
-
-function ensureTranslatableFields(table) {
-  if (snhTranslatableFields.has(table)) return;
-  if (snhTranslatablePending.has(table)) return;
-  const pending = fetchTranslatableFields(table)
-    .then((fields) => {
-      snhTranslatableFields.set(table, fields);
-      // One line per table per page. This is a developer tool and its users live
-      // in the console; more importantly, the fallback below is indistinguishable
-      // from "no filtering happened", so silence here would make a failed lookup
-      // impossible to tell apart from stale code.
-      console.info(
-        `[GlideLens] ${table}: ${fields.size} field(s) can have value translations`,
-        fields.size ? Array.from(fields) : ""
-      );
-    })
-    .catch((error) => {
-      snhTranslatableFields.set(table, null);
-      console.warn(
-        `[GlideLens] could not determine translatable fields for ${table}; ` +
-          "showing the value icon on every field rather than hiding a working one.",
-        error
-      );
-    })
-    .then(() => {
-      snhTranslatablePending.delete(table);
-      decorateValueIconsFor(table);
-    })
-    // A throw in the late pass must not surface as an unhandled rejection; the
-    // globe is already rendered, so the worst case is a missing value icon.
-    .catch(() => {});
-  snhTranslatablePending.set(table, pending);
-}
-
-function fieldSupportsValueTranslation(table, field) {
-  const known = snhTranslatableFields.get(table);
-  if (known === undefined) return false; // unresolved; a later pass fills it in
-  if (known === null) return true; // lookup failed; don't hide a working icon
-  return known.has(field);
-}
-
-function makeValueTranslationIcon(table, field) {
-  const icon = makeIcon(
-    ICON_VALUE,
-    `Value translations for ${table}.${field} (sys_translated_text)`,
-    "#8a5cd6",
-    () => openValueTranslations(table, field)
-  );
-  // Own class so the late pass can tell a decorated label from a bare one. It
-  // keeps .snh-trans-icon too, so teardown and the staleness check still see it.
-  icon.classList.add("snh-trans-value");
-  return icon;
-}
-
-/*
- * Second pass, run when a table's lookup resolves. It mutates the DOM while the
- * re-apply observer is live, so it disconnects first for the same reason
- * runQueuedReapply() does. The staleness check cannot be tripped into a loop by
- * this: it asks for any .snh-trans-icon, and the globe is already there.
- */
-function decorateValueIconsFor(table) {
-  if (!SNH.transIconsOn) return; // toggled off while the query was in flight
-
-  if (snhToggleObserver) snhToggleObserver.disconnect();
-  try {
-    const add = (entry) => {
-      if (!entry || entry.table !== table || !entry.field || !entry.target) return;
-      if (!fieldSupportsValueTranslation(entry.table, entry.field)) return;
-      if (entry.target.querySelector(":scope > .snh-trans-value")) return;
-      entry.target.appendChild(makeValueTranslationIcon(entry.table, entry.field));
-    };
-    getClassicFields().forEach(add);
-    getWorkspaceFields().forEach(add);
-  } finally {
-    if (snhToggleObserver) observeForReapply();
-  }
-}
-
-function toggleTranslationIcons(force) {
-  const turnOn = typeof force === "boolean" ? force : !SNH.transIconsOn;
-  SNH.transIconsOn = turnOn;
-
-  removeSnhElements(".snh-trans-icon");
-  if (!turnOn) {
-    syncToggleObserver();
-    return 0;
-  }
-
-  let count = 0;
-  const tables = new Set();
-  const appendIcons = ({ table, field, target }) => {
-    if (!table || !field || !target) return;
-    // The globe is unconditional: sys_documentation is keyed by table.field and
-    // any field can have a translated LABEL, whatever its type.
-    target.appendChild(
-      makeIcon(
-        ICON_DOC,
-        `Label translations for ${table}.${field} (sys_documentation)`,
-        "#3b7ddd",
-        () => openLabelTranslations(table, field)
-      )
-    );
-    if (fieldSupportsValueTranslation(table, field)) {
-      target.appendChild(makeValueTranslationIcon(table, field));
-    }
-    tables.add(table);
-    count++;
-  };
-
-  getClassicFields().forEach(appendIcons);
-  getWorkspaceFields().forEach(appendIcons);
-  // No-ops for tables already resolved, so a re-apply costs nothing.
-  tables.forEach(ensureTranslatableFields);
-  syncToggleObserver();
-  return count;
-}
-
-/* =====================================================================
- * TOGGLE PERSISTENCE
- *
- * Classic forms re-render on section switches, related-list refreshes and
- * UI Policy runs, which throws away our badges and icons. A MutationObserver
- * puts them back. Three things keep that from becoming a loop or a tax on
- * every keystroke:
- *
- *  1. Re-applying a toggle MUTATES the DOM, so the observer would see its own
- *     writes and re-fire forever. We disconnect around the re-apply;
- *     disconnect() also empties the pending record queue, so nothing our own
- *     writes produced survives to the next observe().
- *  2. A re-render arrives as a burst of mutations, not one, so the re-apply is
- *     debounced on the trailing edge.
- *  3. Both toggles are a full teardown + rescan (see toggleFieldNames), which
- *     is far too heavy to run per burst. We first ask a cheap question — is any
- *     classic label missing its decoration? — and bail when the answer is no.
- *
- * CLASSIC UI ONLY. getWorkspaceFields() walks every element in every shadow
- * root; running that against a Workspace SPA's mutation volume would cost more
- * than the feature is worth. Workspace forms still decorate on demand, they
- * just don't survive a re-render yet.
- * ===================================================================== */
-
-const SNH_REAPPLY_DEBOUNCE_MS = 200;
-let snhToggleObserver = null;
-let snhReapplyTimer = null;
-
-function anyToggleOn() {
-  return SNH.fieldNamesOn || SNH.transIconsOn;
-}
-
-/*
- * Cheap staleness check. Deliberately driven by getClassicFields() rather than
- * raw label counts: it returns exactly the set the toggles decorate, so "every
- * field has its decoration" is reachable. Comparing counts instead would let a
- * label the parser skips — or a badge added by the workspace pass — wedge this
- * permanently stale and rebuild on a 200ms loop forever.
- */
-function classicDecorationStale() {
-  const fields = getClassicFields();
-  if (!fields.length) return false;
-  return fields.some(
-    ({ target }) =>
-      (SNH.fieldNamesOn && !target.querySelector(":scope > .snh-fieldname")) ||
-      (SNH.transIconsOn && !target.querySelector(":scope > .snh-trans-icon"))
-  );
-}
-
-function reapplyToggles() {
-  // Honour both flags: a re-render wipes whatever was on, so restore all of it.
-  if (SNH.fieldNamesOn) toggleFieldNames(true);
-  if (SNH.transIconsOn) toggleTranslationIcons(true);
-}
-
-function runQueuedReapply() {
-  snhReapplyTimer = null;
-  if (!snhToggleObserver || !anyToggleOn()) return;
-  if (!classicDecorationStale()) return;
-
-  snhToggleObserver.disconnect();
-  try {
-    reapplyToggles();
-  } finally {
-    // Re-arm even if a rebuild threw, otherwise one bad form kills the feature
-    // for the rest of the page's life. Null-guarded because this runs in a
-    // finally: reapplyToggles() re-enters syncToggleObserver(), which tears the
-    // observer down when it sees no classic fields. That can't happen today
-    // (the rebuild is synchronous, so the DOM can't change under it after the
-    // staleness check found fields), but a finally is the wrong place to
-    // discover it if that ever stops being true.
-    if (snhToggleObserver) observeForReapply();
-  }
-}
-
-function queueReapply() {
-  if (snhReapplyTimer) clearTimeout(snhReapplyTimer);
-  snhReapplyTimer = setTimeout(runQueuedReapply, SNH_REAPPLY_DEBOUNCE_MS);
-}
-
-function observeForReapply() {
-  // childList + subtree only. Attribute and character-data records would
-  // multiply the volume without telling us anything the staleness check
-  // doesn't already answer.
-  snhToggleObserver.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
-}
-
-/*
- * Called from both toggles, on the on AND off paths. Starts the observer lazily
- * so instance pages with no toggle in use never pay for one, and tears it down
- * once the last toggle goes off.
- */
-function syncToggleObserver() {
-  const shouldRun = anyToggleOn() && getClassicFields().length > 0;
-
-  if (!shouldRun) {
-    if (snhReapplyTimer) {
-      clearTimeout(snhReapplyTimer);
-      snhReapplyTimer = null;
-    }
-    if (snhToggleObserver) {
-      snhToggleObserver.disconnect();
-      snhToggleObserver = null;
-    }
-    return;
-  }
-
-  // Already running — including the re-entrant call from reapplyToggles(),
-  // where we are mid-rebuild with the observer deliberately disconnected and
-  // runQueuedReapply() owns re-arming it.
-  if (snhToggleObserver) return;
-
-  snhToggleObserver = new MutationObserver(queueReapply);
-  observeForReapply();
-}
-
 /*
  * Every branch here answers synchronously, so this listener must not return
  * true. `return true` means "a reply is coming later, hold the channel open",
@@ -5692,16 +5112,6 @@ function syncToggleObserver() {
  * until Chrome tore the port down. Answer in each branch, return false once.
  */
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg && msg.type === "TOGGLE_FIELD_NAMES") {
-    const count = toggleFieldNames(msg.force);
-    sendResponse({ ok: true, count, on: SNH.fieldNamesOn });
-    return false;
-  }
-  if (msg && msg.type === "TOGGLE_TRANSLATIONS") {
-    const count = toggleTranslationIcons(msg.force);
-    sendResponse({ ok: true, count, on: SNH.transIconsOn });
-    return false;
-  }
   if (msg && msg.type === "TOGGLE_PALETTE") {
     // Only the top frame owns the palette to avoid duplicate overlays. Every
     // frame still answers, so the sender is never left waiting on a port.
@@ -5768,19 +5178,31 @@ function buildCommands() {
   const isPlaybookDefinitionPage = decodedVariants(location.href).some(
     (url) => url.includes("sys_pd_process_definition")
   );
+  /* On a Workspace record route, saved or new, the command keeps its label,
+   * keywords and favourite key but shows a notice instead of reading the
+   * Workspace form, which the probe cannot read. The notice links to the
+   * record's classic form when the route names a saved record; nothing opens
+   * until the link is clicked. See showTranslationLensWorkspaceNotice. */
+  const workspaceTranslationRoute = isWorkspaceRecordRoute(location.href);
 
-  // "Toggle field names" was retired in 0.10.0 — snUtils covers it. The palette
-  // command and the Alt+Shift+F manifest command are both gone, so nothing
-  // dispatches TOGGLE_FIELD_NAMES; toggleFieldNames() and its message handler
-  // are kept so the feature can be re-listed rather than rewritten.
   const cmds = [
     {
-      id: "toggle-translations",
-      label: "Translations",
-      description: "Show or hide field translation controls",
-      keywords: ["globe", "i18n", "l10n", "translate", "sys_documentation", "sys_translated_text"],
+      id: "translation-lens",
+      favoriteKey: "toggle-translations",
+      label: "Translation Lens",
+      description: workspaceTranslationRoute
+        ? "Get a link to this record's classic form to audit translations"
+        : "Audit translations on this form",
+      keywords: [
+        "translation", "translations", "i18n", "l10n", "language", "coverage",
+        "missing", "sys_documentation", "sys_translated", "sys_translated_text",
+        "sys_choice", "sys_ui_message",
+      ],
       group: "Tools",
-      run: () => broadcastFrameCommand("TOGGLE_TRANSLATIONS"),
+      keepOpen: true,
+      run: workspaceTranslationRoute
+        ? showTranslationLensWorkspaceNotice
+        : showTranslationLens,
     },
     ...(debugTimelineRecording
       ? [{
@@ -6002,6 +5424,562 @@ function buildCommands() {
     })),
   ];
   return validatePaletteCommands(cmds);
+}
+
+/* =====================================================================
+ * TRANSLATION LENS
+ *
+ * The engine and Opus panel are lazy. The panel boundary is deliberately
+ * object-shaped so progressive and stale-run metadata cannot be confused with
+ * rendered instance strings:
+ *
+ *   open({ fingerprint, context, callbacks })
+ *   setProgress({ fingerprint, phase, detail })
+ *   showResults({ fingerprint, result, section, partial })
+ *   showError({ fingerprint, message })
+ *   close({ fingerprint, reason })
+ *   formatResultsAsText(result)
+ *
+ * This file validates and calls that contract. It never supplies a substitute
+ * visual implementation when translation_lens_ui.js is absent.
+ * ===================================================================== */
+
+const TRANSLATION_LENS_UI_METHODS = [
+  "open",
+  "setProgress",
+  "showResults",
+  "showError",
+  "close",
+  "formatResultsAsText",
+];
+const TRANSLATION_LENS_PANEL_TIMEOUT_MS = 60000;
+let translationLensRunSequence = 0;
+
+function translationLensWithTimeout(promise) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(
+          "Translation reads exceeded 60 seconds; remaining sections are unavailable."
+        );
+        error.code = "translation-timeout";
+        reject(error);
+      }, TRANSLATION_LENS_PANEL_TIMEOUT_MS);
+    }),
+  ]);
+}
+
+function translationLensUi() {
+  const ui = globalThis.SNTranslationLensUI;
+  const missing = TRANSLATION_LENS_UI_METHODS.filter(
+    (method) => !ui || typeof ui[method] !== "function"
+  );
+  if (missing.length) {
+    throw new Error(
+      "Translation Lens panel is awaiting its visual module (missing " +
+      missing.join(", ") + ")."
+    );
+  }
+  return ui;
+}
+
+async function ensureTranslationLensLoaded() {
+  if (globalThis.SNTranslationLens && globalThis.SNTranslationLensUI) {
+    translationLensUi();
+    return true;
+  }
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_TRANSLATION_LENS" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load Translation Lens.");
+  }
+  if (!globalThis.SNTranslationLens) {
+    throw new Error("Translation Lens engine did not load.");
+  }
+  translationLensUi();
+  return true;
+}
+
+async function getFormTranslationContext(fields, expectedIdentity) {
+  const response = await chrome.runtime.sendMessage({
+    type: "GET_FORM_TRANSLATION_CONTEXT",
+    fields: Array.isArray(fields) ? fields : [],
+    expectedIdentity: expectedIdentity || null,
+  });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't inspect the classic form.");
+  }
+  return response;
+}
+
+function translationFormFields(probe) {
+  const table = String(probe && probe.table || "").toLowerCase();
+  const seen = new Set();
+  const fields = [];
+  (probe && probe.labelIds || []).forEach((id) => {
+    const parsed = parseClassicLabel({ id: String(id || "") });
+    if (
+      !parsed || String(parsed.table || "").toLowerCase() !== table ||
+      !/^[a-z][a-z0-9_]*$/.test(String(parsed.field || "").toLowerCase())
+    ) return;
+    const field = String(parsed.field).toLowerCase();
+    if (seen.has(field)) return;
+    seen.add(field);
+    fields.push({ field, label: field });
+  });
+  return fields;
+}
+
+/*
+ * The question ids of the catalog variables a classic form carries. The
+ * verified signal (customer case form, 2026-09-07) is the hidden
+ * `#variable_map` element, whose `<item id>` children are the question
+ * sys_ids the editor renders from; the worker probe lifts those as
+ * `variableQuestionIds`. That editor's controls are `ni.QS<sys_id>` and its
+ * label ids are `label_ni.QS<sys_id>`, so the `label.IO:<sys_id>` shape kept
+ * below is only a fallback for an older editor and is not the reason this
+ * works. None of these ids are fields, so translationFormFields drops them;
+ * here they say the form carries variables this run does not check, and let
+ * the engine find the owning item for the notice's link.
+ */
+function translationVariableQuestionIds(probe) {
+  const seen = new Set();
+  const ids = [];
+  const add = (value) => {
+    const questionId = String(value || "").toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(questionId) || seen.has(questionId)) return;
+    seen.add(questionId);
+    ids.push(questionId);
+  };
+  (probe && probe.variableQuestionIds || []).forEach(add);
+  (probe && probe.labelIds || []).forEach((id) => {
+    const match = /^label\.(?:ni\.)?IO:([0-9a-f]{32})$/i.exec(String(id || ""));
+    if (match) add(match[1]);
+  });
+  return ids;
+}
+
+function translationExpectedFormIdentity(probe) {
+  return {
+    table: String(probe.table || "").toLowerCase(),
+    sysId: String(probe.sysId == null ? "" : probe.sysId).toLowerCase(),
+    isNewRecord: Boolean(probe.isNewRecord),
+    frameId: Number.isInteger(probe.frameId) ? probe.frameId : null,
+  };
+}
+
+function translationContextFingerprint(value) {
+  return [
+    value.mode || "",
+    value.surface || "",
+    value.table || "",
+    value.sysId || "",
+    value.isNewRecord ? "new" : "saved",
+    Number.isInteger(value.frameId) ? String(value.frameId) : "",
+  ].join("\u0000");
+}
+
+function translationResponseRows(response, table) {
+  if (!response || response.ok === false) {
+    const error = new Error((response && response.error) || "Couldn't read " + table + ".");
+    error.status = Number(response && response.status) || 0;
+    throw error;
+  }
+  return Array.isArray(response.result) ? response.result : [];
+}
+
+async function corroborateCatalogTranslationContext(engine, sysId) {
+  /* Accepted R1 residual limitation: this proves the candidate is an
+   * sc_cat_item record, but it does not prove a stale URL cannot say item B
+   * while the page-owned Angular model still shows item A. Reading that
+   * uncontracted model is deferred to the later portal-specific slice. */
+  if (!isSysId(sysId)) return null;
+  const response = await engine.tableGet({
+    table: "sc_cat_item",
+    query: "sys_id=" + String(sysId).toLowerCase(),
+    fields: "sys_id,name,sys_class_name",
+    limit: 2,
+    options: { displayAll: true, excludeRefLinks: true },
+  });
+  const row = translationResponseRows(response, "sc_cat_item").find(
+    (item) => snFieldValue(item, "sys_id").toLowerCase() === String(sysId).toLowerCase()
+  );
+  if (!row) return null;
+  const itemClass = snFieldValue(row, "sys_class_name") || "sc_cat_item";
+  if (!/^[a-z][a-z0-9_]*$/.test(itemClass)) return null;
+  const hierarchy = await engine.resolveHierarchy(itemClass, engine.tableGet);
+  if (!hierarchy.tables.includes("sc_cat_item")) return null;
+  return {
+    sysId: String(sysId).toLowerCase(),
+    table: itemClass,
+    name: snFieldValue(row, "name"),
+    hierarchy: hierarchy.tables,
+  };
+}
+
+async function resolveTranslationLensContext(engine) {
+  /* Refuse Workspace before any classic or catalog probe. A Workspace shell
+   * can contain a real marker-matched classic frame, so checking later would
+   * accidentally claim R1 support. Any record route counts, including an
+   * unsaved one, which the saved-record parser would not recognise. */
+  if (isWorkspaceRecordRoute(location.href)) {
+    return { refused: true, message: TRANSLATION_LENS_WORKSPACE_MESSAGE };
+  }
+
+  const form = await getFormTranslationContext([], null);
+  let catalogCandidate = currentCatalogItemDefinitionSysId();
+  let formHierarchy = null;
+  if (form.found) {
+    formHierarchy = await engine.resolveHierarchy(form.table, engine.tableGet);
+    if (
+      !form.isNewRecord && formHierarchy.tables.includes("sc_cat_item") &&
+      isSysId(form.sysId)
+    ) {
+      catalogCandidate = form.sysId;
+    }
+  }
+
+  let catalog = null;
+  if (isSysId(catalogCandidate)) {
+    catalog = await corroborateCatalogTranslationContext(engine, catalogCandidate);
+  }
+  if (catalog && !form.found) {
+    const resolved = {
+      mode: "catalog",
+      surface: "Service Portal catalog item",
+      table: catalog.table,
+      sysId: catalog.sysId,
+      isNewRecord: false,
+      frameId: 0,
+      catalog,
+      form: null,
+    };
+    resolved.fingerprint = translationContextFingerprint(resolved);
+    return resolved;
+  }
+  if (catalog && form.found && formHierarchy && formHierarchy.tables.includes("sc_cat_item")) {
+    const resolved = {
+      mode: "catalog",
+      surface: "Catalog definition form",
+      table: catalog.table,
+      sysId: catalog.sysId,
+      isNewRecord: false,
+      frameId: form.frameId,
+      catalog,
+      form,
+    };
+    resolved.fingerprint = translationContextFingerprint(resolved);
+    return resolved;
+  }
+  if (form.found) {
+    const resolved = {
+      mode: "form",
+      surface: "Classic form",
+      table: form.table,
+      sysId: form.sysId,
+      isNewRecord: Boolean(form.isNewRecord),
+      frameId: form.frameId,
+      catalog: null,
+      form,
+    };
+    resolved.fingerprint = translationContextFingerprint(resolved);
+    return resolved;
+  }
+  if (form.probeInconclusive) {
+    throw new Error("The classic form probe was inconclusive because a frame did not answer.");
+  }
+  return { refused: true, message: "Open a classic form or a catalog item first." };
+}
+
+function translationFormEngineContext(resolved) {
+  const form = resolved.form;
+  const expected = translationExpectedFormIdentity(form);
+  return {
+    mode: "form",
+    surface: resolved.surface,
+    table: form.table,
+    sysId: form.sysId,
+    isNewRecord: Boolean(form.isNewRecord),
+    fields: translationFormFields(form),
+    variableQuestionIds: translationVariableQuestionIds(form),
+    loadValues: async (fields) => {
+      const second = await getFormTranslationContext(fields, expected);
+      if (!second.found) {
+        const error = new Error("The form changed while Translation Lens was reading it.");
+        error.code = "stale";
+        throw error;
+      }
+      return { values: second.values || {} };
+    },
+  };
+}
+
+function translationEngineContext(resolved) {
+  if (resolved.mode === "form") return translationFormEngineContext(resolved);
+  const context = {
+    mode: "catalog",
+    surface: resolved.surface,
+    table: resolved.catalog.table,
+    sysId: resolved.catalog.sysId,
+    catalogItemSysId: resolved.catalog.sysId,
+  };
+  if (resolved.form) context.formContext = translationFormEngineContext(resolved);
+  return context;
+}
+
+async function translationContextStillCurrent(resolved) {
+  if (isWorkspaceRecordRoute(location.href)) return false;
+  if (resolved.form) {
+    const expected = translationExpectedFormIdentity(resolved.form);
+    const current = await getFormTranslationContext([], expected);
+    return Boolean(current.found);
+  }
+  return currentCatalogItemDefinitionSysId().toLowerCase() === resolved.sysId;
+}
+
+function openTranslationUrl(url) {
+  let target;
+  try { target = new URL(String(url || ""), location.origin); } catch (error) {
+    throw new Error("Translation link is invalid.");
+  }
+  if (target.origin !== location.origin) {
+    throw new Error("Translation links must stay on this instance.");
+  }
+  return chrome.runtime.sendMessage({ type: "OPEN_URL", url: target.href });
+}
+
+const TRANSLATION_LENS_WORKSPACE_MESSAGE =
+  "Translation Lens does not read Workspace forms yet. Open the record's " +
+  "classic form and run it there.";
+
+/*
+ * Workspace fallback. The form probe needs a page-level g_form with the
+ * record markers and label ids that encode table and field; a Workspace form
+ * exposes neither, and reading it would need a per-surface shadow-DOM walker
+ * verified the way Variable Values verifies each experience and table pair.
+ * The route does name the record, so the palette notice carries a link to
+ * its classic form in place of a bare unsupported message. Nothing opens
+ * until the link is clicked: navigating away on the user's behalf read as
+ * the command doing something other than what it says.
+ *
+ * Honest limits: the classic form renders its own view, so the audited field
+ * set is the classic form's rather than the Workspace form's -- labels and
+ * choices are per field and table, so every field both views share gets the
+ * same answer. An unsaved Workspace record has no sys_id in the route and is
+ * not offered a link.
+ */
+function classicFormUrlForWorkspaceRoute(route, origin) {
+  if (!route) return "";
+  const table = String(route.table || "").toLowerCase();
+  const sysId = String(route.sysId || "").toLowerCase();
+  if (!/^[a-z][a-z0-9_]*$/.test(table) || !/^[0-9a-f]{32}$/.test(sysId)) return "";
+  return String(origin || "") + "/" + table + ".do?sys_id=" + sysId;
+}
+
+function showTranslationLensWorkspaceNotice() {
+  const route = workspaceRecordContextFromText(location.href);
+  const url = classicFormUrlForWorkspaceRoute(route, location.origin);
+  if (!url || !paletteToast) {
+    showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
+    return;
+  }
+  /* Same slot and lifetime as showCopyFallback: the notice stays until the
+   * palette closes or another toast replaces it, so the link cannot vanish
+   * mid-read. */
+  clearTimeout(showToast._t);
+  paletteToast.innerHTML = "";
+  const lead = document.createElement("span");
+  lead.textContent = "Translation Lens does not read Workspace forms yet. ";
+  const link = document.createElement("a");
+  link.href = url;
+  link.textContent = "Open this record's classic form";
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    closePalette();
+    Promise.resolve()
+      .then(() => openTranslationUrl(url))
+      .catch((error) => showToast(String(error.message || error), true, 7000));
+  });
+  const tail = document.createElement("span");
+  tail.textContent = " and run Translation Lens there.";
+  paletteToast.appendChild(lead);
+  paletteToast.appendChild(link);
+  paletteToast.appendChild(tail);
+  paletteToast.className = "err";
+  paletteToast.style.display = "block";
+  link.focus();
+}
+
+async function showTranslationLens() {
+  if (window !== window.top) return;
+  if (isWorkspaceRecordRoute(location.href)) {
+    showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
+    return;
+  }
+  showToast("Checking Translation Lens contextâ€¦", false, 6000);
+  try {
+    await ensureTranslationLensLoaded();
+  } catch (error) {
+    showToast(String(error.message || error), true, 9000);
+    return;
+  }
+
+  const engine = globalThis.SNTranslationLens;
+  const ui = translationLensUi();
+  let resolved;
+  try {
+    resolved = await resolveTranslationLensContext(engine);
+  } catch (error) {
+    showToast(String(error.message || error), true, 9000);
+    return;
+  }
+  if (resolved.refused) {
+    showToast(resolved.message, true, 7000);
+    return;
+  }
+
+  const session = { latestResult: null, includeInactive: false };
+  closePalette();
+  ui.open({
+    fingerprint: resolved.fingerprint,
+    context: {
+      mode: resolved.mode,
+      surface: resolved.surface,
+      table: resolved.table,
+      isNewRecord: resolved.isNewRecord,
+    },
+    callbacks: {
+      /* Bumping unconditionally cancels whatever read is still in flight; if
+       * none is, the bump costs nothing. */
+      onClose: () => { translationLensRunSequence++; },
+      onOpenUrl: openTranslationUrl,
+      onCopyReport: () => ui.formatResultsAsText(session.latestResult),
+      onLookupMessage: async (key) => {
+        if (!session.latestResult || !session.latestResult.languages) {
+          throw new Error("Wait for active languages to finish loading.");
+        }
+        return engine.lookupMessage(
+          key, session.latestResult.languages, engine.tableGet, location.origin
+        );
+      },
+      /* Inactive variables and choices are filtered before a row exists, so
+       * the panel cannot apply this to a finished result -- it has to be read
+       * again. The context, and therefore the fingerprint, is unchanged, so
+       * the results land in the panel that is already open. */
+      onSetIncludeInactive: (flag) => {
+        session.includeInactive = Boolean(flag);
+        readTranslationLens(resolved, ui, engine, session);
+      },
+    },
+  });
+  await readTranslationLens(resolved, ui, engine, session);
+}
+
+const TRANSLATION_LENS_CONTEXT_CHANGED =
+  "The page context changed while Translation Lens was reading it. Run it again.";
+
+async function readTranslationLens(resolved, ui, engine, session) {
+  const runId = ++translationLensRunSequence;
+  const isCurrent = () => runId === translationLensRunSequence;
+  ui.setProgress({
+    fingerprint: resolved.fingerprint,
+    phase: "starting",
+    detail: "Reading active languages",
+  });
+
+  const engineContext = translationEngineContext(resolved);
+  /* The engine builds every list and prefilled-new-record URL against this
+   * origin and validates it as a ServiceNow host; without it a row simply
+   * carries no link. It never navigates -- openTranslationUrl does, and
+   * re-checks same-origin before OPEN_URL. */
+  engineContext.origin = location.origin;
+  engineContext.includeInactive = Boolean(session.includeInactive);
+  engineContext.onProgress = (progress) => {
+    if (!isCurrent()) return;
+    ui.setProgress(Object.assign({ fingerprint: resolved.fingerprint }, progress));
+  };
+  /* A section is drawn only after the page is confirmed to still be the
+   * record the run started on. The checks are serialised so sections land in
+   * engine order, and a changed page discards everything drawn and cancels
+   * the run's remaining results rather than leaving stale rows under an
+   * error banner. */
+  let sectionGate = Promise.resolve();
+  const contextChanged = () => {
+    if (!isCurrent()) return;
+    translationLensRunSequence++;
+    ui.showError({
+      fingerprint: resolved.fingerprint,
+      message: TRANSLATION_LENS_CONTEXT_CHANGED,
+      discard: true,
+    });
+  };
+  const deliver = (paint) => {
+    sectionGate = sectionGate.then(async () => {
+      if (!isCurrent()) return;
+      let stillCurrent = false;
+      try {
+        stillCurrent = await translationContextStillCurrent(resolved);
+      } catch (error) {
+        stillCurrent = false;
+      }
+      if (!isCurrent()) return;
+      if (!stillCurrent) {
+        contextChanged();
+        return;
+      }
+      paint();
+    }).catch(() => {});
+  };
+  engineContext.onSection = (section) => {
+    if (!isCurrent()) return;
+    deliver(() => ui.showResults({
+      fingerprint: resolved.fingerprint,
+      section,
+      partial: true,
+    }));
+  };
+  /* A notice -- today, the variable editor this run does not check -- goes
+   * through the same gate as a section, so it can never outlive the page it
+   * describes. */
+  engineContext.onNotice = (notice) => {
+    if (!isCurrent()) return;
+    deliver(() => ui.showResults({
+      fingerprint: resolved.fingerprint,
+      notice,
+      partial: true,
+    }));
+  };
+
+  try {
+    const result = await translationLensWithTimeout(
+      engine.run(engineContext, engine.tableGet)
+    );
+    if (!isCurrent()) return;
+    await sectionGate;
+    if (!isCurrent()) return;
+    const stillCurrent = await translationContextStillCurrent(resolved);
+    if (!isCurrent()) return;
+    if (!stillCurrent) {
+      contextChanged();
+      return;
+    }
+    session.latestResult = result;
+    ui.showResults({
+      fingerprint: resolved.fingerprint,
+      result,
+      partial: false,
+    });
+  } catch (error) {
+    if (!isCurrent()) return;
+    ui.showError({
+      fingerprint: resolved.fingerprint,
+      message: String(error.message || error),
+    });
+    if (error && error.code === "translation-timeout") {
+      translationLensRunSequence++;
+    }
+  }
 }
 
 /* =====================================================================
@@ -6501,6 +6479,8 @@ const PALETTE_CSS = `
     border-top:1px solid var(--palette-border-subtle);color:#a8e6b8;
   }
   #toast.err{color:#ff9d9d}
+  #toast a{color:var(--teal);text-decoration:underline;cursor:pointer}
+  #toast a:focus{outline:2px solid var(--teal);outline-offset:2px}
   #empty{padding:34px 16px;color:var(--palette-secondary);font-size:13px;text-align:center}
   #palette-footer{
     display:flex;align-items:center;justify-content:space-between;gap:16px;
@@ -7178,6 +7158,16 @@ function handlePaletteShortcut(e) {
 
 window.addEventListener("keydown", handlePaletteShortcut, true);
 document.addEventListener("keydown", handlePaletteShortcut, true);
+
+/*
+ * Orphan cleanup, for one release only.
+ *
+ * The translation icons and field-name badges were removed in this version,
+ * but a tab that was already open when the extension updated still has them
+ * in its DOM, and nothing left in the code would ever take them down. Delete
+ * this call in the release after the one that ships it.
+ */
+removeSnhElements(".snh-trans-icon, .snh-fieldname");
 
 // Alt+double-click toggles the per-variable insight icons on a Service Portal
 // catalog form. Gated: turning them ON requires an open catalog item, so a

@@ -23,7 +23,8 @@ function loadPaletteHelpers() {
 
 const palette = loadPaletteHelpers();
 
-function loadBuiltCommands(debugTimelineUI) {
+function loadBuiltCommands(debugTimelineUI, options) {
+  const opts = options || {};
   const commandStart = contentSource.indexOf("const DEV_LINKS");
   const commandEnd = contentSource.indexOf("let recordSearchSession", commandStart);
   const helperStart = contentSource.indexOf("const PALETTE_GROUP_ORDER");
@@ -33,6 +34,7 @@ function loadBuiltCommands(debugTimelineUI) {
   const noop = () => {};
   const factory = new Function(
     "chrome", "location", "globalThis", "decodedVariants",
+    "isWorkspaceRecordRoute",
     "openRecordSearch", "openCurrentRecordPlaybookExecutions",
     "openCurrentPlaybookCustomerUpdates", "openCustomerUpdatesBySysId",
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
@@ -48,6 +50,7 @@ function loadBuiltCommands(debugTimelineUI) {
     { href: "https://example.service-now.com/incident.do", origin: "https://example.service-now.com" },
     { SNDebugTimelineUI: debugTimelineUI || null },
     () => [],
+    () => Boolean(opts.workspaceRoute),
     noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
 }
@@ -84,13 +87,46 @@ test("current built-ins expose the accepted unique command labels", () => {
   assert.deepStrictEqual(
     builtIns.map((item) => item.label),
     [
-      "Translations", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
+      "Translation Lens", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
       "Customer Updates", "Variable Prefill", "Variable Values", "Catalog Logic",
       "Variable Insight", "Code Search", "Search Sources", "Table List", "New Record",
     ]
   );
   assert.ok(builtIns.every((item) => item.description));
   assert.ok(builtIns.filter((item) => item.input).every((item) => item.inputLabel));
+});
+
+test("Translation Lens preserves the retired translation-toggle favorite key", () => {
+  const translationLens = loadBuiltCommands().find((item) => item.id === "translation-lens");
+  assert.ok(translationLens);
+  assert.strictEqual(translationLens.favoriteKey, "toggle-translations");
+  assert.strictEqual(palette.paletteFavoriteKey(translationLens), "toggle-translations");
+  assert.strictEqual(translationLens.keepOpen, true);
+  assert.strictEqual(translationLens.description, "Audit translations on this form");
+  assert.strictEqual(translationLens.run.name, "showTranslationLens");
+});
+
+test("Translation Lens on a Workspace route offers a classic-form link instead of reading", () => {
+  /* Same id, label, keywords and favourite key, so a pinned command and a
+   * typed search behave identically on both surfaces; only what Enter does
+   * changes, and the description says so before it is pressed. Enter shows
+   * a notice with a link; it never navigates on its own. */
+  const route = {
+    experiencePath: ["sow"],
+    table: "incident",
+    sysId: "00000000000000000000000000000001",
+  };
+  const classic = loadBuiltCommands().find((item) => item.id === "translation-lens");
+  const workspace = loadBuiltCommands(null, { workspaceRoute: route })
+    .find((item) => item.id === "translation-lens");
+  assert.ok(workspace);
+  assert.strictEqual(workspace.label, classic.label);
+  assert.strictEqual(workspace.favoriteKey, classic.favoriteKey);
+  assert.deepStrictEqual(workspace.keywords, classic.keywords);
+  assert.strictEqual(workspace.group, classic.group);
+  assert.strictEqual(workspace.description, "Get a link to this record's classic form to audit translations");
+  assert.strictEqual(workspace.run.name, "showTranslationLensWorkspaceNotice");
+  assert.strictEqual(workspace.keepOpen, true, "the notice lives in the palette toast");
 });
 
 test("groups render in the declared order while preserving order within a group", () => {

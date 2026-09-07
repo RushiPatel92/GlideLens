@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GlideLens — a lens on ServiceNow forms, catalogs and code</title>
-<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, code search across 14 sources, catalog debugging, a form Debug Timeline, and translation records." />
+<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, code search across 14 sources, catalog debugging, a form Debug Timeline, and a translation coverage report." />
 
 <!-- Served from /docs, so the site root is this folder — icons are copied in
      beside this file rather than referenced out of ../icons. -->
@@ -16,7 +16,7 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="GlideLens" />
 <meta property="og:title" content="GlideLens — a lens on ServiceNow forms, catalogs and code" />
-<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and translation records." />
+<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and a translation coverage report." />
 <meta property="og:url" content="https://rushipatel92.github.io/GlideLens/" />
 <meta name="twitter:card" content="summary" />
 
@@ -650,6 +650,58 @@ a { color: var(--teal); }
 .dm-grp-head .dm-st { margin-left: auto; font-weight: 500; font-size: 11px; color: #9d9dba; }
 .dm-grp-head .dm-st.warn { color: #e0c187; }
 
+/* --- Translation Lens rows --- */
+.dm-tl-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 15px; border: 0; border-bottom: 1px solid #23233a;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.dm-tl-row:hover { background: #26263c; }
+.dm-tl-row .dm-caret { width: 9px; font-size: 9px; color: #7d7d9c; flex: none; }
+.dm-tl-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.dm-tl-el { font: 11.5px var(--mono); color: #cfcfe4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-lab { font-size: 10.5px; color: #8585a0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-cov { flex: none; display: flex; align-items: center; gap: 8px; }
+.dm-tl-bar { width: 60px; height: 6px; border-radius: 3px; background: #3a3a5e; overflow: hidden; }
+.dm-tl-bar span { display: block; height: 100%; background: var(--teal); }
+.dm-tl-bar.part span { background: #e0c187; }
+.dm-tl-bar.none span { background: #e08787; }
+.dm-tl-num { font: 10.5px var(--mono); color: #9d9dba; min-width: 62px; text-align: right; }
+.dm-tl-word { font-size: 10.5px; color: #8585a0; }
+.dm-tl-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 15px 11px 40px; }
+.dm-tl-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: 9px; font-size: 10.5px; border: 1px solid #34344f;
+  background: #26263c; color: #b9b9d0;
+}
+.dm-tl-chip b { font: 10.5px var(--mono); font-weight: 600; }
+.dm-tl-chip.ok { color: #8fe3d6; border-color: #2f5f59; background: #1f3733; }
+.dm-tl-chip.gap { color: #e8a9a9; border-color: #5f3232; background: #3a2323; }
+.dm-tl-chip.na { color: #82829c; border-style: dashed; }
+.dm-tl-choices { display: grid; gap: 6px; padding: 0 15px 11px 40px; }
+.dm-tl-choice {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px;
+  border: 1px solid #2e2e4e; border-radius: 6px; background: #1d1d2e;
+}
+.dm-tl-choice-label { display: flex; flex-direction: column; gap: 1px; min-width: 120px; font-size: 11.5px; color: #d6d6ea; }
+.dm-tl-choice-value { font: 10px var(--mono); color: #8585a0; }
+.dm-tl-choice-cov { font: 10.5px var(--mono); color: #9d9dba; min-width: 28px; }
+.dm-tl-choices .dm-tl-chips { padding: 0; }
+.dm-tl-score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dm-tl-big { font-size: 21px; font-weight: 700; color: #f0f0fa; line-height: 1; }
+.dm-tl-all {
+  font-size: 10.5px; color: #a8a8c4; border: 1px dashed #4a4b70;
+  border-radius: 9px; padding: 2px 8px;
+}
+.dm-tl-pop {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 10px 15px; border-bottom: 1px solid #2e2e4e; background: #242438;
+}
+.dm-tl-pop p { margin: 0; flex: 1 0 100%; font-size: 10.5px; color: #8f8faa; line-height: 1.5; }
+.dm-tl-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: #b9b9d0; }
+.dm-tl-opt code { font: 10.5px var(--mono); color: #7fded2; }
+.dm-tl-note { padding: 9px 15px; font-size: 11px; color: #8f8fa8; border-bottom: 1px solid #23233a; }
+
 /* --- Code search rows --- */
 .dm-hit {
   padding: 9px 15px;
@@ -1211,6 +1263,261 @@ a { color: var(--teal); }
     <div class="wrap">
 
       <!-- 1 -->
+      <article class="feature" id="translations">
+        <div class="feature-rail">
+          <p class="eyebrow">Forms</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>sys_documentation</dd>
+            <dd>sys_translated</dd>
+            <dd>sys_choice</dd>
+            <dd>sys_ui_message</dd>
+            <dt>Resolves</dt>
+            <dd class="plain">inherited fields</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Which translations are missing, and where they would go</h2>
+          <p>
+            A read-only report over every field, catalog variable, choice and
+            <code>getMessage</code> key on the surface in front of you, against
+            every active language. A gap links to the record that would hold the
+            translation, prefilled with the exact keys &mdash; so closing it is a
+            save, not a search. It runs on a classic form, a catalog item's
+            definition form and a Service Portal catalog item; on a Workspace
+            record the same command offers a link to the record's classic form,
+            where it runs.
+          </p>
+          <p>
+            The store depends on the dictionary type, and getting that wrong is
+            silent: <strong>translated_field</strong> values live in
+            <code>sys_translated</code> keyed by the <em>source string</em>, not in
+            <code>sys_translated_text</code>. Labels resolve through
+            <strong>super_class</strong>, so a field inherited from
+            <code>task</code> lands on the right dictionary record.
+            Absent data is never counted as coverage: a denied read stays
+            Unavailable and stays out of the denominator.
+          </p>
+          <div class="tags">
+            <span class="tag">per-language chips</span>
+            <span class="tag">prefilled gaps</span>
+            <span class="tag">coverage per section</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> &mdash; fictional catalog item. Two rows are open to show the per-language chips. Deselect a language to rescore, or reveal the <em>Minor rows</em>.</p>
+            <div class="dm" id="dmTr">
+              <div class="dm-head">
+                <h3 class="dm-title">Translation Lens</h3>
+                <p class="dm-sub">Catalog definition form &middot; <span>sc_cat_item</span> &middot; Base language en</p>
+              </div>
+              <div class="dm-sum dm-tl-score">
+                <span class="dm-tl-big" id="dmtrScore">0%</span>
+                <span><strong id="dmtrComplete">0</strong>complete</span>
+                <span><strong id="dmtrPartial">0</strong>partial</span>
+                <span><strong id="dmtrNone">0</strong>missing / none</span>
+                <span id="dmtrShown">0 of 0 languages shown</span>
+                <span class="dm-tl-all" id="dmtrAll" hidden></span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tlfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-tlfilter="missing" aria-pressed="false">Missing only</button>
+                <button class="dm-btn" type="button" data-tlfilter="values" aria-pressed="false">Catalog Text</button>
+                <button class="dm-btn" type="button" data-tlfilter="choices" aria-pressed="false">Choices</button>
+                <button class="dm-btn" type="button" data-tlfilter="messages" aria-pressed="false">Messages</button>
+                <button class="dm-tog" type="button" id="dmtrLangs" aria-pressed="false" aria-expanded="false"><span class="dot"></span>Languages</button>
+                <button class="dm-tog" type="button" id="dmtrMinor" aria-pressed="false"><span class="dot"></span><span id="dmtrMinorLabel">Minor rows</span></button>
+              </div>
+              <div class="dm-tl-pop" id="dmtrPicker" hidden></div>
+              <div class="dm-rows" id="dmtrRows"></div>
+              <p class="dm-foot">Reports where a translation is missing. It never writes one.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 2 -->
+      <article class="feature" id="variable-values">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+           <dl>
+             <dt>Covers</dt>
+            <dd class="plain">Stored vs live</dd>
+            <dd class="plain">record movement</dd>
+            <dd class="plain">secret-safe reads</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Variable Values, including the ones you cannot see</h2>
+          <p>
+            On a classic RITM or record-producer target, compare the raw value
+            stored in the database with the raw value now held by
+            <code>g_form</code>, so an onLoad change is visible without mistaking
+            reference or choice labels for differences.
+            On a verified Workspace record &mdash; a Service Operations Workspace
+            request item, or a supplier case or supplier task in Source-to-Pay
+            Workspace &mdash; the same command checks a narrower evidence-backed
+            set after confirming the visible record, the Variable Editor, read
+            permission, and each raw value's shape. Each supported surface has
+            its own verified type list rather than inheriting another's. Partial
+            and stored-only results say plainly what was not compared; every
+            other Workspace experience and table remains unsupported.
+            On an ordering form, the same command keeps its current best-effort
+            live-value and hidden-variable view.
+          </p>
+          <div class="tags">
+            <span class="tag">hidden / visible filter</span>
+            <span class="tag">differing filter</span>
+            <span class="tag">Workspace guarded comparison</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, native RITM panel. Switch to <em>Differing</em>, or try <em>Non-empty</em>.</p>
+            <div class="dm" id="dmVars">
+              <div class="dm-head">
+                <h3 class="dm-title">Variable Values <span class="dm-be">Best effort</span></h3>
+                <p class="dm-sub">Stored Table API values compared with raw live g_form values on this RITM. Values are read-only; reference and choice labels are not compared.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmvTotal">0</strong>variables</span>
+                <span><strong id="dmvHidden">0</strong>hidden</span>
+                <span><strong id="dmvVisible">0</strong>visible</span>
+                <span><strong id="dmvDiffers">0</strong>differing</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-vfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-vfilter="hidden" aria-pressed="false">Hidden</button>
+                <button class="dm-btn" type="button" data-vfilter="visible" aria-pressed="false">Visible</button>
+                <button class="dm-btn" type="button" data-vfilter="differs" aria-pressed="false">Differing</button>
+                <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
+                <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmvRows"></div>
+              <p class="dm-foot">Read-only inspector — does not modify the live form.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 3 -->
+      <article class="feature" id="debug-timeline">
+        <div class="feature-rail">
+          <p class="eyebrow">Debugging</p>
+          <dl>
+            <dt>Captures</dt>
+            <dd>g_form</dd>
+            <dd>GlideAjax</dd>
+            <dd class="plain">field events, errors</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Debug Timeline</h2>
+          <p>
+            Record one page's interaction and read back what happened: public
+            <code>g_form</code> calls, native field events, GlideAjax timing, and
+            JavaScript errors on a filterable timeline. Best-effort by design — it
+            shows you <strong>what ran, not which script ran it</strong>, and says so
+            rather than guessing.
+          </p>
+          <p>
+            GlideAjax rows carry what you would otherwise open the Network tab
+            for: the <strong>Script Include, the method, every parameter added,
+            and the decoded response</strong>, next to how long the call took and
+            in order with the rest of the interaction — rather than pieced back
+            together from a list of XHRs. Parameter and response names that read
+            like secrets are redacted before anything is shown.
+          </p>
+          <div class="tags">
+            <span class="tag">single page</span>
+            <span class="tag">params · response</span>
+            <span class="tag">reversible patches</span>
+            <span class="tag">secrets redacted</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Open a <em>GlideAjax</em> row for its params and response.</p>
+            <div class="dm" id="dmTl">
+              <div class="dm-head">
+                <h3 class="dm-title">Debug Timeline <span class="dm-be">Best effort</span></h3>
+                <p class="dm-sub">ServiceNow form activity correlated across the frames that were available during this interaction.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmtEvents">0</strong>events</span>
+                <span><strong>2</strong>frames</span>
+                <span><strong>2.4s</strong>duration</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tfilter="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-tfilter="g_form" aria-pressed="false">g_form</button>
+                <button class="dm-btn" type="button" data-tfilter="field" aria-pressed="false">Fields</button>
+                <button class="dm-btn" type="button" data-tfilter="glideajax" aria-pressed="false">GlideAjax</button>
+                <button class="dm-btn" type="button" data-tfilter="error" aria-pressed="false">Errors</button>
+                <button class="dm-tog" type="button" id="dmtLowSig" aria-pressed="false"><span class="dot"></span>Show low-signal (2)</button>
+                <input class="dm-find" id="dmtFind" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmtRows"></div>
+              <p class="dm-foot">Stacks identify runtime calls, not guaranteed Client Script or UI Policy names.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 4 -->
+      <article class="feature" id="catalog-insight">
+        <div class="feature-rail">
+          <p class="eyebrow">Catalog</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>catalog_script_client</dd>
+            <dd>catalog_ui_policy</dd>
+            <dd>catalog_ui_policy_action</dd>
+            <dt>Where</dt>
+            <dd class="plain">Service Portal</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Catalog Logic: what actually affects this item</h2>
+          <p>
+            Open a catalog item and get every client script and UI policy bound to
+            it or its variable sets, grouped by the variable they watch. Rows that
+            cannot fire while ordering — inactive, or scoped to RITM and Task views
+            only — are flagged, so <strong>"why isn't my script running"</strong>
+            answers itself before you open a single record.
+          </p>
+          <div class="tags">
+            <span class="tag">group by variable</span>
+            <span class="tag is-warn">⚠ won't run here</span>
+            <span class="tag">open in platform</span>
+            <span class="tag is-ok">read-only</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em>, <em>Active only</em>, or search <em>laptop_model</em>.</p>
+            <div class="dm" id="dmCat">
+              <div class="dm-head">
+                <h3 class="dm-title">Catalog Logic</h3>
+                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
+              </div>
+              <div class="dm-sum">
+                <span><strong id="dmcTotal">0</strong>shown</span>
+                <span><strong id="dmcActive">0</strong>active</span>
+                <span><strong id="dmcInactive">0</strong>inactive</span>
+                <span class="warn" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong id="dmcBlocked">0</strong>won't run here</span>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-kind="all" aria-pressed="true">All</button>
+                <button class="dm-btn" type="button" data-kind="client" aria-pressed="false">Client scripts</button>
+                <button class="dm-btn" type="button" data-kind="uip" aria-pressed="false">UI policies</button>
+                <button class="dm-tog" type="button" id="dmcActiveOnly" aria-pressed="false"><span class="dot"></span>Active only</button>
+                <button class="dm-tog" type="button" id="dmcGroup" aria-pressed="false"><span class="dot"></span>Group by variable</button>
+                <input class="dm-find" id="dmcFind" type="search" placeholder="Search name, type, variable…" aria-label="Search" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="dm-rows" id="dmcRows"></div>
+              <p class="dm-foot">Rows flagged ⚠ are active but scoped away from the catalog form — the usual answer to "why isn't my script running".</p>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 5 -->
       <article class="feature" id="record-search">
         <div class="feature-rail">
           <p class="eyebrow">Records</p>
@@ -1288,7 +1595,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 2 -->
+      <!-- 6 -->
       <article class="feature" id="code-search">
         <div class="feature-rail">
           <p class="eyebrow">Search</p>
@@ -1359,63 +1666,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 2 -->
-      <article class="feature" id="catalog-insight">
-        <div class="feature-rail">
-          <p class="eyebrow">Catalog</p>
-          <dl>
-            <dt>Reads</dt>
-            <dd>catalog_script_client</dd>
-            <dd>catalog_ui_policy</dd>
-            <dd>catalog_ui_policy_action</dd>
-            <dt>Where</dt>
-            <dd class="plain">Service Portal</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Catalog Logic: what actually affects this item</h2>
-          <p>
-            Open a catalog item and get every client script and UI policy bound to
-            it or its variable sets, grouped by the variable they watch. Rows that
-            cannot fire while ordering — inactive, or scoped to RITM and Task views
-            only — are flagged, so <strong>"why isn't my script running"</strong>
-            answers itself before you open a single record.
-          </p>
-          <div class="tags">
-            <span class="tag">group by variable</span>
-            <span class="tag is-warn">⚠ won't run here</span>
-            <span class="tag">open in platform</span>
-            <span class="tag is-ok">read-only</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Try <em>Group by variable</em>, <em>Active only</em>, or search <em>laptop_model</em>.</p>
-            <div class="dm" id="dmCat">
-              <div class="dm-head">
-                <h3 class="dm-title">Catalog Logic</h3>
-                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
-              </div>
-              <div class="dm-sum">
-                <span><strong id="dmcTotal">0</strong>shown</span>
-                <span><strong id="dmcActive">0</strong>active</span>
-                <span><strong id="dmcInactive">0</strong>inactive</span>
-                <span class="warn" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong id="dmcBlocked">0</strong>won't run here</span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-kind="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-kind="client" aria-pressed="false">Client scripts</button>
-                <button class="dm-btn" type="button" data-kind="uip" aria-pressed="false">UI policies</button>
-                <button class="dm-tog" type="button" id="dmcActiveOnly" aria-pressed="false"><span class="dot"></span>Active only</button>
-                <button class="dm-tog" type="button" id="dmcGroup" aria-pressed="false"><span class="dot"></span>Group by variable</button>
-                <input class="dm-find" id="dmcFind" type="search" placeholder="Search name, type, variable…" aria-label="Search" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="dm-rows" id="dmcRows"></div>
-              <p class="dm-foot">Rows flagged ⚠ are active but scoped away from the catalog form — the usual answer to "why isn't my script running".</p>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 3 -->
+      <!-- 7 -->
       <article class="feature" id="variable-icons">
         <div class="feature-rail">
           <p class="eyebrow">Catalog</p>
@@ -1446,166 +1697,6 @@ a { color: var(--teal); }
               width="1280" height="720"
               autoplay muted loop playsinline preload="metadata"
               aria-label="Alt + double-click reveals an icon beside every catalog variable; clicking one opens the insight panel scoped to that variable."></video>
-          </div>
-        </div>
-      </article>
-
-      <!-- 4 -->
-      <article class="feature" id="variable-values">
-        <div class="feature-rail">
-          <p class="eyebrow">Catalog</p>
-           <dl>
-             <dt>Covers</dt>
-            <dd class="plain">Stored vs live</dd>
-            <dd class="plain">record movement</dd>
-            <dd class="plain">secret-safe reads</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Variable Values, including the ones you cannot see</h2>
-          <p>
-            On a classic RITM or record-producer target, compare the raw value
-            stored in the database with the raw value now held by
-            <code>g_form</code>, so an onLoad change is visible without mistaking
-            reference or choice labels for differences.
-            On a verified Workspace record &mdash; a Service Operations Workspace
-            request item, or a supplier case or supplier task in Source-to-Pay
-            Workspace &mdash; the same command checks a narrower evidence-backed
-            set after confirming the visible record, the Variable Editor, read
-            permission, and each raw value's shape. Each supported surface has
-            its own verified type list rather than inheriting another's. Partial
-            and stored-only results say plainly what was not compared; every
-            other Workspace experience and table remains unsupported.
-            On an ordering form, the same command keeps its current best-effort
-            live-value and hidden-variable view.
-          </p>
-          <div class="tags">
-            <span class="tag">hidden / visible filter</span>
-            <span class="tag">differing filter</span>
-            <span class="tag">Workspace guarded comparison</span>
-            <span class="tag is-ok">read-only</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, native RITM panel. Switch to <em>Differing</em>, or try <em>Non-empty</em>.</p>
-            <div class="dm" id="dmVars">
-              <div class="dm-head">
-                <h3 class="dm-title">Variable Values <span class="dm-be">Best effort</span></h3>
-                <p class="dm-sub">Stored Table API values compared with raw live g_form values on this RITM. Values are read-only; reference and choice labels are not compared.</p>
-              </div>
-              <div class="dm-sum">
-                <span><strong id="dmvTotal">0</strong>variables</span>
-                <span><strong id="dmvHidden">0</strong>hidden</span>
-                <span><strong id="dmvVisible">0</strong>visible</span>
-                <span><strong id="dmvDiffers">0</strong>differing</span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-vfilter="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-vfilter="hidden" aria-pressed="false">Hidden</button>
-                <button class="dm-btn" type="button" data-vfilter="visible" aria-pressed="false">Visible</button>
-                <button class="dm-btn" type="button" data-vfilter="differs" aria-pressed="false">Differing</button>
-                <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
-                <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="dm-rows" id="dmvRows"></div>
-              <p class="dm-foot">Read-only inspector — does not modify the live form.</p>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 5 -->
-      <article class="feature" id="debug-timeline">
-        <div class="feature-rail">
-          <p class="eyebrow">Debugging</p>
-          <dl>
-            <dt>Captures</dt>
-            <dd>g_form</dd>
-            <dd>GlideAjax</dd>
-            <dd class="plain">field events, errors</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Debug Timeline</h2>
-          <p>
-            Record one page's interaction and read back what happened: public
-            <code>g_form</code> calls, native field events, GlideAjax timing, and
-            JavaScript errors on a filterable timeline. Best-effort by design — it
-            shows you <strong>what ran, not which script ran it</strong>, and says so
-            rather than guessing.
-          </p>
-          <p>
-            GlideAjax rows carry what you would otherwise open the Network tab
-            for: the <strong>Script Include, the method, every parameter added,
-            and the decoded response</strong>, next to how long the call took and
-            in order with the rest of the interaction — rather than pieced back
-            together from a list of XHRs. Parameter and response names that read
-            like secrets are redacted before anything is shown.
-          </p>
-          <div class="tags">
-            <span class="tag">single page</span>
-            <span class="tag">params · response</span>
-            <span class="tag">reversible patches</span>
-            <span class="tag">secrets redacted</span>
-          </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional trace, real panel. Open a <em>GlideAjax</em> row for its params and response.</p>
-            <div class="dm" id="dmTl">
-              <div class="dm-head">
-                <h3 class="dm-title">Debug Timeline <span class="dm-be">Best effort</span></h3>
-                <p class="dm-sub">ServiceNow form activity correlated across the frames that were available during this interaction.</p>
-              </div>
-              <div class="dm-sum">
-                <span><strong id="dmtEvents">0</strong>events</span>
-                <span><strong>2</strong>frames</span>
-                <span><strong>2.4s</strong>duration</span>
-              </div>
-              <div class="dm-ctl">
-                <button class="dm-btn on" type="button" data-tfilter="all" aria-pressed="true">All</button>
-                <button class="dm-btn" type="button" data-tfilter="g_form" aria-pressed="false">g_form</button>
-                <button class="dm-btn" type="button" data-tfilter="field" aria-pressed="false">Fields</button>
-                <button class="dm-btn" type="button" data-tfilter="glideajax" aria-pressed="false">GlideAjax</button>
-                <button class="dm-btn" type="button" data-tfilter="error" aria-pressed="false">Errors</button>
-                <button class="dm-tog" type="button" id="dmtLowSig" aria-pressed="false"><span class="dot"></span>Show low-signal (2)</button>
-                <input class="dm-find" id="dmtFind" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" autocomplete="off" spellcheck="false" />
-              </div>
-              <div class="dm-rows" id="dmtRows"></div>
-              <p class="dm-foot">Stacks identify runtime calls, not guaranteed Client Script or UI Policy names.</p>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 6 -->
-      <article class="feature" id="translations">
-        <div class="feature-rail">
-          <p class="eyebrow">Forms</p>
-          <dl>
-            <dt>Reads</dt>
-            <dd>sys_documentation</dd>
-            <dd>sys_translated_text</dd>
-            <dt>Resolves</dt>
-            <dd class="plain">inherited fields</dd>
-          </dl>
-        </div>
-        <div class="feature-body">
-          <h2>Translation records, one click away</h2>
-          <p>
-            A globe on every label, for the label, plural and hint. Alongside it, a
-            languages glyph — but only on fields whose dictionary type can actually
-            hold per-record value translations, so an icon appearing means there is
-            somewhere for it to go. The defining table is resolved by walking
-            <strong>super_class</strong>, so a field inherited from <code>task</code>
-            lands on the right dictionary record rather than a dead end.
-          </p>
-          <div class="tags">
-            <span class="tag">label · plural · hint</span>
-            <span class="tag">value translations</span>
-          </div>
-          <div class="shot is-media is-shot">
-            <img
-              src="https://github.com/user-attachments/assets/465b4156-b22f-4969-9e4b-4afdd9be3ac2"
-              width="1005" height="657" loading="lazy" decoding="async"
-              alt="A ServiceNow form with a globe icon beside every field label, and a languages glyph beside Name only — the one field on the form that can hold value translations." />
           </div>
         </div>
       </article>
@@ -1745,7 +1836,7 @@ a { color: var(--teal); }
   ];
 
   var COMMANDS = [
-    { group: "Tools",    name: "Translations",     desc: "Show or hide field translation controls",                    key: "",        go: "#translations" },
+    { group: "Tools",    name: "Translation Lens", desc: "Audit translations on this form",                            key: "",        go: "#translations" },
     { group: "Tools",    name: "Debug Timeline",   desc: "Start recording form activity, GlideAjax calls, and errors", key: "",        go: "#debug-timeline" },
     { group: "Tools",    name: "Code Search",      desc: "Search verified code and configuration…",                    key: "",        go: "#code-search" },
     { group: "Tools",    name: "Search Sources",   desc: "Refresh available Code Search sources",                      key: "",        go: "#code-search" },
@@ -2666,6 +2757,431 @@ a { color: var(--teal); }
   });
 
   find.addEventListener("input", render);
+  render();
+})();
+
+
+/* ---------------------------------------------------------------------------
+   Demo 6 — the Translation Lens report.
+
+   States and their arithmetic are the engine's: COVERED_STATES and
+   EXCLUDED_STATES from translation_lens.js, copied rather than approximated,
+   because the whole point of the panel is that an unread language is not a
+   missing one. Coverage is recomputed here from the states exactly as
+   coverageFromStates does, so the demo cannot drift into showing a total the
+   real panel could never produce.
+
+   The language picker rescopes the score and keeps the all-language score
+   beside it, and minor rows fold away without changing what was counted —
+   both behaviours the panel itself is tested for.
+   --------------------------------------------------------------------------- */
+(function () {
+  var LANGS = [
+    { id: "fr", name: "French" },
+    { id: "de", name: "German" },
+    { id: "es", name: "Spanish" },
+    { id: "it", name: "Italian" },
+    { id: "nl", name: "Dutch" }
+  ];
+  var COVERED = { direct: 1, same_as_source: 1 };
+  var EXCLUDED = { not_applicable: 1, unavailable: 1, unverified: 1 };
+  var STATE_WORD = {
+    direct: "Translated",
+    same_as_source: "Same as source",
+    missing: "Missing",
+    blank: "Blank row",
+    partial: "Partial",
+    not_applicable: "Not applicable",
+    unavailable: "Not read"
+  };
+
+  function row(element, label, aspect, group, states, extra) {
+    var item = {
+      element: element, label: label, aspect: aspect, group: group, states: states,
+      minor: false, word: ""
+    };
+    if (extra) { for (var key in extra) { if (extra.hasOwnProperty(key)) item[key] = extra[key]; } }
+    return item;
+  }
+
+  /* A choices row carries one state per language derived from its base
+   * values the way the engine does it: every value covered is Translated,
+   * every value missing is Missing, anything in between is Partial. The
+   * values are hand-written; the row is not. */
+  function choiceRowStates(choices) {
+    var states = {};
+    LANGS.forEach(function (lang) {
+      var each = choices.map(function (choice) { return choice.states[lang.id] || "missing"; });
+      if (each.every(function (s) { return COVERED[s]; })) states[lang.id] = "direct";
+      else if (each.every(function (s) { return s === "missing"; })) states[lang.id] = "missing";
+      else states[lang.id] = "partial";
+    });
+    return states;
+  }
+  var URGENCY_CHOICES = [
+    { label: "Low", value: "low",
+      states: { fr: "direct", de: "direct", es: "direct", it: "missing", nl: "same_as_source" } },
+    { label: "Medium", value: "medium",
+      states: { fr: "direct", de: "direct", es: "missing", it: "missing", nl: "same_as_source" } },
+    { label: "High", value: "high",
+      states: { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "same_as_source" } }
+  ];
+
+  var ROWS = [
+    row("delivery_date", "Question text", "Question text", "values",
+      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" }),
+    row("contact_email", "Question text", "Question text", "values",
+      { fr: "direct", de: "direct", es: "same_as_source", it: "missing", nl: "missing" }),
+    row("cost_centre", "Question text", "Question text", "values",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }),
+    row("urgency_note", "Help text", "Help text", "values",
+      { fr: "missing", de: "missing", es: "blank", it: "missing", nl: "missing" }),
+    row("contact_email", "Help tag", "Help tag", "values",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" },
+      { minor: true }),
+    row("cost_centre", "Help tag", "Help tag", "values",
+      { fr: "missing", de: "missing", es: "missing", it: "missing", nl: "missing" },
+      { minor: true }),
+    row("urgency", "Choices", "Choices", "choices",
+      choiceRowStates(URGENCY_CHOICES), { choices: URGENCY_CHOICES }),
+    row("site_list", "Choices", "Choices", "choices",
+      { fr: "not_applicable", de: "not_applicable", es: "not_applicable", it: "not_applicable", nl: "not_applicable" },
+      { minor: true, word: "Not applicable — options come from a table" }),
+    row("invalid_email", "Message key", "Message", "messages",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }),
+    row("order_submitted", "Message key", "Message", "messages",
+      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" })
+  ];
+
+  var GROUPS = [
+    { id: "values", label: "Catalog Text" },
+    { id: "choices", label: "Choices" },
+    { id: "messages", label: "Messages" }
+  ];
+
+  var host = document.getElementById("dmtrRows");
+  var picker = document.getElementById("dmtrPicker");
+  var langBtn = document.getElementById("dmtrLangs");
+  var minorBtn = document.getElementById("dmtrMinor");
+  if (!host || !picker || !langBtn || !minorBtn) return;
+
+  var filter = "all";
+  var showMinor = false;
+  var selected = {};
+  LANGS.forEach(function (lang) { selected[lang.id] = true; });
+  /* One text row and the choices row start expanded so the per-language
+   * chips are visible without a click; both carry covered and missing
+   * languages, so green and red are both on screen. */
+  var open = {
+    "values:contact_email:Question text": true,
+    "choices:urgency:Choices": true
+  };
+
+  function scope() {
+    return LANGS.filter(function (lang) { return selected[lang.id]; })
+      .map(function (lang) { return lang.id; });
+  }
+
+  /* coverageFromStates, verbatim in behaviour. */
+  function coverage(item, ids) {
+    var covered = 0;
+    var counted = 0;
+    ids.forEach(function (id) {
+      var state = item.states[id] || "missing";
+      if (EXCLUDED[state]) return;
+      counted += 1;
+      if (COVERED[state]) covered += 1;
+    });
+    return {
+      covered: covered,
+      counted: counted,
+      percent: counted ? Math.round((covered / counted) * 100) : null
+    };
+  }
+
+  function summarise(items, ids) {
+    var covered = 0, counted = 0, complete = 0, partial = 0, none = 0;
+    items.forEach(function (item) {
+      var cov = coverage(item, ids);
+      if (!cov.counted) return;
+      covered += cov.covered;
+      counted += cov.counted;
+      if (cov.covered === cov.counted) complete += 1;
+      else if (cov.covered > 0) partial += 1;
+      else none += 1;
+    });
+    return {
+      covered: covered, counted: counted, complete: complete, partial: partial, none: none,
+      percent: counted ? Math.round((covered / counted) * 100) : null
+    };
+  }
+
+  function matchesQuery(item) {
+    if (filter === "all") return true;
+    if (filter === "missing") {
+      var cov = coverage(item, scope());
+      return cov.counted > 0 && cov.covered < cov.counted;
+    }
+    return item.group === filter;
+  }
+
+  function visibleRows(group) {
+    return ROWS.filter(function (item) {
+      if (item.group !== group) return false;
+      if (!showMinor && item.minor) return false;
+      return matchesQuery(item);
+    });
+  }
+
+  function chip(id, state) {
+    var node = document.createElement("span");
+    var tone = COVERED[state] ? "ok" : (EXCLUDED[state] ? "na" : "gap");
+    node.className = "dm-tl-chip " + tone;
+    var code = document.createElement("b");
+    code.textContent = id;
+    node.appendChild(code);
+    node.appendChild(document.createTextNode(STATE_WORD[state] || state));
+    return node;
+  }
+
+  function renderRow(item, index) {
+    var ids = scope();
+    var cov = coverage(item, ids);
+    var key = item.group + ":" + item.element + ":" + item.aspect;
+    var line = document.createElement("button");
+    line.type = "button";
+    line.className = "dm-tl-row";
+    line.setAttribute("aria-expanded", open[key] ? "true" : "false");
+
+    var caret = document.createElement("span");
+    caret.className = "dm-caret";
+    caret.textContent = open[key] ? "\u25be" : "\u25b8";
+    line.appendChild(caret);
+
+    var name = document.createElement("span");
+    name.className = "dm-tl-name";
+    var el = document.createElement("span");
+    el.className = "dm-tl-el";
+    el.textContent = item.element;
+    var lab = document.createElement("span");
+    lab.className = "dm-tl-lab";
+    lab.textContent = item.aspect + (item.minor ? " · minor" : "");
+    name.appendChild(el);
+    name.appendChild(lab);
+    line.appendChild(name);
+
+    var cell = document.createElement("span");
+    cell.className = "dm-tl-cov";
+    if (!cov.counted) {
+      var word = document.createElement("span");
+      word.className = "dm-tl-word";
+      word.textContent = item.word || "Not counted";
+      cell.appendChild(word);
+    } else {
+      var bar = document.createElement("span");
+      bar.className = "dm-tl-bar" + (cov.covered === cov.counted ? "" : (cov.covered ? " part" : " none"));
+      var fill = document.createElement("span");
+      fill.style.width = cov.percent + "%";
+      bar.appendChild(fill);
+      var num = document.createElement("span");
+      num.className = "dm-tl-num";
+      num.textContent = cov.covered + "/" + cov.counted + "  " + cov.percent + "%";
+      cell.appendChild(bar);
+      cell.appendChild(num);
+    }
+    line.appendChild(cell);
+
+    line.addEventListener("click", function () {
+      open[key] = !open[key];
+      render();
+    });
+
+    host.appendChild(line);
+
+    if (open[key]) {
+      var chips = document.createElement("div");
+      chips.className = "dm-tl-chips";
+      ids.forEach(function (id) {
+        chips.appendChild(chip(id, item.states[id] || "missing"));
+      });
+      if (!ids.length) {
+        var empty = document.createElement("span");
+        empty.className = "dm-tl-word";
+        empty.textContent = "No language is selected.";
+        chips.appendChild(empty);
+      }
+      host.appendChild(chips);
+
+      if (item.choices) {
+        var list = document.createElement("div");
+        list.className = "dm-tl-choices";
+        item.choices.forEach(function (choice) {
+          var line = document.createElement("div");
+          line.className = "dm-tl-choice";
+          var label = document.createElement("div");
+          label.className = "dm-tl-choice-label";
+          var text = document.createElement("span");
+          text.textContent = choice.label;
+          var value = document.createElement("span");
+          value.className = "dm-tl-choice-value";
+          value.textContent = "value " + choice.value;
+          label.appendChild(text);
+          label.appendChild(value);
+          line.appendChild(label);
+          var ccov = coverage(choice, ids);
+          var covText = document.createElement("span");
+          covText.className = "dm-tl-choice-cov";
+          covText.textContent = ccov.counted ? ccov.covered + "/" + ccov.counted : "not counted";
+          line.appendChild(covText);
+          var cchips = document.createElement("div");
+          cchips.className = "dm-tl-chips";
+          ids.forEach(function (id) { cchips.appendChild(chip(id, choice.states[id] || "missing")); });
+          line.appendChild(cchips);
+          list.appendChild(line);
+        });
+        host.appendChild(list);
+      }
+    }
+  }
+
+  function renderPicker() {
+    picker.innerHTML = "";
+    if (langBtn.getAttribute("aria-expanded") !== "true") {
+      picker.hidden = true;
+      return;
+    }
+    picker.hidden = false;
+    var note = document.createElement("p");
+    note.textContent = "The score counts the languages you leave selected, so you can see whether the ones you ship are done. " +
+      "The score across all " + LANGS.length + " stays beside it, so narrowing this list can never hide a gap.";
+    picker.appendChild(note);
+    LANGS.forEach(function (lang) {
+      var label = document.createElement("label");
+      label.className = "dm-tl-opt";
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = !!selected[lang.id];
+      box.addEventListener("change", function () {
+        selected[lang.id] = box.checked;
+        render();
+      });
+      var code = document.createElement("code");
+      code.textContent = lang.id;
+      label.appendChild(box);
+      label.appendChild(code);
+      label.appendChild(document.createTextNode(lang.name));
+      picker.appendChild(label);
+    });
+  }
+
+  function render() {
+    var ids = scope();
+    var scoped = ids.length !== LANGS.length;
+    var main = ROWS.filter(function (item) { return item.group !== "messages"; });
+
+    var summary = summarise(main, ids);
+    document.getElementById("dmtrScore").textContent = summary.counted ? summary.percent + "%" : "—";
+    document.getElementById("dmtrComplete").textContent = String(summary.complete);
+    document.getElementById("dmtrPartial").textContent = String(summary.partial);
+    document.getElementById("dmtrNone").textContent = String(summary.none);
+    document.getElementById("dmtrShown").textContent = ids.length + " of " + LANGS.length + " languages shown";
+
+    var all = document.getElementById("dmtrAll");
+    if (scoped) {
+      var overall = summarise(main, LANGS.map(function (lang) { return lang.id; }));
+      all.hidden = false;
+      all.textContent = "all " + LANGS.length + " languages: " +
+        (overall.counted ? overall.percent + "%" : "nothing counted");
+    } else {
+      all.hidden = true;
+    }
+
+    var folded = showMinor ? 0 : ROWS.filter(function (item) {
+      return item.minor && matchesQuery(item);
+    }).length;
+    document.getElementById("dmtrMinorLabel").textContent = showMinor
+      ? "Hide minor rows"
+      : "Minor rows" + (folded ? " (" + folded + ")" : "");
+
+    host.innerHTML = "";
+    GROUPS.forEach(function (group) {
+      var rows = visibleRows(group.id);
+      var total = ROWS.filter(function (item) { return item.group === group.id; }).length;
+      if (!rows.length && filter !== "all" && filter !== group.id && filter !== "missing") return;
+
+      var head = document.createElement("div");
+      head.className = "dm-grp-head";
+      var caret = document.createElement("span");
+      caret.className = "dm-caret";
+      caret.textContent = "\u25be";
+      var name = document.createElement("span");
+      name.textContent = group.label;
+      var count = document.createElement("span");
+      count.className = "dm-n";
+      count.textContent = rows.length === total ? String(total) : rows.length + " of " + total;
+      var stat = document.createElement("span");
+      stat.className = "dm-st";
+      var groupRows = ROWS.filter(function (item) { return item.group === group.id; });
+      var groupSummary = summarise(groupRows, ids);
+      stat.textContent = groupSummary.counted ? groupSummary.percent + "%" : "not counted";
+      head.appendChild(caret);
+      head.appendChild(name);
+      head.appendChild(count);
+      head.appendChild(stat);
+      host.appendChild(head);
+
+      if (!rows.length) {
+        var note = document.createElement("div");
+        note.className = "dm-tl-note";
+        var hidden = showMinor ? 0 : groupRows.filter(function (item) {
+          return item.minor && matchesQuery(item);
+        }).length;
+        note.textContent = hidden
+          ? hidden + (hidden === 1 ? " matching row is" : " matching rows are") +
+            " folded away. Use Minor rows to show " + (hidden === 1 ? "it" : "them") + "."
+          : "No row in this section matches the current filter.";
+        host.appendChild(note);
+        return;
+      }
+      rows.forEach(renderRow);
+    });
+
+    renderPicker();
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#dmTr .dm-btn[data-tlfilter]"),
+    function (button) {
+      button.addEventListener("click", function () {
+        filter = button.getAttribute("data-tlfilter");
+        Array.prototype.forEach.call(
+          document.querySelectorAll("#dmTr .dm-btn[data-tlfilter]"),
+          function (other) {
+            var on = other === button;
+            other.classList.toggle("on", on);
+            other.setAttribute("aria-pressed", on ? "true" : "false");
+          }
+        );
+        render();
+      });
+    }
+  );
+
+  langBtn.addEventListener("click", function () {
+    var on = langBtn.getAttribute("aria-expanded") !== "true";
+    langBtn.setAttribute("aria-expanded", on ? "true" : "false");
+    langBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    langBtn.classList.toggle("on", on);
+    render();
+  });
+
+  minorBtn.addEventListener("click", function () {
+    showMinor = !showMinor;
+    minorBtn.setAttribute("aria-pressed", showMinor ? "true" : "false");
+    minorBtn.classList.toggle("on", showMinor);
+    render();
+  });
+
   render();
 })();
 

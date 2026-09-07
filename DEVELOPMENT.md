@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js
 ```
 
 The suites cover:
@@ -163,6 +163,34 @@ The suites cover:
   and an unrecognised pair, tri-state visibility, verdict-derived panel
   completeness, and structurally honest stored-only copy.
 
+- `translation_lens.test.js` — the Translation Lens engine: storage routing by
+  dictionary type, chunked query construction and the values it refuses,
+  hierarchy walking with a cycle guard, language/base/fallback resolution, the
+  per-language state model, capitalisation-insensitive key matching for
+  `sys_translated` and exact matching everywhere else, near-duplicate and
+  capitalisation-variant detection,
+  `getMessage` extraction, link and report construction, and that an empty
+  translated-field source is Not applicable rather than Unverified. The section
+  summaries are pinned both ways: a scoped summary re-counts the same rows over
+  only the languages asked for, applies the identical excluded-state rule,
+  never rewrites the row it counted, and treats an empty selection as a
+  selection rather than as every language.
+- `translation_lens_ui.test.js` — the panel. A late call from a superseded run
+  must never paint; progressive sections accumulate and are then replaced
+  rather than stacked; absent data never reads as coverage. Also the language
+  picker, which rescopes the score while the all-language score stays drawn
+  beside it so that narrowing a selection cannot hide a gap, and the round trip
+  back again, because the scope is memoised for the duration of a paint. Minor
+  rows fold away without changing what was counted, each section carries its
+  own score over the same selection as the headline, and the report carries no
+  value, URL, hostname or sys_id. Most cases run the panel with no engine
+  loaded, which is what exercises its local fallbacks; two load both files into
+  one sandbox to pin the contract between them.
+- `translation_lens_integration.test.js` — the runtime boundary: the
+  six-method UI contract `content.js` depends on, the worker routes, the
+  packaging allowlist, and source assertions for behaviour the engine
+  deliberately does not export.
+
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real
 instance.
@@ -256,6 +284,8 @@ default. Reverify when platform behavior or the queried schema changes.
   Record Search names).
 - `debug_timeline_main.js`, `debug_timeline_ui.js` — MAIN-world recorder and
   isolated-world results UI.
+- `translation_lens.js`, `translation_lens_ui.js` — lazily injected Translation
+  Lens coverage engine and read-only report panel.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including
   variable-scoped views.
 - `hidden_variables_ui.js` — shared Service Portal and classic RITM Variable
@@ -282,10 +312,14 @@ keeps value/body/content/script/password-like fields out of the automatic
 selection. If either changes in `record_search.js`, change the demo too —
 `sys_properties.value` showing as "manual only" is the visible proof. Read the source rather than recreating panel behavior from memory,
 including grouping, search fields, counts, buckets, and category labels.
-Change a panel and its demonstration in the same change.
+Change a panel and its demonstration in the same change. Give each demo its
+own id prefix: `getElementById` returns the first match in the document, so an
+id shared between two demos only works by accident of article order.
 
-Translation and variable-insight icons modify ServiceNow's own form chrome and
-should use real screenshots rather than a fabricated platform form. Keep demo
+Variable Insight icons modify ServiceNow's own form chrome and should use real
+screenshots rather than a fabricated platform form; a panel such as
+Translation Lens is demonstrated with a `dm-` mock built from its real
+state constants, which the demo comment names. Keep demo
 CSS names under the `dm-` prefix to avoid collisions with landing-page styles.
 
 Media belongs on GitHub's attachment CDN rather than in the repository so the

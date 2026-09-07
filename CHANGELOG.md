@@ -10,6 +10,100 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **Translation Lens replaces the translation icons.** One palette command,
+  keeping the icons' favourite key so a pinned command survives the change,
+  opens a read-only report over every field, catalog variable, choice and
+  `getMessage` key on the surface in front of you, against every active
+  language: a classic form, a catalog item's definition form, or a Service
+  Portal catalog item. Each row expands to one chip per language, and a
+  missing chip opens the platform record that would hold the translation,
+  prefilled with the exact keys, so closing a gap is a save rather than a
+  search; a blank one opens the existing row instead, so no duplicate is
+  created. Five footer buttons open each translation table filtered to the
+  current context, and the report copies as plain text that carries states
+  and keys but never a translated string, a record value, a sys_id, a hostname
+  or a URL.
+- **The score is honest about what it could not read.** Direct and
+  same-as-source rows count as covered; a fallback row is shown beside the
+  count but not in it; a denied, timed-out or truncated read stays
+  Unavailable and out of the denominator instead of being reported as
+  Missing; a key the Table API cannot express is named Unverified. Messages
+  keep their own denominator so a client script full of `getMessage` calls
+  cannot sink the form's score. Duplicate rows, stranded rows, near-duplicates
+  and conflicting translations are each reported as what they are. A language
+  picker narrows the section scores for the session while the all-language
+  score stays on screen, so narrowing a selection cannot hide a gap. Nothing
+  about the selection is stored.
+- **A key that differs only in capitalisation counts as covered.**
+  `sys_translated` is keyed by the source string, and the platform resolves
+  that key regardless of capitalisation: verified on a configured instance,
+  where
+  catalog variables whose only row was keyed with a different capitalisation
+  of the question text rendered their translation with nothing else on the
+  item able to supply it. Those rows were previously scored as Missing and
+  reported as uncounted near-duplicates. They now count, the chip says the
+  key capitalises the source differently, and the row explains why once. The
+  same holds for `sys_ui_message`, probed separately; `sys_choice` is keyed by
+  a stored value rather than a display string and has not been probed, so its
+  near-duplicates are still uncounted.
+
+- **A form with a variable editor says what it did not check.** A request
+  item, a catalog task or a case raised through a record producer renders
+  catalog variables that a form run never checks, because their text, choices
+  and set titles belong to the item, not the record. The panel now opens with
+  a prominent notice giving the count of variables not checked and a link to
+  the item or record producer definition form, where Translation Lens does
+  check them, so a 100% on such a form cannot be read as covering the
+  variables.
+- **On a Workspace record the same command offers a link to the classic
+  form.** The Workspace form itself cannot be read yet, so on a Workspace
+  route the command says so and shows a link to the record's classic form in
+  place of a bare unsupported message. Nothing opens until the link is
+  clicked, and Translation Lens runs there. The classic form
+  renders its own view, so the audited field set is the classic form's;
+  labels and choices are per field and table, so every field both views
+  share gets the same answer.
+
+### Fixed
+- **Duplicate and near-duplicate counts on a large catalog item.** Source
+  strings are read in batches, and the platform matches `value=` regardless of
+  capitalisation, so a batch asking for one capitalisation also returned the
+  row another batch asked for. The rows were pooled without de-duplication, so
+  one record could be counted once per batch that matched it -- reporting a
+  duplicate row that did not exist, and inflating the near-duplicate count.
+  Rows are now de-duplicated by `sys_id` as they are pooled.
+
+- **A `getMessage` key scanned in another capitalisation counts too.** The
+  capitalisation check was skipped entirely for the stores whose text column is
+  never read, so a key scanned as `Supplier` against fifteen `sys_ui_message`
+  rows keyed `supplier` reported 0/2 Missing and said nothing about them --
+  next to a list button that opens all fifteen, because the platform's own
+  query ignores capitalisation. `gs.getMessage` was then probed on the PDI: a
+  row keyed `glidelens_probe_key` answered that key, its upper-case form and
+  its title-case form, while an absent key came back as itself. So these count
+  as covered. The message rows are also grouped by key without regard to
+  capitalisation before they are judged; grouping them exactly had been
+  discarding the very rows the read returned. Where a store's lookup has not been probed the rows are now at
+  least reported rather than silently dropped, with a warning to open them
+  before adding a row keyed the way the surface spells it.
+
+### Removed
+- **The translation icons.** The globe and the languages icon beside every
+  classic form label are gone, and so are the Workspace field walker and the
+  rerender-persistence observer they needed. This is a correction, not only a
+  reduction: the languages icon opened `sys_translated_text` for every
+  translatable field type, and for a `translated_field` that is the wrong
+  table. Those values live in `sys_translated`, keyed by the source string,
+  so the icon opened an empty list for a field that could be fully
+  translated. Translation Lens routes each field to the store its dictionary
+  type actually uses. The worker relay for the toggle messages and the
+  dormant field-name badge code went with it. A tab that was open across the
+  update has its leftover icons removed once at load; that cleanup is deleted
+  in the release after this one.
+
 ## [0.14.0] - 2026-09-03
 
 ### Added
