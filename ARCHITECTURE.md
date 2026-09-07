@@ -244,9 +244,11 @@ keeps the retired translation icons' favourite key, `toggle-translations`,
 so a pinned command survived the replacement.
 
 Context resolution runs in the top frame only, in a fixed order. A Workspace
-record route is refused before any probe; on such a route the command instead
-opens the record's classic form through `OPEN_URL`, built only from a
-validated table name and a 32-hex sys_id from the route. The classic form
+record route is refused before any probe; on such a route the command shows
+a palette notice with a link to the record's classic form, built only from a
+validated table name and a 32-hex sys_id from the route. Nothing opens until
+the link is clicked, and the click goes through the same-origin `OPEN_URL`
+route. The classic form
 renders its own view, so the audited field set is the classic form's; labels
 and choices are per field and table, so every field both views share gets the
 same answer. Otherwise `GET_FORM_TRANSLATION_CONTEXT` probes every concrete

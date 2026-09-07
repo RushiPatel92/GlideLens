@@ -106,10 +106,11 @@ test("Translation Lens preserves the retired translation-toggle favorite key", (
   assert.strictEqual(translationLens.run.name, "showTranslationLens");
 });
 
-test("Translation Lens on a Workspace route opens the classic form instead of reading", () => {
+test("Translation Lens on a Workspace route offers a classic-form link instead of reading", () => {
   /* Same id, label, keywords and favourite key, so a pinned command and a
    * typed search behave identically on both surfaces; only what Enter does
-   * changes, and the description says so before it is pressed. */
+   * changes, and the description says so before it is pressed. Enter shows
+   * a notice with a link; it never navigates on its own. */
   const route = {
     experiencePath: ["sow"],
     table: "incident",
@@ -123,8 +124,9 @@ test("Translation Lens on a Workspace route opens the classic form instead of re
   assert.strictEqual(workspace.favoriteKey, classic.favoriteKey);
   assert.deepStrictEqual(workspace.keywords, classic.keywords);
   assert.strictEqual(workspace.group, classic.group);
-  assert.strictEqual(workspace.description, "Open this record's classic form to audit translations");
-  assert.strictEqual(workspace.run.name, "openClassicFormForTranslationLens");
+  assert.strictEqual(workspace.description, "Get a link to this record's classic form to audit translations");
+  assert.strictEqual(workspace.run.name, "showTranslationLensWorkspaceNotice");
+  assert.strictEqual(workspace.keepOpen, true, "the notice lives in the palette toast");
 });
 
 test("groups render in the declared order while preserving order within a group", () => {

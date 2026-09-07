@@ -36,10 +36,11 @@ reconstructed version by version.
   picker narrows the section scores for the session while the all-language
   score stays on screen, so narrowing a selection cannot hide a gap. Nothing
   about the selection is stored.
-- **On a Workspace record the same command opens the classic form.** The
-  Workspace form itself cannot be read yet, so on a Workspace route the
-  command says so in its description and opens the record's classic form in
-  a tab beside the current one, where Translation Lens runs. The classic form
+- **On a Workspace record the same command offers a link to the classic
+  form.** The Workspace form itself cannot be read yet, so on a Workspace
+  route the command says so and shows a link to the record's classic form in
+  place of a bare unsupported message. Nothing opens until the link is
+  clicked, and Translation Lens runs there. The classic form
   renders its own view, so the audited field set is the classic form's;
   labels and choices are per field and table, so every field both views
   share gets the same answer.

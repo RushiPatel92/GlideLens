@@ -83,7 +83,7 @@ test("Workspace is refused before loading or probing Translation Lens", () => {
 
 test("the Workspace fallback builds only a same-origin classic form URL for a saved record", () => {
   const factory = new Function(
-    between(contentSource, "function classicFormUrlForWorkspaceRoute", "async function openClassicFormForTranslationLens") +
+    between(contentSource, "function classicFormUrlForWorkspaceRoute", "function showTranslationLensWorkspaceNotice") +
       "\nreturn classicFormUrlForWorkspaceRoute;"
   );
   const build = factory();
@@ -106,13 +106,22 @@ test("the Workspace fallback builds only a same-origin classic form URL for a sa
   assert.strictEqual(build({ table: "../sys_user", sysId }, origin), "");
 });
 
-test("the Workspace fallback opens through the same-origin translation URL route", () => {
-  const block = between(contentSource, "async function openClassicFormForTranslationLens", "async function showTranslationLens");
+test("the Workspace notice links to the classic form and navigates only on a click", () => {
+  const block = between(contentSource, "function showTranslationLensWorkspaceNotice", "async function showTranslationLens");
   assert.ok(block.includes("workspaceRecordContextFromText(location.href)"));
   assert.ok(block.includes("classicFormUrlForWorkspaceRoute(route, location.origin)"));
-  assert.ok(block.includes("openTranslationUrl(url)"));
+  assert.ok(block.includes('document.createElement("a")'));
+  assert.ok(block.includes("link.href = url"));
+  /* The only navigation is inside the click handler, after preventDefault,
+   * and it goes through the same-origin translation URL route. */
+  const click = block.indexOf('addEventListener("click"');
+  const prevent = block.indexOf("preventDefault()");
+  const open = block.indexOf("openTranslationUrl(url)");
+  assert.ok(click >= 0 && click < prevent && prevent < open);
+  assert.strictEqual(block.indexOf("openTranslationUrl("), open, "no navigation outside the click handler");
   assert.ok(!block.includes("chrome.runtime.sendMessage"), "must not bypass the same-origin check");
-  assert.ok(!block.includes("ensureTranslationLensLoaded"), "the fallback must not load the engine");
+  assert.ok(!block.includes("ensureTranslationLensLoaded"), "the notice must not load the engine");
+  assert.ok(block.includes("run Translation Lens there"));
 });
 
 test("panel opens and receives progress before engine data reads", () => {

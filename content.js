@@ -5165,9 +5165,9 @@ function buildCommands() {
     (url) => url.includes("sys_pd_process_definition")
   );
   /* On a Workspace record route the command keeps its label, keywords and
-   * favourite key but opens the record's classic form instead of reading the
-   * Workspace form, which the probe cannot read. See
-   * openClassicFormForTranslationLens. */
+   * favourite key but shows a link to the record's classic form instead of
+   * reading the Workspace form, which the probe cannot read. Nothing opens
+   * until the link is clicked. See showTranslationLensWorkspaceNotice. */
   const workspaceTranslationRoute = workspaceRecordContextFromText(location.href);
 
   const cmds = [
@@ -5176,7 +5176,7 @@ function buildCommands() {
       favoriteKey: "toggle-translations",
       label: "Translation Lens",
       description: workspaceTranslationRoute
-        ? "Open this record's classic form to audit translations"
+        ? "Get a link to this record's classic form to audit translations"
         : "Audit translations on this form",
       keywords: [
         "translation", "translations", "i18n", "l10n", "language", "coverage",
@@ -5186,7 +5186,7 @@ function buildCommands() {
       group: "Tools",
       keepOpen: true,
       run: workspaceTranslationRoute
-        ? openClassicFormForTranslationLens
+        ? showTranslationLensWorkspaceNotice
         : showTranslationLens,
     },
     ...(debugTimelineRecording
@@ -5712,13 +5712,16 @@ const TRANSLATION_LENS_WORKSPACE_MESSAGE =
  * record markers and label ids that encode table and field; a Workspace form
  * exposes neither, and reading it would need a per-surface shadow-DOM walker
  * verified the way Variable Values verifies each experience and table pair.
- * The route does name the record, so its classic form is one tab away.
+ * The route does name the record, so the palette notice carries a link to
+ * its classic form in place of a bare unsupported message. Nothing opens
+ * until the link is clicked: navigating away on the user's behalf read as
+ * the command doing something other than what it says.
  *
  * Honest limits: the classic form renders its own view, so the audited field
  * set is the classic form's rather than the Workspace form's -- labels and
  * choices are per field and table, so every field both views share gets the
  * same answer. An unsaved Workspace record has no sys_id in the route and is
- * not offered a form.
+ * not offered a link.
  */
 function classicFormUrlForWorkspaceRoute(route, origin) {
   if (!route) return "";
@@ -5728,21 +5731,38 @@ function classicFormUrlForWorkspaceRoute(route, origin) {
   return String(origin || "") + "/" + table + ".do?sys_id=" + sysId;
 }
 
-async function openClassicFormForTranslationLens() {
+function showTranslationLensWorkspaceNotice() {
   const route = workspaceRecordContextFromText(location.href);
   const url = classicFormUrlForWorkspaceRoute(route, location.origin);
-  if (!url) {
+  if (!url || !paletteToast) {
     showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
     return;
   }
-  closePalette();
-  showToast(
-    "Opening this record's classic form in a tab beside this one. Run " +
-    "Translation Lens there.",
-    false,
-    7000
-  );
-  await openTranslationUrl(url);
+  /* Same slot and lifetime as showCopyFallback: the notice stays until the
+   * palette closes or another toast replaces it, so the link cannot vanish
+   * mid-read. */
+  clearTimeout(showToast._t);
+  paletteToast.innerHTML = "";
+  const lead = document.createElement("span");
+  lead.textContent = "Translation Lens does not read Workspace forms yet. ";
+  const link = document.createElement("a");
+  link.href = url;
+  link.textContent = "Open this record's classic form";
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    closePalette();
+    Promise.resolve()
+      .then(() => openTranslationUrl(url))
+      .catch((error) => showToast(String(error.message || error), true, 7000));
+  });
+  const tail = document.createElement("span");
+  tail.textContent = " and run Translation Lens there.";
+  paletteToast.appendChild(lead);
+  paletteToast.appendChild(link);
+  paletteToast.appendChild(tail);
+  paletteToast.className = "err";
+  paletteToast.style.display = "block";
+  link.focus();
 }
 
 async function showTranslationLens() {
@@ -6369,6 +6389,8 @@ const PALETTE_CSS = `
     border-top:1px solid var(--palette-border-subtle);color:#a8e6b8;
   }
   #toast.err{color:#ff9d9d}
+  #toast a{color:var(--teal);text-decoration:underline;cursor:pointer}
+  #toast a:focus{outline:2px solid var(--teal);outline-offset:2px}
   #empty{padding:34px 16px;color:var(--palette-secondary);font-size:13px;text-align:center}
   #palette-footer{
     display:flex;align-items:center;justify-content:space-between;gap:16px;
