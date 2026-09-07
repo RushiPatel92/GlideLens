@@ -21,12 +21,36 @@ function loadContextHelpers() {
       source.slice(sysIdStart, sysIdEnd) +
       "\nreturn { recordContextFromText, workspaceRecordContextFromText, " +
         "workspaceRecordContextMatches, workspaceSupportedSurface, " +
-        "WORKSPACE_SUPPORTED_SURFACES, sysIdFromText };"
+        "WORKSPACE_SUPPORTED_SURFACES, sysIdFromText, isWorkspaceRecordRoute };"
   )();
 }
 
 const helpers = loadContextHelpers();
 const SYS_ID = "00000000000000000000000000000001";
+
+test("a Workspace record route is recognised whether or not the record is saved", () => {
+  /* Translation Lens refuses every Workspace record route; the saved-record
+   * parser only answers whether a classic-form link can be built. A new
+   * record's route must count as Workspace even though it carries no sys_id,
+   * or it falls through to the classic-frame probe. */
+  const base = "https://example.service-now.com/now/sow/record/incident/";
+  assert.strictEqual(helpers.isWorkspaceRecordRoute(base + SYS_ID), true);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute(base + SYS_ID + "/params/selected-tab-index/2"), true);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute(base + "-1"), true);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute(base + "-1?query=active%3Dtrue"), true);
+  assert.strictEqual(
+    helpers.isWorkspaceRecordRoute("https://example.service-now.com/now/psm/workspace/record/sn_psm_supplier_case/" + SYS_ID + "/params/selected-tab-index/6/sub/record/sc_req_item/-1"),
+    true
+  );
+  assert.strictEqual(helpers.workspaceRecordContextFromText(base + "-1"), null, "the saved-record parser stays strict");
+
+  assert.strictEqual(helpers.isWorkspaceRecordRoute("https://example.service-now.com/incident.do?sys_id=" + SYS_ID), false);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute("https://example.service-now.com/incident.do?sys_id=-1"), false);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute("https://example.service-now.com/now/nav/ui/classic/params/target/incident.do%3Fsys_id%3D-1"), false);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute("https://example.service-now.com/sp?id=sc_cat_item&sys_id=" + SYS_ID), false);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute("https://example.service-now.com/now/sow/list/incident"), false);
+  assert.strictEqual(helpers.isWorkspaceRecordRoute(""), false);
+});
 
 test("classic list routes preselect the underlying table", () => {
   assert.deepStrictEqual(

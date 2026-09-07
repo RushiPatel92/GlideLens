@@ -166,6 +166,20 @@ function workspaceRecordContextFromText(text) {
 }
 
 /*
+ * Translation Lens refuses every Workspace record route, saved or not, while
+ * the classic-form link it offers instead needs a saved record's sys_id.
+ * workspaceRecordContextFromText answers only the second question: its id
+ * group is 32-hex, so a new record's route (`record/<table>/-1`) returns null
+ * there and would otherwise fall through to the classic-frame probe, where an
+ * embedded marker-matched classic frame could be accepted as the form.
+ */
+function isWorkspaceRecordRoute(text) {
+  return decodedVariants(text).some((value) =>
+    /\/now\/(?:[^/?#]+\/)*?record\/[^/?#]+\/[^/?#]+(?:[/?#]|$)/i.test(value)
+  );
+}
+
+/*
  * Workspace Variable Values is allowlisted per (experience path, table) PAIR,
  * never by either half alone. Widening this list is a deliberate act: each
  * entry means that surface's live rendering and its stored-side routing were
@@ -5164,11 +5178,12 @@ function buildCommands() {
   const isPlaybookDefinitionPage = decodedVariants(location.href).some(
     (url) => url.includes("sys_pd_process_definition")
   );
-  /* On a Workspace record route the command keeps its label, keywords and
-   * favourite key but shows a link to the record's classic form instead of
-   * reading the Workspace form, which the probe cannot read. Nothing opens
+  /* On a Workspace record route, saved or new, the command keeps its label,
+   * keywords and favourite key but shows a notice instead of reading the
+   * Workspace form, which the probe cannot read. The notice links to the
+   * record's classic form when the route names a saved record; nothing opens
    * until the link is clicked. See showTranslationLensWorkspaceNotice. */
-  const workspaceTranslationRoute = workspaceRecordContextFromText(location.href);
+  const workspaceTranslationRoute = isWorkspaceRecordRoute(location.href);
 
   const cmds = [
     {
@@ -5577,8 +5592,9 @@ async function corroborateCatalogTranslationContext(engine, sysId) {
 async function resolveTranslationLensContext(engine) {
   /* Refuse Workspace before any classic or catalog probe. A Workspace shell
    * can contain a real marker-matched classic frame, so checking later would
-   * accidentally claim R1 support. */
-  if (workspaceRecordContextFromText(location.href)) {
+   * accidentally claim R1 support. Any record route counts, including an
+   * unsaved one, which the saved-record parser would not recognise. */
+  if (isWorkspaceRecordRoute(location.href)) {
     return { refused: true, message: TRANSLATION_LENS_WORKSPACE_MESSAGE };
   }
 
@@ -5683,7 +5699,7 @@ function translationEngineContext(resolved) {
 }
 
 async function translationContextStillCurrent(resolved) {
-  if (workspaceRecordContextFromText(location.href)) return false;
+  if (isWorkspaceRecordRoute(location.href)) return false;
   if (resolved.form) {
     const expected = translationExpectedFormIdentity(resolved.form);
     const current = await getFormTranslationContext([], expected);
@@ -5767,7 +5783,7 @@ function showTranslationLensWorkspaceNotice() {
 
 async function showTranslationLens() {
   if (window !== window.top) return;
-  if (workspaceRecordContextFromText(location.href)) {
+  if (isWorkspaceRecordRoute(location.href)) {
     showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
     return;
   }

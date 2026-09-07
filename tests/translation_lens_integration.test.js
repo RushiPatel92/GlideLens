@@ -69,16 +69,22 @@ test("content script pins the complete six-method Opus UI contract", () => {
 
 test("Workspace is refused before loading or probing Translation Lens", () => {
   const block = between(contentSource, "async function showTranslationLens", "/* =====================================================================\n * RECORD SEARCH");
-  const workspace = block.indexOf("workspaceRecordContextFromText(location.href)");
+  /* The refusal uses the any-id route detector, not the saved-record parser:
+   * a new Workspace record has no sys_id in its route and must still refuse. */
+  const workspace = block.indexOf("isWorkspaceRecordRoute(location.href)");
   const load = block.indexOf("ensureTranslationLensLoaded()");
   const resolve = block.indexOf("resolveTranslationLensContext(engine)");
   assert.ok(workspace >= 0 && workspace < load && load < resolve);
+  assert.ok(!block.includes("if (workspaceRecordContextFromText(location.href))"));
 
   const resolver = between(contentSource, "async function resolveTranslationLensContext", "function translationFormEngineContext");
   assert.ok(
-    resolver.indexOf("workspaceRecordContextFromText(location.href)") <
+    resolver.indexOf("isWorkspaceRecordRoute(location.href)") <
       resolver.indexOf("getFormTranslationContext([], null)")
   );
+  assert.ok(!resolver.includes("workspaceRecordContextFromText"));
+  const stillCurrent = between(contentSource, "async function translationContextStillCurrent", "function openTranslationUrl");
+  assert.ok(stillCurrent.includes("isWorkspaceRecordRoute(location.href)"));
 });
 
 test("the Workspace fallback builds only a same-origin classic form URL for a saved record", () => {

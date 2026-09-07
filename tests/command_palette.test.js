@@ -34,7 +34,7 @@ function loadBuiltCommands(debugTimelineUI, options) {
   const noop = () => {};
   const factory = new Function(
     "chrome", "location", "globalThis", "decodedVariants",
-    "workspaceRecordContextFromText",
+    "isWorkspaceRecordRoute",
     "openRecordSearch", "openCurrentRecordPlaybookExecutions",
     "openCurrentPlaybookCustomerUpdates", "openCustomerUpdatesBySysId",
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
@@ -50,7 +50,7 @@ function loadBuiltCommands(debugTimelineUI, options) {
     { href: "https://example.service-now.com/incident.do", origin: "https://example.service-now.com" },
     { SNDebugTimelineUI: debugTimelineUI || null },
     () => [],
-    opts.workspaceRoute ? () => opts.workspaceRoute : () => null,
+    () => Boolean(opts.workspaceRoute),
     noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
 }
