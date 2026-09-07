@@ -37,6 +37,17 @@ reconstructed version by version.
   picker narrows the section scores for the session while the all-language
   score stays on screen, so narrowing a selection cannot hide a gap. Nothing
   about the selection is stored.
+- **A key that differs only in capitalisation counts as covered.**
+  `sys_translated` is keyed by the source string, and the platform resolves
+  that key without regard to case: verified on a configured instance, where
+  catalog variables whose only row was keyed with a different capitalisation
+  of the question text rendered their translation with nothing else on the
+  item able to supply it. Those rows were previously scored as Missing and
+  reported as uncounted near-duplicates. They now count, the chip says the
+  key's case differs from the form's, and the row explains why once. Only this
+  store folds case; `sys_choice` is keyed by a stored value whose lookup
+  nothing here has verified, so its near-duplicates are still uncounted.
+
 - **A form with a variable editor says what it did not check.** A request
   item, a catalog task or a case raised through a record producer renders
   catalog variables that a form run never checks, because their text, choices
@@ -53,6 +64,15 @@ reconstructed version by version.
   renders its own view, so the audited field set is the classic form's;
   labels and choices are per field and table, so every field both views
   share gets the same answer.
+
+### Fixed
+- **Duplicate and near-duplicate counts on a large catalog item.** Source
+  strings are read in batches, and the platform matches `value=` without
+  regard to case, so a batch asking for one capitalisation also returned the
+  row another batch asked for. The rows were pooled without de-duplication, so
+  one record could be counted once per batch that matched it -- reporting a
+  duplicate row that did not exist, and inflating the near-duplicate count.
+  Rows are now de-duplicated by `sys_id` as they are pooled.
 
 ### Removed
 - **The translation icons.** The globe and the languages icon beside every

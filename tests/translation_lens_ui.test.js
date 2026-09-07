@@ -1306,6 +1306,47 @@ test("the report carries no value, URL, hostname or sys_id", () => {
   assert.ok(text.includes("warnings=near-duplicate"));
 });
 
+test("a case-variant key reads as covered, marked on the chip and explained once", () => {
+  const harness = load();
+  openPanel(harness);
+  const row = makeRow({
+    store: "sys_translated",
+    states: {
+      fr: { state: "direct", direct: true },
+      de: { state: "direct", direct: true, caseVariantKey: true },
+    },
+    coverage: { covered: 2, counted: 2, percent: 100, missing: [], unavailable: [] },
+    evidence: { caseVariants: { rowCount: 1, languages: ["de"], inactiveLanguages: [] } },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [row])] }),
+  });
+  let shadow = harness.shadow();
+  click(buttonWithText(shadow, "Expand all"));
+  shadow = harness.shadow();
+  const text = shadow.textContent;
+  assert.ok(text.includes("key case differs"), "the covering row's key is not the form's spelling");
+  assert.ok(text.includes("2/2"), "a case-variant key is counted, not scored as a gap");
+  assert.ok(text.includes("1 case-variant key"), "the row carries an informational tag");
+  assert.ok(
+    text.includes("matches the key without regard to case"),
+    "the reason is stated once, in the row's evidence"
+  );
+});
+
+test("the report names a case-variant key as its own warning token", () => {
+  const harness = load();
+  const row = makeRow({
+    evidence: { caseVariants: { rowCount: 2, languages: ["fr"], inactiveLanguages: [] } },
+  });
+  const text = harness.ui.formatResultsAsText(
+    makeResult({ sections: [makeSection("labels", "Field Labels", [row])] })
+  );
+  assert.ok(text.includes("warnings=case-variant-key"));
+  assert.ok(!text.includes("near-duplicate"), "the two are not the same finding");
+});
+
 test("the local report refuses a hostname-shaped element and an embedded sys_id", () => {
   /* The engine-absent formatter mirrors the engine's rule and must fail the
    * same two review vectors: a getMessage key that is a bare hostname, and a

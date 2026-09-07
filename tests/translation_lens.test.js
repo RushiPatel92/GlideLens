@@ -198,7 +198,7 @@ test("atom states distinguish direct, same-source, blank, conflict, and duplicat
   assert.strictEqual(presence.duplicateRows, true);
 });
 
-test("exact post-filtering rejects case-only keys and reports them as near-duplicates", () => {
+test("a sys_translated key differing only by case covers the language and is flagged", () => {
   const row = TL.analyzeStringRows({
     element: "title",
     aspect: "value",
@@ -214,10 +214,50 @@ test("exact post-filtering rejects case-only keys and reports them as near-dupli
     ],
   });
   assert.strictEqual(row.states.fr.state, "direct");
-  assert.strictEqual(row.states.de.state, "missing");
-  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 1);
+  assert.strictEqual(row.states.fr.caseVariantKey, undefined);
+  /* The platform resolves the key without regard to case, so "base source"
+   * covers a form spelling it "Base Source" -- marked, not scored as a gap. */
+  assert.strictEqual(row.states.de.state, "direct");
+  assert.strictEqual(row.states.de.caseVariantKey, true);
+  assert.strictEqual(row.evidence.caseVariants.rowCount, 1);
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 0);
   assert.strictEqual(row.evidence.alternateRegistrations.rowCount, 1);
   assert.deepStrictEqual(own(row.evidence.extras.languages), ["it"]);
+});
+
+test("a case-only key never covers a store whose lookup is unverified", () => {
+  const row = TL.analyzeStringRows({
+    element: "state",
+    aspect: "value",
+    store: "sys_choice",
+    effectiveTable: "example_record",
+    source: "Base Source",
+    languages: languages(),
+    rows: [
+      { name: "example_record", value: "base source", language: "de", label: "Source DE" },
+    ],
+  });
+  assert.strictEqual(row.states.de.state, "missing");
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 1);
+  assert.strictEqual(row.evidence.caseVariants.rowCount, 0);
+});
+
+test("a language covered by both spellings is not reported as a case variant", () => {
+  const row = TL.analyzeStringRows({
+    element: "title",
+    aspect: "value",
+    store: "sys_translated",
+    effectiveTable: "example_record",
+    source: "Base Source",
+    languages: languages(),
+    rows: [
+      { name: "example_record", value: "Base Source", language: "de", label: "Source DE" },
+      { name: "example_record", value: "base source", language: "de", label: "Source DE" },
+    ],
+  });
+  assert.strictEqual(row.states.de.state, "direct");
+  assert.strictEqual(row.states.de.caseVariantKey, undefined);
+  assert.strictEqual(row.states.de.duplicateCount, 1);
 });
 
 test("unavailable languages never lower a percentage", () => {

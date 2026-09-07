@@ -533,34 +533,61 @@
     const tableField = opts.tableField || "name";
     const effectiveTable = opts.effectiveTable || "";
     const all = Array.isArray(opts.rows) ? opts.rows : [];
-    const exact = all.filter((row) =>
-      (!effectiveTable || fieldValue(row, tableField) === effectiveTable) &&
-      fieldValue(row, keyField) === String(opts.source)
-    );
-    const near = opts.presenceOnly ? [] : all.filter((row) => {
+    /* sys_translated is keyed by the source string itself, and the platform
+     * resolves that key without regard to case. Verified on a configured
+     * instance on 2026-09-07: on a Service Portal catalog item, three variables
+     * whose only row was keyed with a different capitalisation of the question
+     * text all rendered their translation, alongside an exactly-keyed control
+     * on the same form, with no record-keyed row and no same-cased variable
+     * anywhere on the item that could have supplied the text instead. The
+     * platform's own query semantics agree: `value=` on this table matches
+     * without regard to case. So a key differing only in case covers the row,
+     * and the read already returns it. It is still
+     * reported, because inconsistent keys are worth normalising, but as a
+     * case-variant note rather than as a gap.
+     *
+     * Only this store folds case. sys_choice is keyed by a stored choice value
+     * rather than a display string and nothing here has verified how the
+     * platform resolves that, so its near-duplicate handling is unchanged. */
+    const sourceKey = String(opts.source);
+    const foldsCase = opts.store === "sys_translated";
+    const onTable = (row) =>
+      !effectiveTable || fieldValue(row, tableField) === effectiveTable;
+    const keyMatches = (value) => value === sourceKey ||
+      (foldsCase && value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase());
+    const exact = all.filter((row) => onTable(row) && keyMatches(fieldValue(row, keyField)));
+    const variantRows = opts.presenceOnly ? [] : all.filter((row) => {
       const value = fieldValue(row, keyField);
-      return (!effectiveTable || fieldValue(row, tableField) === effectiveTable) &&
-        value !== String(opts.source) &&
-        value.toLocaleLowerCase() === String(opts.source).toLocaleLowerCase();
+      return onTable(row) && value !== sourceKey &&
+        value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase();
     });
+    const near = foldsCase ? [] : variantRows;
+    const caseVariants = foldsCase ? variantRows : [];
     const states = Object.create(null);
     ids.forEach((id) => {
-      states[id] = atomState(
-        exact.filter((row) => fieldValue(row, "language") === id),
-        {
-          presenceOnly: Boolean(opts.presenceOnly),
-          contentField: opts.contentField || "label",
-          source: opts.source,
-        }
-      );
+      const forLanguage = exact.filter((row) => fieldValue(row, "language") === id);
+      const state = atomState(forLanguage, {
+        presenceOnly: Boolean(opts.presenceOnly),
+        contentField: opts.contentField || "label",
+        source: opts.source,
+      });
+      /* The reader is owed the difference between a row they will find under
+       * the key they searched for and one they will only find under another
+       * capitalisation of it. */
+      if (foldsCase && forLanguage.length &&
+        forLanguage.every((row) => fieldValue(row, keyField) !== sourceKey)) {
+        state.caseVariantKey = true;
+      }
+      states[id] = state;
     });
     const withFallback = applyFallbacks(states, languages);
     const alternateRows = all.filter((row) =>
       effectiveTable && fieldValue(row, tableField) && fieldValue(row, tableField) !== effectiveTable &&
-      fieldValue(row, keyField) === String(opts.source)
+      keyMatches(fieldValue(row, keyField))
     );
     return makeRow(opts, withFallback, {
       nearDuplicates: summarizeEvidence(near, languages),
+      caseVariants: summarizeEvidence(caseVariants, languages),
       alternateRegistrations: summarizeEvidence(alternateRows, languages),
       stranded: summarizeEvidence(opts.strandedRows || [], languages),
       extras: summarizeEvidence(exact.filter((row) => {
@@ -1269,6 +1296,7 @@
     const evidence = row.evidence || {};
     const warnings = [];
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) warnings.push("near-duplicate");
+    if (evidence.caseVariants && evidence.caseVariants.rowCount) warnings.push("case-variant-key");
     if (evidence.stranded && evidence.stranded.rowCount) warnings.push("stranded");
     if (evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) warnings.push("alternate-registration");
     if (Object.values(row.states || {}).some((item) => item.state === "conflict")) warnings.push("conflict");
@@ -2141,6 +2169,13 @@
       if (source) stringSpecs.push({ set: row, spec: { field: "title", registration: "item_option_new_set" }, source });
     });
     const stringRows = [];
+    /* One row can arrive from more than one chunk. The source strings are
+     * chunked, and the platform matches `value=` without regard to case, so a
+     * chunk asking for "Base source" also returns the row keyed "Base Source"
+     * that another chunk asked for. Counting that row once per chunk matching it
+     * inflates both the duplicate count on a language and the near-duplicate
+     * evidence, reporting records that do not exist. */
+    const seenStringRowIds = new Set();
     const unavailableStringSources = new Set();
     const byRegistration = new Map();
     stringSpecs.forEach((item) => {
@@ -2166,11 +2201,18 @@
         const response = await safeRead(transport, {
           table: "sys_translated",
           query: chunk.query,
-          fields: "name,element,value,label,language",
+          fields: "sys_id,name,element,value,label,language",
           limit: STORE_CAPS.sys_translated,
           options: { displayAll: true, excludeRefLinks: true },
         });
-        stringRows.push.apply(stringRows, response.rows || []);
+        (response.rows || []).forEach((row) => {
+          const rowId = fieldValue(row, "sys_id");
+          if (rowId) {
+            if (seenStringRowIds.has(rowId)) return;
+            seenStringRowIds.add(rowId);
+          }
+          stringRows.push(row);
+        });
         if (!response.ok || response.truncated) {
           failures.push(failureFor("sys_translated", response));
           chunk.values.forEach((value) => unavailableStringSources.add(value));
