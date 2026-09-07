@@ -734,6 +734,31 @@
       const value = fieldValue(baseRow, "value");
       const dependentValue = fieldValue(baseRow, "dependent_value");
       const sourceLabel = fieldValue(baseRow, "label");
+      /* A value or dependent_value the query language cannot express can be
+       * neither listed nor prefilled, and its translation rows cannot be
+       * matched with confidence. It is Unverified and excluded -- never a
+       * counted gap with no link to close it. */
+      const valueStatus = queryValueStatus(value, { allowEmpty: true });
+      const dependentStatus = queryValueStatus(dependentValue, { allowEmpty: true });
+      if (!valueStatus.ok || !dependentStatus.ok) {
+        const reason = "choice key not expressible (" +
+          (valueStatus.ok ? dependentStatus.reason : valueStatus.reason) + ")";
+        const unverifiedStates = fixedStates(languages, "unverified", reason);
+        choices.push({
+          identity,
+          value,
+          dependentValue,
+          label: sourceLabel,
+          store: "sys_choice",
+          states: unverifiedStates,
+          coverage: coverageFromStates(unverifiedStates, languages.countedLanguageIds),
+          nearDuplicates: summarizeEvidence([], languages),
+          links: null,
+          unverified: true,
+          unverifiedReason: reason,
+        });
+        return;
+      }
       let states = Object.create(null);
       languages.countedLanguageIds.forEach((id) => {
         states[id] = atomState(included.filter((row) =>
@@ -771,7 +796,12 @@
     const states = Object.create(null);
     languages.countedLanguageIds.forEach((id) => {
       const perChoice = choices.map((choice) => choice.states[id] || { state: "missing" });
-      if (perChoice.some((state) => state.state === "conflict")) {
+      /* Unknown first: this one state stands for every base value, so a
+       * single unverified choice makes the verdict unknown rather than a
+       * counted partial. */
+      if (perChoice.some((state) => state.state === "unverified")) {
+        states[id] = { state: "unverified", reason: "a choice key is not expressible" };
+      } else if (perChoice.some((state) => state.state === "conflict")) {
         states[id] = { state: "conflict" };
       } else if (perChoice.every((state) => COVERED_STATES.has(state.state))) {
         states[id] = { state: "direct", direct: true };
@@ -1346,6 +1376,17 @@
     return { rows, unavailableTargets };
   }
 
+  /* A section is handed to the caller the moment its rows exist, not when
+   * the whole run ends. The client-script and UI-policy scan behind Messages
+   * is the slow read, so labels, values and choices reach the panel while it
+   * is still running, and a timeout keeps what was read instead of discarding
+   * everything behind an empty error. */
+  function emitSection(context, emitted, section) {
+    emitted.push(section);
+    if (context && typeof context.onSection === "function") context.onSection(section);
+    return section;
+  }
+
   function normalizedFormFields(context) {
     const seen = new Set();
     const out = [];
@@ -1536,6 +1577,7 @@
       }
     }
 
+    const emitted = [];
     const labelRows = fieldEntries.map((entry) => {
       const descriptor = dictionary[entry.field];
       const definingTable = (descriptor && descriptor.definingTable) || table;
@@ -1554,6 +1596,7 @@
       });
     });
 
+    emitSection(context, emitted, { id: "labels", label: "Field Labels", rows: labelRows });
     const valueRows = fieldEntries.map((entry) => {
       const descriptor = dictionary[entry.field];
       if (!descriptor || dictionaryRead.unavailableTargets.has(entry.field)) {
@@ -1652,6 +1695,9 @@
       });
     });
 
+    emitSection(context, emitted, {
+      id: "values", label: "Translated Names / Fields and Text", rows: valueRows,
+    });
     const choiceRows = choiceFields.map((field) => {
       const descriptor = dictionary[field];
       const source = resolveChoiceSource(descriptor.row, chain, choiceRead.rows);
@@ -1672,6 +1718,7 @@
 
     const scriptSources = [];
     notify(context, "messages", "Scanning literal message keys");
+    emitSection(context, emitted, { id: "choices", label: "Choices", rows: choiceRows });
     const scriptReads = await Promise.all([
       safeRead(transport, {
         table: "sys_script_client",
@@ -1736,22 +1783,14 @@
       messageKeys: extraction.keys.slice(),
     };
 
-    const sections = [
-      { id: "labels", label: "Field Labels", rows: labelRows },
-      { id: "values", label: "Translated Names / Fields and Text", rows: valueRows },
-      { id: "choices", label: "Choices", rows: choiceRows },
-      {
-        id: "messages",
-        label: "Messages",
-        rows: messageRows,
-        scan: extraction,
-        separateHeadline: true,
-      },
-    ];
-    if (typeof context.onSection === "function") {
-      sections.forEach((section) => context.onSection(section));
-    }
-    return sections;
+    emitSection(context, emitted, {
+      id: "messages",
+      label: "Messages",
+      rows: messageRows,
+      scan: extraction,
+      separateHeadline: true,
+    });
+    return emitted;
   }
 
   const CATALOG_VARIABLE_FIELDS = [
@@ -1855,6 +1894,9 @@
       if (items.some((state) => state.state === "unavailable")) {
         states[id] = { state: "unavailable", reason: "choice translation read unavailable" };
       }
+      else if (items.some((state) => state.state === "unverified")) {
+        states[id] = { state: "unverified", reason: "choice text not expressible" };
+      }
       else if (items.some((state) => state.state === "conflict")) states[id] = { state: "conflict" };
       else if (items.every((state) => COVERED_STATES.has(state.state))) states[id] = { state: "direct" };
       else if (items.every((state) => state.state === "missing")) states[id] = { state: "missing" };
@@ -1913,28 +1955,45 @@
     });
     if (!placementRead.ok || placementRead.truncated) failures.push(failureFor("io_set_item", placementRead));
     const setIds = unique(placementRead.rows.map((row) => fieldValue(row, "variable_set")).filter((id) => SYS_ID_PATTERN.test(id)));
+    /* Every id list is chunked. An item can carry hundreds of variable sets,
+     * and a single IN over all of them overran the query ceiling; the item's
+     * own rows are read once and each set chunk separately, so a failed chunk
+     * is recorded against its own targets. */
+    const readOptions = { displayAll: true, excludeRefLinks: true };
+    const setChunks = chunkSysIds(setIds, 50);
     let setRead = { ok: true, rows: [], truncated: false };
-    if (setIds.length) {
-      setRead = await safeRead(transport, {
+    if (setChunks.length) {
+      const collected = await readChunked(transport, setChunks.map((ids) => ({
         table: "item_option_new_set",
-        query: "sys_idIN" + setIds.join(","),
+        query: "sys_idIN" + ids.join(","),
         fields: "sys_id,title,type,active,order",
         limit: STORE_CAPS.item_option_new_set,
-        options: { displayAll: true, excludeRefLinks: true },
-      });
-      if (!setRead.ok || setRead.truncated) failures.push(failureFor("item_option_new_set", setRead));
+        options: readOptions,
+        targets: ids,
+      })), "item_option_new_set", failures, STORE_CAPS.item_option_new_set);
+      setRead = { ok: collected.unavailableTargets.size === 0, rows: collected.rows, truncated: false };
     }
-    const variableQuery = setIds.length
-      ? "cat_item=" + itemId + "^ORvariable_setIN" + setIds.join(",")
-      : "cat_item=" + itemId;
-    const variableRead = await safeRead(transport, {
+    const variableFields = "sys_id,name,question_text,type,variable_set,active,order,tooltip,help_tag,example_text,help_text,instructions,rich_text,conversational_label";
+    const variableCollected = await readChunked(transport, [{
       table: "item_option_new",
-      query: variableQuery,
-      fields: "sys_id,name,question_text,type,variable_set,active,order,tooltip,help_tag,example_text,help_text,instructions,rich_text,conversational_label",
+      query: "cat_item=" + itemId,
+      fields: variableFields,
       limit: STORE_CAPS.item_option_new,
-      options: { displayAll: true, excludeRefLinks: true },
-    });
-    if (!variableRead.ok || variableRead.truncated) failures.push(failureFor("item_option_new", variableRead));
+      options: readOptions,
+      targets: ["item"],
+    }].concat(setChunks.map((ids) => ({
+      table: "item_option_new",
+      query: "variable_setIN" + ids.join(","),
+      fields: variableFields,
+      limit: STORE_CAPS.item_option_new,
+      options: readOptions,
+      targets: ids,
+    }))), "item_option_new", failures, STORE_CAPS.item_option_new);
+    const variableRead = {
+      ok: variableCollected.unavailableTargets.size === 0,
+      rows: variableCollected.rows,
+      truncated: false,
+    };
     const variables = variableRead.rows.map((row) => ({
       id: fieldValue(row, "sys_id"),
       name: fieldValue(row, "name") || fieldValue(row, "sys_id"),
@@ -2006,7 +2065,10 @@
         "value",
         sources
       );
-      plan.rejected.forEach((item) => unavailableStringSources.add(item.value));
+      /* plan.rejected holds sources the query language cannot express. They
+       * are deliberately NOT marked unavailable: analyzeStringRows applies the
+       * same predicate and reports them Unverified, which is what they are. A
+       * read that failed is a different thing and is marked below. */
       for (const chunk of plan.chunks) {
         const response = await safeRead(transport, {
           table: "sys_translated",
@@ -2058,6 +2120,21 @@
         table: "sys_translated_text",
         query: joinQuery([
           "valueISNOTEMPTY", "tablename=question_choice",
+          "documentkeyIN" + ids.join(","),
+        ]),
+        fields: "tablename,documentkey,fieldname,language",
+        limit: STORE_CAPS.sys_translated_text,
+        options: { displayAll: true, excludeRefLinks: true },
+        targets: ids,
+      });
+    });
+    /* Set titles are string-keyed like every other catalog text, so a
+     * record-keyed row for one is stranded in the same way. */
+    chunkSysIds(setIds, 50).forEach((ids) => {
+      mirrorRequests.push({
+        table: "sys_translated_text",
+        query: joinQuery([
+          "valueISNOTEMPTY", "tablename=item_option_new_set",
           "documentkeyIN" + ids.join(","),
         ]),
         fields: "tablename,documentkey,fieldname,language",
@@ -2168,6 +2245,9 @@
         store: "sys_translated",
         effectiveTable: "item_option_new_set",
         rows: stringRows.filter((item) => fieldValue(item, "element") === "title"),
+        strandedRows: mirrorRows.filter((item) =>
+          fieldValue(item, "documentkey") === id && fieldValue(item, "fieldname") === "title"
+        ),
         source,
         languages,
         origin,
@@ -2177,6 +2257,8 @@
         unavailable: unavailableStringSources.has(source),
       }));
     });
+    const emitted = [];
+    emitSection(context, emitted, { id: "values", label: "Catalog Text", rows: valueRows });
     const choiceRows = variables.filter((variable) =>
       DYNAMIC_CATALOG_TYPES.has(String(variable.type || "").toLowerCase()) ||
       choices.some((choice) => choice.questionId === variable.id)
@@ -2192,33 +2274,46 @@
         unavailableStringSources
       ));
 
-    const scripts = await Promise.all([
-      safeRead(transport, {
+    emitSection(context, emitted, { id: "choices", label: "Choices", rows: choiceRows });
+
+    /* The same item-then-set-chunks shape as the variable read. A failed
+     * chunk is recorded as a failure and the scripts that did read are still
+     * scanned, so a denied set does not blank the whole Messages section. */
+    const scriptReads = await Promise.all([
+      readChunked(transport, [{
         table: "catalog_script_client",
-        query: setIds.length
-          ? "active=true^cat_item=" + itemId + "^ORvariable_setIN" + setIds.join(",")
-          : "cat_item=" + itemId + "^active=true",
+        query: "cat_item=" + itemId + "^active=true",
         fields: "sys_id,name,script",
         limit: STORE_CAPS.catalog_script_client,
-        options: { displayAll: true, excludeRefLinks: true },
-      }),
-      safeRead(transport, {
+        options: readOptions,
+        targets: ["item"],
+      }].concat(setChunks.map((ids) => ({
+        table: "catalog_script_client",
+        query: "active=true^variable_setIN" + ids.join(","),
+        fields: "sys_id,name,script",
+        limit: STORE_CAPS.catalog_script_client,
+        options: readOptions,
+        targets: ids,
+      }))), "catalog_script_client", failures, STORE_CAPS.catalog_script_client),
+      readChunked(transport, [{
         table: "catalog_ui_policy",
-        query: setIds.length
-          ? "active=true^run_scripts=true^catalog_item=" + itemId + "^ORvariable_setIN" + setIds.join(",")
-          : "catalog_item=" + itemId + "^active=true^run_scripts=true",
+        query: "catalog_item=" + itemId + "^active=true^run_scripts=true",
         fields: "sys_id,short_description,script_true,script_false",
         limit: STORE_CAPS.catalog_ui_policy,
-        options: { displayAll: true, excludeRefLinks: true },
-      }),
+        options: readOptions,
+        targets: ["item"],
+      }].concat(setChunks.map((ids) => ({
+        table: "catalog_ui_policy",
+        query: "active=true^run_scripts=true^variable_setIN" + ids.join(","),
+        fields: "sys_id,short_description,script_true,script_false",
+        limit: STORE_CAPS.catalog_ui_policy,
+        options: readOptions,
+        targets: ids,
+      }))), "catalog_ui_policy", failures, STORE_CAPS.catalog_ui_policy),
     ]);
     const messageSources = [];
-    scripts.forEach((response, index) => {
-      if (!response.ok || response.truncated) {
-        failures.push(failureFor(index ? "catalog_ui_policy" : "catalog_script_client", response));
-        return;
-      }
-      response.rows.forEach((row) => {
+    scriptReads.forEach((read) => {
+      read.rows.forEach((row) => {
         ["script", "script_true", "script_false"].forEach((field) => {
           if (fieldValue(row, field)) messageSources.push(fieldValue(row, field));
         });
@@ -2255,15 +2350,10 @@
       documentKey: itemId,
       messageKeys: extraction.keys.slice(),
     };
-    const sections = [
-      { id: "values", label: "Catalog Text", rows: valueRows },
-      { id: "choices", label: "Choices", rows: choiceRows },
-      { id: "messages", label: "Messages", rows: messageRows, scan: extraction, separateHeadline: true },
-    ];
-    if (typeof context.onSection === "function") {
-      sections.forEach((section) => context.onSection(section));
-    }
-    return sections;
+    emitSection(context, emitted, {
+      id: "messages", label: "Messages", rows: messageRows, scan: extraction, separateHeadline: true,
+    });
+    return emitted;
   }
 
   function mergeLinkTargets(first, second) {

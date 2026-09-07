@@ -873,6 +873,207 @@ test("a blank language is linked to its existing rows, never to a new record", (
   assert.ok(!row.links.existing.fr);
 });
 
+test("a native choice whose key cannot be queried is unverified and excluded, not a missing gap", () => {
+  /* Review finding: an unsafe value scored as Missing, counted 0/1, with no
+   * usable link. It cannot be listed, prefilled, or matched with confidence,
+   * so it is Unverified and stays out of the denominator. */
+  const languageContext = languages();
+  const row = TL.analyzeChoices({
+    element: "state",
+    source: { table: "example_record", field: "state" },
+    languages: languageContext,
+    origin: "https://example.service-now.com",
+    rows: [
+      { name: "example_record", element: "state", value: "unsafe^value", dependent_value: "", language: "en", label: "Unsafe", inactive: "false" },
+      { name: "example_record", element: "state", value: "safe", dependent_value: "", language: "en", label: "Safe", inactive: "false" },
+      { name: "example_record", element: "state", value: "safe", dependent_value: "", language: "fr", label: "Sûr", inactive: "false" },
+    ],
+  });
+  const unsafe = row.evidence.choices.find((choice) => choice.value === "unsafe^value");
+  const safe = row.evidence.choices.find((choice) => choice.value === "safe");
+  assert.strictEqual(unsafe.states.fr.state, "unverified");
+  assert.strictEqual(unsafe.coverage.counted, 0, "excluded from its own denominator");
+  assert.strictEqual(unsafe.links, null, "no half-built link");
+  assert.strictEqual(safe.states.fr.state, "direct", "the expressible choice is unaffected");
+  assert.strictEqual(row.states.fr.state, "unverified", "one unknown choice makes the row's verdict unknown");
+  assert.strictEqual(row.coverage.counted, 0);
+
+  /* A dependent_value the query language cannot express is the same case. */
+  const dependent = TL.analyzeChoices({
+    element: "state",
+    source: { table: "example_record", field: "state" },
+    languages: languageContext,
+    rows: [
+      { name: "example_record", element: "state", value: "a", dependent_value: "x\ny", language: "en", label: "A", inactive: "false" },
+    ],
+  });
+  assert.strictEqual(dependent.evidence.choices[0].states.fr.state, "unverified");
+});
+
+function catalogTransport(options) {
+  /* A catalog item with an optional list of attached variable sets and one
+   * static-choice variable. `answer` lets a test override any table. */
+  const opts = options || {};
+  const itemId = "00000000000000000000000000000010";
+  const variableId = "00000000000000000000000000000011";
+  const choiceId = "00000000000000000000000000000012";
+  const setIds = opts.setIds || [];
+  const requests = [];
+  const transport = async (request) => {
+    requests.push(request);
+    if (opts.answer) {
+      const answered = opts.answer(request);
+      if (answered !== undefined) return answered;
+    }
+    if (request.table === "sys_language") return [
+      { sys_id: "00000000000000000000000000000001", id: "en", active: "true" },
+      { sys_id: "00000000000000000000000000000002", id: "fr", active: "true" },
+    ];
+    if (request.table === "sys_properties") return [{ name: "glide.sys.language", value: "en" }];
+    if (request.table === "sc_cat_item") return [{
+      sys_id: itemId, sys_class_name: "sc_cat_item", name: "Example item",
+      short_description: "", description: "",
+    }];
+    if (request.table === "sys_db_object") return [{ name: "sc_cat_item", "super_class.name": "" }];
+    if (request.table === "io_set_item") return setIds.map((id, index) => ({ variable_set: id, order: String(index) }));
+    if (request.table === "item_option_new_set") {
+      return setIds.filter((id) => request.query.includes(id)).map((id, index) => ({
+        sys_id: id, title: "Set " + (index + 1), type: "one_to_one", active: "true", order: "100",
+      }));
+    }
+    if (request.table === "item_option_new") {
+      return request.query.startsWith("cat_item=") ? [{
+        sys_id: variableId, name: "example_topic", question_text: "Example topic",
+        type: "5", active: "true", variable_set: "",
+      }] : [];
+    }
+    if (request.table === "question_choice") return [{
+      sys_id: choiceId, question: variableId, text: opts.choiceText || "Choice A", value: "a", inactive: "false",
+    }];
+    if (request.table === "sys_translated") return [];
+    if (request.table === "sys_translated_text") return [];
+    if (request.table === "catalog_script_client") return [];
+    if (request.table === "catalog_ui_policy") return [];
+    if (request.table === "sys_ui_message") return [];
+    return [];
+  };
+  return { transport, requests, itemId, variableId, choiceId };
+}
+
+test("a catalog choice whose text cannot be queried is unverified, not unavailable", async () => {
+  /* Review finding: a rejected string went into the unavailable set, so it
+   * read as a failed read. It is a key the query language cannot express,
+   * which is Unverified; Unavailable is reserved for reads that failed. */
+  const fixture = catalogTransport({ choiceText: "Choice^A" });
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+  }, fixture.transport);
+  const row = result.sections.find((section) => section.id === "choices").rows[0];
+  assert.strictEqual(row.states.fr.state, "unverified");
+  assert.ok(!row.evidence.unavailable, "not presented as a failed read");
+  assert.strictEqual(row.evidence.choices[0].states.fr.state, "unverified");
+  assert.strictEqual(row.coverage.counted, 0);
+  assert.ok(
+    !fixture.requests.some((request) => request.table === "sys_translated" && request.query.includes("Choice^A")),
+    "the unexpressible text is never put into a query"
+  );
+});
+
+test("a record-keyed row for a variable set title is reported as stranded", async () => {
+  /* Review finding: set titles were built without stranded evidence because
+   * the mirror read never asked for item_option_new_set document keys. */
+  const setId = "00000000000000000000000000000020";
+  const fixture = catalogTransport({
+    setIds: [setId],
+    answer: (request) => {
+      if (request.table === "sys_translated_text" && request.query.includes("tablename=item_option_new_set")) {
+        return [{ tablename: "item_option_new_set", documentkey: setId, fieldname: "title", language: "fr" }];
+      }
+      return undefined;
+    },
+  });
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+  }, fixture.transport);
+  const mirror = fixture.requests.find((request) =>
+    request.table === "sys_translated_text" && request.query.includes("tablename=item_option_new_set"));
+  assert.ok(mirror && mirror.query.includes("documentkeyIN" + setId), "the mirror read names the set");
+  const values = result.sections.find((section) => section.id === "values");
+  const title = values.rows.find((row) => row.aspect === "set title");
+  assert.ok(title, "the set title row exists");
+  assert.strictEqual(title.evidence.stranded.rowCount, 1, "the wrong-store row is reported");
+  assert.strictEqual(title.states.fr.state, "missing", "and it never counts as coverage");
+});
+
+test("catalog reads over many variable sets stay under the query bound", async () => {
+  /* Review finding: sys_idIN and variable_setIN were joined over every set
+   * id in one query, so an item with 182 sets produced requests over 6000
+   * characters. Every id list is now chunked, item rows read once. */
+  const setIds = [];
+  for (let index = 0; index < 182; index++) {
+    setIds.push("0000000000000000000000000000" + index.toString(16).padStart(4, "0"));
+  }
+  const fixture = catalogTransport({ setIds });
+  await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+  }, fixture.transport);
+  const longest = Math.max.apply(null, fixture.requests.map((request) => String(request.query || "").length));
+  assert.ok(longest <= 6000, "longest query was " + longest);
+  const count = (table, predicate) => fixture.requests.filter((request) =>
+    request.table === table && (!predicate || predicate(request))).length;
+  assert.strictEqual(count("item_option_new_set"), 4, "182 sets in chunks of 50");
+  assert.strictEqual(count("item_option_new", (r) => r.query.startsWith("cat_item=")), 1, "the item's own variables once");
+  assert.strictEqual(count("item_option_new", (r) => r.query.startsWith("variable_setIN")), 4);
+  assert.strictEqual(count("catalog_script_client"), 5, "item plus four set chunks");
+  assert.strictEqual(count("catalog_ui_policy"), 5);
+  assert.strictEqual(count("sys_translated_text", (r) => r.query.includes("tablename=item_option_new_set")), 4, "set-title mirrors are chunked too");
+  assert.ok(fixture.requests.every((request) => !/,,|IN,|IN\^/.test(request.query || "")), "no empty id list is ever sent");
+});
+
+test("form sections are handed over as their rows exist, before the message scan", async () => {
+  /* Review finding: every section was emitted together at the end, so a
+   * timeout during the client-script scan discarded labels, values and
+   * choices that had already been read. */
+  const fixture = formTransport();
+  const events = [];
+  let seenAtScan = null;
+  const transport = async (request) => {
+    if (request.table === "sys_script_client" && seenAtScan === null) seenAtScan = events.slice();
+    return fixture.transport(request);
+  };
+  const result = await TL.run({
+    mode: "form",
+    surface: "classic",
+    table: "example_child",
+    sysId: "00000000000000000000000000000009",
+    fields: ["title", "description", "state", "plain"],
+    loadValues: async () => ({ values: { title: "Base title" } }),
+    onSection: (section) => events.push(section.id),
+  }, transport);
+  assert.deepStrictEqual(seenAtScan, ["labels", "values", "choices"], "three sections were on their way before the scan started");
+  assert.deepStrictEqual(events, ["labels", "values", "choices", "messages"]);
+  /* Array.from: the engine's arrays come from its VM realm, whose Array
+   * prototype is not this one's, and deepStrictEqual compares prototypes. */
+  assert.deepStrictEqual(Array.from(result.sections, (section) => section.id), events, "the final result is the same sections in the same order");
+});
+
+test("catalog sections are handed over before the client-script scan", async () => {
+  const fixture = catalogTransport();
+  const events = [];
+  let seenAtScan = null;
+  const transport = async (request) => {
+    if (request.table === "catalog_script_client" && seenAtScan === null) seenAtScan = events.slice();
+    return fixture.transport(request);
+  };
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+    onSection: (section) => events.push(section.id),
+  }, transport);
+  assert.deepStrictEqual(seenAtScan, ["values", "choices"]);
+  assert.deepStrictEqual(events, ["values", "choices", "messages"]);
+  assert.deepStrictEqual(Array.from(result.sections, (section) => section.id), events);
+});
+
 test("a choices row links to the whole list while each value prefills its own row", () => {
   const origin = "https://example.service-now.com";
   const languageContext = languages();
