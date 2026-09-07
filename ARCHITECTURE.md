@@ -265,8 +265,10 @@ fingerprint (surface, table, sys_id, frame) is captured with the first probe
 and re-checked before results are committed; a changed page discards the run.
 A classic form that carries a variable editor (a request item, a catalog
 task, a case raised through a record producer) is still Form mode, and its
-catalog variables are not checked there: their label ids carry the question
-ids, one bounded read resolves the owning item, and the panel shows a
+catalog variables are not checked there: the editor keeps a hidden
+`variable_map` whose `<item id>` children are the question ids (its controls are
+`ni.QS<id>`, not `IO:`), one bounded read resolves the owning item, and the
+panel shows a
 prominent notice saying how many variables were not checked with a link to
 the item or producer definition form, where the catalog run does check them.
 

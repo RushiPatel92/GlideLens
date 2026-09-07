@@ -5532,23 +5532,30 @@ function translationFormFields(probe) {
 }
 
 /*
- * A classic variable editor renders each catalog variable with a label id of
- * the form `label.IO:<question sys_id>`. Those ids are collected by the same
- * probe as the field labels and are not fields, so translationFormFields
- * drops them; here they are the signal that the form carries catalog
- * variables this run does not check, and the ids let the engine find the
- * owning item for the notice's link.
+ * The question ids of the catalog variables a classic form carries. The
+ * verified signal (customer case form, 2026-09-07) is the hidden
+ * `#variable_map` element, whose `<item id>` children are the question
+ * sys_ids the editor renders from; the worker probe lifts those as
+ * `variableQuestionIds`. That editor's controls are `ni.QS<sys_id>` and its
+ * label ids are `label_ni.QS<sys_id>`, so the `label.IO:<sys_id>` shape kept
+ * below is only a fallback for an older editor and is not the reason this
+ * works. None of these ids are fields, so translationFormFields drops them;
+ * here they say the form carries variables this run does not check, and let
+ * the engine find the owning item for the notice's link.
  */
 function translationVariableQuestionIds(probe) {
   const seen = new Set();
   const ids = [];
-  (probe && probe.labelIds || []).forEach((id) => {
-    const match = /^label\.(?:ni\.)?IO:([0-9a-f]{32})$/i.exec(String(id || ""));
-    if (!match) return;
-    const questionId = match[1].toLowerCase();
-    if (seen.has(questionId)) return;
+  const add = (value) => {
+    const questionId = String(value || "").toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(questionId) || seen.has(questionId)) return;
     seen.add(questionId);
     ids.push(questionId);
+  };
+  (probe && probe.variableQuestionIds || []).forEach(add);
+  (probe && probe.labelIds || []).forEach((id) => {
+    const match = /^label\.(?:ni\.)?IO:([0-9a-f]{32})$/i.exec(String(id || ""));
+    if (match) add(match[1]);
   });
   return ids;
 }

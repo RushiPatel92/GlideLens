@@ -185,6 +185,41 @@ test("Translation Lens form probe detects preallocated and empty new records", (
   assert.strictEqual(empty.recordMarkerMatched, true);
 });
 
+test("Translation Lens form probe lifts the question ids from the hidden variable map", () => {
+  /* Verified on a customer case form raised through a record producer: the
+   * classic variable editor keeps a hidden #variable_map whose <item id>
+   * children are the question sys_ids it renders from. Those ids are the
+   * signal that the form carries catalog variables a form run never checks. */
+  const q1 = "00000000000000000000000000000031";
+  const q2 = "00000000000000000000000000000032";
+  const marker = { value: "example_record" };
+  const map = {
+    querySelectorAll: (selector) => selector === "item[id]"
+      ? [{ id: q1 }, { id: q2.toUpperCase() }, { id: "not-a-sys-id" }, { id: q1 }, {}]
+      : [],
+  };
+  const document = {
+    querySelector: (selector) => selector === "#variable_map" ? map
+      : (selector.includes("sys_target") ? marker : { value: "" }),
+    querySelectorAll: (selector) => selector === '[id^="label."]' ? [{ id: "label.example_record.title" }] : [],
+  };
+  const { api } = loadTranslationFrameHelpers({
+    document,
+    gForm: { getTableName: () => "example_record", getUniqueValue: () => "", getValue: () => "" },
+  });
+  const result = api.inspectFormTranslationContext([]);
+  assert.deepStrictEqual(result.variableQuestionIds, [q1, q2], "deduplicated, lower-cased, non-ids dropped");
+  assert.deepStrictEqual(result.labelIds, ["label.example_record.title"], "labels are untouched");
+
+  const none = loadTranslationFrameHelpers({
+    gForm: { getTableName: () => "example_record", getUniqueValue: () => "", getValue: () => "" },
+  }).api.inspectFormTranslationContext([]);
+  assert.deepStrictEqual(none.variableQuestionIds, [], "no map, no ids, no error");
+
+  const source = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
+  assert.ok(source.includes("variableQuestionIds: value.variableQuestionIds || []"), "the worker passes the ids to the content script");
+});
+
 test("Translation Lens rejects markerless and expected-identity-mismatched frames", () => {
   const saved = (table, sysId, marker, isNewRecord) => ({
     foundGForm: true,

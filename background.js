@@ -3036,6 +3036,7 @@ function inspectFormTranslationContext(requestedFields) {
     isNewRecord: false,
     recordMarkerMatched: false,
     labelIds: [],
+    variableQuestionIds: [],
     values: {},
   };
   let form = null;
@@ -3088,6 +3089,24 @@ function inspectFormTranslationContext(requestedFields) {
       .map((element) => String(element.id || ""))
       .filter(Boolean)
       .slice(0, 1000);
+  } catch (e) {}
+
+  /* The classic variable editor keeps a hidden #variable_map whose <item id>
+   * children are the question sys_ids it renders from (verified on a case
+   * form raised through a record producer, 2026-09-07). Those are the catalog
+   * variables a form run never checks; the content script turns them into the
+   * panel's "not checked" notice. Ids only, deduplicated, never a value. */
+  try {
+    const map = document.querySelector("#variable_map");
+    const seen = new Set();
+    if (map && typeof map.querySelectorAll === "function") {
+      Array.from(map.querySelectorAll("item[id]")).forEach((item) => {
+        const id = String(item && item.id || "").toLowerCase();
+        if (!/^[0-9a-f]{32}$/.test(id) || seen.has(id)) return;
+        seen.add(id);
+        if (result.variableQuestionIds.length < 500) result.variableQuestionIds.push(id);
+      });
+    }
   } catch (e) {}
 
   const fields = Array.isArray(requestedFields) ? requestedFields.slice(0, 500) : [];
@@ -4830,6 +4849,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             isNewRecord: false,
             frameId: null,
             labelIds: [],
+            variableQuestionIds: [],
             values: {},
           });
           return;
@@ -4845,6 +4865,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           isNewRecord: Boolean(value.isNewRecord),
           frameId: selected.frameId,
           labelIds: value.labelIds || [],
+          variableQuestionIds: value.variableQuestionIds || [],
           values: value.values || {},
         });
       })

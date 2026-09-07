@@ -209,6 +209,13 @@ test("variable editor question ids are lifted from the probe's label ids and han
   ] }), [a, b]);
   assert.deepStrictEqual(lift({ labelIds: [] }), []);
   assert.deepStrictEqual(lift(null), []);
+  /* The verified signal: the worker's variable_map lift comes first, and a
+   * label-shaped duplicate of the same question is not counted twice. */
+  const c = "00000000000000000000000000000033";
+  assert.deepStrictEqual(lift({
+    variableQuestionIds: [c, a.toUpperCase(), "junk", ""],
+    labelIds: ["label.IO:" + a, "label.example_record.title"],
+  }), [c, a]);
 
   const context = between(contentSource, "function translationFormEngineContext", "function translationEngineContext");
   assert.ok(context.includes("variableQuestionIds: translationVariableQuestionIds(form)"));
