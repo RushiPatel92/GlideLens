@@ -21,16 +21,24 @@ Before changing code, use these task-specific references:
 
 ### Client confidentiality
 
-Client confidentiality is absolute. Never write a real client or customer
-name, tenant or instance name, hostname, company-specific identifier, account
-name, internal URL, or other identifying customer detail anywhere in this
-repository's work.
+Client confidentiality is absolute at the publication boundary. Never let a real
+client or customer name, tenant or instance name, hostname, company-specific
+identifier, account name, internal URL, or other identifying customer detail
+reach anything this project publishes.
 
-This applies even to gitignored or local notes and includes files, plans,
-branches, commits, tags, pull requests, issues, release notes, store
-submissions, screenshots, logs, traces, fixtures, and test data. Information
-seen in a browser, tool output, pasted trace, or user message remains
-confidential even when the user does not repeat that instruction.
+That covers everything that leaves the machine: tracked files, **untracked
+non-ignored files** — `git add -A` publishes those too — branches, commits, tags,
+pull requests, issues, release notes, store submissions, screenshots, logs,
+traces, fixtures, and test data. Information seen in a browser, tool output,
+pasted trace, or user message remains confidential even when the user does not
+repeat that instruction.
+
+Gitignored and out-of-repo working material may hold real instance detail:
+`plans/`, the sibling `tooling/` directory and its probe output, `~/.glidelens/`,
+`~/.cnit/`, and local screenshots. That is deliberate — a probe report you cannot
+tie back to its record is worth less. Do not build scanners that police local
+trees. Screenshots destined for a store listing stay PDI-only regardless, because
+no scan can read pixels.
 
 Use anonymous descriptions such as "customer instance", "test instance", or
 "framed classic form" and synthetic data such as `example.service-now.com`.
