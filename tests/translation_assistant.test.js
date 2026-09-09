@@ -293,7 +293,7 @@ test("every per-row verdict has a case", () => {
 
 test("a 256-character translated_field is over its destination limit", () => {
   const draft = draftFrom([element({ fields: [field({ source: "Long one" })] })]);
-  assert.strictEqual(draft.payload.rows[0].maxLength, 255, "sys_translated.value, not the source column");
+  assert.strictEqual(draft.payload.rows[0].maxLength, 255, "sys_translated.label, the column the translation lands in");
   const result = evaluate(draft, [element({ fields: [field({ source: "Long one", sysId: draft.map["1"].additionalParameters.sysId })] })],
     replyFor(draft, { 1: "x".repeat(255) }));
   assert.strictEqual(verdictOf(result, 1), TA.VERDICT.FILL, "255 fits");
@@ -673,9 +673,11 @@ test("destination grouping folds capitalisation, because sys_translated does", (
  * stored row on the server, so treating them as two destinations let a locked
  * row be rewritten through an unlocked one.
  */
-test("the fold covers every character class the server folds", () => {
-  /* [variant, base] pairs the server was measured to unify. */
-  const folded = [
+test("the fold carries only equivalences the server was measured to make", () => {
+  /* [variant, base] pairs measured to resolve to the SAME stored row on both
+   * the PDI and the configured instance, each positive confirmed by the
+   * control row's own sys_id coming back. */
+  const folds = [
     ["é", "e"], ["è", "e"], ["ê", "e"], ["ë", "e"],
     ["à", "a"], ["å", "a"], ["ą", "a"],
     ["ó", "o"], ["ö", "o"], ["ő", "o"],
@@ -684,27 +686,81 @@ test("the fold covers every character class the server folds", () => {
     ["ğ", "g"], ["ť", "t"], ["ř", "r"],
     ["ı", "i"],
   ];
-  folded.forEach(([variant, base]) => {
+  folds.forEach(([variant, base]) => {
     assert.strictEqual(TA.foldSourceKey("x" + variant + "x"), TA.foldSourceKey("x" + base + "x"),
-      "U+" + variant.codePointAt(0).toString(16) + " must fold to " + base);
+      "U+" + variant.codePointAt(0).toString(16) + " was measured to fold to " + base);
   });
 
-  /* The eszett folds to one s, which is what the server does. Unicode case
-   * folding says "ss", and taking that would have left the bypass open. */
+  /* The eszett folds to one s. Unicode case folding says "ss"; the server does
+   * not, and taking Unicode's answer left a bypass. */
   assert.strictEqual(TA.foldSourceKey("ß"), "s");
-  assert.notStrictEqual(TA.foldSourceKey("ß"), "ss");
 
-  /* Wider than the server on these, which is the safe direction. */
+  /* A key stored with trailing spaces answers a query for the trimmed form,
+   * on the same row. Measured on the configured instance. */
+  assert.strictEqual(TA.foldSourceKey("cost centre  "), TA.foldSourceKey("cost centre"));
+
+  /*
+   * Measured DISTINCT, so the fold must keep them apart. Folding these was the
+   * over-fold defect: it hides one source string from the model and writes the
+   * other's translation over it. Deduplicating is a content decision and only
+   * measured equivalences may drive it.
+   */
+  const distinct = [
+    ["ø", "o"], ["đ", "d"], ["ð", "d"], ["ł", "l"], ["ŧ", "t"], ["ŋ", "n"],
+    ["æ", "a"], ["œ", "o"],
+    ["ｏ", "o"],   // fullwidth - NFKD folded this and the server does not
+    ["ο", "o"],   // greek omicron
+    ["о", "o"],   // cyrillic o
+  ];
+  distinct.forEach(([variant, base]) => {
+    assert.notStrictEqual(TA.foldSourceKey("x" + variant + "x"), TA.foldSourceKey("x" + base + "x"),
+      "U+" + variant.codePointAt(0).toString(16) + " was measured to stay distinct from " + base);
+  });
+
+  /* A combining mark standing on its own is measured distinct from the base
+   * letter, so only a PRECOMPOSED accent folds. Built from code points so the
+   * assertion cannot become the precomposed case depending on the editor. */
   const decomposed = String.fromCodePoint(0x65, 0x0301);
   assert.strictEqual(decomposed.length, 2, "this must be the two-code-point form");
-  assert.strictEqual(TA.foldSourceKey(decomposed), TA.foldSourceKey("e"),
-    "the server keeps a decomposed accent distinct; folding it is the safe direction");
-  assert.strictEqual(TA.foldSourceKey("ø"), "o");
+  assert.notStrictEqual(TA.foldSourceKey(decomposed), TA.foldSourceKey("e"));
 
-  /* And not so wide that distinct letters collapse. */
-  assert.notStrictEqual(TA.foldSourceKey("æ"), TA.foldSourceKey("a"));
-  assert.notStrictEqual(TA.foldSourceKey("œ"), TA.foldSourceKey("o"));
+  /* Whitespace, all measured except the two the suspect key covers below. */
+  assert.notStrictEqual(TA.foldSourceKey(" cost"), TA.foldSourceKey("cost"), "leading space");
+  assert.notStrictEqual(TA.foldSourceKey("a  b"), TA.foldSourceKey("a b"), "doubled internal space");
+  assert.notStrictEqual(TA.foldSourceKey("a\u00a0b"), TA.foldSourceKey("a b"), "non-breaking space");
   assert.notStrictEqual(TA.foldSourceKey("cost centre"), TA.foldSourceKey("cost center"));
+});
+
+test("what could not be measured is refused rather than guessed either way", () => {
+  /* No stored key on either instance carried a trailing or internal tab, so
+   * whether the server folds one is unproven. The suspect key spans those, and
+   * a collision under it blocks both rows instead of merging them. */
+  assert.notStrictEqual(TA.foldSourceKey("cost centre\t"), TA.foldSourceKey("cost centre"),
+    "unproven equivalence must never drive deduplication");
+  assert.strictEqual(TA.suspectSourceKey("cost centre\t"), TA.suspectSourceKey("cost centre"),
+    "but it must be visible as a possible collision");
+
+  const plain = field({ source: "Cost centre", sysId: nextSysId() });
+  const tabbed = field({ source: "Cost centre\t", sysId: nextSysId() });
+  const draft = draftFrom([
+    element({ id: "A", fields: [plain] }),
+    element({ id: "B", fields: [tabbed] }),
+  ]);
+  assert.strictEqual(draft.payload.rows.length, 0,
+    "neither row is filled while it is unknown whether they share a stored row");
+  assert.strictEqual(draft.counts.uncertain_destination, 2);
+  assert.strictEqual(draft.excluded[0].reason, TA.REASON.UNCERTAIN_DESTINATION);
+
+  /* A measured-distinct pair is NOT blocked: the guard covers the unproven, not
+   * everything that merely looks similar. */
+  const distinctPair = draftFrom([
+    element({ id: "A", fields: [field({ source: "for", sysId: nextSysId() })] }),
+    element({ id: "B", fields: [field({ source: "før", sysId: nextSysId() })] }),
+  ]);
+  assert.strictEqual(distinctPair.payload.rows.length, 2,
+    "the server keeps these apart, so both are translated separately");
+  assert.strictEqual(distinctPair.payload.rows[1].source, "før",
+    "and neither source is hidden from the model");
 });
 
 test("an accented source string shares its destination with the plain one", () => {

@@ -81,6 +81,7 @@
     EMPTY_SOURCE: "empty_source",
     LOCKED: "locked",
     SHARED_WITH_INELIGIBLE: "shared_with_ineligible",
+    UNCERTAIN_DESTINATION: "uncertain_destination",
   });
 
   function createError(code, message) {
@@ -160,23 +161,66 @@
    * bypass. Anything added here must keep that direction.
    */
   const COMBINING_MARK = /\p{Mn}/u;
+  /* Measured to fold, and not reachable by decomposing the character. */
   const FOLD_NON_DECOMPOSING = new Map([
-    [0x0131, "i"],  // dotless i - the server folds it, and NFKD does not
+    [0x0131, "i"],  // dotless i - the server folds it, NFD does not reach it
     [0x00df, "s"],  // eszett - to one s, measured, not the Unicode "ss"
-    [0x00f8, "o"], [0x0111, "d"], [0x0142, "l"], [0x0127, "h"],
-    [0x0167, "t"], [0x014b, "n"], [0x00f0, "d"], [0x00fe, "th"],
-    [0x00e6, "ae"], [0x0153, "oe"],
   ]);
+  /* Measured: a key stored with trailing spaces is returned by a query for the
+   * trimmed form, on the same row. Leading spaces, doubled internal spaces,
+   * newlines and a non-breaking space are all measured NOT to fold. */
+  const TRAILING_SPACES = / +$/;
 
   function foldSourceKey(value) {
-    const lowered = text(value).toLowerCase().normalize("NFKD");
+    const lowered = text(value).toLowerCase();
     let folded = "";
     for (const character of lowered) {
-      if (COMBINING_MARK.test(character)) continue;
       const code = character.codePointAt(0);
-      folded += FOLD_NON_DECOMPOSING.has(code) ? FOLD_NON_DECOMPOSING.get(code) : character;
+      if (FOLD_NON_DECOMPOSING.has(code)) {
+        folded += FOLD_NON_DECOMPOSING.get(code);
+        continue;
+      }
+      /* Decompose one character at a time and keep its base letter. A
+       * precomposed accent folds; a combining mark that was already standing on
+       * its own in the source does not, because the server keeps those apart. */
+      const decomposed = character.normalize("NFD");
+      const base = decomposed[0];
+      folded += (decomposed.length > 1 && COMBINING_MARK.test(decomposed[1])) ? base : character;
     }
-    return folded;
+    return folded.replace(TRAILING_SPACES, "");
+  }
+
+  /*
+   * The other key, and the reason there are two.
+   *
+   * foldSourceKey answers "does the platform store one translation for these
+   * two strings?", and it is used to DEDUPLICATE - to export two rows as one
+   * and write one answer to both. A false equivalence there hides a source
+   * string from the model and overwrites a different one, so it may only carry
+   * equivalences that were measured.
+   *
+   * But the same question also decides what to BLOCK, and there the error runs
+   * the other way: an equivalence the engine misses is a lock bypass, because
+   * filling one row rewrites the stored row another one shares. Measurement
+   * cannot cover every script and every whitespace form, so what is left over
+   * needs a third answer besides "same" and "different": *unproven*.
+   *
+   * suspectSourceKey is that answer. Two rows whose folded keys differ but
+   * whose suspect keys match might share a destination, so the engine refuses
+   * to fill either of them and says why - rather than silently deduplicating
+   * them, which would be the content error, or silently treating them as
+   * independent, which would be the lock bypass.
+   *
+   * It carries only the whitespace forms no stored key on either instance was
+   * available to test: a trailing tab, and an internal tab. Everything the
+   * probe did settle stays out, so a measured-distinct pair is never blocked.
+   */
+  const TRAILING_WHITESPACE = /\s+$/;
+  const INTERNAL_TABS = /\t+/g;
+
+  function suspectSourceKey(value) {
+    return foldSourceKey(text(value).replace(INTERNAL_TABS, " "))
+      .replace(TRAILING_WHITESPACE, "");
   }
 
   function placeholders(value) {
@@ -224,6 +268,15 @@
     /* Unsupported and message rows never group: they are excluded anyway, and
      * an invented group would drag eligible rows down with them. */
     return ["row", String(field.elementIndex), String(field.fieldIndex)].join(UNIT);
+  }
+
+  /* The same address under the looser key. Only string-scoped rows can collide
+   * this way; a record-scoped destination is a sys_id and needs no guessing. */
+  function suspectDestinationKey(field) {
+    const p = field.params || {};
+    const type = fieldType(p);
+    if (!STRING_SCOPED_TYPES.has(type)) return null;
+    return ["string", type, text(p.table), text(p.name), suspectSourceKey(field.source)].join(UNIT);
   }
 
   function limitFor(params) {
@@ -294,6 +347,32 @@
       }
       group.members.push(field);
     });
+    /*
+     * Destinations that are only PROBABLY distinct. Two groups whose folded
+     * keys differ but whose suspect keys match may be one stored row, and the
+     * engine cannot tell. Deduplicating them would write one answer over two
+     * different source strings; treating them as independent would let filling
+     * one rewrite the other's lock. Neither is acceptable on a guess, so both
+     * groups are refused and the panel says which field it could not separate.
+     */
+    const bySuspect = new Map();
+    order.forEach((group) => {
+      const suspect = suspectDestinationKey(group.members[0]);
+      if (!suspect) return;
+      const seen = bySuspect.get(suspect) || [];
+      seen.push(group);
+      bySuspect.set(suspect, seen);
+    });
+    bySuspect.forEach((groups) => {
+      if (groups.length < 2) return;
+      groups.forEach((group) => {
+        group.uncertainWith = groups
+          .filter((other) => other !== group)
+          .map((other) => other.members[0].elementId);
+        group.members.forEach((member) => { member.exclusion = REASON.UNCERTAIN_DESTINATION; });
+      });
+    });
+
     order.forEach((group) => {
       const ineligible = group.members.filter((member) => member.exclusion);
       if (!ineligible.length) return;
@@ -583,11 +662,14 @@
   }
 
   /* Why a live field can no longer take the value it was reviewed for, or null
-   * when it still can. */
+   * when it still can. The order mirrors evaluateReply's deliberately: both
+   * refuse either way, but the two must not name different reasons for the same
+   * field or a report will contradict the preview the user just read. */
   function memberFailure(field, member) {
     const blocking = ineligibilityOf(field);
-    if (blocking) return blocking;
+    if (blocking === VERDICT.INELIGIBLE) return blocking;
     if (hashText(field.source) !== member.expectedSourceHash) return VERDICT.SOURCE_CHANGED;
+    if (blocking) return blocking;
     if (field.target !== text(member.expectedTarget)) return VERDICT.EDITED;
     return null;
   }
@@ -1118,6 +1200,8 @@
     hashText,
     randomExportId,
     foldSourceKey,
+    suspectSourceKey,
+    suspectDestinationKey,
     placeholders,
     placeholdersDiffer,
     identityKey,
