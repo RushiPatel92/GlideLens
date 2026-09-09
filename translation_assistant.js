@@ -104,9 +104,10 @@
   }
 
   /*
-   * FNV-1a, run twice with different offset bases to give 64 bits of hex. Used
-   * only to detect that a source string moved between draft and apply, which is
-   * a change check rather than a security boundary.
+   * Two 32-bit rolling hashes over the same string - one is FNV-1a, the second
+   * mixes the index in with a different multiplier - concatenated with the
+   * length. It is not standard 64-bit FNV-1a and it is not cryptographic: it
+   * exists only to detect that a source string moved between draft and apply.
    */
   function hashText(value) {
     const input = text(value);
@@ -531,9 +532,40 @@
     NOT_EXPORTED: "not_exported",
     MISSING: "missing",
     TOO_LONG: "too_long",
+    INELIGIBLE: "ineligible",
   });
 
   const BLOCKED_VERDICTS = new Set([VERDICT.LOCKED, VERDICT.TOO_LONG]);
+
+  /*
+   * An exclusion that applies to this field as the model reads right now. A
+   * draft can outlive a change in how the page represents a field - a plain
+   * row that comes back as rich text is the case that matters, because that is
+   * the one this feature must never fill - so eligibility is re-tested against
+   * the live read rather than trusted from draft time.
+   *
+   * A member marked only because a group-mate is ineligible is not itself the
+   * offender; the caller finds that one by scanning the rest of the group.
+   */
+  function ineligibilityOf(field) {
+    if (field.locked) return VERDICT.LOCKED;
+    if (field.exclusion &&
+        field.exclusion !== REASON.SHARED_WITH_INELIGIBLE &&
+        field.exclusion !== REASON.LOCKED) {
+      return VERDICT.INELIGIBLE;
+    }
+    return null;
+  }
+
+  /* Why a live field can no longer take the value it was reviewed for, or null
+   * when it still can. */
+  function memberFailure(field, member) {
+    const blocking = ineligibilityOf(field);
+    if (blocking) return blocking;
+    if (hashText(field.source) !== member.expectedSourceHash) return VERDICT.SOURCE_CHANGED;
+    if (field.target !== text(member.expectedTarget)) return VERDICT.EDITED;
+    return null;
+  }
 
   function overrideFor(overrides, k) {
     if (!Array.isArray(overrides)) return null;
@@ -553,6 +585,26 @@
 
   function replyRows(reply) {
     return Array.isArray(reply && reply.rows) ? reply.rows : null;
+  }
+
+  /*
+   * A reply is JSON from a language model, so every value in it is a shape
+   * before it is a value. `{"toString": null}` is valid JSON and turns String()
+   * and Number() into a TypeError, which would leave the panel with a thrown
+   * exception instead of a refusal it can show. Nothing is coerced until it is
+   * known to be a primitive, and nothing non-primitive is interpolated into a
+   * message.
+   */
+  function isPrimitiveValue(value) {
+    const type = typeof value;
+    return type === "string" || type === "number" || type === "boolean";
+  }
+
+  function describeValue(value) {
+    if (value === null) return "null";
+    if (isPrimitiveValue(value)) return String(value);
+    if (Array.isArray(value)) return "a list";
+    return "an object";
   }
 
   const ENVELOPE_KEYS = new Set([
@@ -607,9 +659,10 @@
       return refusal("unknown_draft",
         "This reply belongs to a different draft. Draft this item again, or use the file that came from this one.");
     }
-    if (Number(reply.schemaVersion) !== SCHEMA_VERSION) {
+    if (!isPrimitiveValue(reply.schemaVersion) || Number(reply.schemaVersion) !== SCHEMA_VERSION) {
       return refusal("schema_version",
-        "This reply uses format version " + reply.schemaVersion + "; this build understands " + SCHEMA_VERSION + ".");
+        "This reply's format version is " + describeValue(reply.schemaVersion) +
+        "; this build understands " + SCHEMA_VERSION + ".");
     }
     if (text(reply.artifactType) !== draft.identity.artifactInternalName) {
       return refusal("artifact_mismatch", "This reply was drafted for a different kind of record.");
@@ -630,15 +683,17 @@
     for (let i = 0; i < rows.length; i += 1) {
       const row = rows[i];
       if (!isObject(row)) return refusal("row_shape", "Row " + (i + 1) + " of the reply is not an object.");
+      if (!isPrimitiveValue(row.k)) {
+        return refusal("key_shape", "Row " + (i + 1) + " of the reply has no usable k.");
+      }
       const key = String(row.k);
       if (seen.has(key)) {
         return refusal("duplicate_key", "Two rows in the reply both claim k " + key + ".");
       }
       seen.add(key);
       if (row.target !== undefined && typeof row.target !== "string") {
-        return refusal("target_type", "Row k " + key + " returned a " +
-          (row.target === null ? "null" : Array.isArray(row.target) ? "array" : typeof row.target) +
-          " rather than text.");
+        return refusal("target_type",
+          "Row k " + key + " returned " + describeValue(row.target) + " rather than text.");
       }
       if (typeof row.target === "string" && row.target.length > MAX_TARGET_CHARS) {
         return refusal("target_too_large",
@@ -733,6 +788,24 @@
       });
       base.members = resolved.map((entryPair) => displayOf(entryPair.field));
 
+      /* Eligibility is re-tested against this read, not carried from the draft:
+       * a row the page now represents as rich text is one R1 must not fill,
+       * whatever it was when the draft was made. Locked has its own verdict
+       * below, so it is not folded in here. */
+      const ineligible = resolved.find((pair) => ineligibilityOf(pair.field) === VERDICT.INELIGIBLE);
+      if (ineligible) {
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.INELIGIBLE,
+          status: "skip",
+          detail: {
+            reason: ineligible.field.exclusion,
+            member: ineligible.field.identityKey,
+            elementId: ineligible.field.elementId,
+          },
+        }));
+        return;
+      }
+
       const moved = resolved.find((pair) => hashText(pair.field.source) !== pair.member.sourceHash);
       if (moved) {
         rows.push(Object.assign(base, {
@@ -819,12 +892,27 @@
         base.overrideApplied = true;
       }
 
-      const warning = placeholdersDiffer(liveMembers[0].source, target) ? "placeholder" : null;
+      /*
+       * Against every member, not just the first. One translation covers the
+       * whole destination group, and grouping folds capitalisation, so members
+       * can carry placeholders this target matches and placeholders it does
+       * not. Warning on the first member alone lets a real substitution loss
+       * through as a clean fill.
+       */
+      const lost = liveMembers.find((member) => placeholdersDiffer(member.source, target));
+      const warning = lost ? "placeholder" : null;
       rows.push(Object.assign(base, {
         verdict: VERDICT.FILL,
         status: "fill",
         warning,
-        detail: warning ? { source: placeholders(liveMembers[0].source), target: placeholders(target) } : undefined,
+        detail: warning
+          ? {
+            source: placeholders(lost.source),
+            target: placeholders(target),
+            member: lost.identityKey,
+            elementId: lost.elementId,
+          }
+          : undefined,
       }));
     });
 
@@ -922,31 +1010,47 @@
     const elements = contentArray(opts.content);
     const clone = JSON.parse(JSON.stringify(elements));
     const read = readFields(elements);
+    const grouped = groupByDestination(read.fields);
     const index = indexByIdentity(read.fields);
     const applied = [];
     const stale = [];
 
     (opts.plan && opts.plan.fills ? opts.plan.fills : []).forEach((fill) => {
+      const planned = new Map((fill.members || []).map((member) => [member.identityKey, member]));
       const targets = [];
-      let ok = true;
-      fill.members.forEach((member) => {
-        const matches = index.get(member.identityKey) || [];
-        if (!matches.length) { ok = false; return; }
-        matches.forEach((field) => {
-          if (field.locked ||
-              hashText(field.source) !== member.expectedSourceHash ||
-              field.target !== text(member.expectedTarget)) {
-            ok = false;
-            return;
-          }
-          targets.push(field);
-        });
+      let missing = false;
+      planned.forEach((member, key) => {
+        const matches = index.get(key) || [];
+        if (!matches.length) missing = true;
+        matches.forEach((field) => targets.push({ field, member }));
       });
-      if (!ok || !targets.length) {
-        stale.push({ k: fill.k });
+      if (missing || !targets.length) {
+        stale.push({ k: fill.k, reason: VERDICT.MISSING });
         return;
       }
-      targets.forEach((field) => {
+
+      const failed = targets.find((pair) => memberFailure(pair.field, pair.member));
+      if (failed) {
+        stale.push({ k: fill.k, reason: memberFailure(failed.field, failed.member) });
+        return;
+      }
+
+      /*
+       * Rederive the destination group from the content about to be mutated,
+       * exactly as the preview did. A row renamed into this collision between
+       * preview and merge is a member the user never reviewed, and filling
+       * around it would rewrite its shared row on Publish - which is the same
+       * lock bypass the group rule exists to close, reached a step later.
+       */
+      const group = grouped.byKey.get(targets[0].field.destinationKey);
+      const members = group ? group.members : targets.map((pair) => pair.field);
+      if (members.some((field) => !planned.has(field.identityKey))) {
+        stale.push({ k: fill.k, reason: VERDICT.NOT_EXPORTED });
+        return;
+      }
+
+      targets.forEach((pair) => {
+        const field = pair.field;
         clone[field.elementIndex].fieldInfo[field.fieldIndex].translatedValue = fill.value;
         applied.push({ k: fill.k, identityKey: field.identityKey, value: fill.value });
       });

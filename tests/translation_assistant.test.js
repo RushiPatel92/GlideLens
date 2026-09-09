@@ -691,6 +691,96 @@ test("a value that moved between preview and merge is not written", () => {
   moved[0].fieldInfo[0].translatedValue = "Typed after the preview";
   const merged = TA.buildMergedContent({ content: moved, plan });
   assert.deepStrictEqual(json(merged.applied), []);
-  assert.deepStrictEqual(json(merged.stale), [{ k: 1 }]);
+  assert.deepStrictEqual(json(merged.stale), [{ k: 1, reason: TA.VERDICT.EDITED }]);
   assert.strictEqual(merged.content[0].fieldInfo[0].translatedValue, "Typed after the preview");
+});
+
+/*
+ * Codex review of 08c7c54. Four defects, each with the input that found it.
+ */
+test("the merge rederives destination membership, not only the planned members", () => {
+  const filled = field({ source: "Cost centre", sysId: nextSysId() });
+  const locked = field({ source: "Other", target: "Autre", locked: true, sysId: nextSysId() });
+  const content = [element({ id: "A", fields: [filled] }), element({ id: "B", fields: [locked] })];
+  const draft = draftFrom(content);
+  assert.strictEqual(draft.payload.rows.length, 1, "two destinations at draft time, one of them locked");
+
+  const plan = TA.buildApplyPlan({
+    evaluation: evaluate(draft, content, replyFor(draft, { 1: "Centre de cout" })),
+  });
+  assert.strictEqual(plan.fills.length, 1);
+
+  /* The locked row is renamed into the filled row's destination between the
+   * preview and the merge. The element count does not move, so nothing else
+   * refuses; only rederived membership catches it. */
+  const renamed = json(content);
+  renamed[1].fieldInfo[0].originalValue = "Cost centre";
+  const merged = TA.buildMergedContent({ content: renamed, plan });
+  assert.deepStrictEqual(json(merged.applied), [],
+    "filling the unlocked row would rewrite the locked row's shared destination");
+  assert.deepStrictEqual(json(merged.stale), [{ k: 1, reason: TA.VERDICT.NOT_EXPORTED }]);
+  assert.ok(!Object.prototype.hasOwnProperty.call(merged.content[0].fieldInfo[0], "translatedValue"));
+  assert.strictEqual(
+    verdictOf(evaluate(draft, renamed, replyFor(draft, { 1: "Centre de cout" })), 1),
+    TA.VERDICT.NOT_EXPORTED,
+    "the preview and the merge must agree"
+  );
+});
+
+test("a placeholder warning is raised against every member of a folded group", () => {
+  const upper = field({ source: "Charge ${Account}", sysId: nextSysId() });
+  const lower = field({ source: "Charge ${account}", sysId: nextSysId() });
+  const content = [element({ id: "A", fields: [upper] }), element({ id: "B", fields: [lower] })];
+  const draft = draftFrom(content);
+  assert.strictEqual(draft.payload.rows.length, 1, "capitalisation folding puts both in one group");
+
+  const result = evaluate(draft, content, replyFor(draft, { 1: "Debiter ${Account}" }));
+  const row = result.rows[0];
+  assert.strictEqual(row.verdict, TA.VERDICT.FILL);
+  assert.strictEqual(row.warning, "placeholder",
+    "the second member's ${account} is not in the proposed target");
+  assert.strictEqual(row.defaultSelected, false);
+  assert.strictEqual(result.counts.warned, 1);
+});
+
+test("a row the page now represents as rich text is neither filled nor merged", () => {
+  const plain = field({ source: "Describe it", name: "description", table: "sc_cat_item" });
+  const content = [element({ fields: [plain] })];
+  const draft = draftFrom(content);
+  assert.strictEqual(draft.payload.rows.length, 1);
+
+  const asHtml = json(content);
+  asHtml[0].fieldInfo[0].textType = "html";
+  const result = evaluate(draft, asHtml, replyFor(draft, { 1: "Decrivez-le" }));
+  assert.strictEqual(verdictOf(result, 1), TA.VERDICT.INELIGIBLE);
+  assert.strictEqual(result.rows[0].detail.reason, TA.REASON.RICH_TEXT);
+
+  /* A plan built before the change must not carry it through either. */
+  const plan = TA.buildApplyPlan({
+    evaluation: evaluate(draft, content, replyFor(draft, { 1: "Decrivez-le" })),
+  });
+  const merged = TA.buildMergedContent({ content: asHtml, plan });
+  assert.deepStrictEqual(json(merged.stale), [{ k: 1, reason: TA.VERDICT.INELIGIBLE }]);
+  assert.ok(!Object.prototype.hasOwnProperty.call(merged.content[0].fieldInfo[0], "translatedValue"));
+});
+
+test("a JSON value that is a shape rather than a primitive refuses instead of throwing", () => {
+  const content = [element({ fields: [field({ source: "Cost centre" })] })];
+  const draft = draftFrom(content);
+  /* Valid JSON, and enough to turn String() and Number() into a TypeError. */
+  const poison = JSON.parse('{"toString": null}');
+
+  const badKey = replyFor(draft, { 1: "Centre de cout" });
+  badKey.rows[0].k = poison;
+  assert.strictEqual(evaluate(draft, content, badKey).code, "key_shape");
+
+  const badVersion = replyFor(draft, { 1: "Centre de cout" });
+  badVersion.schemaVersion = poison;
+  const version = evaluate(draft, content, badVersion);
+  assert.strictEqual(version.code, "schema_version");
+  assert.match(version.message, /an object/, "no non-primitive is interpolated into a message");
+
+  const badTarget = replyFor(draft, { 1: "Centre de cout" });
+  badTarget.rows[0].target = poison;
+  assert.strictEqual(evaluate(draft, content, badTarget).code, "target_type");
 });
