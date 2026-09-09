@@ -137,21 +137,46 @@
   }
 
   /*
-   * sys_translated resolves a key regardless of capitalisation - verified on a
-   * configured instance, where a variable whose only row was keyed with a
-   * different capitalisation of its question text rendered that translation.
-   * The read and the write use the same query, so two rows differing only in
-   * case address one stored translation.
+   * How the platform decides that two source strings are one stored
+   * translation. `sys_translated.value` holds the source key lower-cased, and
+   * the column's collation folds a good deal more than case on top of that, so
+   * a fold that stops at toLowerCase() leaves rows the server unifies looking
+   * like separate destinations - which is a lock bypass, since filling one
+   * would rewrite the stored row a locked one shares.
    *
-   * Folding here therefore only ever *widens* a destination group, which is the
-   * safe direction: a wider group blocks more and can never let a locked member
-   * be rewritten through an unlocked one. If the write path later proves
-   * case-sensitive, the cost is two case-variants sharing one translation,
-   * which is what the page would show anyway. This is the one place to change
-   * if that is ever measured.
+   * Measured 2026-09-09 on both the PDI and the configured customer
+   * development instance, by querying real rows with variants of their own key
+   * (`tooling/probe-sys-translated-fold-battery.*`). Identical on both: of 76
+   * variants across 15 base letters, the server folds 68 - every precomposed
+   * Latin accent tested, plus the Turkish dotless i, plus the eszett, which
+   * folds to a single "s" and NOT to "ss" as Unicode case folding would have
+   * it. It does not fold a decomposed accent, o/d/l/t with stroke, eng, eth,
+   * ae or oe.
+   *
+   * This fold matches those 68 and is deliberately wider on six of the
+   * remaining eight. Wider is the safe direction: it can only put more rows in
+   * a group, and a group is all-or-nothing, so it blocks more and can never
+   * let a locked member be rewritten through an unlocked one. Narrower is the
+   * bypass. Anything added here must keep that direction.
    */
+  const COMBINING_MARK = /\p{Mn}/u;
+  const FOLD_NON_DECOMPOSING = new Map([
+    [0x0131, "i"],  // dotless i - the server folds it, and NFKD does not
+    [0x00df, "s"],  // eszett - to one s, measured, not the Unicode "ss"
+    [0x00f8, "o"], [0x0111, "d"], [0x0142, "l"], [0x0127, "h"],
+    [0x0167, "t"], [0x014b, "n"], [0x00f0, "d"], [0x00fe, "th"],
+    [0x00e6, "ae"], [0x0153, "oe"],
+  ]);
+
   function foldSourceKey(value) {
-    return text(value).toLowerCase();
+    const lowered = text(value).toLowerCase().normalize("NFKD");
+    let folded = "";
+    for (const character of lowered) {
+      if (COMBINING_MARK.test(character)) continue;
+      const code = character.codePointAt(0);
+      folded += FOLD_NON_DECOMPOSING.has(code) ? FOLD_NON_DECOMPOSING.get(code) : character;
+    }
+    return folded;
   }
 
   function placeholders(value) {

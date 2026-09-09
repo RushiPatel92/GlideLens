@@ -666,6 +666,64 @@ test("destination grouping folds capitalisation, because sys_translated does", (
   assert.strictEqual(TA.foldSourceKey("Cost Centre"), TA.foldSourceKey("cost centre"));
 });
 
+/*
+ * The fold matches what the destination lookup actually does, measured on both
+ * instances by `tooling/probe-sys-translated-fold-battery.*`. Case alone was
+ * not enough: an accented pair and a Turkish dotless i both resolve to one
+ * stored row on the server, so treating them as two destinations let a locked
+ * row be rewritten through an unlocked one.
+ */
+test("the fold covers every character class the server folds", () => {
+  /* [variant, base] pairs the server was measured to unify. */
+  const folded = [
+    ["é", "e"], ["è", "e"], ["ê", "e"], ["ë", "e"],
+    ["à", "a"], ["å", "a"], ["ą", "a"],
+    ["ó", "o"], ["ö", "o"], ["ő", "o"],
+    ["ü", "u"], ["ç", "c"], ["ñ", "n"], ["š", "s"],
+    ["ý", "y"], ["ž", "z"], ["ď", "d"], ["ľ", "l"],
+    ["ğ", "g"], ["ť", "t"], ["ř", "r"],
+    ["ı", "i"],
+  ];
+  folded.forEach(([variant, base]) => {
+    assert.strictEqual(TA.foldSourceKey("x" + variant + "x"), TA.foldSourceKey("x" + base + "x"),
+      "U+" + variant.codePointAt(0).toString(16) + " must fold to " + base);
+  });
+
+  /* The eszett folds to one s, which is what the server does. Unicode case
+   * folding says "ss", and taking that would have left the bypass open. */
+  assert.strictEqual(TA.foldSourceKey("ß"), "s");
+  assert.notStrictEqual(TA.foldSourceKey("ß"), "ss");
+
+  /* Wider than the server on these, which is the safe direction. */
+  const decomposed = String.fromCodePoint(0x65, 0x0301);
+  assert.strictEqual(decomposed.length, 2, "this must be the two-code-point form");
+  assert.strictEqual(TA.foldSourceKey(decomposed), TA.foldSourceKey("e"),
+    "the server keeps a decomposed accent distinct; folding it is the safe direction");
+  assert.strictEqual(TA.foldSourceKey("ø"), "o");
+
+  /* And not so wide that distinct letters collapse. */
+  assert.notStrictEqual(TA.foldSourceKey("æ"), TA.foldSourceKey("a"));
+  assert.notStrictEqual(TA.foldSourceKey("œ"), TA.foldSourceKey("o"));
+  assert.notStrictEqual(TA.foldSourceKey("cost centre"), TA.foldSourceKey("cost center"));
+});
+
+test("an accented source string shares its destination with the plain one", () => {
+  const plain = field({ source: "Cafe order", sysId: nextSysId() });
+  const accented = field({
+    source: "Café order", target: "Commande cafe", locked: true, sysId: nextSysId(),
+  });
+  const draft = draftFrom([element({ id: "A", fields: [plain] }), element({ id: "B", fields: [accented] })]);
+  assert.strictEqual(draft.payload.rows.length, 0,
+    "the server stores one translation for both, so the locked one blocks the group");
+
+  const both = draftFrom([
+    element({ id: "A", fields: [field({ source: "Cafe order", sysId: nextSysId() })] }),
+    element({ id: "B", fields: [field({ source: "Café order", sysId: nextSysId() })] }),
+  ]);
+  assert.strictEqual(both.payload.rows.length, 1, "one destination, one exported row");
+  assert.strictEqual(both.map["1"].members.length, 2);
+});
+
 test("a field with no source text is excluded rather than exported blank", () => {
   const draft = draftFrom([element({ fields: [field({ source: "" }), field({ source: "Cost centre" })] })]);
   assert.strictEqual(draft.payload.rows.length, 1);
