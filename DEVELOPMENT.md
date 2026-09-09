@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js
 ```
 
 The suites cover:
@@ -190,6 +190,15 @@ The suites cover:
   six-method UI contract `content.js` depends on, the worker routes, the
   packaging allowlist, and source assertions for behaviour the engine
   deliberately does not export.
+- `translation_assistant.test.js` — the Translation Assistant engine: which
+  rows are eligible (lock state, not "has no translation"), the destination
+  grouping that makes a shared `sys_translated` row all-or-nothing, the JSON
+  envelope and its instruction block, reply parsing through fences and prose,
+  every per-row verdict, the overrides bound to a reviewed value, the budgets,
+  the merge invariant that writes `translatedValue` and introduces no other
+  key, and the bounded draft store that survives a worker teardown. A reload
+  on its own refuses nothing — the regression guard for a fingerprint that
+  must hold no frame handle.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real
