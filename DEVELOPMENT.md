@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_integration.test.js
 ```
 
 The suites cover:
@@ -199,6 +199,15 @@ The suites cover:
   key, and the bounded draft store that survives a worker teardown. A reload
   on its own refuses nothing — the regression guard for a fingerprint that
   must hold no frame handle.
+- `translation_assistant_integration.test.js` — the runtime boundary: the
+  four-method panel contract `content.js` depends on, the command listed from
+  the decoded URL but acting only on a probed scope, the MAIN-world read that
+  names why a frame is not the comparison page, the three independent
+  editability states it reads rather than infers, the draft held in
+  `storage.session` before it is ever offered, both output routes emitting the
+  one serialised string, and the packaging allowlist. Also the negatives:
+  phase 2 ships no write path, nothing persists a frame handle, and no
+  user-facing string calls a locked field verified.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real

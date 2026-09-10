@@ -12,6 +12,11 @@
  */
 
 importScripts("debug_timeline_main.js");
+/* The Translation Assistant engine, for its bounded draft store. The worker
+ * owns that store because it has to outlive the panel, and the engine is
+ * DOM-free and chrome-free, so importing it here and injecting the same file
+ * into the page keeps one implementation of the cap and the lookup. */
+importScripts("translation_assistant.js");
 
 function sendToTab(tabId, msg, options) {
   if (!tabId) return;
@@ -3194,6 +3199,163 @@ async function readTranslationFormContext(tabId, requestedFields, expectedIdenti
   };
 }
 
+/* ---------------------------------------------------------------------------
+   Translation Assistant: the read path.
+
+   The Localization Framework comparison page is an AngularJS app, so its
+   content has to be read from the page's own scope in the MAIN world. The page
+   runs in `gsft_main` when it is reached by the "Edit Translations" UI action
+   and in the top frame when its link is opened directly, and both have to work,
+   so the frame is discovered fresh on every call. Nothing is cached: a reload
+   gives the same page a different frame id, and ARCHITECTURE.md already
+   requires context-sensitive reads be discovered rather than remembered.
+   --------------------------------------------------------------------------- */
+
+// Self-contained MAIN-world reader for the comparison page. Returns a reason
+// when this frame is not the page, because "not the comparison UI" and "the
+// frame never answered" are different answers and the caller must tell them
+// apart. Based on the read proven by tooling/probe-lf-fingerprint-reload.mjs.
+function inspectLfAssistantContext() {
+  const out = { isLfPage: false, why: "" };
+  try {
+    const root = document.querySelector(".main-content");
+    if (!root) { out.why = "no .main-content in this frame"; return out; }
+    if (typeof angular === "undefined") { out.why = "no page-owned angular"; return out; }
+    const scope = angular.element(root).scope();
+    if (!scope) { out.why = "scope() came back empty"; return out; }
+    if (typeof scope.isAdhocMode !== "function") { out.why = "not the comparison UI"; return out; }
+
+    out.isLfPage = true;
+    out.isAdhoc = !!scope.isAdhocMode();
+    out.frameName = window.name || "";
+    out.isTopFrame = window.top === window.self;
+
+    /* Read-only mode and an in-flight request each make every field
+     * un-editable independently of its lock. Both are read here so the caller
+     * never has to infer editability from a lock alone. The accessor for the
+     * second one can throw when additionalInfo is undefined, which is why it
+     * has its own guard rather than a shared one. */
+    out.readOnlyMode = typeof scope.isReadOnlyMode === "function" ? !!scope.isReadOnlyMode() : null;
+    out.requestInProgress = null;
+    try {
+      if (typeof scope.isLastRequestInProgress === "function") {
+        out.requestInProgress = !!scope.isLastRequestInProgress();
+      }
+    } catch (error) { out.requestInProgress = null; }
+
+    const params = new URLSearchParams(location.search);
+    const pick = (onScope, fromUrl) =>
+      String(scope[onScope] || params.get(fromUrl) || "");
+    out.artifactInternalName = pick("artifactInternalName", "sysparm_artifact_internal_name");
+    out.artifactSysId = pick("artifactSysId", "sysparm_artifact_sys_id");
+    out.sourceLanguage = pick("sourceLanguage", "sysparm_source_language");
+    out.targetLanguage = pick("targetLanguage", "sysparm_target_language");
+
+    const adhoc = scope.itemsToTranslate && scope.itemsToTranslate.adhoc;
+    const original = adhoc && adhoc.documentContent && adhoc.documentContent.content;
+    if (!Array.isArray(original)) { out.why = "documentContent.content is not an array"; return out; }
+
+    /* retrieveCurrentContent flattens the BOUND copy back over the original, so
+     * what comes out includes edits the user has typed but not published --
+     * including unblurred rich text, which syncs to the model on input. Reading
+     * the original array instead would silently lose them. */
+    let content = original;
+    const grouped = scope.groupedItemsToTranslate &&
+      scope.groupedItemsToTranslate.adhoc &&
+      scope.groupedItemsToTranslate.adhoc.documentContent;
+    if (grouped && typeof scope.retrieveCurrentContent === "function") {
+      const live = scope.retrieveCurrentContent(grouped, original);
+      if (Array.isArray(live)) content = live;
+    }
+
+    /* Structured-cloned out of the page. The caller gets a copy it cannot use
+     * to reach back into page objects. */
+    out.content = JSON.parse(JSON.stringify(content));
+    out.elementCount = out.content.length;
+    return out;
+  } catch (error) {
+    out.why = String(error && error.message ? error.message : error);
+    return out;
+  }
+}
+
+function selectLfAssistantFrame(outcomes) {
+  return outcomes.find((item) => {
+    const value = item && item.ok && item.value;
+    return !!value && value.isLfPage && value.isAdhoc && Array.isArray(value.content);
+  }) || null;
+}
+
+async function readLfAssistantContext(tabId) {
+  const outcomes = await injectInDiscoveredFrames(
+    tabId,
+    { world: "MAIN", func: inspectLfAssistantContext },
+    "read the Translation Assistant context"
+  );
+  const answers = outcomes.map((item) => ({
+    frameId: item.frameId,
+    ok: item.ok,
+    error: item.error,
+    value: item.ok
+      ? (item.results || []).map((entry) => entry && entry.result).find((entry) => entry)
+      : null,
+  }));
+  const selected = selectLfAssistantFrame(answers);
+  return {
+    selected: selected ? { frameId: selected.frameId, context: selected.value } : null,
+    /* Why nothing was selected, kept per frame so the panel can say "the page
+     * is there but not in ad-hoc mode" rather than "something went wrong". */
+    rejected: answers
+      .filter((item) => item !== selected)
+      .map((item) => ({
+        frameId: item.frameId,
+        isLfPage: !!(item.value && item.value.isLfPage),
+        isAdhoc: item.value ? item.value.isAdhoc : null,
+        why: item.ok ? String((item.value && item.value.why) || "") : errorText(item.error),
+      })),
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   The draft store.
+
+   storage.session, not a module variable, for the same reason the Debug
+   Timeline frame list lives there: the MV3 worker can be torn down between the
+   user downloading a draft and coming back with the model's reply, and losing
+   the map is losing the only thing that can address the reply. Memory rather
+   than disk, because the map holds the item's own text; a browser restart
+   therefore loses it, which the panel's copy does not promise otherwise.
+
+   The cap and the lookup come from the engine rather than being written twice.
+   --------------------------------------------------------------------------- */
+const LF_ASSISTANT_DRAFTS_KEY = "translationAssistantDrafts";
+
+function assistantEngine() {
+  const engine = globalThis.SNTranslationAssistant;
+  if (!engine) throw new Error("The Translation Assistant engine did not load in the worker.");
+  return engine;
+}
+
+function readLfAssistantDraftStore() {
+  return chrome.storage.session
+    .get(LF_ASSISTANT_DRAFTS_KEY)
+    .then((bag) => (bag && bag[LF_ASSISTANT_DRAFTS_KEY]) || assistantEngine().createDraftStore())
+    .catch(() => assistantEngine().createDraftStore());
+}
+
+async function saveLfAssistantDraft(draft) {
+  const engine = assistantEngine();
+  const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
+  const item = {};
+  item[LF_ASSISTANT_DRAFTS_KEY] = store;
+  await chrome.storage.session.set(item);
+  return store.drafts.length;
+}
+
+async function readLfAssistantDraft(exportId) {
+  return assistantEngine().getDraft(await readLfAssistantDraftStore(), exportId);
+}
+
 // Self-contained MAIN-world reader for classic RITM variables. The caller
 // supplies the definition list because g_form cannot enumerate these fields.
 // Every g_form call is isolated: one throwing prototype-collision key must not
@@ -4883,6 +5045,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .then(() => sendResponse({ ok: true, uiIncluded: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "INJECT_TRANSLATION_ASSISTANT" && sender.tab) {
+    /* Engine and panel together, into the frame that asked, isolated world.
+     * Both no-op when already present. The engine is also importScripts'd into
+     * this worker for the draft store; the two copies are the same file. */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["translation_assistant.js", "translation_assistant_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "GET_LF_ASSISTANT_CONTEXT" && sender.tab) {
+    readLfAssistantContext(sender.tab.id)
+      .then((result) => sendResponse(Object.assign({ ok: true }, result)))
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "SAVE_LF_ASSISTANT_DRAFT" && sender.tab) {
+    saveLfAssistantDraft(msg.draft)
+      .then((held) => sendResponse({ ok: true, held }))
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "READ_LF_ASSISTANT_DRAFT" && sender.tab) {
+    readLfAssistantDraft(msg.exportId)
+      .then((draft) => sendResponse({ ok: true, draft }))
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
     return true;
   }
   if (msg && msg.type === "INJECT_CODE_SEARCH" && sender.tab) {

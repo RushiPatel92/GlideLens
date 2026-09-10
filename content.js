@@ -5178,6 +5178,13 @@ function buildCommands() {
   const isPlaybookDefinitionPage = decodedVariants(location.href).some(
     (url) => url.includes("sys_pd_process_definition")
   );
+  /* Listed only where the Localization Framework comparison page is in play.
+   * The URL decides the listing because buildCommands is synchronous and
+   * cross-frame probing is not; the page's own scope decides whether the
+   * command can do anything, when it runs. */
+  const isLfComparisonPage = decodedVariants(location.href).some(
+    (url) => url.includes(LF_COMPARISON_PAGE_MARKER)
+  );
   /* On a Workspace record route, saved or new, the command keeps its label,
    * keywords and favourite key but shows a notice instead of reading the
    * Workspace form, which the probe cannot read. The notice links to the
@@ -5285,6 +5292,19 @@ function buildCommands() {
       keepOpen: true,
       run: openCurrentRecordPlaybookExecutions,
     },
+    ...(isLfComparisonPage
+      ? [{
+          id: "translation-assistant",
+          label: "Translation Assistant",
+          description: "Prepare and fill translations",
+          keywords: [
+            "translation generator", "translate", "translation", "export",
+            "import", "json", "localization", "i18n", "l10n",
+          ],
+          group: "Record",
+          run: runTranslationAssistant,
+        }]
+      : []),
     ...(isPlaybookDefinitionPage
       ? [{
           id: "open-current-playbook-customer-updates",
@@ -5469,6 +5489,132 @@ function translationLensWithTimeout(promise) {
       }, TRANSLATION_LENS_PANEL_TIMEOUT_MS);
     }),
   ]);
+}
+
+/* ---------------------------------------------------------------------------
+   Translation Assistant (phase 2: the read path).
+
+   Hands the untranslated, unlocked strings of a catalog item or record producer
+   to the user's own AI tool, as JSON that carries its own instructions. Nothing
+   here writes to the page, creates a record, or publishes: filling the page
+   model and pressing Publish are the user's own later steps.
+   --------------------------------------------------------------------------- */
+const TRANSLATION_ASSISTANT_UI_METHODS = ["open", "showDraft", "showError", "close"];
+/* The comparison page's UI page name. Matched against the decoded URL rather
+ * than location.pathname because the page usually runs inside gsft_main, where
+ * the palette's own frame only sees it as a nav_to parameter. A URL match is
+ * what decides whether the command is LISTED; whether the page is really there
+ * and really in ad-hoc mode is settled by a probe when it RUNS, because a URL
+ * is a claim and a scope is evidence. */
+const LF_COMPARISON_PAGE_MARKER = "sn_lf_comparison_ui";
+let translationAssistantRunSequence = 0;
+
+function translationAssistantUi() {
+  const ui = globalThis.SNTranslationAssistantUI;
+  const missing = TRANSLATION_ASSISTANT_UI_METHODS.filter(
+    (method) => !ui || typeof ui[method] !== "function"
+  );
+  if (missing.length) {
+    throw new Error(
+      "Translation Assistant panel is awaiting its visual module (missing " +
+      missing.join(", ") + ")."
+    );
+  }
+  return ui;
+}
+
+async function ensureTranslationAssistantLoaded() {
+  if (globalThis.SNTranslationAssistant && globalThis.SNTranslationAssistantUI) {
+    translationAssistantUi();
+    return true;
+  }
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_TRANSLATION_ASSISTANT" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load Translation Assistant.");
+  }
+  if (!globalThis.SNTranslationAssistant) {
+    throw new Error("Translation Assistant engine did not load.");
+  }
+  translationAssistantUi();
+  return true;
+}
+
+/* Why the draft could not be made, in the user's terms. The worker reports each
+ * frame it asked, so "the page is open but not in ad-hoc mode" and "this is not
+ * the comparison page at all" get different sentences. */
+function translationAssistantRefusal(rejected) {
+  const frames = Array.isArray(rejected) ? rejected : [];
+  const lfFrame = frames.find((frame) => frame.isLfPage);
+  if (lfFrame && lfFrame.isAdhoc === false) {
+    return "This comparison page is not in ad-hoc mode. Translation Assistant only " +
+      "handles the ad-hoc view reached from a catalog item's Edit Translations button.";
+  }
+  if (lfFrame) {
+    return "The comparison page is open but Translation Assistant could not read it" +
+      (lfFrame.why ? " (" + lfFrame.why + ")." : ".");
+  }
+  return "Open a catalog item or record producer and press Edit Translations, then " +
+    "run Translation Assistant on that page.";
+}
+
+async function runTranslationAssistant() {
+  const fingerprint = "ta-" + (++translationAssistantRunSequence) + "-" + Date.now();
+  let ui;
+  try {
+    await ensureTranslationAssistantLoaded();
+    ui = translationAssistantUi();
+  } catch (error) {
+    showToast(error && error.message ? error.message : String(error), true, 7000);
+    return;
+  }
+
+  ui.open({
+    fingerprint,
+    context: {},
+    callbacks: {
+      onClose: () => { translationAssistantRunSequence++; },
+      onNotify: (message, isError) => showToast(message, !!isError, isError ? 7000 : 4000),
+    },
+  });
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "GET_LF_ASSISTANT_CONTEXT" });
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "The page context could not be read.");
+    }
+    if (!response.selected) {
+      ui.showError({ fingerprint, message: translationAssistantRefusal(response.rejected) });
+      return;
+    }
+    const context = response.selected.context || {};
+    const engine = globalThis.SNTranslationAssistant;
+    /* The frame id is deliberately not kept. It is a browser handle a reload
+     * invalidates, the apply route resolves its own frame again, and caching it
+     * would refuse a returning draft for no reason. */
+    const draft = engine.buildDraft({
+      content: context.content,
+      artifactInternalName: context.artifactInternalName,
+      artifactSysId: context.artifactSysId,
+      sourceLanguage: context.sourceLanguage,
+      targetLanguage: context.targetLanguage,
+    });
+
+    /* Persisted before it is shown, so a file the user downloads is always
+     * addressable by a reply -- the failure that made the file route's one
+     * advantage over the clipboard imaginary. */
+    const saved = await chrome.runtime.sendMessage({
+      type: "SAVE_LF_ASSISTANT_DRAFT",
+      draft: engine.storedDraft(draft),
+    });
+    if (!saved || !saved.ok) {
+      throw new Error((saved && saved.error) || "The draft could not be held for your reply.");
+    }
+
+    ui.showDraft({ fingerprint, draft });
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    if (!ui.showError({ fingerprint, message })) showToast(message, true, 7000);
+  }
 }
 
 function translationLensUi() {

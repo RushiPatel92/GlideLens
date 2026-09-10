@@ -49,7 +49,9 @@ function loadBuiltCommands(debugTimelineUI, options) {
     { runtime: { sendMessage: noop } },
     { href: "https://example.service-now.com/incident.do", origin: "https://example.service-now.com" },
     { SNDebugTimelineUI: debugTimelineUI || null },
-    () => [],
+    /* Page-conditional commands are decided from the decoded URL, so a test
+     * that wants one has to supply what decodedVariants would have seen. */
+    () => opts.decodedUrls || [],
     () => Boolean(opts.workspaceRoute),
     noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
@@ -94,6 +96,46 @@ test("current built-ins expose the accepted unique command labels", () => {
   );
   assert.ok(builtIns.every((item) => item.description));
   assert.ok(builtIns.filter((item) => item.input).every((item) => item.inputLabel));
+});
+
+/*
+ * Two commands whose labels share a first word, one of them page-conditional.
+ * The decision to call it "Translation Assistant" rested on the claim that both
+ * still win on their own names; that claim was never executed, because the
+ * default harness has no LF page and so never lists the second command.
+ */
+test("Translation Assistant and Translation Lens coexist and each wins its own label", () => {
+  const onLfPage = loadBuiltCommands(null, {
+    decodedUrls: ["https://example.service-now.com/sn_lf_comparison_ui.do?sysparm_caller_mode=adhoc"],
+  });
+  const assistant = onLfPage.find((item) => item.id === "translation-assistant");
+  assert.ok(assistant, "the command must be listed on the comparison page");
+  assert.strictEqual(assistant.label, "Translation Assistant");
+  assert.strictEqual(assistant.description, "Prepare and fill translations");
+  assert.strictEqual(assistant.run.name, "runTranslationAssistant");
+
+  /* It is absent everywhere else: an ordinary form must not offer it. */
+  assert.ok(!loadBuiltCommands().some((item) => item.id === "translation-assistant"));
+
+  /* No duplicate visible label, and no other validation complaint. */
+  palette.validatePaletteCommands(onLfPage);
+
+  for (const label of ["Translation Assistant", "Translation Lens"]) {
+    const prepared = palette.preparePaletteCommands(onLfPage, label, null);
+    assert.ok(prepared.length > 0, `"${label}" matched nothing`);
+    assert.strictEqual(
+      prepared[0].label,
+      label,
+      `typing "${label}" makes "${prepared[0].label}" the active row`
+    );
+  }
+
+  /* And every other built-in still wins its own name with the extra command in
+   * the list, since shared keywords could have moved any of them. */
+  for (const cmd of onLfPage) {
+    const prepared = palette.preparePaletteCommands(onLfPage, cmd.label, null);
+    assert.strictEqual(prepared[0].id, cmd.id, `"${cmd.label}" no longer ranks first`);
+  }
 });
 
 test("Translation Lens preserves the retired translation-toggle favorite key", () => {

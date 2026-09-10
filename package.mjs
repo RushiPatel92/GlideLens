@@ -77,6 +77,8 @@ const SHIP = [
   "record_search_ui.js",
   "translation_lens.js",
   "translation_lens_ui.js",
+  "translation_assistant.js",
+  "translation_assistant_ui.js",
   "popup.html",
   "popup.js",
   "popup.css",

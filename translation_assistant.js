@@ -512,6 +512,18 @@
     return {
       exportId: payload.exportId,
       identity,
+      /* Display names when the page supplied them, codes when it did not. Kept
+       * beside identity rather than inside it: identity is compared against a
+       * fresh read and a display name is not part of that comparison. */
+      languages: {
+        sourceLanguage: identity.sourceLanguage,
+        targetLanguage: identity.targetLanguage,
+        sourceLanguageName: sourceName,
+        targetLanguageName: targetName,
+      },
+      /* How many exported rows fill more than one field, so the panel can say
+       * that publishing them changes a translation used elsewhere. */
+      sharedRows: Object.keys(map).filter((key) => (map[key].members || []).length > 1).length,
       elementCount: read.elementCount,
       fieldCount: read.fieldCount,
       createdAt: typeof opts.now === "number" ? opts.now : Date.now(),
