@@ -3355,39 +3355,79 @@ function readLfAssistantDraftStore() {
  * is worker-wide because the store is. */
 let lfAssistantDraftWrites = Promise.resolve();
 
-/* Runs whose panel closed while their save was still queued. Serialising the
- * writes means a save can wait here for as long as another one takes, and the
- * content script's own run gate cannot reach a message it has already sent, so
- * the recall has to be honoured on this side. Bounded, and deliberately not
+/* Runs whose panel closed, or was replaced, while their save was still queued.
+ * Serialising the writes means a save can wait for as long as another one
+ * takes, and the content script's own run gate cannot reach a message it has
+ * already sent, so the recall has to be honoured on this side. Nothing here is
  * persisted: if the worker dies the queue dies with it and the write never
- * happens anyway. */
-const LF_ASSISTANT_CANCELLED_LIMIT = 20;
-const lfAssistantCancelledRuns = [];
+ * happens anyway.
+ *
+ * Two structures, because they answer different questions and only one of them
+ * can be bounded. A recall for a save that is still QUEUED lives on that save's
+ * own record and cannot expire -- a bounded list dropped it the moment twenty
+ * other panels closed, which un-cancelled work that had not run yet. A recall
+ * that arrives before its save does has nothing to attach to, so it waits in a
+ * short history, and that one is safe to bound: it only covers the window
+ * between two messages from the same frame. */
+const LF_ASSISTANT_EARLY_CANCEL_LIMIT = 20;
+const lfAssistantEarlyCancels = [];
+const lfAssistantPendingSaves = new Map();
+
+/* A run token is minted per frame as `ta-<n>-<Date.now()>`, so two tabs that
+ * start their first run in the same millisecond would mint the same one. The
+ * worker holds one queue for every tab, so it scopes the token by sender
+ * before using it as a key. */
+function lfAssistantRunKey(sender, runToken) {
+  const token = String(runToken || "");
+  if (!token) return "";
+  return String(sender && sender.tab ? sender.tab.id : 0) + " " + token;
+}
 
 function cancelLfAssistantDraft(runToken) {
   const token = String(runToken || "");
-  if (!token || lfAssistantCancelledRuns.includes(token)) return;
-  lfAssistantCancelledRuns.push(token);
-  if (lfAssistantCancelledRuns.length > LF_ASSISTANT_CANCELLED_LIMIT) {
-    lfAssistantCancelledRuns.shift();
+  if (!token) return;
+  const pending = lfAssistantPendingSaves.get(token);
+  if (pending) {
+    pending.cancelled = true;
+    return;
   }
+  if (lfAssistantEarlyCancels.includes(token)) return;
+  lfAssistantEarlyCancels.push(token);
+  if (lfAssistantEarlyCancels.length > LF_ASSISTANT_EARLY_CANCEL_LIMIT) {
+    lfAssistantEarlyCancels.shift();
+  }
+}
+
+function takeEarlyLfAssistantCancel(token) {
+  const index = lfAssistantEarlyCancels.indexOf(token);
+  if (index < 0) return false;
+  lfAssistantEarlyCancels.splice(index, 1);
+  return true;
 }
 
 function saveLfAssistantDraft(draft, runToken) {
   const token = String(runToken || "");
-  const cancelled = () => !!token && lfAssistantCancelledRuns.includes(token);
+  /* Registered before the turn is queued, so a recall arriving at any point
+   * from here on has somewhere to land that outlives every other cancellation. */
+  const pending = { cancelled: token ? takeEarlyLfAssistantCancel(token) : false };
+  if (token) lfAssistantPendingSaves.set(token, pending);
+
   const write = lfAssistantDraftWrites.then(async () => {
-    /* Checked when the turn starts rather than when it was queued, and again
-     * at the last moment before the write: a draft the user never saw must not
-     * take a slot in a capped store and evict one they downloaded. */
-    if (cancelled()) return { held: 0, cancelled: true };
-    const engine = assistantEngine();
-    const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
-    if (cancelled()) return { held: 0, cancelled: true };
-    const item = {};
-    item[LF_ASSISTANT_DRAFTS_KEY] = store;
-    await chrome.storage.session.set(item);
-    return { held: store.drafts.length, cancelled: false };
+    try {
+      /* Checked when the turn starts rather than when it was queued, and again
+       * at the last moment before the write: a draft the user never saw must
+       * not take a slot in a capped store and evict one they downloaded. */
+      if (pending.cancelled) return { held: 0, cancelled: true };
+      const engine = assistantEngine();
+      const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
+      if (pending.cancelled) return { held: 0, cancelled: true };
+      const item = {};
+      item[LF_ASSISTANT_DRAFTS_KEY] = store;
+      await chrome.storage.session.set(item);
+      return { held: store.drafts.length, cancelled: false };
+    } finally {
+      if (token) lfAssistantPendingSaves.delete(token);
+    }
   });
   /* A rejected write must not poison the queue for the next caller, and the
    * rejection still reaches the one that caused it through `write`. */
@@ -5110,13 +5150,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "SAVE_LF_ASSISTANT_DRAFT" && sender.tab) {
-    saveLfAssistantDraft(msg.draft, msg.runToken)
+    saveLfAssistantDraft(msg.draft, lfAssistantRunKey(sender, msg.runToken))
       .then((result) => sendResponse({ ok: true, held: result.held, cancelled: result.cancelled }))
       .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
     return true;
   }
   if (msg && msg.type === "CANCEL_LF_ASSISTANT_DRAFT" && sender.tab) {
-    cancelLfAssistantDraft(msg.runToken);
+    cancelLfAssistantDraft(lfAssistantRunKey(sender, msg.runToken));
     sendResponse({ ok: true });
     return true;
   }

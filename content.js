@@ -5508,6 +5508,19 @@ const TRANSLATION_ASSISTANT_UI_METHODS = ["open", "showDraft", "showError", "clo
  * is a claim and a scope is evidence. */
 const LF_COMPARISON_PAGE_MARKER = "sn_lf_comparison_ui";
 let translationAssistantRunSequence = 0;
+/* The run whose save may still be in flight. Held so a replacement run can
+ * recall it: the panel unmounts the old one without firing onClose, so being
+ * superseded is silent everywhere except the queue that can still write. */
+let translationAssistantActiveToken = "";
+
+/* Tell the worker to drop a queued save. Fire and forget: the run it belongs
+ * to is over either way, and there is nothing useful to do with a failure. */
+function recallTranslationAssistantDraft(runToken) {
+  if (!runToken) return;
+  chrome.runtime
+    .sendMessage({ type: "CANCEL_LF_ASSISTANT_DRAFT", runToken })
+    .catch(() => {});
+}
 
 function translationAssistantUi() {
   const ui = globalThis.SNTranslationAssistantUI;
@@ -5578,6 +5591,11 @@ async function runTranslationAssistant() {
    * outlives the panel. Both are gated here instead. A run stops being current
    * when the user dismisses it (onClose below) or when a later run starts. */
   const current = () => translationAssistantRunSequence === runId;
+  /* This run supersedes whatever was on screen, which is the same thing a
+   * dismissal does and needs the same recall. Sent before anything else
+   * because a run that fails to load still supersedes its predecessor. */
+  recallTranslationAssistantDraft(translationAssistantActiveToken);
+  translationAssistantActiveToken = fingerprint;
   let ui;
   try {
     await ensureTranslationAssistantLoaded();
@@ -5597,13 +5615,17 @@ async function runTranslationAssistant() {
     callbacks: {
       onClose: () => {
         translationAssistantRunSequence++;
-        /* The run gate below stops this run doing anything further, but it
-         * cannot reach a save already handed to the worker, which serialises
-         * its writes and may still be holding this one in a queue. Recall it
-         * by token: a draft nobody saw must not evict one they downloaded. */
-        chrome.runtime
-          .sendMessage({ type: "CANCEL_LF_ASSISTANT_DRAFT", runToken: fingerprint })
-          .catch(() => {});
+        /* The run gate stops this run doing anything further, but it cannot
+         * reach a save already handed to the worker, which serialises its
+         * writes and may still be holding this one in a queue. Recall it by
+         * token: a draft nobody saw must not evict one they downloaded. */
+        /* Only while this run's save may still be in flight. Once it has
+         * landed the token is cleared, and recalling a write that already
+         * happened would just crowd the worker's short early-recall history. */
+        if (translationAssistantActiveToken === fingerprint) {
+          translationAssistantActiveToken = "";
+          recallTranslationAssistantDraft(fingerprint);
+        }
       },
       onNotify: (message, isError) => showToast(message, !!isError, isError ? 7000 : 4000),
     },
@@ -5651,6 +5673,10 @@ async function runTranslationAssistant() {
       throw new Error((saved && saved.error) || "The draft could not be held for your reply.");
     }
 
+    /* The save has landed, so there is nothing left to recall: a later run
+     * that superseded this one would be cancelling a write that already
+     * happened. */
+    if (translationAssistantActiveToken === fingerprint) translationAssistantActiveToken = "";
     ui.showDraft({ fingerprint, draft });
   } catch (error) {
     /* An abandoned run has nobody to report to, and a toast would appear over

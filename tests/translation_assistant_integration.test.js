@@ -350,6 +350,59 @@ test("a save cancelled while it waits in the queue is never written", async () =
     "and must not evict a draft the user may already have downloaded");
 });
 
+test("a cancellation is not forgotten while its save is still queued", async () => {
+  /* Third round, 2026-09-10. The recall list was bounded at 20 and evicted
+   * oldest-first with no regard for whether the save it spoke for had run.
+   * Twenty later cancellations therefore un-cancelled a queued one. */
+  const gate = deferred();
+  const store = loadDraftStore({ slowGet: true, holdSet: (n) => (n === 1 ? gate.promise : null) });
+
+  const blocking = "f".repeat(32);
+  const abandoned = "9".repeat(32);
+  const held = store.context.saveLfAssistantDraft(storedDraftFixture(blocking));
+  const doomed = store.context.saveLfAssistantDraft(storedDraftFixture(abandoned), "ta-1-1000");
+  await settle();
+
+  store.context.cancelLfAssistantDraft("ta-1-1000");
+  /* Enough unrelated dismissals to push it out of a 20-entry history. */
+  for (let index = 0; index < 20; index += 1) {
+    store.context.cancelLfAssistantDraft("ta-noise-" + index);
+  }
+
+  gate.resolve();
+  const [, result] = await Promise.all([held, doomed]);
+  assert.strictEqual(result.cancelled, true,
+    "a recall that has not been acted on yet cannot expire");
+  assert.strictEqual(await store.context.readLfAssistantDraft(abandoned), null);
+});
+
+test("one tab's recall cannot drop another tab's draft", async () => {
+  /* Tokens are minted per frame as ta-<n>-<Date.now()>, so two tabs starting
+   * their first run in the same millisecond mint the same one. The worker has
+   * one queue for every tab, so it scopes the token by sender. */
+  const store = loadDraftStore({ slowGet: true });
+  const key = store.context.lfAssistantRunKey;
+  const mine = "a".repeat(32);
+
+  const save = store.context.saveLfAssistantDraft(
+    storedDraftFixture(mine), key({ tab: { id: 7 } }, "ta-1-1000")
+  );
+  store.context.cancelLfAssistantDraft(key({ tab: { id: 9 } }, "ta-1-1000"));
+  const result = await save;
+
+  assert.strictEqual(result.cancelled, false);
+  assert.ok(await store.context.readLfAssistantDraft(mine),
+    "a dismissal in one tab must not discard what another tab is holding");
+});
+
+test("both draft routes scope the run token to the sender", () => {
+  const save = between(backgroundSource, '"SAVE_LF_ASSISTANT_DRAFT" && sender.tab', "return true;");
+  const cancel = between(backgroundSource, '"CANCEL_LF_ASSISTANT_DRAFT" && sender.tab', "return true;");
+  assert.ok(/lfAssistantRunKey\(sender, msg\.runToken\)/.test(save));
+  assert.ok(/lfAssistantRunKey\(sender, msg\.runToken\)/.test(cancel),
+    "a raw token from one tab would address another tab's queued save");
+});
+
 test("the store still caps at the engine's limit under concurrency", async () => {
   const store = loadDraftStore({ slowGet: true });
   const ids = [];
@@ -520,6 +573,40 @@ test("dismissing a run cancels the save it has already handed to the worker", as
   assert.ok(cancel, "a dismissal has to reach the queue the save is sitting in");
   assert.strictEqual(cancel.runToken, sent.runToken);
   assert.strictEqual(harness.of("showDraft").length, 0);
+});
+
+test("starting another run recalls the save the previous one left queued", async () => {
+  /* ui.open() unmounts the old panel without firing onClose, so a replacement
+   * run supersedes its predecessor everywhere except in the one place that
+   * could still write. */
+  const firstSave = deferred();
+  let saves = 0;
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SAVE_LF_ASSISTANT_DRAFT") {
+        saves += 1;
+        return saves === 1 ? firstSave.promise : Promise.resolve({ ok: true, held: 1 });
+      }
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  const first = harness.context.runTranslationAssistant();
+  await settle();
+  const firstSent = harness.sent.find((message) => message.type === "SAVE_LF_ASSISTANT_DRAFT");
+  assert.ok(firstSent && firstSent.runToken, "the first run's save is in flight");
+
+  const second = harness.context.runTranslationAssistant();
+  await settle();
+
+  const recall = harness.sent.find((message) =>
+    message.type === "CANCEL_LF_ASSISTANT_DRAFT" && message.runToken === firstSent.runToken);
+  assert.ok(recall, "a superseded run's draft must not be written any more than a dismissed one's");
+
+  firstSave.resolve({ ok: true, held: 1 });
+  await Promise.all([first, second]);
+  assert.strictEqual(harness.of("showDraft").length, 1, "only the run the user is watching renders");
 });
 
 test("a slow first run never opens over the panel a later run already owns", async () => {
