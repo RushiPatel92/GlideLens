@@ -3355,14 +3355,39 @@ function readLfAssistantDraftStore() {
  * is worker-wide because the store is. */
 let lfAssistantDraftWrites = Promise.resolve();
 
-function saveLfAssistantDraft(draft) {
+/* Runs whose panel closed while their save was still queued. Serialising the
+ * writes means a save can wait here for as long as another one takes, and the
+ * content script's own run gate cannot reach a message it has already sent, so
+ * the recall has to be honoured on this side. Bounded, and deliberately not
+ * persisted: if the worker dies the queue dies with it and the write never
+ * happens anyway. */
+const LF_ASSISTANT_CANCELLED_LIMIT = 20;
+const lfAssistantCancelledRuns = [];
+
+function cancelLfAssistantDraft(runToken) {
+  const token = String(runToken || "");
+  if (!token || lfAssistantCancelledRuns.includes(token)) return;
+  lfAssistantCancelledRuns.push(token);
+  if (lfAssistantCancelledRuns.length > LF_ASSISTANT_CANCELLED_LIMIT) {
+    lfAssistantCancelledRuns.shift();
+  }
+}
+
+function saveLfAssistantDraft(draft, runToken) {
+  const token = String(runToken || "");
+  const cancelled = () => !!token && lfAssistantCancelledRuns.includes(token);
   const write = lfAssistantDraftWrites.then(async () => {
+    /* Checked when the turn starts rather than when it was queued, and again
+     * at the last moment before the write: a draft the user never saw must not
+     * take a slot in a capped store and evict one they downloaded. */
+    if (cancelled()) return { held: 0, cancelled: true };
     const engine = assistantEngine();
     const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
+    if (cancelled()) return { held: 0, cancelled: true };
     const item = {};
     item[LF_ASSISTANT_DRAFTS_KEY] = store;
     await chrome.storage.session.set(item);
-    return store.drafts.length;
+    return { held: store.drafts.length, cancelled: false };
   });
   /* A rejected write must not poison the queue for the next caller, and the
    * rejection still reaches the one that caused it through `write`. */
@@ -5085,9 +5110,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "SAVE_LF_ASSISTANT_DRAFT" && sender.tab) {
-    saveLfAssistantDraft(msg.draft)
-      .then((held) => sendResponse({ ok: true, held }))
+    saveLfAssistantDraft(msg.draft, msg.runToken)
+      .then((result) => sendResponse({ ok: true, held: result.held, cancelled: result.cancelled }))
       .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "CANCEL_LF_ASSISTANT_DRAFT" && sender.tab) {
+    cancelLfAssistantDraft(msg.runToken);
+    sendResponse({ ok: true });
     return true;
   }
   if (msg && msg.type === "READ_LF_ASSISTANT_DRAFT" && sender.tab) {

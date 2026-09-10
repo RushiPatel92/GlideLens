@@ -5595,7 +5595,16 @@ async function runTranslationAssistant() {
     fingerprint,
     context: {},
     callbacks: {
-      onClose: () => { translationAssistantRunSequence++; },
+      onClose: () => {
+        translationAssistantRunSequence++;
+        /* The run gate below stops this run doing anything further, but it
+         * cannot reach a save already handed to the worker, which serialises
+         * its writes and may still be holding this one in a queue. Recall it
+         * by token: a draft nobody saw must not evict one they downloaded. */
+        chrome.runtime
+          .sendMessage({ type: "CANCEL_LF_ASSISTANT_DRAFT", runToken: fingerprint })
+          .catch(() => {});
+      },
       onNotify: (message, isError) => showToast(message, !!isError, isError ? 7000 : 4000),
     },
   });
@@ -5632,6 +5641,10 @@ async function runTranslationAssistant() {
     const saved = await chrome.runtime.sendMessage({
       type: "SAVE_LF_ASSISTANT_DRAFT",
       draft: engine.storedDraft(draft),
+      /* The worker serialises its writes, so this can sit in a queue for as
+       * long as another save takes. The token is what lets a dismissal in that
+       * window recall it -- see onClose above. */
+      runToken: fingerprint,
     });
     if (!current()) return;
     if (!saved || !saved.ok) {

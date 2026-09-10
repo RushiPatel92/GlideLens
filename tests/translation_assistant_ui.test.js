@@ -35,6 +35,10 @@ const HOST_ID = "snh-translation-assistant-results";
 
 function createDom() {
   let activeElement = null;
+  /* The download anchor is removed from the shadow root immediately after it
+   * is clicked, so what it was asked to save has to be recorded as it happens
+   * or it cannot be inspected at all. */
+  const clicks = [];
 
   class El {
     constructor(tag) {
@@ -96,7 +100,10 @@ function createDom() {
       return shadow;
     }
     focus() { activeElement = this; }
-    click() { this.clicked += 1; }
+    click() {
+      this.clicked += 1;
+      clicks.push({ tagName: this.tagName, download: this.download, href: this.href });
+    }
   }
 
   const document = {
@@ -104,7 +111,7 @@ function createDom() {
     documentElement: new El("html"),
     get activeElement() { return activeElement; },
   };
-  return { El, document };
+  return { El, document, clicks };
 }
 
 function walk(node, visit) {
@@ -127,13 +134,20 @@ function findAll(root_, predicate) {
 function load() {
   const dom = createDom();
   const revoked = [];
+  const downloaded = [];
   const sandbox = {
     document: dom.document,
     Blob: class Blob {
       constructor(parts) { this.parts = parts || []; }
     },
     URL: {
-      createObjectURL: () => "blob:draft",
+      /* The blob is kept, not just counted. A test that watches the anchor and
+       * the clipboard but never looks at the bytes passes just as happily when
+       * the file is empty, which is the one failure the download route has. */
+      createObjectURL: (blob) => {
+        downloaded.push(blob);
+        return "blob:draft";
+      },
       revokeObjectURL: (url) => revoked.push(url),
     },
     navigator: {
@@ -158,7 +172,12 @@ function load() {
     ui: sandbox.SNTranslationAssistantUI,
     notices,
     revoked,
+    downloaded,
     clipboard: sandbox.navigator.clipboard,
+    get lastDownloadName() {
+      const anchors = dom.clicks.filter((entry) => entry.tagName === "A");
+      return anchors.length ? anchors[anchors.length - 1].download : null;
+    },
     callbacks: {
       onNotify: (message, isError) => notices.push({ message, isError: !!isError }),
       onClose: () => {},
@@ -337,6 +356,18 @@ test("both output routes hand over the one string the engine serialised", () => 
   (button.handlers.click || []).forEach((handler) => handler({}));
   const anchor = findAll(shadow, (node) => node.tagName === "A")[0];
   assert.ok(!anchor, "the anchor is removed once it has been clicked");
+
+  /* The bytes, not the gesture. Watching the anchor and the clipboard while
+   * never opening the blob is how a download route can ship empty. */
+  assert.strictEqual(harness.downloaded.length, 1);
+  assert.strictEqual(harness.downloaded[0].parts.join(""), draft.serialized,
+    "the file is the one string the engine serialised, prompt included");
+  assert.deepStrictEqual(harness.revoked, ["blob:draft"], "and the object URL is released");
+
+  /* The artifact's own name is customer content, so the filename carries the
+   * language pair and the draft id instead. */
+  assert.strictEqual(harness.lastDownloadName, "glidelens-translation-en-fr-" +
+    draft.exportId.slice(0, 8) + ".json");
 
   const copyLink = findAll(shadow, (node) => node.tagName === "BUTTON")
     .find((node) => node.textContent === "Copy prompt + JSON instead");

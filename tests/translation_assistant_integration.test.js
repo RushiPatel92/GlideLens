@@ -257,6 +257,7 @@ function loadDraftStore(options) {
   context.globalThis = context;
 
   const cell = {};
+  let writes = 0;
   context.chrome = {
     storage: {
       session: {
@@ -271,8 +272,13 @@ function loadDraftStore(options) {
             : Promise.resolve(answer);
         },
         set(item) {
-          Object.assign(cell, item);
-          return Promise.resolve();
+          writes += 1;
+          /* Lets a test hold one write open, so the next save is genuinely
+           * queued behind it rather than merely started later. */
+          const gate = opts.holdSet && opts.holdSet(writes);
+          return Promise.resolve(gate || null).then(() => {
+            Object.assign(cell, item);
+          });
         },
       },
     },
@@ -314,6 +320,34 @@ test("two saves in flight at once both survive", async () => {
   assert.ok(await store.context.readLfAssistantDraft(first),
     "the first draft was reported saved, so it has to be there");
   assert.ok(await store.context.readLfAssistantDraft(second));
+});
+
+test("a save cancelled while it waits in the queue is never written", async () => {
+  /* The second round of the review, 2026-09-10. Gating the runner before it
+   * sends the save closes the window during the page read; it does nothing
+   * about the window between the send and the worker's write, which the new
+   * write queue can hold open for as long as another save takes. */
+  const gate = deferred();
+  const store = loadDraftStore({ slowGet: true, holdSet: (n) => (n === 5 ? gate.promise : null) });
+  const early = ["0", "1", "2", "3"].map((n) => n.padStart(32, "e"));
+  for (const id of early) {
+    await store.context.saveLfAssistantDraft(storedDraftFixture(id));
+  }
+
+  const blocking = "f".repeat(32);
+  const abandoned = "9".repeat(32);
+  const held = store.context.saveLfAssistantDraft(storedDraftFixture(blocking));
+  const doomed = store.context.saveLfAssistantDraft(storedDraftFixture(abandoned), "ta-9-1000");
+  await settle();
+
+  store.context.cancelLfAssistantDraft("ta-9-1000");
+  gate.resolve();
+  await Promise.all([held, doomed]);
+
+  assert.strictEqual(await store.context.readLfAssistantDraft(abandoned), null,
+    "a draft nobody ever saw must not be written");
+  assert.ok(await store.context.readLfAssistantDraft(early[0]),
+    "and must not evict a draft the user may already have downloaded");
 });
 
 test("the store still caps at the engine's limit under concurrency", async () => {
@@ -456,10 +490,36 @@ test("a run dismissed while the page is being read saves nothing", async () => {
   contextRead.resolve(contextAnswer());
   await run;
 
-  assert.deepStrictEqual(harness.sent.map((message) => message.type), ["GET_LF_ASSISTANT_CONTEXT"],
+  assert.ok(!harness.sent.some((message) => message.type === "SAVE_LF_ASSISTANT_DRAFT"),
     "an abandoned run must not write to a store that outlives it");
   assert.strictEqual(harness.of("showDraft").length, 0);
   assert.strictEqual(harness.of("showError").length, 0, "nobody is watching, so nothing is reported");
+});
+
+test("dismissing a run cancels the save it has already handed to the worker", async () => {
+  const save = deferred();
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SAVE_LF_ASSISTANT_DRAFT") return save.promise;
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  const run = harness.context.runTranslationAssistant();
+  await settle();
+  const sent = harness.sent.find((message) => message.type === "SAVE_LF_ASSISTANT_DRAFT");
+  assert.ok(sent, "the save is in flight before the user dismisses");
+  assert.ok(sent.runToken, "and it carries the run's own token, so it can still be recalled");
+
+  harness.dismiss();
+  save.resolve({ ok: true, held: 5 });
+  await run;
+
+  const cancel = harness.sent.find((message) => message.type === "CANCEL_LF_ASSISTANT_DRAFT");
+  assert.ok(cancel, "a dismissal has to reach the queue the save is sitting in");
+  assert.strictEqual(cancel.runToken, sent.runToken);
+  assert.strictEqual(harness.of("showDraft").length, 0);
 });
 
 test("a slow first run never opens over the panel a later run already owns", async () => {
