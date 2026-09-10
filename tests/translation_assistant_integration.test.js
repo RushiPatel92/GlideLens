@@ -137,14 +137,15 @@ test("the draft is persisted in session memory, through the engine's own cap", (
     "an object URL on an <a download> needs no downloads permission");
 });
 
-test("the draft is held before it is shown", () => {
+/* The behavioural version of this lives at the end of the file. A source-order
+ * check is kept as well because it is the cheap guard: it fails loudly if the
+ * save is ever moved after the render, which is the shape of the mistake. */
+test("the draft is held before it is shown, in source order", () => {
   const runner = between(contentSource, "async function runTranslationAssistant(", "function translationLensUi(");
   const save = runner.indexOf("SAVE_LF_ASSISTANT_DRAFT");
   const show = runner.indexOf("ui.showDraft(");
   assert.ok(save > 0 && show > save,
     "a file the user can download must already be addressable by a reply when they get it");
-  assert.ok(between(runner, "SAVE_LF_ASSISTANT_DRAFT", "ui.showDraft(").includes("throw new Error"),
-    "and a store that refused must stop the draft being offered at all");
 });
 
 test("both output routes write the one string the engine serialised", () => {
@@ -212,4 +213,372 @@ test("engine and panel are packaged lazily and injected together", () => {
   assert.ok(route.includes('files: ["translation_assistant.js", "translation_assistant_ui.js"]'));
   assert.ok(route.includes("frameIds: [sender.frameId || 0]"), "into the frame that asked");
   assert.ok(!route.includes('world: "MAIN"'), "the engine and panel belong to the isolated world");
+});
+
+/* ==================================================================== *
+ * Behavioural: the worker's draft store and the content script's runner
+ * are executed here, not read.
+ *
+ * Codex's phase 2 review, 2026-09-10, found four defects that a source
+ * assertion cannot see, and one of them was in the assertion above: it
+ * checked that a save appears before a render in the TEXT of the file,
+ * which a fire-and-forget save satisfies just as well as an awaited one.
+ * The blocks below are lifted from their real files by the same anchors
+ * the source tests use -- move one and these fail loudly rather than
+ * silently testing nothing.
+ * ==================================================================== */
+
+const engineSourceText = read("translation_assistant.js");
+
+function deferred() {
+  const box = {};
+  box.promise = new Promise((resolve, reject) => {
+    box.resolve = resolve;
+    box.reject = reject;
+  });
+  return box;
+}
+
+/* Lets every already-queued microtask run before the test looks. */
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+/* ------------------------------------------------------------------ *
+ * The worker's draft store
+ * ------------------------------------------------------------------ */
+
+function loadDraftStore(options) {
+  const opts = options || {};
+  const block = between(
+    backgroundSource,
+    "const LF_ASSISTANT_DRAFTS_KEY",
+    "// Self-contained MAIN-world reader for classic RITM"
+  );
+  const context = { globalThis: null, crypto: nodeCrypto.webcrypto, console, Promise };
+  context.globalThis = context;
+
+  const cell = {};
+  context.chrome = {
+    storage: {
+      session: {
+        get(key) {
+          /* A real storage.get is asynchronous. Resolving it a tick late is
+           * what lets two callers read the same store before either writes,
+           * which is the whole of finding 1. */
+          const answer = Object.prototype.hasOwnProperty.call(cell, key)
+            ? { [key]: cell[key] } : {};
+          return opts.slowGet
+            ? new Promise((resolve) => setImmediate(() => resolve(answer)))
+            : Promise.resolve(answer);
+        },
+        set(item) {
+          Object.assign(cell, item);
+          return Promise.resolve();
+        },
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(engineSourceText, context, { filename: "translation_assistant.js" });
+  vm.runInContext(block, context, { filename: "background.js (draft store)" });
+  return { context, cell };
+}
+
+function storedDraftFixture(exportId) {
+  return {
+    exportId,
+    identity: {
+      artifactInternalName: "catalog_item",
+      artifactSysId: "0".repeat(31) + "1",
+      sourceLanguage: "en",
+      targetLanguage: "fr",
+    },
+    elementCount: 1,
+    createdAt: 1000,
+    map: { 1: { elementId: "Variable: Cost centre: Question", fieldIndex: 0, members: [] } },
+  };
+}
+
+test("two saves in flight at once both survive", async () => {
+  const store = loadDraftStore({ slowGet: true });
+  const first = "a".repeat(32);
+  const second = "c".repeat(32);
+
+  await Promise.all([
+    store.context.saveLfAssistantDraft(storedDraftFixture(first)),
+    store.context.saveLfAssistantDraft(storedDraftFixture(second)),
+  ]);
+
+  /* Both callers were told the draft was held, and the panel offers a
+   * downloadable file on the strength of that. A file whose draft was
+   * overwritten by a concurrent save is a file no reply can address. */
+  assert.ok(await store.context.readLfAssistantDraft(first),
+    "the first draft was reported saved, so it has to be there");
+  assert.ok(await store.context.readLfAssistantDraft(second));
+});
+
+test("the store still caps at the engine's limit under concurrency", async () => {
+  const store = loadDraftStore({ slowGet: true });
+  const ids = [];
+  for (let index = 0; index < 8; index += 1) {
+    ids.push(String(index).padStart(32, "d"));
+  }
+  await Promise.all(ids.map((id) => store.context.saveLfAssistantDraft(storedDraftFixture(id))));
+  const held = store.cell.translationAssistantDrafts;
+  assert.ok(held.drafts.length <= 5, "the engine's cap is not widened by serialising writes");
+  /* The cap keeps the newest, so the last one written must still be there. */
+  assert.ok(await store.context.readLfAssistantDraft(ids[ids.length - 1]));
+});
+
+/* ------------------------------------------------------------------ *
+ * The content script's runner
+ * ------------------------------------------------------------------ */
+
+const LF_CONTENT_FIXTURE = [{
+  groupName: "Variable: Cost centre",
+  label: "Question",
+  id: "Variable: Cost centre: Question",
+  isInternal: false,
+  fieldInfo: [{
+    originalValue: "Cost centre",
+    textType: "plain",
+    isFieldLocked: false,
+    additionalParameters: {
+      sysId: "e".repeat(32),
+      name: "question_text",
+      type: "translated_field",
+      table: "question",
+      scope: "global",
+    },
+  }],
+}];
+
+function loadRunner(options) {
+  const opts = options || {};
+  const block = between(
+    contentSource,
+    "const TRANSLATION_ASSISTANT_UI_METHODS",
+    "function translationLensUi("
+  );
+  const context = {
+    globalThis: null,
+    crypto: nodeCrypto.webcrypto,
+    console,
+    Promise,
+    Date,
+    setTimeout,
+  };
+  context.globalThis = context;
+
+  const calls = [];
+  const toasts = [];
+  const sent = [];
+  let captured = null;
+
+  const panel = {
+    open(request) {
+      captured = request.callbacks || {};
+      calls.push({ method: "open", fingerprint: request.fingerprint });
+      return true;
+    },
+    showDraft(request) {
+      calls.push({ method: "showDraft", fingerprint: request.fingerprint, draft: request.draft });
+      return true;
+    },
+    showError(request) {
+      calls.push({ method: "showError", fingerprint: request.fingerprint, message: request.message });
+      return true;
+    },
+    close() { return true; },
+  };
+
+  context.showToast = (message, isError) => toasts.push({ message, isError: !!isError });
+  context.chrome = {
+    runtime: {
+      sendMessage(message) {
+        sent.push(message);
+        return opts.send(message, { context, panel });
+      },
+    },
+  };
+
+  vm.createContext(context);
+  vm.runInContext(engineSourceText, context, { filename: "translation_assistant.js" });
+  vm.runInContext(block, context, { filename: "content.js (assistant block)" });
+  if (opts.panelPresent !== false) context.SNTranslationAssistantUI = panel;
+
+  return {
+    context,
+    calls,
+    toasts,
+    sent,
+    panel,
+    dismiss() {
+      assert.ok(captured && typeof captured.onClose === "function",
+        "the panel is opened with an onClose the runner uses to learn about a dismissal");
+      captured.onClose("close-button");
+    },
+    of(method) { return calls.filter((entry) => entry.method === method); },
+  };
+}
+
+function contextAnswer() {
+  return {
+    ok: true,
+    selected: {
+      frameId: 5,
+      context: {
+        isLfPage: true,
+        isAdhoc: true,
+        artifactInternalName: "catalog_item",
+        artifactSysId: "0".repeat(31) + "1",
+        sourceLanguage: "en",
+        targetLanguage: "fr",
+        content: LF_CONTENT_FIXTURE,
+        elementCount: 1,
+      },
+    },
+    rejected: [],
+  };
+}
+
+test("a run dismissed while the page is being read saves nothing", async () => {
+  const contextRead = deferred();
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return contextRead.promise;
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  const run = harness.context.runTranslationAssistant();
+  await settle();
+  harness.dismiss();
+  contextRead.resolve(contextAnswer());
+  await run;
+
+  assert.deepStrictEqual(harness.sent.map((message) => message.type), ["GET_LF_ASSISTANT_CONTEXT"],
+    "an abandoned run must not write to a store that outlives it");
+  assert.strictEqual(harness.of("showDraft").length, 0);
+  assert.strictEqual(harness.of("showError").length, 0, "nobody is watching, so nothing is reported");
+});
+
+test("a slow first run never opens over the panel a later run already owns", async () => {
+  const loads = [deferred(), deferred()];
+  let injections = 0;
+  const harness = loadRunner({
+    panelPresent: false,
+    send(message, tools) {
+      if (message.type === "INJECT_TRANSLATION_ASSISTANT") {
+        const box = loads[injections];
+        injections += 1;
+        return box.promise.then(() => {
+          tools.context.SNTranslationAssistantUI = tools.panel;
+          return { ok: true };
+        });
+      }
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      return Promise.resolve({ ok: true, held: 1 });
+    },
+  });
+
+  const first = harness.context.runTranslationAssistant();
+  const second = harness.context.runTranslationAssistant();
+  await settle();
+
+  /* The user's second invocation wins the race to load. */
+  loads[1].resolve();
+  await settle();
+  loads[0].resolve();
+  await Promise.all([first, second]);
+
+  const opens = harness.of("open");
+  assert.strictEqual(opens.length, 1, "the older run must not replace the panel the user is looking at");
+  const shown = harness.of("showDraft");
+  assert.strictEqual(shown.length, 1);
+  assert.strictEqual(shown[0].fingerprint, opens[0].fingerprint);
+});
+
+test("the draft is not offered until the store has accepted it", async () => {
+  const save = deferred();
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SAVE_LF_ASSISTANT_DRAFT") return save.promise;
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  const run = harness.context.runTranslationAssistant();
+  await settle();
+  assert.strictEqual(harness.of("showDraft").length, 0,
+    "a file the user can download must already be addressable by a reply when they get it");
+
+  save.resolve({ ok: true, held: 1 });
+  await run;
+  assert.strictEqual(harness.of("showDraft").length, 1);
+});
+
+test("a store that refuses stops the draft being offered at all", async () => {
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SAVE_LF_ASSISTANT_DRAFT") {
+        return Promise.resolve({ ok: false, error: "session storage is full" });
+      }
+      return Promise.resolve({ ok: true });
+    },
+  });
+
+  await harness.context.runTranslationAssistant();
+  assert.strictEqual(harness.of("showDraft").length, 0);
+  const errors = harness.of("showError");
+  assert.strictEqual(errors.length, 1);
+  assert.match(errors[0].message, /session storage is full/);
+});
+
+/* ------------------------------------------------------------------ *
+ * Refusals (Codex phase 2 review, finding 7)
+ * ------------------------------------------------------------------ */
+
+function refusalFor(rejected) {
+  const block = between(contentSource, "function translationAssistantRefusal(", "async function runTranslationAssistant(");
+  const context = { globalThis: null };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(block, context, { filename: "content.js (refusal)" });
+  return context.translationAssistantRefusal(rejected);
+}
+
+test("a frame that never answered is not reported as the wrong page", () => {
+  /* ARCHITECTURE.md: a negative answer from one frame says nothing about a
+   * frame that never answered. Telling a user who is ON the comparison page to
+   * go and find it is the worst available answer. */
+  const message = refusalFor([
+    { frameId: 0, answered: true, isLfPage: false, isAdhoc: null, why: "no .main-content in this frame" },
+    { frameId: 5, answered: false, isLfPage: false, isAdhoc: null, why: "timed out after 5000 ms" },
+  ]);
+  assert.ok(!/press Edit Translations/.test(message),
+    "an inconclusive read must not produce conclusive navigation advice: " + message);
+  assert.match(message, /again/, "the user is told what to do instead: " + message);
+});
+
+test("a page that really is not the comparison UI still says so plainly", () => {
+  const message = refusalFor([
+    { frameId: 0, answered: true, isLfPage: false, isAdhoc: null, why: "no page-owned angular" },
+  ]);
+  assert.match(message, /press Edit Translations/);
+});
+
+test("the wrong mode outranks every other refusal", () => {
+  const message = refusalFor([
+    { frameId: 0, answered: false, isLfPage: false, isAdhoc: null, why: "timed out" },
+    { frameId: 5, answered: true, isLfPage: true, isAdhoc: false, why: "" },
+  ]);
+  assert.match(message, /ad-hoc mode/);
+});
+
+test("the worker tells the panel which frames failed to answer", () => {
+  const block = between(backgroundSource, "async function readLfAssistantContext(", "/* ---");
+  assert.ok(/answered:/.test(block),
+    "'not the page' and 'never answered' are different answers and the panel has to tell them apart");
 });

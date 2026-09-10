@@ -449,6 +449,16 @@
     const rows = [];
     const excluded = [];
     let k = 0;
+    /* Fields covered by an exported row, which is not the number of rows: two
+     * fields sharing one destination are one row and two fields. The panel
+     * presents its tally as arithmetic against fieldCount, so it needs the
+     * field number; the payload and the preview are addressed by row. */
+    let eligibleFields = 0;
+    /* Exported rows the platform stores by source string rather than by
+     * record. Publishing one of these changes that translation for every
+     * artifact on the instance whose field carries the same source string,
+     * whether or not anything on THIS item shares it. */
+    let instanceWideRows = 0;
 
     grouped.groups.forEach((group) => {
       const eligible = group.members.every((member) => !member.exclusion);
@@ -458,6 +468,8 @@
       }
       k += 1;
       const lead = group.members[0];
+      eligibleFields += group.members.length;
+      if (STRING_SCOPED_TYPES.has(lead.type)) instanceWideRows += 1;
       const maxLength = group.members.reduce(
         (limit, member) => Math.min(limit, member.limit), Number.MAX_SAFE_INTEGER
       );
@@ -492,7 +504,12 @@
       };
     });
 
-    const counts = { fields: read.fieldCount, elements: read.elementCount, eligible: rows.length };
+    const counts = {
+      fields: read.fieldCount,
+      elements: read.elementCount,
+      eligible: rows.length,
+      eligibleFields,
+    };
     Object.keys(REASON).forEach((name) => {
       counts[REASON[name]] = excluded.filter((entry) => entry.reason === REASON[name]).length;
     });
@@ -521,9 +538,13 @@
         sourceLanguageName: sourceName,
         targetLanguageName: targetName,
       },
-      /* How many exported rows fill more than one field, so the panel can say
-       * that publishing them changes a translation used elsewhere. */
+      /* How many exported rows fill more than one field OF THIS ITEM. This is
+       * local multiplicity and nothing else: it explains why the tally's field
+       * count and row count differ. It is NOT the shared-translation warning,
+       * which is instanceWideRows -- a row with one local member is still
+       * shared instance-wide when the platform keys it by source string. */
       sharedRows: Object.keys(map).filter((key) => (map[key].members || []).length > 1).length,
+      instanceWideRows,
       elementCount: read.elementCount,
       fieldCount: read.fieldCount,
       createdAt: typeof opts.now === "number" ? opts.now : Date.now(),

@@ -5553,20 +5553,43 @@ function translationAssistantRefusal(rejected) {
     return "The comparison page is open but Translation Assistant could not read it" +
       (lfFrame.why ? " (" + lfFrame.why + ")." : ".");
   }
+  /* A negative answer from one frame says nothing about a frame that never
+   * answered (ARCHITECTURE.md). When the frame that would hold the page timed
+   * out or threw, "this is not the comparison page" is a conclusion nothing
+   * supports -- and telling a user who is already looking at that page to go
+   * and find it is the worst answer available. */
+  const silent = frames.filter((frame) => frame.answered === false);
+  if (silent.length || !frames.length) {
+    const why = silent.length ? String(silent[0].why || "") : "";
+    return "Translation Assistant could not read this page's frames" +
+      (why ? " (" + why + ")" : "") +
+      ". Reload the page and run it again.";
+  }
   return "Open a catalog item or record producer and press Edit Translations, then " +
     "run Translation Assistant on that page.";
 }
 
 async function runTranslationAssistant() {
-  const fingerprint = "ta-" + (++translationAssistantRunSequence) + "-" + Date.now();
+  const runId = ++translationAssistantRunSequence;
+  const fingerprint = "ta-" + runId + "-" + Date.now();
+  /* The panel discards a late call by fingerprint, but it can only do that once
+   * it has been opened and only for what it renders. Two things sit outside
+   * that: the decision to open at all, and the write to a draft store that
+   * outlives the panel. Both are gated here instead. A run stops being current
+   * when the user dismisses it (onClose below) or when a later run starts. */
+  const current = () => translationAssistantRunSequence === runId;
   let ui;
   try {
     await ensureTranslationAssistantLoaded();
     ui = translationAssistantUi();
   } catch (error) {
-    showToast(error && error.message ? error.message : String(error), true, 7000);
+    if (current()) showToast(error && error.message ? error.message : String(error), true, 7000);
     return;
   }
+  /* Loading is slow the first time, and a second invocation while it is in
+   * flight is ordinary. Opening here would replace the panel the user is
+   * already reading with an older run's. */
+  if (!current()) return;
 
   ui.open({
     fingerprint,
@@ -5579,6 +5602,10 @@ async function runTranslationAssistant() {
 
   try {
     const response = await chrome.runtime.sendMessage({ type: "GET_LF_ASSISTANT_CONTEXT" });
+    /* Dismissed while the page was being read. Nothing is shown and, more to
+     * the point, nothing is saved: a draft the user never saw would still take
+     * a slot in the capped store and could evict one they had downloaded. */
+    if (!current()) return;
     if (!response || !response.ok) {
       throw new Error((response && response.error) || "The page context could not be read.");
     }
@@ -5606,12 +5633,16 @@ async function runTranslationAssistant() {
       type: "SAVE_LF_ASSISTANT_DRAFT",
       draft: engine.storedDraft(draft),
     });
+    if (!current()) return;
     if (!saved || !saved.ok) {
       throw new Error((saved && saved.error) || "The draft could not be held for your reply.");
     }
 
     ui.showDraft({ fingerprint, draft });
   } catch (error) {
+    /* An abandoned run has nobody to report to, and a toast would appear over
+     * whatever the user moved on to. */
+    if (!current()) return;
     const message = error && error.message ? error.message : String(error);
     if (!ui.showError({ fingerprint, message })) showToast(message, true, 7000);
   }

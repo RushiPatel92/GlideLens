@@ -898,3 +898,48 @@ test("a JSON value that is a shape rather than a primitive refuses instead of th
   badTarget.rows[0].target = poison;
   assert.strictEqual(evaluate(draft, content, badTarget).code, "target_type");
 });
+
+/* ------------------------------------------------------------------ *
+ * Codex review of phase 2, 2026-09-10: findings 3 and 6.
+ *
+ * Both are the same mistake -- reading local member counts as if they
+ * described the destination -- and both survived the live PDI run because no
+ * eligible group on the demo item happened to have two members.
+ * ------------------------------------------------------------------ */
+
+test("eligible fields and exported rows are counted apart, so the tally reconciles", () => {
+  /* Two unlocked fields, same table, same column, same source string: one
+   * destination, two fields. Sect. 4 promises counts are per field. */
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Cost centre (copy)", fields: [field({ source: "Cost centre" })] }),
+  ];
+  const draft = draftFrom(content);
+
+  assert.strictEqual(draft.counts.fields, 2);
+  assert.strictEqual(draft.counts.eligible, 1, "one destination is exported");
+  assert.strictEqual(draft.counts.eligibleFields, 2, "and it covers two fields");
+
+  const excluded = Object.keys(TA.REASON)
+    .reduce((total, name) => total + draft.counts[TA.REASON[name]], 0);
+  assert.strictEqual(draft.counts.eligibleFields + excluded, draft.counts.fields,
+    "the panel presents these as one accounting system, so they have to close");
+});
+
+test("a lone translated_field row is still an instance-wide destination", () => {
+  /* sys_translated keys translated_field by (table, column, source string) and
+   * never by sysId, so one member on this item says nothing about how many
+   * other items publish through the same row. */
+  const draft = draftFrom([element({ fields: [field({ source: "Cost centre" })] })]);
+  assert.strictEqual(draft.counts.eligible, 1);
+  assert.strictEqual(draft.sharedRows, 0, "nothing on this item shares it");
+  assert.strictEqual(draft.instanceWideRows, 1,
+    "but publishing it still changes every item whose field carries the same source string");
+});
+
+test("a record-scoped row is not counted as instance-wide", () => {
+  const draft = draftFrom([element({ fields: [field({ type: "translated_text" })] })]);
+  assert.strictEqual(draft.counts.eligible, 1);
+  assert.strictEqual(draft.instanceWideRows, 0,
+    "translated_text is stored per record, so publishing it changes nothing elsewhere");
+});

@@ -24,8 +24,12 @@
  *     weight. Download leads because a file outlives a clipboard and because
  *     the payload carries its own instructions; the copy link is there for a
  *     model with no file upload. Nobody is asked to compare them.
- *   - Every excluded field is named with its reason and counted. A field this
- *     build will not translate is a stated limit, never a silent omission.
+ *   - Every excluded field is counted under a named reason. A field this build
+ *     will not translate is a stated limit, never a silent omission.
+ *   - The tally is one accounting system, and it is counted in FIELDS. The
+ *     exported row count is a different number -- two fields can share one
+ *     destination -- and where they differ the panel says so rather than
+ *     printing one where the reader is subtracting the other.
  *   - "Locked" is never described as verified. In ad-hoc mode the flag is
  *     derived from whether a translation exists, so the panel says the field
  *     already has one and says how to redo it.
@@ -93,6 +97,7 @@
   const str = (value) => (typeof value === "string" ? value : "");
   const count = (value) => (Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
   const isFn = (value) => typeof value === "function";
+  const plural = (n, word) => (n === 1 ? word : word + "s");
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -246,9 +251,10 @@
     const counts = (draft && draft.counts) || {};
     const list = el("ul", "tally");
 
+    const fields = count(counts.fields);
     const total = el("li");
-    total.appendChild(el("span", "n", String(count(counts.fields))));
-    total.appendChild(el("span", "what", "fields on this item"));
+    total.appendChild(el("span", "n", String(fields)));
+    total.appendChild(el("span", "what", plural(fields, "field") + " on this item"));
     list.appendChild(total);
 
     BUCKETS.forEach((bucket) => {
@@ -261,10 +267,20 @@
       list.appendChild(row);
     });
 
-    const eligible = count(counts.eligible);
+    /* Fields, not rows, because this line is read as arithmetic against the
+     * total above. Two fields sharing one destination are one exported row and
+     * two fields; printing the row count here left a gap that no exclusion
+     * bucket accounted for, and the demo item never showed it because none of
+     * its eligible groups had a second member. */
+    const rows = count(counts.eligible);
+    const eligible = count(counts.eligibleFields) || rows;
     const row = el("li", eligible ? "total" : "total none");
     row.appendChild(el("span", "n", String(eligible)));
-    row.appendChild(el("span", "what", eligible === 1 ? "to translate" : "to translate"));
+    row.appendChild(el("span", "what", "to translate"));
+    if (rows && rows !== eligible) {
+      row.appendChild(el("span", "why",
+        "(in " + rows + " " + plural(rows, "translation row") + " — some fields share one)"));
+    }
     list.appendChild(row);
     return list;
   }
@@ -355,7 +371,10 @@
     bodyEl.appendChild(copyLink);
 
     if (draft.counts && count(draft.counts.locked)) bodyEl.appendChild(unlockNote());
-    if (draft.sharedRows) bodyEl.appendChild(sharedNote(draft.sharedRows));
+    /* instanceWideRows, never sharedRows. A row with one member on this item is
+     * still shared instance-wide when the platform keys it by source string,
+     * and that is the common case, not the exception. */
+    if (draft.instanceWideRows) bodyEl.appendChild(sharedNote(draft.instanceWideRows));
     return true;
   }
 
@@ -366,15 +385,17 @@
   }
 
   /* Stated once, above the routes, because it is the platform's storage model
-   * and the user is entitled to know it before they publish. */
+   * and the user is entitled to know it before they publish. "Source text",
+   * not "English text": the source language is whatever the picker says it is.
+   */
   function sharedNote(rows) {
     const n = count(rows);
     return el("p", "note",
       n === 1
         ? "One of these translations is shared: publishing it changes that translation " +
-          "for every catalog item on this instance whose field uses the same English text."
+          "for every catalog item on this instance whose field uses the same source text."
         : n + " of these translations are shared: publishing them changes those translations " +
-          "for every catalog item on this instance whose fields use the same English text.");
+          "for every catalog item on this instance whose fields use the same source text.");
   }
 
   function close(options) {

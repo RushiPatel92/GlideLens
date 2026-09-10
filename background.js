@@ -3309,6 +3309,10 @@ async function readLfAssistantContext(tabId) {
       .filter((item) => item !== selected)
       .map((item) => ({
         frameId: item.frameId,
+        /* Whether this frame answered at all. A frame that timed out, threw, or
+         * ran and returned nothing has said nothing about what the page is, and
+         * the panel must not turn that silence into navigation advice. */
+        answered: !!(item.ok && item.value),
         isLfPage: !!(item.value && item.value.isLfPage),
         isAdhoc: item.value ? item.value.isAdhoc : null,
         why: item.ok ? String((item.value && item.value.why) || "") : errorText(item.error),
@@ -3343,13 +3347,27 @@ function readLfAssistantDraftStore() {
     .catch(() => assistantEngine().createDraftStore());
 }
 
-async function saveLfAssistantDraft(draft) {
-  const engine = assistantEngine();
-  const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
-  const item = {};
-  item[LF_ASSISTANT_DRAFTS_KEY] = store;
-  await chrome.storage.session.set(item);
-  return store.drafts.length;
+/* One writer at a time. storage.session has no atomic update, so two saves that
+ * read the map before either writes it will each append to their own copy and
+ * the second set() discards the first draft -- while both callers are told the
+ * draft is held. That is the failure that makes a downloaded file
+ * unaddressable later, which is the one thing persisting it was for. The chain
+ * is worker-wide because the store is. */
+let lfAssistantDraftWrites = Promise.resolve();
+
+function saveLfAssistantDraft(draft) {
+  const write = lfAssistantDraftWrites.then(async () => {
+    const engine = assistantEngine();
+    const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
+    const item = {};
+    item[LF_ASSISTANT_DRAFTS_KEY] = store;
+    await chrome.storage.session.set(item);
+    return store.drafts.length;
+  });
+  /* A rejected write must not poison the queue for the next caller, and the
+   * rejection still reaches the one that caused it through `write`. */
+  lfAssistantDraftWrites = write.then(() => {}, () => {});
+  return write;
 }
 
 async function readLfAssistantDraft(exportId) {
