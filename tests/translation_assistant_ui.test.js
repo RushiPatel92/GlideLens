@@ -530,11 +530,15 @@ test("each shared translation links to the fields that use its text, on this ins
   ], "the page's own table and column, filtered on the source text");
 });
 
-test("a text a list filter cannot express gets no link rather than a wrong one", () => {
-  const harness = load();
-  show(harness, draftFrom([element({ fields: [field({ source: "Up ^ down" })] })]));
-  assert.strictEqual(buttonNamed(harness.shadow(), "Where this text is used ↗"), null);
-  assert.match(harness.text(), /cannot express \^/);
+test("a text a list filter cannot express gets no links rather than wrong ones", () => {
+  /* Translation Lens's queryValueStatus rules: a caret is the clause
+   * separator, and a line break cannot sit inside an encoded query either. */
+  for (const source of ["Up ^ down", "Line one\nLine two"]) {
+    const harness = load();
+    show(harness, draftFrom([element({ fields: [field({ source })] })]));
+    assert.strictEqual(verifyButtons(harness.shadow()).length, 0, JSON.stringify(source));
+    assert.match(harness.text(), /cannot express this text/);
+  }
 });
 
 test("a table name that is not a plain identifier never becomes a link", () => {
@@ -542,6 +546,42 @@ test("a table name that is not a plain identifier never becomes a link", () => {
   show(harness, draftFrom([element({
     fields: [field({ source: "Cost centre", table: "x/../../elsewhere" })],
   })]));
-  assert.strictEqual(buttonNamed(harness.shadow(), "Where this text is used ↗"), null);
+  assert.strictEqual(verifyButtons(harness.shadow()).length, 0,
+    "neither the usage list nor the stored translation may be built from it");
   assert.deepStrictEqual(harness.opened, []);
+});
+
+function verifyButtons(root_) {
+  return findAll(root_, (node) => node.tagName === "BUTTON" && node.className === "verify");
+}
+
+test("each shared translation links to where its translation is stored", () => {
+  /* The key a publish writes -- the page's own table and column, the source
+   * text, the target language -- which is the same key Translation Lens
+   * links to for a choice. */
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  press(buttonNamed(harness.shadow(), "Stored French translation ↗"));
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/sys_translated_list.do?sysparm_query=" +
+      "name%3Dquestion%5Eelement%3Dquestion_text%5Evalue%3DCost%20centre%5Elanguage%3Dfr",
+  ]);
+});
+
+test("the note says the stored-translation list is expected to be empty", () => {
+  /* Every listed row is unlocked, and in ad-hoc mode that usually means no
+   * translation exists, so an empty list must not read as a broken link. */
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  assert.match(harness.text(), /stays empty until one is published/);
+});
+
+test("a language code that is not sys_language-shaped gets no stored link", () => {
+  const harness = load();
+  const draft = draftFrom([element({ fields: [field({ source: "Cost centre" })] })]);
+  draft.languages.targetLanguage = "fr/../x";
+  show(harness, draft);
+  assert.ok(buttonNamed(harness.shadow(), "Where this text is used ↗"),
+    "the usage link does not depend on the language");
+  assert.strictEqual(verifyButtons(harness.shadow()).length, 1);
 });

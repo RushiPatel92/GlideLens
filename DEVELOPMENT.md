@@ -216,7 +216,9 @@ The suites cover:
   a copy or download flashes its own outcome and reverts, under fake timers —
   plus the shared-translation list: each row named, each linked to the fields
   that use its text through a same-origin URL built only from the page's own
-  table and column, with no link for a caret or a non-identifier table.
+  table and column, and to the sys_translated row a publish would write for the
+  target language. Both follow Translation Lens's rules for what a filter can
+  carry: no link for a caret, a line break, an unsafe table or language.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that

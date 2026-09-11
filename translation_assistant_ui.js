@@ -39,7 +39,8 @@
  *     toast is gone by the time this panel is up, so a notice sent there is
  *     never seen: a copy that worked looked exactly like one that did not.
  *   - A claim the user cannot check is named and linked. Every shared
- *     translation is listed, with a link to the fields that use its text.
+ *     translation is listed, with a link to the fields that use its text and
+ *     another to the sys_translated row a publish would write.
  *   - "Locked" is never described as verified. In ad-hoc mode the flag is
  *     derived from whether a translation exists, so the panel says the field
  *     already has one and says how to redo it.
@@ -147,11 +148,13 @@
     .shared-list .src{color:#fff3d6;font-weight:650;overflow-wrap:anywhere}
     .shared-list .where{color:#b9ad8a;font-size:11px}
     .verify{
-      margin-left:auto;background:none;border:0;padding:0;cursor:pointer;font-size:11px;
+      background:none;border:0;padding:0;cursor:pointer;font-size:11px;
       color:color-mix(in srgb, var(--teal) 84%, white);text-decoration:underline;
       text-underline-offset:2px;white-space:nowrap;
     }
     .verify:hover{color:#fff}
+    .verify-links{margin-left:auto;display:flex;gap:12px;flex-wrap:wrap}
+    .note .sub{margin:6px 0 0;font-size:11px;color:#b9ad8a}
     .verify-none{margin-left:auto;font-size:11px;color:#b9ad8a}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
@@ -267,21 +270,51 @@
   }
 
   /*
+   * Translation Lens's rules for what a list link may carry, copied rather
+   * than approximated: a table or column starts with a letter, a language is
+   * sys_language.id-shaped (fr, es-MX, pb), and a value the encoded-query
+   * language cannot carry -- empty, over 255 characters, a caret or a line
+   * break -- gets no link rather than a wrong one.
+   */
+  const TABLE_PATTERN = /^[a-z][a-z0-9_]*$/;
+  const LANGUAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+  function queryValueOk(value) {
+    const text = str(value);
+    return !!text && text.length <= 255 && !/[\^\r\n]/.test(text);
+  }
+
+  /*
    * Every record in the field's own table whose column holds this text: the
    * fields that would pick up a translation published for it. Built only from
-   * the page's own (table, column). An encoded query cannot express a caret,
-   * so a source containing one gets no link rather than a wrong one. The
-   * server's = is case-insensitive, as the platform's lookup is; it does not
-   * fold accents, which the lookup also does, so the list can under-show.
+   * the page's own (table, column). The server's = is case-insensitive, as the
+   * platform's lookup is; it does not fold accents, which the lookup also
+   * does, so the list can under-show.
    */
-  const IDENTIFIER = /^[a-z0-9_]+$/;
   function whereUsedUrl(row) {
     const table = str(row && row.table);
     const column = str(row && row.column);
     const source = str(row && row.source);
-    if (!IDENTIFIER.test(table) || !IDENTIFIER.test(column) || !source) return "";
-    if (/\^/.test(source)) return "";
+    if (!TABLE_PATTERN.test(table) || !TABLE_PATTERN.test(column) || !queryValueOk(source)) return "";
     return `/${table}_list.do?sysparm_query=${encodeURIComponent(`${column}=${source}`)}`;
+  }
+
+  /*
+   * The row a publish writes for this field: sys_translated keyed on (name,
+   * element, value, language), with name the page's own table -- the defining
+   * table, which is where these rows live -- and the same key Translation Lens
+   * links to. Some instances also hold record-keyed sys_translated_text rows
+   * for these fields and which store renders is unverified, so this names only
+   * the one the save path writes.
+   */
+  function storedTranslationUrl(row, language) {
+    const table = str(row && row.table);
+    const column = str(row && row.column);
+    const source = str(row && row.source);
+    const lang = str(language);
+    if (!TABLE_PATTERN.test(table) || !TABLE_PATTERN.test(column) ||
+      !LANGUAGE_PATTERN.test(lang) || !queryValueOk(source)) return "";
+    const query = `name=${table}^element=${column}^value=${source}^language=${lang}`;
+    return `/sys_translated_list.do?sysparm_query=${encodeURIComponent(query)}`;
   }
 
   function unmount() {
@@ -572,7 +605,7 @@
      * still shared instance-wide when the platform keys it by source string,
      * and that is the common case, not the exception. */
     if (Array.isArray(draft.instanceWide) && draft.instanceWide.length) {
-      bodyEl.appendChild(sharedNote(draft.instanceWide));
+      bodyEl.appendChild(sharedNote(draft.instanceWide, draft.languages));
     }
     return true;
   }
@@ -587,9 +620,13 @@
    * and the user is entitled to know it before they publish. "Source text",
    * not "English text": the source language is whatever the picker says it is.
    */
-  function sharedNote(rows) {
+  function sharedNote(rows, languages) {
     const list = Array.isArray(rows) ? rows : [];
     const n = list.length;
+    const language = str(languages && languages.targetLanguage);
+    const languageLabel = str(languages && languages.targetLanguageName) || language;
+    const inLanguage = languageLabel ? `${languageLabel} translation` : "translation";
+    const linked = isFn(callbacks.onOpenUrl);
     const box = el("div", "note flag");
     box.appendChild(el("p", "",
       n === 1
@@ -597,23 +634,39 @@
           "for every catalog item on this instance whose field uses the same source text."
         : n + " of these translations are shared: publishing them changes those translations " +
           "for every catalog item on this instance whose fields use the same source text."));
+    if (linked) {
+      /* Every row listed here is unlocked, which in ad-hoc mode usually means
+       * no translation exists yet -- so the stored list is expected to be
+       * empty, and saying so stops an empty list reading as a broken link. */
+      box.appendChild(el("p", "sub",
+        `Each links to the fields that use its text, and to where its ${inLanguage} ` +
+        "is stored — that list stays empty until one is published."));
+    }
 
-    /* Named, and linked to where each text is used, so the claim above can be
-     * checked rather than taken on trust. */
+    /* Named, and linked to where each text is used and where its translation
+     * is kept, so the claim above can be checked rather than taken on trust. */
     const ul = el("ul", "shared-list");
     list.forEach((row) => {
       const li = el("li");
       li.appendChild(el("span", "src", `“${str(row.source)}”`));
       const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
       if (where) li.appendChild(el("span", "where", where));
-      const url = whereUsedUrl(row);
-      if (url && isFn(callbacks.onOpenUrl)) {
-        const link = el("button", "verify", "Where this text is used ↗");
-        link.type = "button";
-        link.addEventListener("click", () => { openUrl(url); });
-        li.appendChild(link);
-      } else if (/\^/.test(str(row.source))) {
-        li.appendChild(el("span", "verify-none", "no list link: a list filter cannot express ^"));
+      const links = [
+        { url: whereUsedUrl(row), label: "Where this text is used ↗" },
+        { url: storedTranslationUrl(row, language), label: `Stored ${inLanguage} ↗` },
+      ].filter((entry) => entry.url);
+      if (links.length && linked) {
+        const group = el("span", "verify-links");
+        links.forEach((entry) => {
+          const link = el("button", "verify", entry.label);
+          link.type = "button";
+          link.addEventListener("click", () => { openUrl(entry.url); });
+          group.appendChild(link);
+        });
+        li.appendChild(group);
+      } else if (!queryValueOk(row.source)) {
+        li.appendChild(el("span", "verify-none",
+          "no list links: a list filter cannot express this text"));
       }
       ul.appendChild(li);
     });
