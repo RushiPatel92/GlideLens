@@ -541,6 +541,34 @@ test("a text a list filter cannot express gets no links rather than wrong ones",
   }
 });
 
+test("a text a list filter would run as a script gets no links, and says why", () => {
+  /* Codex review of 337a328..0d928d4, P1, measured on the PDI: a query value
+   * that is a javascript: expression is evaluated by the server instead of
+   * matched as words, and encoding the URL does not stop it. Refused wherever
+   * it appears, in any capitalisation, with or without space before the
+   * colon: refusing too much costs a link, refusing too little opens a list
+   * whose filter is someone's script. */
+  for (const source of [
+    "javascript:'Cost centre'",
+    "JavaScript :gs.getUserName()",
+    "Cost centre javascript:x",
+  ]) {
+    const harness = load();
+    show(harness, draftFrom([
+      element({ groupName: "Variable: Shared", fields: [field({ source })] }),
+      element({
+        groupName: "Variable: Done",
+        fields: [field({ source: source + " (done)", locked: true, target: "Centre de coûts" })],
+      }),
+    ]));
+    assert.strictEqual(verifyButtons(harness.shadow()).length, 0, JSON.stringify(source));
+    const shared = findAll(harness.shadow(), (node) => node.className === "shared-list")[0];
+    assert.match(shared.textContent, /would run this text as a script/, "the shared row says why");
+    const detail = detailOf(bucketToggle(harness.shadow(), "already translated"));
+    assert.match(detail.textContent, /would run this text as a script/, "so does the listed field");
+  }
+});
+
 test("a table name that is not a plain identifier never becomes a link", () => {
   const harness = load();
   show(harness, draftFrom([element({
@@ -568,12 +596,18 @@ test("each shared translation links to where its translation is stored", () => {
   ]);
 });
 
-test("the note says the stored-translation list is expected to be empty", () => {
-  /* Every listed row is unlocked, and in ad-hoc mode that usually means no
-   * translation exists, so an empty list must not read as a broken link. */
+test("the note says when the stored-translation list is empty, and when it is not", () => {
+  /* Every listed row is unlocked. In ad-hoc mode that usually means no
+   * translation exists, so an empty list must not read as a broken link --
+   * but a translation the user unlocked to have redone is unlocked too, is
+   * filled like any other, and is still stored (Codex review, P2). The note
+   * has to be true of both. */
   const harness = load();
-  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
-  assert.match(harness.text(), /stays empty until one is published/);
+  show(harness, draftFrom([element({
+    fields: [field({ source: "Cost centre", target: "Centre de coûts" })],
+  })]));
+  assert.match(harness.text(), /empty unless one was published and then unlocked to be redone/);
+  assert.doesNotMatch(harness.text(), /stays empty until one is published/);
 });
 
 test("a language code that is not sys_language-shaped gets no stored link", () => {
@@ -683,7 +717,7 @@ test("only the already-translated and rich text counts open into a list", () => 
     findAll(harness.shadow(), (node) => node.tagName === "BUTTON" && node.className === "toggle").length, 0);
 });
 
-test("every listed field has the same shape, however long its text", () => {
+test("every listed field is built from the same parts, however long its text", () => {
   /* Owner report, 2026-09-11: the list was one wrapping row per field, so the
    * text length decided which line the translation, the location and the link
    * landed on, and a short entry never matched a long one. Each entry is now
@@ -732,4 +766,60 @@ test("a long text is cut at a whole word, and the whole of it is on hover", () =
   assert.strictEqual(source.title, words, "the whole text is one hover away");
   const target = findAll(detail, (node) => node.className === "tgt")[0];
   assert.strictEqual(target.title, "Oui", "one line can clip even a short text, so it has a hover too");
+});
+
+test("the list's stylesheet keeps each text to one line and each foot to one row", () => {
+  /* The test above pins the parts, not the layout: turning the one-line rule
+   * into wrapping inline text left it passing (Codex review, P3). Node cannot
+   * lay the panel out, so this reads the stylesheet the panel injects. */
+  const harness = load();
+  show(harness, mixedDraft());
+  const style = findAll(harness.shadow(), (node) => node.tagName === "STYLE")[0];
+  assert.ok(style, "the panel injects its stylesheet");
+  const css = style.textContent
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([{};:,])\s*/g, "$1");
+  const rule = (selector) => {
+    const at = css.indexOf("}" + selector + "{");
+    assert.ok(at >= 0, "no rule for " + selector);
+    const start = at + selector.length + 2;
+    return css.slice(start, css.indexOf("}", start));
+  };
+  const text = rule(".excluded-list .src,.excluded-list .tgt");
+  ["display:block", "white-space:nowrap", "overflow:hidden", "text-overflow:ellipsis"].forEach((declaration) => {
+    assert.ok(text.includes(declaration), "a listed text keeps to one line: " + declaration);
+  });
+  assert.ok(rule(".tally .excluded-list li").includes("display:block"),
+    "an entry is a stack of lines, not one wrapping row");
+  const foot = rule(".foot");
+  assert.ok(foot.includes("display:flex") && !foot.includes("flex-wrap:wrap"),
+    "the foot is one row at the panel's normal width");
+});
+
+test("plain text keeps its angle brackets; only rich text is shown as words", () => {
+  /* Codex review, P2, measured: every entry went through the markup stripper,
+   * so "Enter <account> here" showed as "Enter here", its hover lost the
+   * placeholder too, and a translation that was nothing but "<compte>" read
+   * as no translation at all. */
+  const harness = load();
+  show(harness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({
+      groupName: "Variable: Account",
+      fields: [field({ source: "Enter <account> here", locked: true, target: "Saisir <compte> ici" })],
+    }),
+    element({
+      groupName: "Variable: Placeholder",
+      fields: [field({ source: "<account>", locked: true, target: "<compte>" })],
+    }),
+  ]));
+  const detail = detailOf(bucketToggle(harness.shadow(), "already translated"));
+  assert.match(detail.textContent, /“Enter <account> here”/);
+  assert.match(detail.textContent, /→ “Saisir <compte> ici”/);
+  assert.match(detail.textContent, /→ “<compte>”/, "a translation that looks like a tag is still a translation");
+  assert.doesNotMatch(detail.textContent, /no French translation yet/);
+  const titles = findAll(detail, (node) => node.className === "src" || node.className === "tgt")
+    .map((node) => node.title);
+  assert.deepStrictEqual(titles, ["Enter <account> here", "Saisir <compte> ici", "<account>", "<compte>"]);
 });

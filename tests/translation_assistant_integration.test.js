@@ -407,9 +407,33 @@ test("the panel's links take the same guarded route as Translation Lens", () => 
   const runner = between(contentSource, "async function runTranslationAssistant(", "function translationLensUi(");
   assert.ok(/onOpenUrl: \(url\) => openTranslationUrl\(url\)/.test(runner),
     "the shared-translation links go through the same same-origin check the Lens uses");
+
+  /* Executed rather than searched for: the source check this replaces kept
+   * passing with the origin comparison disabled (Codex review, P3). */
   const guard = between(contentSource, "function openTranslationUrl(", "const TRANSLATION_LENS_WORKSPACE_MESSAGE");
-  assert.ok(guard.includes("target.origin !== location.origin"),
-    "and that check still refuses another origin before the worker ever sees it");
+  const sent = [];
+  const context = {
+    URL,
+    location: { origin: "https://example.service-now.com" },
+    chrome: { runtime: { sendMessage: (message) => { sent.push(message); return Promise.resolve(); } } },
+  };
+  vm.createContext(context);
+  vm.runInContext(guard, context, { filename: "content.js (openTranslationUrl)" });
+
+  context.openTranslationUrl("/sys_translated_list.do?sysparm_query=language%3Dfr");
+  assert.strictEqual(sent.length, 1, "a same-origin link reaches the worker");
+  assert.strictEqual(sent[0].type, "OPEN_URL");
+  assert.strictEqual(sent[0].url,
+    "https://example.service-now.com/sys_translated_list.do?sysparm_query=language%3Dfr");
+
+  for (const url of [
+    "https://elsewhere.example.com/sys_translated_list.do",
+    "//elsewhere.example.com/sys_translated_list.do",
+    "javascript:alert(1)",
+  ]) {
+    assert.throws(() => context.openTranslationUrl(url), /stay on this instance|invalid/, url);
+  }
+  assert.strictEqual(sent.length, 1, "and nothing refused ever does");
 });
 
 test("the store still caps at the engine's limit under concurrency", async () => {

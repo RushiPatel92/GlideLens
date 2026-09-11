@@ -359,6 +359,18 @@ test("every result panel wears the shared palette and stops page inheritance at 
       file + " must use the shared teal and pink, not a palette of its own");
     assert.match(source, /:host\{[^}]*all:initial/,
       file + " must stop the ServiceNow page's inherited font and colour at the shadow host");
+    /* A present reset is not an effective one: a later host rule carrying
+     * all:inherit undid it while the match above still passed (Codex review,
+     * P3). Only a :host rule can undo it -- anything inside the shadow tree
+     * inherits from the reset host -- so no host rule may inherit. Node cannot
+     * compute styles; the static render's hostile page is where a leak that
+     * gets past this would show. */
+    for (const block of source.match(/:host[^{]*\{[^}]*\}/g) || []) {
+      assert.doesNotMatch(block, /:\s*(?:inherit|unset|revert)\b/,
+        file + " must not take anything from the page at the host: " + block);
+    }
+    assert.doesNotMatch(source, /\ball\s*:\s*(?:inherit|unset|revert)\b/,
+      file + " must not reset everything back to the page's values");
   }
 });
 

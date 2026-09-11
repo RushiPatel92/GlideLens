@@ -297,17 +297,27 @@
   }
 
   /*
-   * Translation Lens's rules for what a list link may carry, copied rather
-   * than approximated: a table or column starts with a letter, a language is
-   * sys_language.id-shaped (fr, es-MX, pb), and a value the encoded-query
-   * language cannot carry -- empty, over 255 characters, a caret or a line
-   * break -- gets no link rather than a wrong one.
+   * Translation Lens's rules for what a list link may carry: a table or
+   * column starts with a letter, a language is sys_language.id-shaped (fr,
+   * es-MX, pb), and a value the encoded-query language cannot carry -- empty,
+   * over 255 characters, a caret or a line break -- gets no link rather than a
+   * wrong one. And one rule more: the server evaluates a value that is a
+   * javascript: expression instead of matching it as words, and encoding the
+   * URL does not stop it (Codex review, measured on the PDI). So any value
+   * naming that scheme is refused, in any case and wherever it sits.
+   * Refusing too much costs a link; refusing too little opens a list whose
+   * filter is someone's script.
    */
   const TABLE_PATTERN = /^[a-z][a-z0-9_]*$/;
   const LANGUAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
-  function queryValueOk(value) {
+  function queryValueProblem(value) {
     const text = str(value);
-    return !!text && text.length <= 255 && !/[\^\r\n]/.test(text);
+    if (/javascript\s*:/i.test(text)) return "a list filter would run this text as a script";
+    if (!text || text.length > 255 || /[\^\r\n]/.test(text)) return "a list filter cannot express this text";
+    return "";
+  }
+  function queryValueOk(value) {
+    return !queryValueProblem(value);
   }
 
   /*
@@ -367,17 +377,21 @@
     return `/sys_translated_text_list.do?sysparm_query=${encodeURIComponent(query)}`;
   }
 
-  /* Rich text arrives as markup. The list shows it as plain words, shortened
-   * at a whole word, through textContent like everything else here -- never
-   * as markup. */
+  /* Rich text arrives as markup, so the list shows it as plain words. Every
+   * other type is literal text and keeps every character -- "Enter <account>
+   * here" is not markup -- with only its runs of white space folded, as one
+   * line would fold them anyway. Both go in through textContent like
+   * everything else here, never as markup. */
   const SPACE = String.fromCharCode(32);
   function plainWords(value) {
     return str(value).replace(/<[^>]*>/g, SPACE).replace(/\s+/g, SPACE).trim();
   }
-  function plainPreview(value, limit) {
-    const words = plainWords(value);
-    if (words.length <= limit) return words;
-    const cut = words.slice(0, limit - 1);
+  function oneLine(value) {
+    return str(value).replace(/\s+/g, SPACE).trim();
+  }
+  function shorten(text, limit) {
+    if (text.length <= limit) return text;
+    const cut = text.slice(0, limit - 1);
     const space = cut.lastIndexOf(SPACE);
     /* A whole word, unless one unbroken run of characters fills the preview. */
     const kept = space > limit / 2 ? cut.slice(0, space) : cut;
@@ -386,12 +400,14 @@
 
   /* Quoted and shortened at a whole word. The stylesheet keeps it to one
    * line, which can clip even a short text in a narrow window, so the whole
-   * text is always one hover away. */
+   * text is always one hover away: the literal value for plain text, the
+   * plain words for rich text. */
   const PREVIEW_CHARS = 140;
-  function quotedPreview(className, prefix, value) {
-    const full = plainWords(value);
-    const node = el("span", className, `${prefix}“${plainPreview(full, PREVIEW_CHARS)}”`);
-    if (full) node.title = full;
+  function quotedPreview(className, prefix, value, rich) {
+    const shown = rich ? plainWords(value) : oneLine(value);
+    const node = el("span", className, `${prefix}“${shorten(shown, PREVIEW_CHARS)}”`);
+    const whole = rich ? shown : str(value);
+    if (whole) node.title = whole;
     return node;
   }
 
@@ -418,18 +434,27 @@
     const ul = el("ul", "excluded-list");
     entries.forEach((entry) => {
       const li = el("li");
-      li.appendChild(quotedPreview("src", "", entry.source));
-      li.appendChild(plainWords(entry.target)
-        ? quotedPreview("tgt", "→ ", entry.target)
+      /* Only rich text is markup; the engine puts every HTML field in that
+       * bucket before it looks at locks. */
+      const rich = entry.reason === "rich_text";
+      li.appendChild(quotedPreview("src", "", entry.source, rich));
+      /* Whether a translation exists is a property of the value, not of what
+       * survives once markup is stripped: "<compte>" is a translation. */
+      li.appendChild(str(entry.target)
+        ? quotedPreview("tgt", "→ ", entry.target, rich)
         : el("span", "untranslated", `no ${inLanguage} yet`));
       const url = excludedStoreUrl(entry, language);
-      let link = null;
+      let trailing = null;
       if (url && isFn(callbacks.onOpenUrl)) {
-        link = el("button", "verify", `Stored ${inLanguage} ↗`);
-        link.type = "button";
-        link.addEventListener("click", () => { openUrl(url); });
+        trailing = el("button", "verify", `Stored ${inLanguage} ↗`);
+        trailing.type = "button";
+        trailing.addEventListener("click", () => { openUrl(url); });
+      } else if (str(entry.store) === "sys_translated" && queryValueProblem(entry.source)) {
+        /* Stored under its text, so a text no filter can carry gets no link,
+         * and the entry says so rather than leaving a gap. */
+        trailing = el("span", "verify-none", `no list link: ${queryValueProblem(entry.source)}`);
       }
-      const foot = footLine([str(entry.label), str(entry.groupName)].filter(Boolean).join(" · "), link);
+      const foot = footLine([str(entry.label), str(entry.groupName)].filter(Boolean).join(" · "), trailing);
       if (foot) li.appendChild(foot);
       ul.appendChild(li);
     });
@@ -772,12 +797,15 @@
         : n + " of these translations are shared: publishing them changes those translations " +
           "for every catalog item on this instance whose fields use the same source text."));
     if (linked) {
-      /* Every row listed here is unlocked, which in ad-hoc mode usually means
-       * no translation exists yet -- so the stored list is expected to be
-       * empty, and saying so stops an empty list reading as a broken link. */
+      /* Every row listed here is unlocked. In ad-hoc mode that usually means
+       * no translation exists yet, so the stored list is usually empty, and
+       * saying so stops an empty list reading as a broken link. But a
+       * translation unlocked to be redone is unlocked too and still stored
+       * (Codex review), so the sentence names both cases rather than
+       * promising the first. */
       box.appendChild(el("p", "sub",
         `Each links to the fields that use its text, and to where its ${inLanguage} ` +
-        "is stored — that list stays empty until one is published."));
+        "is stored — empty unless one was published and then unlocked to be redone."));
     }
 
     /* Named, and linked to where each text is used and where its translation
@@ -800,8 +828,8 @@
           link.addEventListener("click", () => { openUrl(entry.url); });
           trailing.appendChild(link);
         });
-      } else if (!queryValueOk(row.source)) {
-        trailing = el("span", "verify-none", "no list links: a list filter cannot express this text");
+      } else if (queryValueProblem(row.source)) {
+        trailing = el("span", "verify-none", `no list links: ${queryValueProblem(row.source)}`);
       }
       const foot = footLine(where, trailing);
       if (foot) li.appendChild(foot);

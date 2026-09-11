@@ -77,8 +77,9 @@ The suites cover:
   source assertions for the listbox, `aria-activedescendant`, focus trap, and
   shared panel headings. Also that every `*_ui.js` panel, found by glob rather
   than listed, carries the shared GlideLens teal and pink tokens and stops the
-  page's inherited styles with `:host{all:initial}` — there is no build step to
-  share CSS, so the copies are compared instead.
+  page's inherited styles with `:host{all:initial}`, which no host rule undoes
+  with `inherit`, `unset` or `revert` — there is no build step to share CSS, so
+  the copies are compared instead.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
   encoded URLs, and the complete Workspace experience path. Workspace support is
@@ -218,21 +219,25 @@ The suites cover:
   that use its text through a same-origin URL built only from the page's own
   table and column, and to the sys_translated row a publish would write for the
   target language. Both follow Translation Lens's rules for what a filter can
-  carry: no link for a caret, a line break, an unsafe table or language. And
-  the two counts that open into a list — already translated, rich text —
-  closed by default, each field shown as plain words with its current
-  translation and linked to its store: `sys_translated` for shared text,
-  `sys_translated_text` by sys_id for per-record fields. Every entry has the
-  same shape however long its text — the text, its translation, then one line
-  holding where it lives and its link — and each text keeps to one line, cut
-  at a whole word, with the whole of it on hover.
+  carry — no link for a caret, a line break, an unsafe table or language — and
+  one more: no link for a text naming a `javascript:` expression, which the
+  server would run rather than match, and the row says why. And the two counts
+  that open into a list — already translated, rich text — closed by default,
+  each field shown with its current translation (rich text as plain words,
+  every other type literally, angle brackets and all) and linked to its store:
+  `sys_translated` for shared text, `sys_translated_text` by sys_id for
+  per-record fields. Every entry is built from the same parts however long its
+  text — the text, its translation, then one line holding where it lives and
+  its link — and the stylesheet the panel injects keeps each text to one line,
+  cut at a whole word, with the whole of it on hover.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that
   names why a frame is not the comparison page, the three independent
   editability states it reads rather than infers, the draft held in
   `storage.session` before it is ever offered, both output routes emitting the
-  one serialised string, and the packaging allowlist. Also the negatives:
+  one serialised string, the panel's link guard run against a same-origin link
+  and three it must refuse, and the packaging allowlist. Also the negatives:
   phase 2 ships no write path, nothing persists a frame handle, and no
   user-facing string calls a locked field verified.
 
