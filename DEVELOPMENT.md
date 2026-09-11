@@ -222,7 +222,10 @@ The suites cover:
   the two counts that open into a list — already translated, rich text —
   closed by default, each field shown as plain words with its current
   translation and linked to its store: `sys_translated` for shared text,
-  `sys_translated_text` by sys_id for per-record fields.
+  `sys_translated_text` by sys_id for per-record fields. Every entry has the
+  same shape however long its text — the text, its translation, then one line
+  holding where it lives and its link — and each text keeps to one line, cut
+  at a whole word, with the whole of it on hover.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that

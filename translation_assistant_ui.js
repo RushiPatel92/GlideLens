@@ -79,7 +79,7 @@
       display:flex;align-items:center;justify-content:center;padding:12px;
     }
     .panel{
-      width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 24px);
+      width:min(880px,calc(100vw - 24px));max-height:calc(100vh - 24px);
       display:flex;flex-direction:column;overflow:hidden;
       background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
       box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;font-size:13px;line-height:1.5;
@@ -143,20 +143,24 @@
     .note.flag{color:var(--flag);background:var(--flag-bg);border:1px solid var(--flag-line)}
     .note p{margin:0}
     .shared-list{list-style:none;margin:8px 0 0;padding:0}
-    .shared-list li{
-      display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:5px 0 3px;
-      border-top:1px solid var(--flag-line);
-    }
+    .shared-list li{padding:6px 0 5px;border-top:1px solid var(--flag-line)}
     .shared-list li:first-child{border-top:0}
-    .shared-list .src{color:#fff3d6;font-weight:650;overflow-wrap:anywhere}
-    .shared-list .where{color:#b9ad8a;font-size:11px}
+    .shared-list .src{display:block;color:#fff3d6;font-weight:650;overflow-wrap:anywhere}
+    .shared-list .where{color:#b9ad8a}
+    /* Every listed field keeps one shape however long its text: the text on
+       its own lines, then a foot line with where the field lives on the left
+       and its links on the right. A wrapping row let the length of the text
+       decide which line each piece landed on, so no two entries matched. */
+    .foot{display:flex;align-items:center;gap:14px;margin-top:2px;font-size:11px}
+    .foot .where{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .foot .verify,.foot .verify-links,.foot .verify-none{margin-left:auto;flex:none}
     .verify{
       background:none;border:0;padding:0;cursor:pointer;font-size:11px;
       color:color-mix(in srgb, var(--teal) 84%, white);text-decoration:underline;
       text-underline-offset:2px;white-space:nowrap;
     }
     .verify:hover{color:#fff}
-    .verify-links{margin-left:auto;display:flex;gap:12px;flex-wrap:wrap}
+    .verify-links{display:flex;gap:12px}
     .note .sub{margin:6px 0 0;font-size:11px;color:#b9ad8a}
     [hidden]{display:none !important}
     .toggle{
@@ -165,14 +169,20 @@
       text-underline-offset:2px;white-space:nowrap;
     }
     .toggle:hover{color:#fff}
-    .tally li.detail{display:block;padding:0 0 8px 3.2em}
-    .excluded-list{list-style:none;margin:2px 0 0;padding:0 0 0 10px;border-left:2px solid #2e2e4e}
-    .tally .excluded-list li{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:4px 0}
-    .excluded-list .src{color:#e6e6f5;font-weight:600;overflow-wrap:anywhere}
-    .excluded-list .tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9);overflow-wrap:anywhere}
-    .excluded-list .where{color:#85859f;font-size:11px}
-    .excluded-list .verify{margin-left:auto}
-    .verify-none{margin-left:auto;font-size:11px;color:#b9ad8a}
+    .tally li.detail{display:block;padding:2px 0 10px 3.2em}
+    .excluded-list{list-style:none;margin:0;padding:0 0 0 12px;border-left:2px solid #2e2e4e}
+    .tally .excluded-list li{display:block;padding:8px 0;border-top:1px solid #29293f}
+    .tally .excluded-list li:first-child{border-top:0;padding-top:2px}
+    /* One line each, the whole text on hover: the list is for checking which
+       field was left out, not for reading it. */
+    .excluded-list .src,.excluded-list .tgt{
+      display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .excluded-list .src{color:#ececf8}
+    .excluded-list .tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
+    .excluded-list .untranslated{display:block;color:#85859f;font-size:12px}
+    .excluded-list .where{color:#85859f}
+    .verify-none{font-size:11px;color:#b9ad8a}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
@@ -188,7 +198,7 @@
       *{animation:none !important;transition:none !important}
       .bar-indeterminate span{width:100%}
     }
-    @media(max-width:680px){.overlay{padding:8px}.panel{width:100%}.header{padding:14px}}
+    @media(max-width:680px){.overlay{padding:8px}.panel{width:100%}.header{padding:14px}.foot{flex-wrap:wrap}}
   `;
 
   let host = null;
@@ -357,12 +367,44 @@
     return `/sys_translated_text_list.do?sysparm_query=${encodeURIComponent(query)}`;
   }
 
-  /* Rich text arrives as markup. The list shows it as plain words, shortened,
-   * through textContent like everything else here -- never as markup. */
+  /* Rich text arrives as markup. The list shows it as plain words, shortened
+   * at a whole word, through textContent like everything else here -- never
+   * as markup. */
   const SPACE = String.fromCharCode(32);
+  function plainWords(value) {
+    return str(value).replace(/<[^>]*>/g, SPACE).replace(/\s+/g, SPACE).trim();
+  }
   function plainPreview(value, limit) {
-    const words = str(value).replace(/<[^>]*>/g, SPACE).replace(/\s+/g, SPACE).trim();
-    return words.length > limit ? `${words.slice(0, limit - 1)}…` : words;
+    const words = plainWords(value);
+    if (words.length <= limit) return words;
+    const cut = words.slice(0, limit - 1);
+    const space = cut.lastIndexOf(SPACE);
+    /* A whole word, unless one unbroken run of characters fills the preview. */
+    const kept = space > limit / 2 ? cut.slice(0, space) : cut;
+    return `${kept.replace(/[\s,;:.]+$/, "")}…`;
+  }
+
+  /* Quoted and shortened at a whole word. The stylesheet keeps it to one
+   * line, which can clip even a short text in a narrow window, so the whole
+   * text is always one hover away. */
+  const PREVIEW_CHARS = 140;
+  function quotedPreview(className, prefix, value) {
+    const full = plainWords(value);
+    const node = el("span", className, `${prefix}“${plainPreview(full, PREVIEW_CHARS)}”`);
+    if (full) node.title = full;
+    return node;
+  }
+
+  /* The line under a listed field: where it lives, cut to one line with the
+   * whole of it on hover, and at the right whatever links it has. */
+  function footLine(where, trailing) {
+    if (!where && !trailing) return null;
+    const foot = el("div", "foot");
+    const whereNode = el("span", "where", where);
+    if (where) whereNode.title = where;
+    foot.appendChild(whereNode);
+    if (trailing) foot.appendChild(trailing);
+    return foot;
   }
 
   /* The two counts that can open into a list. The counts stay the first thing
@@ -376,20 +418,19 @@
     const ul = el("ul", "excluded-list");
     entries.forEach((entry) => {
       const li = el("li");
-      li.appendChild(el("span", "src", `“${plainPreview(entry.source, 90)}”`));
-      const target = plainPreview(entry.target, 90);
-      li.appendChild(target
-        ? el("span", "tgt", `→ “${target}”`)
-        : el("span", "where", `no ${inLanguage} yet`));
-      const where = [str(entry.label), str(entry.groupName)].filter(Boolean).join(" · ");
-      if (where) li.appendChild(el("span", "where", where));
+      li.appendChild(quotedPreview("src", "", entry.source));
+      li.appendChild(plainWords(entry.target)
+        ? quotedPreview("tgt", "→ ", entry.target)
+        : el("span", "untranslated", `no ${inLanguage} yet`));
       const url = excludedStoreUrl(entry, language);
+      let link = null;
       if (url && isFn(callbacks.onOpenUrl)) {
-        const link = el("button", "verify", `Stored ${inLanguage} ↗`);
+        link = el("button", "verify", `Stored ${inLanguage} ↗`);
         link.type = "button";
         link.addEventListener("click", () => { openUrl(url); });
-        li.appendChild(link);
       }
+      const foot = footLine([str(entry.label), str(entry.groupName)].filter(Boolean).join(" · "), link);
+      if (foot) li.appendChild(foot);
       ul.appendChild(li);
     });
     return ul;
@@ -746,24 +787,24 @@
       const li = el("li");
       li.appendChild(el("span", "src", `“${str(row.source)}”`));
       const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
-      if (where) li.appendChild(el("span", "where", where));
       const links = [
         { url: whereUsedUrl(row), label: "Where this text is used ↗" },
         { url: storedTranslationUrl(row, language), label: `Stored ${inLanguage} ↗` },
       ].filter((entry) => entry.url);
+      let trailing = null;
       if (links.length && linked) {
-        const group = el("span", "verify-links");
+        trailing = el("span", "verify-links");
         links.forEach((entry) => {
           const link = el("button", "verify", entry.label);
           link.type = "button";
           link.addEventListener("click", () => { openUrl(entry.url); });
-          group.appendChild(link);
+          trailing.appendChild(link);
         });
-        li.appendChild(group);
       } else if (!queryValueOk(row.source)) {
-        li.appendChild(el("span", "verify-none",
-          "no list links: a list filter cannot express this text"));
+        trailing = el("span", "verify-none", "no list links: a list filter cannot express this text");
       }
+      const foot = footLine(where, trailing);
+      if (foot) li.appendChild(foot);
       ul.appendChild(li);
     });
     box.appendChild(ul);

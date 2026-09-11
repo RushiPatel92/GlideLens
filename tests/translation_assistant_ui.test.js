@@ -682,3 +682,54 @@ test("only the already-translated and rich text counts open into a list", () => 
   assert.strictEqual(
     findAll(harness.shadow(), (node) => node.tagName === "BUTTON" && node.className === "toggle").length, 0);
 });
+
+test("every listed field has the same shape, however long its text", () => {
+  /* Owner report, 2026-09-11: the list was one wrapping row per field, so the
+   * text length decided which line the translation, the location and the link
+   * landed on, and a short entry never matched a long one. Each entry is now
+   * its text, its translation, then one foot line: where it lives, its link. */
+  const long = "Is this a replacement for a device that was lost, stolen or damaged while travelling for work ?";
+  const harness = load();
+  show(harness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Choice", fields: [field({ source: "No", locked: true, target: "Non" })] }),
+    element({ groupName: "Variable: Lost", fields: [field({ source: long, locked: true, target: long })] }),
+    element({
+      groupName: "Basic Info",
+      label: "Description",
+      fields: [field({
+        source: "<p>Notes</p>", type: "translated_html", textType: "html",
+        name: "description", table: "sc_cat_item",
+      })],
+    }),
+  ]));
+  const shapes = findAll(harness.shadow(), (node) =>
+    node.tagName === "LI" && node.parentNode && node.parentNode.className === "excluded-list")
+    .map((item) => [
+      item.children.map((child) => child.className).join(" "),
+      item.children[item.children.length - 1].children.map((child) => child.className).join(" "),
+    ]);
+  assert.deepStrictEqual(shapes, [
+    ["src untranslated foot", "where verify"],
+    ["src tgt foot", "where verify"],
+    ["src tgt foot", "where verify"],
+  ]);
+});
+
+test("a long text is cut at a whole word, and the whole of it is on hover", () => {
+  const words = "With the managed laptop programme remote staff get a secured device the software " +
+    "their role needs and help from the service desk wherever they happen to work";
+  const harness = load();
+  show(harness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Long", fields: [field({ source: words, locked: true, target: "Oui" })] }),
+  ]));
+  const detail = detailOf(bucketToggle(harness.shadow(), "already translated"));
+  const source = findAll(detail, (node) => node.className === "src")[0];
+  assert.ok(source.textContent.endsWith("…”"), source.textContent);
+  const shown = source.textContent.slice(1, -2);
+  assert.ok(words.startsWith(shown + " "), "ends on a whole word: " + shown);
+  assert.strictEqual(source.title, words, "the whole text is one hover away");
+  const target = findAll(detail, (node) => node.className === "tgt")[0];
+  assert.strictEqual(target.title, "Oui", "one line can clip even a short text, so it has a hover too");
+});
