@@ -135,21 +135,25 @@ function load() {
   const dom = createDom();
   const revoked = [];
   const downloaded = [];
+  const timers = [];
+  const opened = [];
   const sandbox = {
     document: dom.document,
     Blob: class Blob {
       constructor(parts) { this.parts = parts || []; }
     },
-    URL: {
-      /* The blob is kept, not just counted. A test that watches the anchor and
-       * the clipboard but never looks at the bytes passes just as happily when
-       * the file is empty, which is the one failure the download route has. */
+    /* A real URL constructor, because the panel validates its links with one,
+     * carrying the two statics the download route uses. The blob is kept, not
+     * just counted: a test that watches the anchor and the clipboard but never
+     * looks at the bytes passes just as happily when the file is empty. */
+    URL: Object.assign(class SandboxURL extends URL {}, {
       createObjectURL: (blob) => {
         downloaded.push(blob);
         return "blob:draft";
       },
       revokeObjectURL: (url) => revoked.push(url),
-    },
+    }),
+    location: { origin: "https://example.service-now.com" },
     navigator: {
       clipboard: {
         written: [],
@@ -159,7 +163,14 @@ function load() {
         },
       },
     },
-    setTimeout,
+    /* Fake timers, so a flash can be seen to revert without a real clock. */
+    setTimeout: (fn) => {
+      timers.push({ fn, cancelled: false, done: false });
+      return timers.length;
+    },
+    clearTimeout: (id) => {
+      if (timers[id - 1]) timers[id - 1].cancelled = true;
+    },
     Promise,
     console,
   };
@@ -173,6 +184,16 @@ function load() {
     notices,
     revoked,
     downloaded,
+    opened,
+    sandbox,
+    runTimers() {
+      timers.forEach((timer) => {
+        if (!timer.cancelled && !timer.done) {
+          timer.done = true;
+          timer.fn();
+        }
+      });
+    },
     clipboard: sandbox.navigator.clipboard,
     get lastDownloadName() {
       const anchors = dom.clicks.filter((entry) => entry.tagName === "A");
@@ -181,6 +202,7 @@ function load() {
     callbacks: {
       onNotify: (message, isError) => notices.push({ message, isError: !!isError }),
       onClose: () => {},
+      onOpenUrl: (url) => { opened.push(url); },
     },
     shadow() {
       const host = dom.document.documentElement.children.find((node) => node.id === HOST_ID);
@@ -423,4 +445,103 @@ test("the subtitle names the language pair in the mono accent", () => {
   const mono = findAll(harness.shadow(), (node) => node.className === "mono");
   assert.strictEqual(mono.length, 1);
   assert.strictEqual(mono[0].textContent, "English → French");
+});
+
+/* ------------------------------------------------------------------ *
+ * Feedback and evidence (live test on the PDI, 2026-09-11)
+ *
+ * Copying worked and said nothing: the panel's notices go to the command
+ * palette's toast, and the palette has closed by the time the panel is up.
+ * And "2 of these translations are shared" asked to be taken on trust.
+ * ------------------------------------------------------------------ */
+
+function buttonNamed(root_, text) {
+  return findAll(root_, (node) => node.tagName === "BUTTON" && node.textContent === text)[0] || null;
+}
+
+function press(node) {
+  assert.ok(node, "expected a control to press");
+  (node.handlers.click || []).forEach((handler) => handler({ target: node }));
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a copy confirms itself on the link, then puts the label back", async () => {
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  const link = buttonNamed(harness.shadow(), "Copy prompt + JSON instead");
+  press(link);
+  await flush();
+  assert.match(link.textContent, /^Copied/,
+    "the palette's toast is gone by now, so the control is the only place feedback can land");
+  harness.runTimers();
+  assert.strictEqual(link.textContent, "Copy prompt + JSON instead");
+});
+
+test("a failed copy says so instead of failing silently", async () => {
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  harness.clipboard.writeText = () => Promise.reject(new Error("denied"));
+  const link = buttonNamed(harness.shadow(), "Copy prompt + JSON instead");
+  press(link);
+  await flush();
+  assert.match(link.textContent, /^Copy failed/);
+  assert.match(link.textContent, /Download JSON/, "and names the route that still works");
+});
+
+test("a failed download says so on the button, then puts the label back", () => {
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  harness.sandbox.Blob = class {
+    constructor() { throw new Error("blocked"); }
+  };
+  const button = buttonNamed(harness.shadow(), "Download JSON");
+  press(button);
+  assert.match(button.textContent, /^Download failed/);
+  harness.runTimers();
+  assert.strictEqual(button.textContent, "Download JSON");
+});
+
+test("the shared warning names each shared translation", () => {
+  const draft = draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Department", fields: [field({ source: "Department" })] }),
+    element({
+      groupName: "Variable: Notes",
+      fields: [field({ source: "Notes", type: "translated_text", name: "help_text" })],
+    }),
+  ]);
+  const harness = load();
+  show(harness, draft);
+  const items = findAll(harness.shadow(), (node) =>
+    node.tagName === "LI" && node.parentNode && node.parentNode.className === "shared-list");
+  assert.strictEqual(items.length, 2, "the record-scoped row is not shared, so it is not listed");
+  assert.match(items[0].textContent, /“Cost centre”/);
+  assert.match(items[0].textContent, /Question · Variable: Cost centre/);
+  assert.match(items[1].textContent, /“Department”/);
+});
+
+test("each shared translation links to the fields that use its text, on this instance", () => {
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  press(buttonNamed(harness.shadow(), "Where this text is used ↗"));
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/question_list.do?sysparm_query=question_text%3DCost%20centre",
+  ], "the page's own table and column, filtered on the source text");
+});
+
+test("a text a list filter cannot express gets no link rather than a wrong one", () => {
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Up ^ down" })] })]));
+  assert.strictEqual(buttonNamed(harness.shadow(), "Where this text is used ↗"), null);
+  assert.match(harness.text(), /cannot express \^/);
+});
+
+test("a table name that is not a plain identifier never becomes a link", () => {
+  const harness = load();
+  show(harness, draftFrom([element({
+    fields: [field({ source: "Cost centre", table: "x/../../elsewhere" })],
+  })]));
+  assert.strictEqual(buttonNamed(harness.shadow(), "Where this text is used ↗"), null);
+  assert.deepStrictEqual(harness.opened, []);
 });

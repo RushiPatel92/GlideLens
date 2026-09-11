@@ -212,7 +212,11 @@ The suites cover:
   storage model, not how many fields on this item happen to share it. Also the
   house style: the shared palette, the footer every panel carries, exactly one
   pink primary route with the copy route drawn as a link, and the language pair
-  in the subtitle's mono accent.
+  in the subtitle's mono accent. And feedback on the control that was pressed —
+  a copy or download flashes its own outcome and reverts, under fake timers —
+  plus the shared-translation list: each row named, each linked to the fields
+  that use its text through a same-origin URL built only from the page's own
+  table and column, with no link for a caret or a non-identifier table.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that

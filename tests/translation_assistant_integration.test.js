@@ -149,8 +149,8 @@ test("the draft is held before it is shown, in source order", () => {
 });
 
 test("both output routes write the one string the engine serialised", () => {
-  const download = between(uiSource, "function download(draft, button)", "async function copy(draft)");
-  const copy = between(uiSource, "async function copy(draft)", "function showDraft(");
+  const download = between(uiSource, "function download(draft, button)", "async function copy(draft, link)");
+  const copy = between(uiSource, "async function copy(draft, link)", "function showDraft(");
   assert.ok(download.includes("str(draft && draft.serialized)"));
   assert.ok(copy.includes("str(draft && draft.serialized)"));
   /* The panel must not assemble a payload: that is how the file came to ship
@@ -401,6 +401,15 @@ test("both draft routes scope the run token to the sender", () => {
   assert.ok(/lfAssistantRunKey\(sender, msg\.runToken\)/.test(save));
   assert.ok(/lfAssistantRunKey\(sender, msg\.runToken\)/.test(cancel),
     "a raw token from one tab would address another tab's queued save");
+});
+
+test("the panel's links take the same guarded route as Translation Lens", () => {
+  const runner = between(contentSource, "async function runTranslationAssistant(", "function translationLensUi(");
+  assert.ok(/onOpenUrl: \(url\) => openTranslationUrl\(url\)/.test(runner),
+    "the shared-translation links go through the same same-origin check the Lens uses");
+  const guard = between(contentSource, "function openTranslationUrl(", "const TRANSLATION_LENS_WORKSPACE_MESSAGE");
+  assert.ok(guard.includes("target.origin !== location.origin"),
+    "and that check still refuses another origin before the worker ever sees it");
 });
 
 test("the store still caps at the engine's limit under concurrency", async () => {

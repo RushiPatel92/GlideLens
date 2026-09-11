@@ -458,7 +458,9 @@
      * record. Publishing one of these changes that translation for every
      * artifact on the instance whose field carries the same source string,
      * whether or not anything on THIS item shares it. */
-    let instanceWideRows = 0;
+    /* Listed rather than counted, so the panel can name each one and link to
+     * every field that shares its text -- a claim the user can check. */
+    const instanceWide = [];
 
     grouped.groups.forEach((group) => {
       const eligible = group.members.every((member) => !member.exclusion);
@@ -469,7 +471,19 @@
       k += 1;
       const lead = group.members[0];
       eligibleFields += group.members.length;
-      if (STRING_SCOPED_TYPES.has(lead.type)) instanceWideRows += 1;
+      if (STRING_SCOPED_TYPES.has(lead.type)) {
+        instanceWide.push({
+          k,
+          kind: lead.label,
+          context: lead.groupName,
+          source: lead.source,
+          /* The platform's own (table, column) for this field, straight from
+           * additionalParameters and never inferred, so a list built from them
+           * holds exactly the records the stored row is keyed against. */
+          table: text(lead.params && lead.params.table),
+          column: text(lead.params && lead.params.name),
+        });
+      }
       const maxLength = group.members.reduce(
         (limit, member) => Math.min(limit, member.limit), Number.MAX_SAFE_INTEGER
       );
@@ -544,7 +558,8 @@
        * which is instanceWideRows -- a row with one local member is still
        * shared instance-wide when the platform keys it by source string. */
       sharedRows: Object.keys(map).filter((key) => (map[key].members || []).length > 1).length,
-      instanceWideRows,
+      instanceWideRows: instanceWide.length,
+      instanceWide,
       elementCount: read.elementCount,
       fieldCount: read.fieldCount,
       createdAt: typeof opts.now === "number" ? opts.now : Date.now(),

@@ -943,3 +943,25 @@ test("a record-scoped row is not counted as instance-wide", () => {
   assert.strictEqual(draft.instanceWideRows, 0,
     "translated_text is stored per record, so publishing it changes nothing elsewhere");
 });
+
+test("each instance-wide row is named with the platform's own table and column", () => {
+  /* The panel links each shared row to the records that use its text. That
+   * link is only honest if (table, column) are the ones the page supplied,
+   * because those are what the stored row is keyed against. */
+  const draft = draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({
+      groupName: "Variable: Notes",
+      fields: [field({ type: "translated_text", name: "help_text", source: "Notes" })],
+    }),
+  ]);
+  assert.strictEqual(draft.instanceWideRows, 1);
+  assert.deepStrictEqual(json(draft.instanceWide), [{
+    k: 1,
+    kind: "Question",
+    context: "Variable: Cost centre",
+    source: "Cost centre",
+    table: "question",
+    column: "question_text",
+  }]);
+});

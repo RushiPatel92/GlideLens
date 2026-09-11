@@ -5613,6 +5613,9 @@ async function runTranslationAssistant() {
     fingerprint,
     context: {},
     callbacks: {
+      /* The shared-translation list links to where each text is used. Same
+       * route as Translation Lens: same-origin here, re-checked by the worker. */
+      onOpenUrl: (url) => openTranslationUrl(url),
       onClose: () => {
         translationAssistantRunSequence++;
         /* The run gate stops this run doing anything further, but it cannot

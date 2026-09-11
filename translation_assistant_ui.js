@@ -35,6 +35,11 @@
  *     states what the panel never does. There is no build step to share CSS,
  *     so every panel carries a verbatim copy of the tokens and a test in
  *     command_palette.test.js catches a panel that drifts from them.
+ *   - Feedback lands on the control that was pressed. The command palette's
+ *     toast is gone by the time this panel is up, so a notice sent there is
+ *     never seen: a copy that worked looked exactly like one that did not.
+ *   - A claim the user cannot check is named and linked. Every shared
+ *     translation is listed, with a link to the fields that use its text.
  *   - "Locked" is never described as verified. In ad-hoc mode the flag is
  *     derived from whether a translation exists, so the panel says the field
  *     already has one and says how to redo it.
@@ -132,6 +137,22 @@
     .note{margin:14px 0 0;padding:9px 12px;border-radius:7px;font-size:12px;line-height:1.5}
     .note.info{color:var(--info);background:var(--info-bg);border:1px solid var(--info-line)}
     .note.flag{color:var(--flag);background:var(--flag-bg);border:1px solid var(--flag-line)}
+    .note p{margin:0}
+    .shared-list{list-style:none;margin:8px 0 0;padding:0}
+    .shared-list li{
+      display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:5px 0 3px;
+      border-top:1px solid var(--flag-line);
+    }
+    .shared-list li:first-child{border-top:0}
+    .shared-list .src{color:#fff3d6;font-weight:650;overflow-wrap:anywhere}
+    .shared-list .where{color:#b9ad8a;font-size:11px}
+    .verify{
+      margin-left:auto;background:none;border:0;padding:0;cursor:pointer;font-size:11px;
+      color:color-mix(in srgb, var(--teal) 84%, white);text-decoration:underline;
+      text-underline-offset:2px;white-space:nowrap;
+    }
+    .verify:hover{color:#fff}
+    .verify-none{margin-left:auto;font-size:11px;color:#b9ad8a}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
@@ -184,6 +205,83 @@
 
   function notify(message, isError) {
     if (isFn(callbacks.onNotify)) callbacks.onNotify(message, !!isError);
+  }
+
+  /*
+   * Feedback on the control that was pressed, the way Translation Lens confirms
+   * its copy. notify() reaches the command palette's toast, and the palette has
+   * closed by the time this panel is on screen, so nothing sent there is seen.
+   */
+  const FLASH_MS = 2200;
+  function flash(node, text) {
+    if (!node) return;
+    if (node.flashRestore === undefined) node.flashRestore = node.textContent;
+    node.textContent = text;
+    if (node.flashTimer) clearTimeout(node.flashTimer);
+    node.flashTimer = setTimeout(() => {
+      node.flashTimer = null;
+      node.textContent = node.flashRestore;
+    }, FLASH_MS);
+  }
+
+  /* A lasting label change, which also cancels any flash still pending so the
+   * flash cannot put the old label back over it. */
+  function relabel(node, text) {
+    if (!node) return;
+    if (node.flashTimer) {
+      clearTimeout(node.flashTimer);
+      node.flashTimer = null;
+    }
+    node.flashRestore = text;
+    node.textContent = text;
+  }
+
+  function currentOrigin() {
+    try {
+      return (typeof location !== "undefined" && location && location.origin) || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  /* Same-origin http(s) only, as in Translation Lens; the worker checks again. */
+  function validatedUrl(value) {
+    const raw = str(value).trim();
+    const origin = currentOrigin();
+    if (!raw || !origin || typeof URL !== "function") return "";
+    let parsed;
+    try { parsed = new URL(raw, origin); } catch (error) { return ""; }
+    if (parsed.origin !== origin) return "";
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+    return parsed.href;
+  }
+
+  function openUrl(url) {
+    const safe = validatedUrl(url);
+    if (!safe || !isFn(callbacks.onOpenUrl)) return false;
+    try {
+      const outcome = callbacks.onOpenUrl(safe);
+      if (outcome && isFn(outcome.catch)) outcome.catch(() => {});
+    } catch (error) { /* navigation is best-effort; the panel stays open */ }
+    return true;
+  }
+
+  /*
+   * Every record in the field's own table whose column holds this text: the
+   * fields that would pick up a translation published for it. Built only from
+   * the page's own (table, column). An encoded query cannot express a caret,
+   * so a source containing one gets no link rather than a wrong one. The
+   * server's = is case-insensitive, as the platform's lookup is; it does not
+   * fold accents, which the lookup also does, so the list can under-show.
+   */
+  const IDENTIFIER = /^[a-z0-9_]+$/;
+  function whereUsedUrl(row) {
+    const table = str(row && row.table);
+    const column = str(row && row.column);
+    const source = str(row && row.source);
+    if (!IDENTIFIER.test(table) || !IDENTIFIER.test(column) || !source) return "";
+    if (/\^/.test(source)) return "";
+    return `/${table}_list.do?sysparm_query=${encodeURIComponent(`${column}=${source}`)}`;
   }
 
   function unmount() {
@@ -410,25 +508,29 @@
       anchor.click();
       shadow.removeChild(anchor);
       notify("Draft downloaded. Upload it to your AI tool.", false);
-      if (button) button.textContent = "Download again";
+      relabel(button, "Download again");
     } catch (error) {
       notify("The download could not start: " + String(error && error.message ? error.message : error), true);
+      flash(button, "Download failed — try Copy instead");
     } finally {
       if (url) URL.revokeObjectURL(url);
     }
   }
 
-  async function copy(draft) {
+  async function copy(draft, link) {
     const text = str(draft && draft.serialized);
     if (!text) {
       notify("There is nothing to copy.", true);
+      flash(link, "Nothing to copy");
       return;
     }
     try {
       await navigator.clipboard.writeText(text);
       notify("Prompt and JSON copied. Paste it into your AI tool.", false);
+      flash(link, "Copied — paste it into your AI tool");
     } catch (error) {
       notify("Copying failed. Use Download JSON instead.", true);
+      flash(link, "Copy failed — use Download JSON instead");
     }
   }
 
@@ -462,14 +564,16 @@
 
     const copyLink = el("button", "secondary", "Copy prompt + JSON instead");
     copyLink.type = "button";
-    copyLink.addEventListener("click", () => { copy(draft); });
+    copyLink.addEventListener("click", () => { copy(draft, copyLink); });
     bodyEl.appendChild(copyLink);
 
     if (draft.counts && count(draft.counts.locked)) bodyEl.appendChild(unlockNote());
-    /* instanceWideRows, never sharedRows. A row with one member on this item is
+    /* instanceWide, never sharedRows. A row with one member on this item is
      * still shared instance-wide when the platform keys it by source string,
      * and that is the common case, not the exception. */
-    if (draft.instanceWideRows) bodyEl.appendChild(sharedNote(draft.instanceWideRows));
+    if (Array.isArray(draft.instanceWide) && draft.instanceWide.length) {
+      bodyEl.appendChild(sharedNote(draft.instanceWide));
+    }
     return true;
   }
 
@@ -484,13 +588,37 @@
    * not "English text": the source language is whatever the picker says it is.
    */
   function sharedNote(rows) {
-    const n = count(rows);
-    return el("p", "note flag",
+    const list = Array.isArray(rows) ? rows : [];
+    const n = list.length;
+    const box = el("div", "note flag");
+    box.appendChild(el("p", "",
       n === 1
         ? "One of these translations is shared: publishing it changes that translation " +
           "for every catalog item on this instance whose field uses the same source text."
         : n + " of these translations are shared: publishing them changes those translations " +
-          "for every catalog item on this instance whose fields use the same source text.");
+          "for every catalog item on this instance whose fields use the same source text."));
+
+    /* Named, and linked to where each text is used, so the claim above can be
+     * checked rather than taken on trust. */
+    const ul = el("ul", "shared-list");
+    list.forEach((row) => {
+      const li = el("li");
+      li.appendChild(el("span", "src", `“${str(row.source)}”`));
+      const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
+      if (where) li.appendChild(el("span", "where", where));
+      const url = whereUsedUrl(row);
+      if (url && isFn(callbacks.onOpenUrl)) {
+        const link = el("button", "verify", "Where this text is used ↗");
+        link.type = "button";
+        link.addEventListener("click", () => { openUrl(url); });
+        li.appendChild(link);
+      } else if (/\^/.test(str(row.source))) {
+        li.appendChild(el("span", "verify-none", "no list link: a list filter cannot express ^"));
+      }
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+    return box;
   }
 
   function close(options) {
