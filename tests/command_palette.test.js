@@ -342,6 +342,26 @@ test("rendering keeps interactive controls outside options and announces selecti
   assert.match(contentSource, /\.cmd-label\{\s*display:block;justify-self:start;width:max-content;max-width:100%/);
 });
 
+test("every result panel wears the shared palette and stops page inheritance at the host", () => {
+  /* There is no build step to share CSS, so each panel carries a verbatim copy
+   * of the tokens. The Translation Assistant first shipped with a light theme
+   * of its own -- white card, green button, no host reset -- and nothing
+   * noticed, because nothing compared the copies. Globbed rather than listed,
+   * so a panel added later is held to the same rule without anyone
+   * remembering to add it here. */
+  const root = path.join(__dirname, "..");
+  const panels = fs.readdirSync(root).filter((name) => /_ui\.js$/.test(name)).sort();
+  assert.ok(panels.length >= 7, "the glob must actually find the panels: " + panels.join(", "));
+
+  for (const file of panels) {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    assert.match(source, /--teal:#31d4c4;--pink:#ff6fae/,
+      file + " must use the shared teal and pink, not a palette of its own");
+    assert.match(source, /:host\{[^}]*all:initial/,
+      file + " must stop the ServiceNow page's inherited font and colour at the shadow host");
+  }
+});
+
 test("result panels use the same stable feature headings", () => {
   const files = {
     "record_search_ui.js": /<h2>Record Lens<\/h2>/,
@@ -349,6 +369,8 @@ test("result panels use the same stable feature headings", () => {
     "code_search_ui.js": /<h2>Code Search <span class="term"><\/span><\/h2>/,
     "hidden_variables_ui.js": /const panelTitle = workspaceMode[\s\S]*\["stored-only", "no-editor-empty", "no-candidate"\][\s\S]*\? "Stored Variables"[\s\S]*: "Variable Values"[\s\S]*<h2 id="snh-hidden-title">\$\{panelTitle\} /,
     "debug_timeline_ui.js": /<h2 id="snh-debug-title">Debug Timeline /,
+    "translation_lens_ui.js": /el\("h2", "", "Translation Lens"\)/,
+    "translation_assistant_ui.js": /el\("h2", "", "Translation Assistant"\)/,
   };
 
   for (const [file, pattern] of Object.entries(files)) {

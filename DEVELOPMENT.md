@@ -75,7 +75,10 @@ The suites cover:
   single-appearance favourite, the stable Debug Timeline favourite key across
   Start/Stop, rejection of duplicate labels and implicit input labels, and
   source assertions for the listbox, `aria-activedescendant`, focus trap, and
-  shared panel headings.
+  shared panel headings. Also that every `*_ui.js` panel, found by glob rather
+  than listed, carries the shared GlideLens teal and pink tokens and stops the
+  page's inherited styles with `:host{all:initial}` — there is no build step to
+  share CSS, so the copies are compared instead.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
   encoded URLs, and the complete Workspace experience path. Workspace support is
@@ -206,7 +209,10 @@ The suites cover:
   destination: the tally is counted in fields and reconciles against the
   exclusion buckets, the deduplicated row count is stated rather than
   substituted for it, and the instance-wide warning follows the destination's
-  storage model, not how many fields on this item happen to share it.
+  storage model, not how many fields on this item happen to share it. Also the
+  house style: the shared palette, the footer every panel carries, exactly one
+  pink primary route with the copy route drawn as a link, and the language pair
+  in the subtitle's mono accent.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that

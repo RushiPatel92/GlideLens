@@ -30,6 +30,11 @@
  *     exported row count is a different number -- two fields can share one
  *     destination -- and where they differ the panel says so rather than
  *     printing one where the reader is subtracting the other.
+ *   - It wears the shared GlideLens palette and chrome: a dark panel, teal for
+ *     focus and grouping, pink for the one primary action, and a footer that
+ *     states what the panel never does. There is no build step to share CSS,
+ *     so every panel carries a verbatim copy of the tokens and a test in
+ *     command_palette.test.js catches a panel that drifts from them.
  *   - "Locked" is never described as verified. In ad-hoc mode the flag is
  *     derived from whether a translation exists, so the panel says the field
  *     already has one and says how to redo it.
@@ -49,41 +54,100 @@
   const TITLE_ID = "snh-translation-assistant-title";
 
   const UI_CSS = `
-  .overlay { position: fixed; inset: 0; z-index: 2147483600; display: flex;
-    align-items: flex-start; justify-content: center; padding: 48px 16px;
-    background: rgba(14, 19, 24, 0.55); font: 14px/1.5 -apple-system,
-    BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
-  .panel { background: #fff; color: #1b1f23; width: 100%; max-width: 560px;
-    border-radius: 10px; box-shadow: 0 18px 48px rgba(0,0,0,.32);
-    max-height: calc(100vh - 96px); display: flex; flex-direction: column; }
-  .header { display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 12px; padding: 16px 18px 10px; border-bottom: 1px solid #e3e6e8; }
-  .header h2 { margin: 0; font-size: 16px; font-weight: 600; }
-  .subtitle { color: #5c6670; font-size: 13px; margin-top: 2px; }
-  .close { border: 1px solid #c8ced3; background: #fff; border-radius: 6px;
-    padding: 4px 10px; cursor: pointer; font-size: 13px; color: #1b1f23; }
-  .close:hover { background: #f4f6f7; }
-  .body { padding: 14px 18px 18px; overflow: auto; }
-  .status { color: #5c6670; }
-  .error { color: #8a1c1c; }
-  .tally { list-style: none; margin: 0 0 12px; padding: 0; }
-  .tally li { display: flex; gap: 10px; padding: 3px 0; }
-  .tally .n { min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums;
-    font-weight: 600; }
-  .tally .why { color: #5c6670; }
-  .tally li.total { border-top: 1px solid #e3e6e8; margin-top: 6px; padding-top: 8px; }
-  .tally li.none .n, .tally li.none .what { color: #5c6670; font-weight: 400; }
-  .primary { margin: 14px 0 10px; }
-  .primary button { background: #1b5e4a; color: #fff; border: 0; border-radius: 6px;
-    padding: 9px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
-  .primary button:hover { background: #17513f; }
-  .primary button:disabled { background: #9aa7ae; cursor: default; }
-  .hint { color: #3c454d; margin: 0 0 6px; }
-  .privacy { color: #5c6670; margin: 0 0 12px; }
-  .secondary { background: none; border: 0; padding: 0; color: #1b5e4a;
-    text-decoration: underline; cursor: pointer; font-size: 13px; font-family: inherit; }
-  .note { color: #3c454d; border-left: 3px solid #d7dbdf; padding: 2px 0 2px 10px;
-    margin: 12px 0 0; }
+    *{box-sizing:border-box}
+    :host{
+      all:initial;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      /* The shared GlideLens palette, copied verbatim from the sibling panels.
+         Teal = grouping/selection/focus; pink = the one primary action. */
+      --teal:#31d4c4;--pink:#ff6fae;--band:#2a2a46;
+      --flag:#f0d79b;--flag-bg:#3a3320;--flag-line:#5c5031;
+      --info:#a9d5ff;--info-bg:#24364a;--info-line:#365573;
+      --gap:#ff9d9d;--gap-bg:#3a2530;--gap-line:#5c3a48;
+    }
+    button{font:inherit}
+    .overlay{
+      position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
+      display:flex;align-items:center;justify-content:center;padding:12px;
+    }
+    .panel{
+      width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 24px);
+      display:flex;flex-direction:column;overflow:hidden;
+      background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
+      box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;font-size:13px;line-height:1.5;
+    }
+    .header{
+      display:flex;align-items:flex-start;gap:14px;padding:18px 20px 14px;
+      border-bottom:1px solid #2e2e4e;
+    }
+    .heading{flex:1;min-width:0}
+    h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
+    .subtitle{font-size:12px;color:#85859f;line-height:1.5}
+    .subtitle .mono{
+      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
+      color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
+    }
+    .close{
+      border:0;background:transparent;color:#85859f;padding:3px 5px;
+      font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
+    }
+    .close:hover{color:#fff;background:#2d2d48}
+    .body{padding:16px 20px 18px;overflow:auto}
+    .status{color:#aaaac1;margin:0}
+    .bar-indeterminate{
+      height:2px;background:#2b2b46;border-radius:2px;overflow:hidden;margin-top:9px;
+    }
+    .bar-indeterminate span{
+      display:block;height:100%;width:36%;border-radius:2px;background:var(--teal);
+      animation:snh-ta-slide 1.5s linear infinite;
+    }
+    @keyframes snh-ta-slide{from{transform:translateX(-100%)}to{transform:translateX(280%)}}
+    .error{
+      margin:0;padding:9px 12px;border-radius:7px;color:#ffc9c9;
+      background:var(--gap-bg);border:1px solid var(--gap-line);
+    }
+    .tally{list-style:none;margin:0 0 4px;padding:0}
+    .tally li{display:flex;align-items:baseline;gap:10px;padding:4px 0}
+    .tally .n{
+      min-width:2.6em;text-align:right;font-variant-numeric:tabular-nums;
+      font-weight:650;color:#f0f0fa;
+    }
+    .tally .why{color:#85859f;font-size:12px}
+    .tally li.total{border-top:1px solid #2e2e4e;margin-top:6px;padding-top:9px}
+    .tally li.none .n,.tally li.none .what{color:#85859f;font-weight:400}
+    .primary{margin:16px 0 12px}
+    .primary button{
+      background:color-mix(in srgb, var(--pink) 82%, #3a2740);
+      border:1px solid color-mix(in srgb, var(--pink) 70%, #5a3a4c);color:#fff;
+      border-radius:7px;padding:8px 16px;font-size:13px;font-weight:650;cursor:pointer;
+    }
+    .primary button:hover{background:color-mix(in srgb, var(--pink) 92%, #3a2740)}
+    .hint{color:#c9c9dc;margin:0 0 6px}
+    .privacy{color:#85859f;font-size:12px;margin:0 0 12px}
+    .secondary{
+      background:none;border:0;padding:0;cursor:pointer;font-size:12px;
+      color:color-mix(in srgb, var(--teal) 84%, white);text-decoration:underline;
+      text-underline-offset:2px;
+    }
+    .secondary:hover{color:#fff}
+    .note{margin:14px 0 0;padding:9px 12px;border-radius:7px;font-size:12px;line-height:1.5}
+    .note.info{color:var(--info);background:var(--info-bg);border:1px solid var(--info-line)}
+    .note.flag{color:var(--flag);background:var(--flag-bg);border:1px solid var(--flag-line)}
+    .toolbar{
+      display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
+      border-top:1px solid #2e2e4e;background:#1b1b2b;
+    }
+    .toolbar-note{font-size:11px;color:#67677e;flex:1;min-width:150px}
+    .toolbar button{
+      border:1px solid #3a3a5c;background:#292941;color:#d8d8ea;
+      border-radius:6px;padding:6px 9px;cursor:pointer;font-size:12px;
+    }
+    .toolbar button:hover{background:#343453;color:#fff}
+    :focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+    @media (prefers-reduced-motion: reduce){
+      *{animation:none !important;transition:none !important}
+      .bar-indeterminate span{width:100%}
+    }
+    @media(max-width:680px){.overlay{padding:8px}.panel{width:100%}.header{padding:14px}}
   `;
 
   let host = null;
@@ -173,10 +237,11 @@
     panel.setAttribute("aria-labelledby", TITLE_ID);
 
     const header = el("header", "header");
-    const heading = el("div");
+    const heading = el("div", "heading");
     const title = el("h2", "", "Translation Assistant");
     title.id = TITLE_ID;
-    subtitleEl = el("div", "subtitle", languagePair(context));
+    subtitleEl = el("div", "subtitle");
+    renderSubtitle(context);
     heading.appendChild(title);
     heading.appendChild(subtitleEl);
     const closeButton = el("button", "close", "Close");
@@ -190,6 +255,18 @@
     bodyEl.setAttribute("aria-live", "polite");
     panel.appendChild(bodyEl);
 
+    /* The footer every GlideLens panel carries: what the panel will never do,
+     * then Close. Worded to stay true once phase 3 fills the page, because
+     * filling the page model is not saving -- Publish stays the user's step. */
+    const toolbar = el("footer", "toolbar");
+    toolbar.appendChild(el("span", "toolbar-note",
+      "Never saves or publishes — Translation Assistant leaves Publish to you."));
+    const footerClose = el("button", "", "Close");
+    footerClose.type = "button";
+    footerClose.addEventListener("click", () => userClose("footer-close"));
+    toolbar.appendChild(footerClose);
+    panel.appendChild(toolbar);
+
     overlay.appendChild(panel);
     shadow.appendChild(overlay);
     closeButton.focus();
@@ -201,6 +278,19 @@
     const target = str(context && (context.targetLanguageName || context.targetLanguage));
     if (!source || !target) return "";
     return source + " → " + target;
+  }
+
+  /* What the panel is for, then the language pair in the house's teal mono
+   * accent -- the same shape as the Translation Lens subtitle. Built from
+   * spans rather than markup, because the pair is page-derived text. */
+  function renderSubtitle(context) {
+    if (!subtitleEl) return;
+    clear(subtitleEl);
+    subtitleEl.appendChild(el("span", "", "Hands this item's untranslated fields to your own AI tool"));
+    const pair = languagePair(context);
+    if (!pair) return;
+    subtitleEl.appendChild(el("span", "", " — "));
+    subtitleEl.appendChild(el("span", "mono", pair));
   }
 
   function clear(node) {
@@ -217,6 +307,11 @@
     mount(request.context);
     clear(bodyEl);
     bodyEl.appendChild(el("p", "status", "Reading this item…"));
+    /* The house's indeterminate bar, so a slow frame read looks like work
+     * rather than a stall. Reduced motion freezes it at full width. */
+    const bar = el("div", "bar-indeterminate");
+    bar.appendChild(el("span"));
+    bodyEl.appendChild(bar);
     return true;
   }
 
@@ -342,7 +437,7 @@
     if (!sameRun(request.fingerprint)) return false;
     const draft = request.draft || {};
     clear(bodyEl);
-    if (subtitleEl) subtitleEl.textContent = languagePair(draft.languages) || subtitleEl.textContent;
+    if (draft.languages) renderSubtitle(draft.languages);
 
     bodyEl.appendChild(tallyList(draft));
 
@@ -379,7 +474,7 @@
   }
 
   function unlockNote() {
-    return el("p", "note",
+    return el("p", "note info",
       "A field that already has a translation is left alone. To have one redone, " +
       "unlock it on this page first, then run Translation Assistant again.");
   }
@@ -390,7 +485,7 @@
    */
   function sharedNote(rows) {
     const n = count(rows);
-    return el("p", "note",
+    return el("p", "note flag",
       n === 1
         ? "One of these translations is shared: publishing it changes that translation " +
           "for every catalog item on this instance whose field uses the same source text."

@@ -377,3 +377,50 @@ test("both output routes hand over the one string the engine serialised", () => 
     assert.deepStrictEqual(harness.clipboard.written, [draft.serialized]);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * House style
+ *
+ * Phase 2 first shipped with a light theme of its own -- a white card, a
+ * green button, no footer -- beside six panels that all wear the same dark
+ * palette. With no build step to share CSS, each panel carries a verbatim
+ * copy, so drift is only ever visible to a test.
+ * ------------------------------------------------------------------ */
+
+test("the panel wears the shared GlideLens palette", () => {
+  const start = UI_SOURCE.indexOf("const UI_CSS");
+  const css = UI_SOURCE.slice(start, UI_SOURCE.indexOf("`;", start));
+  assert.match(css, /:host\{[^}]*all:initial/,
+    "without it the ServiceNow page's inherited font and colour leak through the shadow boundary");
+  assert.match(css, /--teal:#31d4c4/);
+  assert.match(css, /--pink:#ff6fae/);
+  assert.match(css, /\.panel\{[^}]*background:#1e1e2e/);
+});
+
+test("the panel carries the house footer and exactly one pink action", () => {
+  const draft = draftFrom([element({ fields: [field({ source: "Cost centre" })] })]);
+  const harness = load();
+  show(harness, draft);
+  const shadow = harness.shadow();
+
+  const footer = findAll(shadow, (node) => node.tagName === "FOOTER")[0];
+  assert.ok(footer, "every GlideLens panel ends in a toolbar footer");
+  assert.match(footer.textContent, /never saves or publishes/i);
+  assert.strictEqual(
+    findAll(footer, (node) => node.tagName === "BUTTON" && node.textContent === "Close").length, 1);
+
+  const primaries = findAll(shadow, (node) => node.className === "primary");
+  assert.strictEqual(primaries.length, 1, "one primary route");
+  assert.strictEqual(primaries[0].textContent, "Download JSON");
+  const links = findAll(shadow, (node) => node.tagName === "BUTTON" && node.className === "secondary");
+  assert.strictEqual(links.length, 1, "and one escape hatch, drawn as a link");
+});
+
+test("the subtitle names the language pair in the mono accent", () => {
+  const draft = draftFrom([element({ fields: [field({ source: "Cost centre" })] })]);
+  const harness = load();
+  show(harness, draft);
+  const mono = findAll(harness.shadow(), (node) => node.className === "mono");
+  assert.strictEqual(mono.length, 1);
+  assert.strictEqual(mono[0].textContent, "English → French");
+});
