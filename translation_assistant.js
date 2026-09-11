@@ -427,6 +427,7 @@
   }
 
   function excludedEntry(field) {
+    const params = field.params || {};
     return {
       elementId: field.elementId,
       groupName: field.groupName,
@@ -434,6 +435,16 @@
       fieldIndex: field.fieldIndex,
       reason: field.exclusion,
       type: field.type,
+      /* Enough for the panel to show an excluded field and link to where its
+       * translation is kept, without the panel knowing which store a type
+       * lives in: that mapping stays here, beside the type sets themselves. */
+      source: field.source,
+      target: field.target,
+      table: text(params.table),
+      column: text(params.name),
+      sysId: text(params.sysId),
+      store: STRING_SCOPED_TYPES.has(field.type) ? "sys_translated"
+        : (RECORD_SCOPED_TYPES.has(field.type) ? "sys_translated_text" : ""),
     };
   }
 

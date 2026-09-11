@@ -25,7 +25,10 @@
  *     the payload carries its own instructions; the copy link is there for a
  *     model with no file upload. Nobody is asked to compare them.
  *   - Every excluded field is counted under a named reason. A field this build
- *     will not translate is a stated limit, never a silent omission.
+ *     will not translate is a stated limit, never a silent omission. Two of
+ *     the buckets -- already translated, and rich text -- open into a list
+ *     on request, each field linked to where its translation is kept. The
+ *     counts stay first; the list is for checking, not reading.
  *   - The tally is one accounting system, and it is counted in FIELDS. The
  *     exported row count is a different number -- two fields can share one
  *     destination -- and where they differ the panel says so rather than
@@ -155,6 +158,20 @@
     .verify:hover{color:#fff}
     .verify-links{margin-left:auto;display:flex;gap:12px;flex-wrap:wrap}
     .note .sub{margin:6px 0 0;font-size:11px;color:#b9ad8a}
+    [hidden]{display:none !important}
+    .toggle{
+      margin-left:auto;background:none;border:0;padding:0;cursor:pointer;font-size:11px;
+      color:color-mix(in srgb, var(--teal) 84%, white);text-decoration:underline;
+      text-underline-offset:2px;white-space:nowrap;
+    }
+    .toggle:hover{color:#fff}
+    .tally li.detail{display:block;padding:0 0 8px 3.2em}
+    .excluded-list{list-style:none;margin:2px 0 0;padding:0 0 0 10px;border-left:2px solid #2e2e4e}
+    .tally .excluded-list li{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:4px 0}
+    .excluded-list .src{color:#e6e6f5;font-weight:600;overflow-wrap:anywhere}
+    .excluded-list .tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9);overflow-wrap:anywhere}
+    .excluded-list .where{color:#85859f;font-size:11px}
+    .excluded-list .verify{margin-left:auto}
     .verify-none{margin-left:auto;font-size:11px;color:#b9ad8a}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
@@ -315,6 +332,67 @@
       !LANGUAGE_PATTERN.test(lang) || !queryValueOk(source)) return "";
     const query = `name=${table}^element=${column}^value=${source}^language=${lang}`;
     return `/sys_translated_list.do?sysparm_query=${encodeURIComponent(query)}`;
+  }
+
+  /*
+   * Where an excluded field's translation is kept, for the lists behind the
+   * "already translated" and "rich text" counts. A shared-text field uses the
+   * same sys_translated key as the shared list. A per-record field is keyed by
+   * the record's sys_id in sys_translated_text. tablename is left out on
+   * purpose: that column can hold the concrete table (item_option_new) while
+   * the page names the defining one (question), and a sys_id is unique without
+   * it. That precaution has not yet been checked on a live instance.
+   */
+  const SYS_ID_PATTERN = /^[0-9a-f]{32}$/;
+  function excludedStoreUrl(entry, language) {
+    const lang = str(language);
+    if (!LANGUAGE_PATTERN.test(lang)) return "";
+    const store = str(entry && entry.store);
+    if (store === "sys_translated") return storedTranslationUrl(entry, lang);
+    if (store !== "sys_translated_text") return "";
+    const sysId = str(entry && entry.sysId).toLowerCase();
+    const column = str(entry && entry.column);
+    if (!SYS_ID_PATTERN.test(sysId) || !TABLE_PATTERN.test(column)) return "";
+    const query = `documentkey=${sysId}^fieldname=${column}^language=${lang}`;
+    return `/sys_translated_text_list.do?sysparm_query=${encodeURIComponent(query)}`;
+  }
+
+  /* Rich text arrives as markup. The list shows it as plain words, shortened,
+   * through textContent like everything else here -- never as markup. */
+  const SPACE = String.fromCharCode(32);
+  function plainPreview(value, limit) {
+    const words = str(value).replace(/<[^>]*>/g, SPACE).replace(/\s+/g, SPACE).trim();
+    return words.length > limit ? `${words.slice(0, limit - 1)}…` : words;
+  }
+
+  /* The two counts that can open into a list. The counts stay the first thing
+   * shown; the list is there to check, not to read. */
+  const DETAIL_BUCKETS = new Set(["locked", "rich_text"]);
+
+  function excludedList(entries, languages) {
+    const language = str(languages && languages.targetLanguage);
+    const languageLabel = str(languages && languages.targetLanguageName) || language;
+    const inLanguage = languageLabel ? `${languageLabel} translation` : "translation";
+    const ul = el("ul", "excluded-list");
+    entries.forEach((entry) => {
+      const li = el("li");
+      li.appendChild(el("span", "src", `“${plainPreview(entry.source, 90)}”`));
+      const target = plainPreview(entry.target, 90);
+      li.appendChild(target
+        ? el("span", "tgt", `→ “${target}”`)
+        : el("span", "where", `no ${inLanguage} yet`));
+      const where = [str(entry.label), str(entry.groupName)].filter(Boolean).join(" · ");
+      if (where) li.appendChild(el("span", "where", where));
+      const url = excludedStoreUrl(entry, language);
+      if (url && isFn(callbacks.onOpenUrl)) {
+        const link = el("button", "verify", `Stored ${inLanguage} ↗`);
+        link.type = "button";
+        link.addEventListener("click", () => { openUrl(url); });
+        li.appendChild(link);
+      }
+      ul.appendChild(li);
+    });
+    return ul;
   }
 
   function unmount() {
@@ -483,6 +561,7 @@
     total.appendChild(el("span", "what", plural(fields, "field") + " on this item"));
     list.appendChild(total);
 
+    const excluded = Array.isArray(draft && draft.excluded) ? draft.excluded : [];
     BUCKETS.forEach((bucket) => {
       const n = count(counts[bucket.key]);
       if (!n) return;
@@ -491,6 +570,23 @@
       row.appendChild(el("span", "what", bucket.what));
       row.appendChild(el("span", "why", "(excluded — " + bucket.why + ")"));
       list.appendChild(row);
+
+      const entries = DETAIL_BUCKETS.has(bucket.key)
+        ? excluded.filter((entry) => entry && entry.reason === bucket.key) : [];
+      if (!entries.length) return;
+      const detail = el("li", "detail");
+      detail.hidden = true;
+      detail.appendChild(excludedList(entries, draft.languages));
+      const toggle = el("button", "toggle", "Show them");
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.addEventListener("click", () => {
+        detail.hidden = !detail.hidden;
+        toggle.textContent = detail.hidden ? "Show them" : "Hide";
+        toggle.setAttribute("aria-expanded", detail.hidden ? "false" : "true");
+      });
+      row.appendChild(toggle);
+      list.appendChild(detail);
     });
 
     /* Fields, not rows, because this line is read as arithmetic against the

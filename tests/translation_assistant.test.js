@@ -965,3 +965,32 @@ test("each instance-wide row is named with the platform's own table and column",
     column: "question_text",
   }]);
 });
+
+test("an excluded field carries what the panel needs to show it and link to its store", () => {
+  const draft = draftFrom([
+    element({
+      groupName: "Variable: Approver",
+      fields: [field({ source: "Approver", locked: true, target: "Approbateur" })],
+    }),
+    element({
+      groupName: "Basic Info",
+      label: "Description",
+      fields: [field({
+        source: "<p>Notes</p>", type: "translated_html", textType: "html",
+        name: "description", table: "sc_cat_item",
+      })],
+    }),
+  ]);
+
+  const locked = json(draft.excluded.find((entry) => entry.reason === TA.REASON.LOCKED));
+  assert.strictEqual(locked.source, "Approver");
+  assert.strictEqual(locked.target, "Approbateur");
+  assert.strictEqual(locked.table, "question");
+  assert.strictEqual(locked.column, "question_text");
+  assert.match(locked.sysId, /^[0-9a-f]{32}$/);
+  assert.strictEqual(locked.store, "sys_translated", "a translated_field is keyed by its text");
+
+  const rich = json(draft.excluded.find((entry) => entry.reason === TA.REASON.RICH_TEXT));
+  assert.strictEqual(rich.store, "sys_translated_text", "a translated_html is keyed by its record");
+  assert.strictEqual(rich.column, "description");
+});

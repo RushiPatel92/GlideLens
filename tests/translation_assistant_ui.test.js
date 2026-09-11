@@ -585,3 +585,100 @@ test("a language code that is not sys_language-shaped gets no stored link", () =
     "the usage link does not depend on the language");
   assert.strictEqual(verifyButtons(harness.shadow()).length, 1);
 });
+
+/* ------------------------------------------------------------------ *
+ * The lists behind two counts (owner request, 2026-09-11)
+ *
+ * "Already translated" and "rich text" open into a list on request. The
+ * counts stay first; the list is for checking what was excluded and where
+ * its translation is kept.
+ * ------------------------------------------------------------------ */
+
+function bucketToggle(root_, what) {
+  return findAll(root_, (node) => node.tagName === "BUTTON" && node.className === "toggle" &&
+    node.parentNode && node.parentNode.textContent.includes(what))[0] || null;
+}
+
+function detailOf(toggle) {
+  const row = toggle.parentNode;
+  const siblings = row.parentNode.children;
+  return siblings[siblings.indexOf(row) + 1];
+}
+
+function mixedDraft() {
+  return draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({
+      groupName: "Variable: Approver",
+      fields: [field({ source: "Approver", locked: true, target: "Approbateur" })],
+    }),
+    element({
+      groupName: "Basic Info",
+      label: "Description",
+      fields: [field({
+        source: "<p>Read the <b>notes</b></p>", type: "translated_html", textType: "html",
+        name: "description", table: "sc_cat_item",
+      })],
+    }),
+  ]);
+}
+
+test("the already-translated count opens into a list, closed by default", () => {
+  const harness = load();
+  show(harness, mixedDraft());
+  const toggle = bucketToggle(harness.shadow(), "already translated");
+  assert.ok(toggle, "the bucket offers the list");
+  const detail = detailOf(toggle);
+  assert.strictEqual(detail.hidden, true, "the counts stay first");
+  assert.strictEqual(toggle.getAttribute("aria-expanded"), "false");
+
+  press(toggle);
+  assert.strictEqual(detail.hidden, false);
+  assert.strictEqual(toggle.textContent, "Hide");
+  assert.strictEqual(toggle.getAttribute("aria-expanded"), "true");
+  assert.match(detail.textContent, /“Approver”/);
+  assert.match(detail.textContent, /→ “Approbateur”/, "the translation that makes it count as done");
+
+  press(toggle);
+  assert.strictEqual(detail.hidden, true);
+  assert.strictEqual(toggle.textContent, "Show them");
+});
+
+test("an already-translated field links to the sys_translated row that holds it", () => {
+  const harness = load();
+  show(harness, mixedDraft());
+  const detail = detailOf(bucketToggle(harness.shadow(), "already translated"));
+  press(verifyButtons(detail)[0]);
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/sys_translated_list.do?sysparm_query=" +
+      "name%3Dquestion%5Eelement%3Dquestion_text%5Evalue%3DApprover%5Elanguage%3Dfr",
+  ]);
+});
+
+test("a rich text field shows plain words and links to its record's translation", () => {
+  const draft = mixedDraft();
+  const rich = draft.excluded.find((entry) => entry.reason === "rich_text");
+  const harness = load();
+  show(harness, draft);
+  const detail = detailOf(bucketToggle(harness.shadow(), "rich text"));
+  assert.match(detail.textContent, /“Read the notes”/, "markup is shown as words, never rendered");
+  assert.ok(!/<b>/.test(detail.textContent));
+  assert.match(detail.textContent, /no French translation yet/);
+
+  press(verifyButtons(detail)[0]);
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/sys_translated_text_list.do?sysparm_query=" +
+      "documentkey%3D" + rich.sysId + "%5Efieldname%3Ddescription%5Elanguage%3Dfr",
+  ], "keyed by the record's sys_id, without a table name the store may spell differently");
+});
+
+test("only the already-translated and rich text counts open into a list", () => {
+  const harness = load();
+  show(harness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Blank", fields: [field({ source: "" })] }),
+  ]));
+  assert.match(harness.text(), /empty/, "the empty bucket is shown");
+  assert.strictEqual(
+    findAll(harness.shadow(), (node) => node.tagName === "BUTTON" && node.className === "toggle").length, 0);
+});

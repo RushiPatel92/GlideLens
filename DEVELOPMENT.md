@@ -218,7 +218,11 @@ The suites cover:
   that use its text through a same-origin URL built only from the page's own
   table and column, and to the sys_translated row a publish would write for the
   target language. Both follow Translation Lens's rules for what a filter can
-  carry: no link for a caret, a line break, an unsafe table or language.
+  carry: no link for a caret, a line break, an unsafe table or language. And
+  the two counts that open into a list — already translated, rich text —
+  closed by default, each field shown as plain words with its current
+  translation and linked to its store: `sys_translated` for shared text,
+  `sys_translated_text` by sys_id for per-record fields.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that
