@@ -2643,6 +2643,44 @@
     return SAFE_REPORT_ELEMENT.test(element) ? element : position;
   }
 
+  /* Mirrors REPORT_REASONS, reportUnverified and reportScan in
+   * translation_lens.js, for the same engine-absent case: an Unverified
+   * language is named with a reason only from the engine's own codes, and a
+   * message scan is counted, never quoted. */
+  const REPORT_REASONS = new Set([
+    "empty", "over-255", "encoded-query-separator", "javascript-expression",
+    "dynamic choice source", "a choice key is not expressible", "choice text not expressible",
+    "storage unverified for type translated",
+  ]);
+
+  function localReportReasons(reasons) {
+    const codes = Array.from(new Set(reasons.map((reason) => str(reason))
+      .filter((reason) => REPORT_REASONS.has(reason))));
+    return codes.length ? " (" + codes.join(", ") + ")" : "";
+  }
+
+  function localReportUnverified(row) {
+    const states = (row && row.states) || {};
+    const ids = Object.keys(states).filter((id) => states[id] && states[id].state === "unverified");
+    if (!ids.length) return "";
+    return "; unverified=" + ids.join(",") + localReportReasons(ids.map((id) => states[id].reason));
+  }
+
+  function localReportScan(scan) {
+    if (!scan) return "";
+    const parts = [];
+    const dynamic = Number(scan.dynamicCount) || 0;
+    if (dynamic) parts.push(plural(dynamic, "dynamic key"));
+    const invalid = Array.isArray(scan.invalid) ? scan.invalid : [];
+    if (invalid.length) {
+      parts.push(plural(invalid.length, "key") + " refused" +
+        localReportReasons(invalid.map((item) => item && item.reason)));
+    }
+    const omitted = scan.capped ? Number(scan.omittedCount) || 0 : 0;
+    if (omitted) parts.push(plural(omitted, "key") + " past the cap");
+    return parts.length ? "Not checked: " + parts.join("; ") : "";
+  }
+
   function reportIdentifierFor(row, index) {
     const api = engineApi();
     if (api && isFn(api.reportIdentifier)) {
@@ -2673,13 +2711,15 @@
     ((result && result.sections) || []).forEach((section) => {
       lines.push("");
       lines.push(str(section.label) || str(section.id));
+      const scan = localReportScan(section.scan);
+      if (scan) lines.push(scan);
       (section.rows || []).forEach((row, index) => {
         const coverage = row.coverage || {};
         const missing = (coverage.missing || []).join(",") || "none";
         const warnings = reportWarnings(row);
         lines.push("- " + reportIdentifierFor(row, index) + " [" + str(row.aspect) + "]: " +
           (coverage.covered || 0) + "/" + (coverage.counted || 0) +
-          "; missing=" + missing +
+          "; missing=" + missing + localReportUnverified(row) +
           (warnings.length ? "; warnings=" + warnings.join(",") : ""));
       });
     });

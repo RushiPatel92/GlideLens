@@ -1363,6 +1363,47 @@ test("the local report refuses a hostname-shaped element and an embedded sys_id"
   assert.ok(text.includes("invalid_email"), "a plain key survives");
 });
 
+test("the local report names Unverified languages and what the scan could not check", () => {
+  /* Codex review, mirrored for the engine-absent case: an Unverified row is
+   * out of the count, so it read "0/0; missing=none" like a row with nothing
+   * to translate, and a refused getMessage key vanished. The row now says
+   * which languages are Unverified, with a reason only from the engine's own
+   * codes, and the scan is counted without printing a key. */
+  const harness = load();
+  const unverified = { covered: 0, counted: 0, percent: null, missing: [], unavailable: [] };
+  const refused = makeRow({
+    element: "example_topic", aspect: "source",
+    states: {
+      fr: { state: "unverified", reason: "javascript-expression" },
+      de: { state: "unverified", reason: "javascript-expression" },
+    },
+    coverage: unverified,
+  });
+  const foreign = makeRow({
+    element: "example_field", aspect: "value",
+    states: { fr: { state: "unverified", reason: "https://secret.service-now.com/nav_to.do" } },
+    coverage: unverified,
+  });
+  const result = makeResult({ sections: [
+    makeSection("values", "Field Values", [refused, foreign]),
+    makeSection("messages", "Messages", [], {
+      scan: {
+        dynamicCount: 0, capped: true, omittedCount: 3,
+        invalid: [{ key: "javascript:gs.getUserName()", reason: "javascript-expression" }],
+      },
+      separateHeadline: true,
+    }),
+  ] });
+  const text = harness.ui.formatResultsAsText(result);
+  const lines = text.split(String.fromCharCode(10));
+  assert.ok(lines.includes("- example_topic [source]: 0/0; missing=none; unverified=fr,de (javascript-expression)"), text);
+  assert.ok(lines.includes("- example_field [value]: 0/0; missing=none; unverified=fr"), "an unlisted reason is left out: " + text);
+  assert.ok(lines.includes("Not checked: 1 key refused (javascript-expression); 3 keys past the cap"), text);
+  ["gs.getUserName", "secret.service-now.com"].forEach((fragment) => {
+    assert.ok(!text.includes(fragment), "never in the report: " + fragment);
+  });
+});
+
 test("a report taken mid-run says it is partial rather than implying a final score", () => {
   const harness = load();
   openPanel(harness);

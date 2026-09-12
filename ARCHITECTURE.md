@@ -885,7 +885,12 @@ Reads go through `SN_TRANSLATION_GET`, which delegates to the single
 token-bearing-frame path Record Lens uses rather than `SN_TABLE_GET` into
 every frame. Identifiers are validated before any query; a value containing
 `^`, a newline or more than 255 characters is refused and its row is
-Unverified; encoded queries are chunked under 6000 characters; the content
+Unverified. So is any value naming `javascript:`: the platform evaluates a
+value that begins `javascript:` as a script instead of matching it, through
+the Table API and a list URL alike, and URL encoding does not prevent that.
+Capitalised, mid-text and spaced forms were not seen to run and are refused
+anyway, as policy, since a refusal costs only an Unverified row. Encoded
+queries are chunked under 6000 characters; the content
 columns of `sys_translated_text` and `sys_ui_message` are never requested.
 Each read has a 30 s ceiling and the panel 60 s; past that the remaining
 sections are Unavailable. The panel mounts before the first read and fills
@@ -896,7 +901,11 @@ Every link is same-origin through `OPEN_URL`; a Missing chip opens a
 prefilled new record, a Blank chip opens the existing rows for that language
 so no duplicate is created; nothing is written.
 The copied report carries states and keys but no translated text, record
-value, sys_id, hostname or URL.
+value, sys_id, hostname or URL. An Unverified language is listed with its
+reason when that reason is one of the engine's own codes, and a message scan
+reports how many keys it could not check, never the keys. The Messages footer
+button is withheld when the scan refused or capped a key, since a list of the
+rest would answer a narrower question than the panel asked.
 
 The translation icons and the field-name badges are both gone from
 `content.js`, along with the Workspace field walker and the toggle
