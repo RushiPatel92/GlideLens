@@ -1404,6 +1404,61 @@ test("the local report names Unverified languages and what the scan could not ch
   });
 });
 
+test("the local report agrees with the engine's on every reason and every scan count", () => {
+  /* Codex review, round 3: the engine-absent report keeps its own copy of the
+   * engine's reason list and helpers, and dropping a reason from the copy
+   * passed every test. The fixture is built from the engine's own list, so a
+   * reason the copy lacks, or any difference in a row suffix or a scan line,
+   * fails here. Header lines are not compared. */
+  const engine = load({ withEngine: true }).sandbox.SNTranslationLens;
+  const local = load();
+  const reasons = Array.from(engine.REPORT_REASONS);
+  assert.ok(reasons.includes("javascript-expression"), "the list is the engine's own");
+  const uncounted = { covered: 0, counted: 0, percent: null, missing: [], unavailable: [] };
+  const rows = reasons.map((reason, index) => makeRow({
+    element: "reason_row_" + index, aspect: "source",
+    states: { fr: { state: "unverified", reason }, de: { state: "unverified", reason } },
+    coverage: uncounted,
+  }));
+  rows.push(makeRow({
+    element: "mixed_row", aspect: "value",
+    states: {
+      fr: { state: "unverified", reason: reasons[0] },
+      de: { state: "unverified", reason: "https://secret.service-now.com/nav_to.do" },
+    },
+    coverage: uncounted,
+  }));
+  rows.push(makeRow({
+    element: "foreign_row", aspect: "value",
+    states: { fr: { state: "unverified", reason: "Denied for secret_user" } },
+    coverage: uncounted,
+  }));
+  const scan = (over) => Object.assign({ dynamicCount: 0, invalid: [], capped: false, omittedCount: 0 }, over);
+  const result = makeResult({ sections: [
+    makeSection("values", "Field Values", rows),
+    makeSection("messages", "Singular", [], { scan: scan({
+      dynamicCount: 1, capped: true, omittedCount: 1,
+      invalid: [{ key: "javascript:1", reason: "javascript-expression" }],
+    }) }),
+    makeSection("messages", "Plural", [], { scan: scan({
+      dynamicCount: 2, capped: true, omittedCount: 3,
+      invalid: reasons.map((reason, index) => ({ key: "refused " + index, reason }))
+        .concat([{ key: "foreign", reason: "https://secret.service-now.com" }]),
+    }) }),
+    makeSection("messages", "Not capped", [], { scan: scan({ omittedCount: 4 }) }),
+  ] });
+  const comparable = (text) => text.split(String.fromCharCode(10))
+    .filter((line) => line.startsWith("- ") || line.startsWith("Not checked:"));
+  const fromEngine = comparable(engine.formatResultsAsText(result));
+  const fromLocal = comparable(local.ui.formatResultsAsText(result));
+  assert.deepStrictEqual(fromLocal, fromEngine);
+  reasons.forEach((reason) => {
+    assert.ok(fromEngine.some((line) => line.endsWith("(" + reason + ")")), "exercised: " + reason);
+  });
+  assert.ok(fromEngine.includes("Not checked: 1 dynamic key; 1 key refused (javascript-expression); 1 key past the cap"));
+  assert.ok(!fromEngine.some((line) => line.includes("secret")), "a foreign reason stays out");
+});
+
 test("a report taken mid-run says it is partial rather than implying a final score", () => {
   const harness = load();
   openPanel(harness);

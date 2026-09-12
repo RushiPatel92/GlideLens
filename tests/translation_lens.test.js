@@ -524,13 +524,14 @@ test("getMessage extraction handles quotes, escapes, gs prefix, dedupe, invalid,
     "getMessage('Simple key'); gs.getMessage(\"Double key\");",
     "getMessage('It\\'s ready'); getMessage('Simple key');",
     "getMessage(dynamicKey); getMessage(`template`); getMessage('joined' + suffix);",
-    "object.getMessage('ignore me'); getMessage('bad^key');",
+    "object.getMessage('ignore me'); getMessage('bad^key'); getMessage('bad^key');",
   ], 2);
   assert.deepStrictEqual(own(extracted.keys), ["Simple key", "Double key"]);
   assert.strictEqual(extracted.dynamicCount, 3);
-  assert.strictEqual(extracted.invalid.length, 1);
+  assert.strictEqual(extracted.invalid.length, 1, "a refused key called twice is one key");
   assert.strictEqual(extracted.capped, true);
   assert.strictEqual(extracted.omittedCount, 1);
+  assert.deepStrictEqual(own(extracted.omitted), ["It's ready"]);
 });
 
 test("scanned messages have a separate denominator from the form headline", () => {
@@ -1422,6 +1423,68 @@ test("a message scan with a refused key offers no footer message list", async ()
   assert.strictEqual(messageList(merged), undefined, "a refusal in the definition form's scan counts");
   const messages = merged.sections.find((section) => section.id === "messages");
   assert.deepStrictEqual(json(messages.scan.invalid), [{ key: "javascript:1", reason: "javascript-expression" }]);
+});
+
+test("a capped or merged message scan offers no list and counts each unchecked key once", async () => {
+  /* Codex review, round 3. The footer relied on the cap being five chunks
+   * wide, so a smaller cap would have offered a list of the keys that fit.
+   * Merging summed each half's omissions -- two for one key both halves
+   * omitted, and two where each half read the key the other omitted -- and
+   * kept one half's repeated refusals, so the count changed with the order. */
+  const origin = "https://example.service-now.com";
+  const keys = Array.from({ length: TL.MAX_MESSAGE_KEYS + 1 }, (_, index) => "Example key " + index);
+  const script = (list) => list.map((key) => "getMessage('" + key + "');").join(" ");
+  const forward = script(keys);
+  const backward = script(keys.slice().reverse());
+  const messageList = (result) => (result.links || {}).sys_ui_message;
+  const messages = (result) => result.sections.find((section) => section.id === "messages");
+  const scanLines = (result) => TL.formatResultsAsText(result).split(String.fromCharCode(10))
+    .filter((line) => line.startsWith("Not checked:"));
+
+  const form = formTransport();
+  const formResult = await TL.run({
+    mode: "form", table: "example_child", sysId: "00000000000000000000000000000009",
+    fields: ["title"], loadValues: async () => ({ values: { title: "Base title" } }), origin,
+  }, async (request) => (request.table === "sys_script_client" ? [{ script: forward }] : form.transport(request)));
+  assert.strictEqual(messageList(formResult), undefined, "form: a capped scan offers no list");
+  assert.deepStrictEqual(scanLines(formResult), ["Not checked: 1 key past the cap"]);
+
+  const catalogRun = (catalogScript, formScript) => {
+    const fixture = catalogTransport({
+      answer: (request) => {
+        if (request.table === "catalog_script_client" && request.query.startsWith("cat_item=")) {
+          return [{ sys_id: "00000000000000000000000000000040", name: "Example script", script: catalogScript }];
+        }
+        if (request.table === "sys_script_client") return [{ script: formScript }];
+        return undefined;
+      },
+    });
+    return TL.run({
+      mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId, origin,
+      formContext: formScript === undefined ? undefined : {
+        table: "sc_cat_item", sysId: fixture.itemId, fields: ["name"], loadValues: async () => ({ values: {} }),
+      },
+    }, fixture.transport);
+  };
+  assert.strictEqual(messageList(await catalogRun(forward)), undefined, "catalog: the same");
+
+  const same = await catalogRun(forward, forward);
+  assert.strictEqual(messageList(same), undefined, "merged: the same");
+  assert.strictEqual(messages(same).scan.omittedCount, 1, "a key both halves omitted is one key");
+  assert.deepStrictEqual(scanLines(same), ["Not checked: 1 key past the cap"]);
+
+  const opposite = await catalogRun(forward, backward);
+  assert.strictEqual(messageList(opposite), undefined, "still more keys than one list holds");
+  assert.strictEqual(messages(opposite).scan.omittedCount, 0, "each half read the key the other omitted");
+  assert.deepStrictEqual(scanLines(opposite), [], "nothing went unchecked");
+
+  const twice = "getMessage('javascript:1'); getMessage('javascript:1');";
+  const once = "getMessage('javascript:1');";
+  for (const [catalogScript, formScript] of [[twice, once], [once, twice]]) {
+    const merged = await catalogRun(catalogScript, formScript);
+    assert.strictEqual(messages(merged).scan.invalid.length, 1, "one refused key, whichever half repeats it");
+    assert.deepStrictEqual(scanLines(merged), ["Not checked: 1 key refused (javascript-expression)"]);
+  }
 });
 
 test("a report names Unverified languages and what a message scan could not check, never the text", () => {

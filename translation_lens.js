@@ -915,6 +915,9 @@
     const invalid = [];
     let dynamicCount = 0;
     const seen = new Set();
+    /* A refused key is one key however often a script calls it, as a checked
+     * key is, so the note and the report count keys rather than calls. */
+    const refused = new Set();
     (sources || []).forEach((source) => {
       const text = String(source || "");
       const call = /(^|[^\w.])((?:gs\.)?getMessage)\s*\(/g;
@@ -958,7 +961,10 @@
         const key = unescapeMessageLiteral(body, quote);
         const status = queryValueStatus(key);
         if (!status.ok) {
-          invalid.push({ key, reason: status.reason });
+          if (!refused.has(key)) {
+            refused.add(key);
+            invalid.push({ key, reason: status.reason });
+          }
         } else if (!seen.has(key)) {
           seen.add(key);
           keys.push(key);
@@ -972,6 +978,9 @@
       invalid,
       capped: keys.length > limit,
       omittedCount: Math.max(0, keys.length - limit),
+      /* Kept so a merge can tell which omitted keys the other scan checked.
+       * Never printed: the note and the report carry the count only. */
+      omitted: keys.slice(limit),
     };
   }
 
@@ -1797,9 +1806,10 @@
       /* Only when every scanned key fits one chunk. A truncated key list would
        * open a list that silently answers a narrower question than the panel
        * asked, which is worse than offering no button. */
-      /* A scan that refused a key hands over only the rest, so the builder
-       * cannot see what is missing; the scan says so instead. A capped scan
-       * needs no flag: the cap is five chunks' worth, refused below. */
+      /* A scan that refused or capped a key hands over only the rest, so the
+       * builder cannot see what is missing; the scan says so instead. The cap
+       * is five chunks' worth today and would be refused below anyway, but
+       * that holds only while the two constants keep their sizes. */
       if (scope.messageKeysIncomplete) return "";
       const keys = unique(scope.messageKeys || []);
       if (!keys.length) return "";
@@ -2760,7 +2770,7 @@
       tables: chain.slice(),
       documentKey: SYS_ID_PATTERN.test(sysId) ? sysId : "",
       messageKeys: extraction.keys.slice(),
-      messageKeysIncomplete: extraction.invalid.length > 0,
+      messageKeysIncomplete: extraction.invalid.length > 0 || extraction.capped,
     };
 
     emitSection(context, emitted, {
@@ -3390,7 +3400,7 @@
       tables: unique(CATALOG_REGISTRATION_TABLES.concat(itemChain)),
       documentKey: itemId,
       messageKeys: extraction.keys.slice(),
-      messageKeysIncomplete: extraction.invalid.length > 0,
+      messageKeysIncomplete: extraction.invalid.length > 0 || extraction.capped,
     };
     emitSection(context, emitted, {
       id: "messages", label: "Messages", rows: messageRows, scan: extraction, separateHeadline: true,
@@ -3419,21 +3429,32 @@
     };
   }
 
-  /* One scan from two, for the Messages note and the report. A key refused
-   * by both halves is one key. */
+  /* One scan from two, for the Messages note and the report. Both halves'
+   * keys were read, so a key is not checked only when neither half checked
+   * it: an omitted key the other half read is not reported, and a key both
+   * halves omitted or refused is one key, whichever half it came from. */
   function mergeScans(first, second) {
     const left = first || {};
     const right = second || {};
-    const invalid = (left.invalid || []).slice();
-    (right.invalid || []).forEach((item) => {
-      if (!invalid.some((seen) => seen.key === item.key)) invalid.push(item);
+    const keys = unique((left.keys || []).concat(right.keys || []));
+    const checked = new Set(keys);
+    const invalid = [];
+    const refused = new Set();
+    (left.invalid || []).concat(right.invalid || []).forEach((item) => {
+      const key = item && item.key;
+      if (refused.has(key)) return;
+      refused.add(key);
+      invalid.push(item);
     });
+    const omitted = unique((left.omitted || []).concat(right.omitted || []))
+      .filter((key) => !checked.has(key));
     return {
-      keys: unique((left.keys || []).concat(right.keys || [])),
+      keys,
       dynamicCount: (Number(left.dynamicCount) || 0) + (Number(right.dynamicCount) || 0),
       invalid,
-      capped: Boolean(left.capped || right.capped),
-      omittedCount: (Number(left.omittedCount) || 0) + (Number(right.omittedCount) || 0),
+      capped: omitted.length > 0,
+      omittedCount: omitted.length,
+      omitted,
     };
   }
 
@@ -3631,6 +3652,9 @@
     sectionSummary,
     summarizeResult,
     reportIdentifier,
+    /* A copy, for the panel's tests: its engine-absent report keeps its own
+     * list, and the two are compared against this one. */
+    REPORT_REASONS: Array.from(REPORT_REASONS),
     formatResultsAsText,
     readChunked,
     runForm,
