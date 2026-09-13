@@ -407,6 +407,49 @@
   }
 
   /*
+   * The page reports its language pair as sys_language ids ("fr") and a person
+   * reads names ("French"). sys_language holds both, in the id and name columns
+   * Translation Lens already reads, so the runner asks it for the pair.
+   *
+   * An id goes into that query only when it is shaped like one - a letter, then
+   * letters, digits, _ or -, as Translation Lens accepts it. The ids are page
+   * text, and that shape admits no caret, comma or colon, so a filter cannot be
+   * appended and a javascript: value, which the server would run rather than
+   * match, cannot be sent.
+   */
+  const LANGUAGE_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+
+  function languageNameQuery(identity) {
+    const ids = [text(identity && identity.sourceLanguage), text(identity && identity.targetLanguage)]
+      .filter((id) => LANGUAGE_ID_PATTERN.test(id));
+    return ids.length ? "idIN" + Array.from(new Set(ids)).join(",") : "";
+  }
+
+  /* A name only when the rows give exactly one for the id. No row, a blank name,
+   * or two rows that disagree leave it empty, and buildDraft then shows the
+   * code - which is all the page gave, and what the draft showed before. */
+  function languageNames(rows, identity) {
+    const found = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const id = text(row && row.id).toLowerCase();
+      const name = text(row && row.name).trim();
+      if (!id || !name) return;
+      if (!found.has(id)) found.set(id, new Set());
+      found.get(id).add(name);
+    });
+    const nameFor = (value) => {
+      const id = text(value);
+      if (!LANGUAGE_ID_PATTERN.test(id)) return "";
+      const names = found.get(id.toLowerCase());
+      return names && names.size === 1 ? Array.from(names)[0] : "";
+    };
+    return {
+      sourceLanguageName: nameFor(identity && identity.sourceLanguage),
+      targetLanguageName: nameFor(identity && identity.targetLanguage),
+    };
+  }
+
+  /*
    * The instruction block. It is the first key of the envelope so a model
    * reading a truncated or partially quoted file meets it before the rows, it
    * is generated from this template and never edited by a user, and it is
@@ -1269,6 +1312,8 @@
     exclusionFor,
     readFields,
     groupByDestination,
+    languageNameQuery,
+    languageNames,
     buildPrompt,
     serializePayload,
     buildDraft,

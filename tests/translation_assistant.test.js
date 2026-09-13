@@ -589,6 +589,64 @@ test("exportId is 32 hex characters from a cryptographic source", () => {
   assert.notStrictEqual(draft.exportId, TA.buildDraft(Object.assign({ content: [element({})] }, IDENTITY)).exportId);
 });
 
+/* The language pair a person reads: names from sys_language, codes without. */
+test("the language-name query carries only ids shaped like sys_language.id", () => {
+  assert.strictEqual(TA.languageNameQuery(IDENTITY), "idINen,fr");
+  assert.strictEqual(TA.languageNameQuery({ sourceLanguage: "fr", targetLanguage: "fr" }), "idINfr",
+    "one id asked for once");
+  assert.strictEqual(TA.languageNameQuery({ sourceLanguage: "en", targetLanguage: "es-MX" }), "idINen,es-MX");
+
+  /* The ids are page text. Nothing that could extend the filter, or that the
+   * server would run as a script, may reach the query. */
+  [
+    "javascript:gs.getUserName()",
+    "JavaScript:x",
+    "fr^ORactive=true",
+    "fr,de",
+    "fr de",
+    "1fr",
+    "",
+  ].forEach((bad) => {
+    assert.strictEqual(TA.languageNameQuery({ sourceLanguage: "en", targetLanguage: bad }), "idINen", bad);
+  });
+  assert.strictEqual(TA.languageNameQuery({ sourceLanguage: "javascript:x", targetLanguage: "fr^x" }), "",
+    "no valid id means no read at all");
+  assert.strictEqual(TA.languageNameQuery(null), "");
+});
+
+test("a language name is used only when sys_language gives exactly one", () => {
+  const rows = [{ id: "en", name: "English" }, { id: "FR", name: " French " }];
+  assert.deepStrictEqual(json(TA.languageNames(rows, IDENTITY)),
+    { sourceLanguageName: "English", targetLanguageName: "French" },
+    "ids match without regard to capitalisation, and names are trimmed");
+
+  assert.strictEqual(TA.languageNames([{ id: "en", name: "English" }], IDENTITY).targetLanguageName, "",
+    "no row for the id");
+  assert.strictEqual(TA.languageNames([{ id: "fr", name: "" }], IDENTITY).targetLanguageName, "",
+    "a blank name");
+  assert.strictEqual(
+    TA.languageNames([{ id: "fr", name: "French" }, { id: "fr", name: "Francais" }], IDENTITY).targetLanguageName,
+    "", "two rows that disagree name neither"
+  );
+  assert.strictEqual(
+    TA.languageNames([{ id: "fr", name: "French" }, { id: "fr", name: "French" }], IDENTITY).targetLanguageName,
+    "French", "two rows that agree are one name"
+  );
+  assert.deepStrictEqual(json(TA.languageNames(null, IDENTITY)), { sourceLanguageName: "", targetLanguageName: "" });
+  assert.strictEqual(
+    TA.languageNames([{ id: "fr^x", name: "Injected" }], { sourceLanguage: "en", targetLanguage: "fr^x" }).targetLanguageName,
+    "", "an id the query would have refused is never named"
+  );
+});
+
+test("without names the draft shows the page's codes", () => {
+  const draft = TA.buildDraft(Object.assign({ content: [element({})], exportId: EXPORT_ID }, IDENTITY));
+  assert.match(draft.payload.prompt, /from en into fr\./);
+  assert.strictEqual(draft.languages.sourceLanguageName, "en");
+  assert.strictEqual(draft.languages.targetLanguageName, "fr");
+  assert.strictEqual(draft.payload.targetLanguage, "fr", "the payload's identity stays the code either way");
+});
+
 /* 20. The prompt is untrusted input on the way back in. */
 test("a rewritten prompt is ignored, not obeyed", () => {
   const content = [element({ fields: [field({ source: "Cost centre" })] })];

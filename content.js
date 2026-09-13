@@ -5552,6 +5552,22 @@ async function ensureTranslationAssistantLoaded() {
   return true;
 }
 
+/* "French" rather than "fr" in the subtitle, the prompt and every line naming
+ * the target language. The page scope carries only the codes; the engine builds
+ * the sys_language query from them, and only from codes shaped like an id.
+ * Best effort: a read that is refused, fails or finds nothing leaves the codes,
+ * which is all the page had, and never stops the draft. */
+async function translationAssistantLanguageNames(engine, context) {
+  const query = engine.languageNameQuery(context);
+  if (!query) return {};
+  try {
+    const rows = await snGetMany("sys_language", query, "id,name", 10);
+    return engine.languageNames(rows, context);
+  } catch (error) {
+    return {};
+  }
+}
+
 /* Why the draft could not be made, in the user's terms. The worker reports each
  * frame it asked, so "the page is open but not in ad-hoc mode" and "this is not
  * the comparison page at all" get different sentences. */
@@ -5649,6 +5665,9 @@ async function runTranslationAssistant() {
     }
     const context = response.selected.context || {};
     const engine = globalThis.SNTranslationAssistant;
+    const names = await translationAssistantLanguageNames(engine, context);
+    /* Dismissed during the name read: the same rule as the page read above. */
+    if (!current()) return;
     /* The frame id is deliberately not kept. It is a browser handle a reload
      * invalidates, the apply route resolves its own frame again, and caching it
      * would refuse a returning draft for no reason. */
@@ -5658,6 +5677,8 @@ async function runTranslationAssistant() {
       artifactSysId: context.artifactSysId,
       sourceLanguage: context.sourceLanguage,
       targetLanguage: context.targetLanguage,
+      sourceLanguageName: names.sourceLanguageName,
+      targetLanguageName: names.targetLanguageName,
     });
 
     /* Persisted before it is shown, so a file the user downloads is always

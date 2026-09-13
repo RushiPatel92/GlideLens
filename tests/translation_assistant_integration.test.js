@@ -523,6 +523,14 @@ function loadRunner(options) {
 
   vm.createContext(context);
   vm.runInContext(engineSourceText, context, { filename: "translation_assistant.js" });
+  /* The language-name read goes through the content script's shared Table API
+   * helper, which lives outside the block. Lifted too, so the read reaches the
+   * messaging shim rather than dying on a missing name inside a catch. */
+  vm.runInContext(
+    between(contentSource, "async function snGetMany(", "function snFieldValue("),
+    context,
+    { filename: "content.js (snGetMany)" }
+  );
   vm.runInContext(block, context, { filename: "content.js (assistant block)" });
   if (opts.panelPresent !== false) context.SNTranslationAssistantUI = panel;
 
@@ -541,12 +549,12 @@ function loadRunner(options) {
   };
 }
 
-function contextAnswer() {
+function contextAnswer(overrides) {
   return {
     ok: true,
     selected: {
       frameId: 5,
-      context: {
+      context: Object.assign({
         isLfPage: true,
         isAdhoc: true,
         artifactInternalName: "catalog_item",
@@ -555,7 +563,7 @@ function contextAnswer() {
         targetLanguage: "fr",
         content: LF_CONTENT_FIXTURE,
         elementCount: 1,
-      },
+      }, overrides || {}),
     },
     rejected: [],
   };
@@ -714,6 +722,92 @@ test("a store that refuses stops the draft being offered at all", async () => {
   const errors = harness.of("showError");
   assert.strictEqual(errors.length, 1);
   assert.match(errors[0].message, /session storage is full/);
+});
+
+/* ------------------------------------------------------------------ *
+ * Language names: "French", not "fr"
+ * ------------------------------------------------------------------ */
+
+const LANGUAGE_ROWS = [{ id: "en", name: "English" }, { id: "fr", name: "French" }];
+
+test("the draft names the language pair from sys_language", async () => {
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SN_TABLE_GET") return Promise.resolve({ ok: true, result: LANGUAGE_ROWS });
+      return Promise.resolve({ ok: true, held: 1 });
+    },
+  });
+
+  await harness.context.runTranslationAssistant();
+  const read = harness.sent.filter((message) => message.type === "SN_TABLE_GET");
+  assert.strictEqual(read.length, 1, "one read for the pair");
+  assert.strictEqual(read[0].table, "sys_language");
+  assert.strictEqual(read[0].query, "idINen,fr");
+  assert.strictEqual(read[0].fields, "id,name");
+
+  const shown = harness.of("showDraft");
+  assert.strictEqual(shown.length, 1);
+  assert.strictEqual(shown[0].draft.languages.sourceLanguageName, "English");
+  assert.strictEqual(shown[0].draft.languages.targetLanguageName, "French");
+  assert.match(shown[0].draft.payload.prompt, /from English into French/);
+  assert.strictEqual(shown[0].draft.payload.targetLanguage, "fr", "the identity stays the code");
+});
+
+test("a refused name read still produces the draft, with the codes", async () => {
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SN_TABLE_GET") return Promise.resolve({ ok: false, error: "HTTP 403 reading sys_language" });
+      return Promise.resolve({ ok: true, held: 1 });
+    },
+  });
+
+  await harness.context.runTranslationAssistant();
+  assert.strictEqual(harness.of("showError").length, 0, "a missing name is not an error");
+  const shown = harness.of("showDraft");
+  assert.strictEqual(shown.length, 1);
+  assert.strictEqual(shown[0].draft.languages.targetLanguageName, "fr");
+  assert.strictEqual(harness.toasts.length, 0);
+});
+
+test("a run dismissed while the language names are read saves nothing", async () => {
+  const nameRead = deferred();
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "SN_TABLE_GET") return nameRead.promise;
+      return Promise.resolve({ ok: true, held: 1 });
+    },
+  });
+
+  const run = harness.context.runTranslationAssistant();
+  await settle();
+  assert.ok(harness.sent.some((message) => message.type === "SN_TABLE_GET"), "the name read is in flight");
+  harness.dismiss();
+  nameRead.resolve({ ok: true, result: LANGUAGE_ROWS });
+  await run;
+
+  assert.ok(!harness.sent.some((message) => message.type === "SAVE_LF_ASSISTANT_DRAFT"),
+    "an abandoned run must not write to a store that outlives it");
+  assert.strictEqual(harness.of("showDraft").length, 0);
+});
+
+test("page codes that are not language-shaped send no name read", async () => {
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") {
+        return Promise.resolve(contextAnswer({ sourceLanguage: "javascript:x", targetLanguage: "fr^ORid=en" }));
+      }
+      if (message.type === "SN_TABLE_GET") return Promise.resolve({ ok: true, result: LANGUAGE_ROWS });
+      return Promise.resolve({ ok: true, held: 1 });
+    },
+  });
+
+  await harness.context.runTranslationAssistant();
+  assert.ok(!harness.sent.some((message) => message.type === "SN_TABLE_GET"),
+    "a query built from those would carry a script or an extra filter");
+  assert.strictEqual(harness.of("showDraft").length, 1, "and the draft is still made");
 });
 
 /* ------------------------------------------------------------------ *

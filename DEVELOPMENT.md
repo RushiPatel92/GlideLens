@@ -202,7 +202,10 @@ The suites cover:
   the merge invariant that writes `translatedValue` and introduces no other
   key, and the bounded draft store that survives a worker teardown. A reload
   on its own refuses nothing — the regression guard for a fingerprint that
-  must hold no frame handle.
+  must hold no frame handle. Also the language names: the `sys_language` query
+  is built only from ids shaped like one, so page text naming `javascript:` or
+  carrying a caret or comma never reaches it, and a name is used only when the
+  rows give exactly one — otherwise the draft shows the page's codes.
 - `translation_assistant_ui.test.js` — the panel, loaded under `node:vm`
   against the same small DOM shim the Translation Lens panel uses. Drafts are
   built by the real engine rather than written as literals, because the
@@ -246,7 +249,10 @@ The suites cover:
   messaging shims: concurrent saves both survive, a dismissed run writes
   nothing to a store that outlives it, a slow first run never opens over the
   panel a later run owns, the draft is not offered until the store accepts it,
-  and a frame that never answered is not reported as the wrong page. Those
+  and a frame that never answered is not reported as the wrong page. The
+  language-name read runs through the same shims: its names reach the prompt
+  and subtitle, a refused read still yields a draft in codes, a run dismissed
+  during it saves nothing, and codes that are not id-shaped send no read. Those
   blocks are lifted from their real files by the same anchors the source
   assertions use, so moving one fails loudly instead of testing nothing.
 
