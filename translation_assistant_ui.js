@@ -219,18 +219,30 @@
       margin:6px 0 0;padding:8px 10px;border-radius:7px;background:#16162a;color:#aaaac1;
       font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;
     }
+    /* One report entry reads top to bottom like a form field: which field,
+       its text, then a labelled pair of values (the reply's against the
+       page's), and last the reason with its button beside it. Every piece
+       keeps to one line, whole on hover, so entries line up with each other. */
     .report-list{list-style:none;margin:6px 0 14px;padding:0 0 0 12px;border-left:2px solid #2e2e4e}
-    .report-list li{padding:8px 0;border-top:1px solid #29293f}
+    .report-list li{padding:10px 0;border-top:1px solid #29293f}
     .report-list li:first-child{border-top:0;padding-top:2px}
-    .report-list .src,.report-list .tgt,.report-list .was{
+    .report-list .field,.report-list .src,.report-list .pair dd{
       display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     }
-    .report-list .src{color:#ececf8}
-    .report-list .tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
-    .report-list .was{color:#85859f}
-    .report-list .reason{display:block;color:var(--flag);font-size:12px}
+    .report-list .field{font-size:11px;color:#85859f;margin-bottom:1px}
+    .report-list .src{color:#ececf8;font-weight:650}
+    .report-list .pair{
+      display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:10px;row-gap:2px;
+      margin:4px 0 0;font-size:12px;
+    }
+    .report-list .pair dt{color:#85859f;white-space:nowrap}
+    .report-list .pair dd{margin:0}
+    .report-list .pair dd.tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
+    .report-list .pair dd.was{color:#c9c9dc}
+    .report-list .verdict{display:flex;align-items:center;gap:12px;margin-top:6px}
+    .report-list .reason{flex:1;min-width:0;color:var(--flag);font-size:12px;line-height:1.4}
     .choice{
-      margin-top:5px;border:1px solid #4a4a70;background:#2c2c48;color:#f0f0fa;border-radius:6px;
+      flex:none;border:1px solid #4a4a70;background:#2c2c48;color:#f0f0fa;border-radius:6px;
       padding:4px 10px;font-size:12px;cursor:pointer;
     }
     .choice:hover{background:#37375a}
@@ -457,9 +469,9 @@
    * text is always one hover away: the literal value for plain text, the
    * plain words for rich text. */
   const PREVIEW_CHARS = 140;
-  function quotedPreview(className, prefix, value, rich) {
+  function quotedPreview(className, prefix, value, rich, tag) {
     const shown = rich ? plainWords(value) : oneLine(value);
-    const node = el("span", className, `${prefix}“${shorten(shown, PREVIEW_CHARS)}”`);
+    const node = el(tag || "span", className, `${prefix}“${shorten(shown, PREVIEW_CHARS)}”`);
     const whole = rich ? shown : str(value);
     if (whole) node.title = whole;
     return node;
@@ -1036,11 +1048,38 @@
     return seen;
   }
 
-  function reportRow(row) {
+  /* One entry: which field, its source text, then the values that matter for
+   * it as a labelled pair -- the reply's translation against what the page
+   * holds, or against what a fill replaced. A label per value replaced the
+   * arrow and the "on the page" prefix, which read as one run of text. */
+  function reportRow(row, pairs) {
     const li = el("li");
+    const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
+    if (where) {
+      const field = el("span", "field", where);
+      field.title = where;
+      li.appendChild(field);
+    }
     li.appendChild(quotedPreview("src", "", row.source, false));
-    if (str(row.target)) li.appendChild(quotedPreview("tgt", "→ ", row.target, false));
+    const shown = (pairs || []).filter((pair) => str(pair[2]));
+    if (shown.length) {
+      const dl = el("dl", "pair");
+      shown.forEach(([label, className, value]) => {
+        dl.appendChild(el("dt", "", label));
+        dl.appendChild(quotedPreview(className, "", value, false, "dd"));
+      });
+      li.appendChild(dl);
+    }
     return li;
+  }
+
+  /* The last line of an entry: why it stands there, and beside it the one
+   * thing the user can do about it, when there is one. */
+  function verdictLine(reason, choice) {
+    const line = el("div", "verdict");
+    line.appendChild(el("span", "reason", reason));
+    if (choice) line.appendChild(choice);
+    return line;
   }
 
   function showReport(request, result) {
@@ -1109,9 +1148,10 @@
         "To keep an old one, type it back into its box before you publish — clearing the box deletes it."));
       const ul = el("ul", "report-list");
       replaced.forEach((row) => {
-        const li = reportRow(row);
-        li.appendChild(quotedPreview("was", "was ", distinctTargets(row).join(" / "), false));
-        ul.appendChild(li);
+        ul.appendChild(reportRow(row, [
+          ["Filled", "tgt", row.target],
+          ["Was", "was", distinctTargets(row).join(" / ")],
+        ]));
       });
       bodyEl.appendChild(ul);
     }
@@ -1124,28 +1164,29 @@
       bodyEl.appendChild(el("h3", "", `Not filled (${left.length})`));
       const ul = el("ul", "report-list");
       left.forEach((row) => {
-        const li = reportRow(row);
-        li.appendChild(el("span", "reason",
-          missed.has(row.k) ? "did not take on the page — check this field before you publish" : reasonFor(row)));
-        const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
-        const foot = footLine(where, null);
-        if (foot) li.appendChild(foot);
+        const overridable = row.verdict === "edited" && row.overridable;
+        const pairs = [["Reply", "tgt", row.target]];
+        /* The page's value is shown only for the row it can be overwritten
+         * against, which is the value that the override is bound to. */
+        if (overridable) pairs.push(["On the page", "was", distinctTargets(row).join(" / ") || "(empty)"]);
+        const li = reportRow(row, pairs);
+        const reason = missed.has(row.k)
+          ? "did not take on the page — check this field before you publish"
+          : reasonFor(row);
 
+        let choice = null;
         if (!missed.has(row.k) && row.status === "fill" && row.warning) {
-          const choice = el("button", "choice", "Fill anyway");
+          choice = el("button", "choice", "Fill anyway");
           choice.type = "button";
           choice.addEventListener("click", () => runFill({
             text: request.text,
             include: (request.include || []).concat(row.k),
             overrides: request.overrides || [],
           }, controls, status));
-          controls.push(choice);
-          li.appendChild(choice);
-        } else if (row.verdict === "edited" && row.overridable) {
+        } else if (overridable) {
           /* Bound to exactly the values shown here. If the page moves again
            * before the fill runs, the engine voids it and the row comes back. */
-          li.appendChild(quotedPreview("was", "on the page ", distinctTargets(row).join(" / ") || "(empty)", false));
-          const choice = el("button", "choice", "Overwrite");
+          choice = el("button", "choice", "Overwrite");
           choice.type = "button";
           choice.addEventListener("click", () => runFill({
             text: request.text,
@@ -1158,9 +1199,9 @@
               })),
             }),
           }, controls, status));
-          controls.push(choice);
-          li.appendChild(choice);
         }
+        if (choice) controls.push(choice);
+        li.appendChild(verdictLine(reason, choice));
         ul.appendChild(li);
       });
       bodyEl.appendChild(ul);

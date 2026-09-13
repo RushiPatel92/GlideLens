@@ -949,13 +949,55 @@ test("a field changed on the page offers Overwrite, bound to the value it shows"
 
   const text = harness.text();
   assert.match(text, /changed on the page since the draft/);
-  assert.match(text, /on the page “typed by hand”/);
+  assert.match(text, /Reply“Centre de coût”On the page“typed by hand”/);
   press(buttonNamed(harness.shadow(), "Overwrite"));
   await flush();
   assert.deepStrictEqual(calls[1].overrides, [{
     k: evaluation.rows[0].k,
     reviewed: [{ identityKey: evaluation.rows[0].members[0].identityKey, target: "typed by hand" }],
   }]);
+});
+
+test("every report entry is built from the same parts, with the reason and its button on one line", async () => {
+  /* Owner report, 2026-09-13: an entry was six lines of prose one under the
+   * other -- text, arrow, reason, location, "on the page", button -- and hard
+   * to read. Now: the field, its text, a labelled pair of values, then one
+   * verdict line holding the reason and, beside it, the button. */
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Charge", fields: [field({ source: "Charge ${account}" })] }),
+    element({ groupName: "Variable: Approver", fields: [field({ source: "Approver" })] }),
+  ];
+  const live = clone(content);
+  live[0].fieldInfo[0].translatedValue = "typed by hand";
+  const evaluation = evaluationFor(content, {
+    "Cost centre": "Centre de coût",
+    "Charge ${account}": "Débiter le compte",
+  }, live);
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const entries = findAll(harness.shadow(), (node) =>
+    node.tagName === "LI" && node.parentNode && node.parentNode.className === "report-list");
+  const shapes = entries.map((item) => {
+    const pair = item.children.find((child) => child.className === "pair");
+    return [
+      item.children.map((child) => child.className).join(" "),
+      pair ? pair.children.map((child) => child.textContent).join("|") : "",
+      item.children[item.children.length - 1].children.map((child) => child.tagName).join(" "),
+    ];
+  });
+  /* Placeholder warning first, then the edited field, then the one the reply
+   * left out -- which has no translation to pair, so no pair. */
+  assert.deepStrictEqual(shapes, [
+    ["field src pair verdict", "Reply|“Débiter le compte”", "SPAN BUTTON"],
+    ["field src pair verdict", "Reply|“Centre de coût”|On the page|“typed by hand”", "SPAN BUTTON"],
+    ["field src verdict", "", "SPAN"],
+  ]);
+  assert.match(harness.text(), /Variable: Charge“Charge \$\{account\}”Reply/,
+    "the field is named above its text");
 });
 
 test("a fill that replaced a translation shows the old text, and how to keep it", async () => {
@@ -973,7 +1015,7 @@ test("a fill that replaced a translation shows the old text, and how to keep it"
 
   const text = harness.text();
   assert.match(text, /Replaced 1 existing translation/);
-  assert.match(text, /was “Centre de frais”/);
+  assert.match(text, /Filled“Centre de coût”Was“Centre de frais”/);
   assert.match(text, /clearing the box deletes it/);
 });
 
