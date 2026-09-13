@@ -1220,3 +1220,45 @@ test("a fill the page could not confirm keeps every attempted row's old text, an
   assert.match(text, /Replaced 1 existing translation.*Was“Centre de frais”/);
   assert.match(text, /One translation filled on this page is shared/);
 });
+
+test("a shared row whose fields hold different values shows every value, each named", async () => {
+  /* Codex review note: the display collapsed a shared row's distinct values
+   * into one line and left an empty member out, so a user reviewing an
+   * Overwrite could not see every value it would replace. */
+  const content = [
+    element({ groupName: "Variable: Cost centre", label: "Question", id: "Variable: Cost centre: Question",
+      fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Cost centre (copy)", label: "Question", id: "Variable: Cost centre (copy): Question",
+      fields: [field({ source: "Cost centre" })] }),
+  ];
+  const live = clone(content);
+  live[0].fieldInfo[0].translatedValue = "typed by hand";
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" }, live);
+  assert.strictEqual(evaluation.rows.length, 1);
+  assert.strictEqual(evaluation.rows[0].verdict, "edited");
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const entry = findAll(harness.shadow(), (node) =>
+    node.tagName === "LI" && node.parentNode && node.parentNode.className === "report-list")[0];
+  const pair = entry.children.find((child) => child.className === "pair");
+  assert.deepStrictEqual(pair.children.map((child) => child.textContent), [
+    "Reply", "“Centre de coût”",
+    "On the page", "“typed by hand”Variable: Cost centre: Question",
+    "", "“(empty)”Variable: Cost centre (copy): Question",
+  ]);
+
+  /* And when the fields agree, one line, unnamed. */
+  const agreed = clone(content);
+  agreed.forEach((element_) => { element_.fieldInfo[0].translatedValue = "typed by hand"; });
+  const same = evaluationFor(content, { "Cost centre": "Centre de coût" }, agreed);
+  const second = load();
+  withFill(second, filledAnswer(same, []));
+  show(second, draftFrom(content));
+  await pasteAndFill(second, "reply text");
+  const onePair = findAll(second.shadow(), (node) => node.className === "pair")[0];
+  assert.deepStrictEqual(onePair.children.map((child) => child.textContent),
+    ["Reply", "“Centre de coût”", "On the page", "“typed by hand”"]);
+});

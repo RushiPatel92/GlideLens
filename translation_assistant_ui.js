@@ -239,6 +239,7 @@
     .report-list .pair dd{margin:0}
     .report-list .pair dd.tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
     .report-list .pair dd.was{color:#c9c9dc}
+    .report-list .pair .mem{margin-left:8px;font-size:11px;color:#85859f}
     .report-list .verdict{display:flex;align-items:center;gap:12px;margin-top:6px}
     .report-list .reason{flex:1;min-width:0;color:var(--flag);font-size:12px;line-height:1.4}
     .choice{
@@ -1043,15 +1044,6 @@
     }
   }
 
-  function distinctTargets(row) {
-    const seen = [];
-    ((row && row.members) || []).forEach((member) => {
-      const value = str(member && member.liveTarget);
-      if (value && !seen.includes(value)) seen.push(value);
-    });
-    return seen;
-  }
-
   /* One entry: which field, its source text, then the values that matter for
    * it as a labelled pair -- the reply's translation against what the page
    * holds, or against what a fill replaced. A label per value replaced the
@@ -1068,13 +1060,33 @@
     const shown = (pairs || []).filter((pair) => str(pair[2]));
     if (shown.length) {
       const dl = el("dl", "pair");
-      shown.forEach(([label, className, value]) => {
+      shown.forEach(([label, className, value, member]) => {
         dl.appendChild(el("dt", "", label));
-        dl.appendChild(quotedPreview(className, "", value, false, "dd"));
+        const dd = quotedPreview(className, "", value, false, "dd");
+        if (str(member)) {
+          const who = el("span", "mem", str(member));
+          who.title = str(member);
+          dd.appendChild(who);
+        }
+        dl.appendChild(dd);
       });
       li.appendChild(dl);
     }
     return li;
+  }
+
+  /* The page's value for a row: one line when its fields agree, and one line
+   * per field, each naming its field, when they do not -- a shared row must
+   * never show one value in place of another (Codex review). An empty field
+   * says so rather than being left out. */
+  function valuePairs(label, className, members) {
+    const list = (members || []).map((member) => ({
+      name: str(member && member.elementId),
+      value: str(member && member.liveTarget),
+    }));
+    const distinct = list.map((entry) => entry.value).filter((value, i, all) => all.indexOf(value) === i);
+    if (list.length <= 1 || distinct.length <= 1) return [[label, className, distinct[0] || "(empty)"]];
+    return list.map((entry, i) => [i ? "" : label, className, entry.value || "(empty)", entry.name]);
   }
 
   /* The last line of an entry: why it stands there, and beside it the one
@@ -1101,12 +1113,10 @@
       if (fillHistory.has(row.k)) return;
       const members = (row.members || []).filter((member) => wroteMember(row, member));
       if (!members.length) return;
-      const was = [];
-      members.forEach((member) => {
-        const value = str(member.liveTarget);
-        if (value && !was.includes(value)) was.push(value);
+      fillHistory.set(row.k, {
+        row,
+        members: members.map((member) => ({ elementId: str(member.elementId), liveTarget: str(member.liveTarget) })),
       });
-      fillHistory.set(row.k, { row, was });
     });
   }
 
@@ -1116,7 +1126,7 @@
    * a deletion), and how many of the filled translations are shared. */
   function recoverySections() {
     const written = Array.from(fillHistory.values());
-    const replaced = written.filter((entry) => entry.was.length);
+    const replaced = written.filter((entry) => entry.members.some((member) => member.liveTarget));
     let replacedNode = null;
     if (replaced.length) {
       replacedNode = el("div");
@@ -1125,10 +1135,8 @@
         "To keep an old one, type it back into its box before you publish — clearing the box deletes it."));
       const ul = el("ul", "report-list");
       replaced.forEach((entry) => {
-        ul.appendChild(reportRow(entry.row, [
-          ["Filled", "tgt", entry.row.target],
-          ["Was", "was", entry.was.join(" / ")],
-        ]));
+        ul.appendChild(reportRow(entry.row, [["Filled", "tgt", entry.row.target]]
+          .concat(valuePairs("Was", "was", entry.members))));
       });
       replacedNode.appendChild(ul);
     }
@@ -1237,10 +1245,10 @@
       const ul = el("ul", "report-list");
       left.forEach((row) => {
         const overridable = row.verdict === "edited" && row.overridable;
-        const pairs = [["Reply", "tgt", row.target]];
+        let pairs = [["Reply", "tgt", row.target]];
         /* The page's value is shown only for the row it can be overwritten
          * against, which is the value that the override is bound to. */
-        if (overridable) pairs.push(["On the page", "was", distinctTargets(row).join(" / ") || "(empty)"]);
+        if (overridable) pairs = pairs.concat(valuePairs("On the page", "was", row.members));
         const li = reportRow(row, pairs);
         let reason = reasonFor(row);
         if (missedRows.has(row.k)) {
