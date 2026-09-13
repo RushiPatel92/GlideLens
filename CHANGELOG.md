@@ -10,6 +10,38 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **Translation Assistant.** A palette command listed only on the
+  Localization Framework comparison page of a catalog item or record producer
+  (**Edit Translations**, in ad-hoc mode). Step 1 downloads one JSON file
+  holding the item's untranslated, unlocked text together with the
+  instructions an AI tool needs to translate it, or copies the same prompt
+  and JSON to the clipboard. The panel counts what it left out and why —
+  already translated, rich text, a message key, a text shared with a locked
+  field — and lists each text whose translation is stored instance-wide by
+  source string, linked to the fields that use it and to the row a publish
+  would write. Step 2 takes the tool's reply, pasted or uploaded, and fills
+  the page: every row that still passes the checks is written into the page's
+  own unsaved model through its own update channel, and the panel then lists
+  each row it did not fill with the reason, offers **Fill anyway** for a
+  placeholder mismatch and **Overwrite** for a field changed on the page
+  since the draft, and keeps the old text of every translation a fill
+  replaced so it can be typed back. Nothing is saved until the page's own
+  **Publish**; reloading the page discards every fill. GlideLens never
+  contacts an AI service: the file leaves the browser only when the user
+  uploads it somewhere.
+- **The fill is checked twice and written once.** The reply is matched to the
+  draft it answers by an id the file carries, so a reply from another item or
+  another browser is refused by name. Before writing, the page is read again
+  and every rule re-applied: a row whose source text changed, whose field is
+  now locked, which is too long for its destination column, or which shares
+  a stored translation with a field not in the draft is left alone and named.
+  The page is written only if it still holds exactly what the fill was built
+  from, so nothing typed in between is reverted, and only one fill runs per
+  tab until the page confirms it.
+
 ## [0.15.0] - 2026-09-08
 
 ### Added

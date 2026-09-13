@@ -248,6 +248,13 @@ The suites cover:
   and shows how it starts; a timeout says the fill may still be running. A
   second press while a fill runs sends nothing, an answer for a replaced panel
   is not drawn, and choosing a file loads it into the box without filling.
+  Each report entry is built from the same parts — the field, its text, a
+  labelled pair of values, then one verdict line holding the reason and its
+  button. And the panel's per-run history: the old text of a replaced
+  translation and the shared-translation warning survive the next click and a
+  refusal; a shared row that half landed names the field that missed and
+  keeps the old text of the one that did; a fill the page could not confirm
+  keeps every attempted row's old text and says to check each.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that
@@ -288,9 +295,16 @@ The suites cover:
   refuses on any page state it cannot confirm — including the accessor that
   throws when `additionalInfo` is undefined — and does not refuse an untouched
   page whose snapshot came back through Chrome with its keys reordered, the
-  defect the live check found. Those blocks are lifted from their real files by
-  the same anchors the source assertions use, so moving one fails loudly
-  instead of testing nothing.
+  defect the live check found. The faked scope keeps the original and the
+  bound copy apart, and typing lands only in the bound one, so a writer that
+  read the original would fail the refusal test rather than pass it. Also
+  from the Codex round on the fill: a navigation that releases the lock while
+  a fill is still awaiting its read stops that fill, and only the next one
+  injects; a shared row that half landed comes back by field, not only by
+  row; and a fill whose read-back threw after the event fired comes back
+  unconfirmed with its rows, never as a count of zero. Those blocks are lifted
+  from their real files by the same anchors the source assertions use, so
+  moving one fails loudly instead of testing nothing.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real

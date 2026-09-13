@@ -329,6 +329,82 @@ orphan cleanup at content-script init removes icon elements left in tabs that
 were open across the update; delete it in the release after the one that
 removed the icons. Do not relist either feature without an explicit request.
 
+## Translation Assistant
+
+Translation Assistant hands a catalog item's untranslated text to the user's
+own AI tool and fills the reply back into ServiceNow's Localization Framework
+comparison page. `translation_assistant.js` (a DOM-free engine exporting
+`globalThis.SNTranslationAssistant`) and `translation_assistant_ui.js` (the
+panel) are injected on first use through `INJECT_TRANSLATION_ASSISTANT` and
+are not in `manifest.json`; the worker loads the same engine for the write.
+The command is listed when the decoded tab URL names the
+`sn_lf_comparison_ui` page, which is a claim; whether the page is really
+there and really in ad-hoc mode is settled by a MAIN-world probe when the
+command runs, because the page usually lives inside `gsft_main` and the
+palette's frame only sees it as a `nav_to` parameter.
+
+**Read.** `GET_LF_ASSISTANT_CONTEXT` probes every concrete frame and accepts
+the one whose page-owned Angular scope reports the comparison UI in ad-hoc
+mode, reading three editability states rather than inferring them:
+read-only mode, a translation request in progress, and the lock on each
+field. The context is a flattened copy of the page's own content array,
+which the engine turns into a draft. A row's identity is its
+`additionalParameters` (type, table, sysId, name); the platform's element id
+is `groupName: label` with an ordinal suffix on collision, so it moves when
+variables are renamed and is only ever an address. A row's *destination* is
+not its identity: `translated_field` values are stored in `sys_translated`
+keyed by source string, so two records sharing one source text share one
+stored translation, and destination groups are the unit of every decision —
+all or nothing. Exclusions are named, never silent: rich text, a message
+key, an unsupported type, an empty source, a locked field, a text shared
+with a locked field, and an uncertain destination. Locked means only that a
+translation exists, and the panel never repeats the platform's "verified".
+The draft is held in `storage.session`, capped at five, before it is offered,
+because the MV3 worker can be torn down between the download and the reply.
+Language names are read from `sys_language` through a query built only from
+id-shaped codes, and used only when the rows give exactly one; otherwise the
+codes stay.
+
+**Export.** One JSON file carrying its own instruction block, a schema
+version, an export id, the language pair as codes, and one row per
+destination group with the source text and the placeholders it holds. The
+copy route emits the identical string. The panel says plainly that the file
+holds the item's text and leaves the browser when uploaded; GlideLens itself
+never contacts an AI service.
+
+**Fill.** There is no preview step: the comparison page is the preview,
+since nothing is saved until Publish and a reload discards every fill. The
+panel sends the reply text with the user's choices to `APPLY_LF_ASSISTANT`,
+and the worker does everything under a per-tab lock: parse the reply
+(through fences and prose, refused past 5 MB or 2000 rows), find the draft
+by export id, read the page again, refuse unless it is editable, re-evaluate
+every row against the live page, and merge. A row is filled only when its
+source text still hashes the same, its field is unlocked, its translation
+fits the destination column (255 for `translated_field`), every member of
+its destination group is in the draft, and the field still holds what the
+draft saw — or the user chose Overwrite against the exact values shown.
+A placeholder mismatch waits for Fill anyway; a blank never clears an
+existing translation. The merge writes `translatedValue` and no other key,
+because the platform's deserialiser moves unknown keys into
+`additionalParameters` and posts them on Publish. The write is one
+`executeScript` into the frame this fill's own read selected, running
+`writeLfAssistantContent` in the MAIN world: it re-checks the page states,
+compares the live model with the base the merge was built from as content
+(Chrome returns injection values with keys sorted, and Angular leaves
+`$$hashKey` on the model, so a text compare refused an untouched page),
+fires the page's own `updateDocumentContent` event only if they match, then
+reads each filled field back by position and record identity. What comes
+back is a count of fields that hold their value, the rows and fields that
+did not, or "unconfirmed" when the read-back itself failed after the event
+fired — never a count of what was attempted. The lock is released when the
+injection settles, on navigation, or on tab close; a fill still awaiting a
+read when a navigation releases the lock refuses rather than injecting into
+the new page. A fill that does not settle in 10 s is reported as
+indeterminate and keeps its lock. The panel reports what was not filled and
+why, and keeps a per-run history of every replaced translation's old text
+through later clicks and refusals, since clearing a box would publish a
+deletion.
+
 ## Catalog and Service Portal behavior
 
 Variable Values is context-sensitive. It parses any top-frame Workspace record
