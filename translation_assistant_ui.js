@@ -1,9 +1,19 @@
 /*
  * Isolated-world visual panel for the "Translation Assistant" command.
  *
- * Phase 2 is the read path only: it shows what an item has, what it cannot
- * translate and why, and hands the payload out. Nothing here writes to the
- * page. The paste box, the preview and Apply arrive with phase 3.
+ * Two steps on one panel. The export shows what an item has, what it cannot
+ * translate and why, and hands the payload out. Under it, the reply comes back:
+ * pasted or uploaded, handed to callbacks.onFill, and reported. The panel never
+ * touches the page itself -- the worker re-reads, re-checks and fills -- and it
+ * never saves or publishes.
+ *
+ * There is no preview step before the fill, by the owner's decision: the
+ * comparison page is the preview, since nothing is saved until Publish and a
+ * reload discards every fill. So the report is where the panel earns its
+ * keep. It names every row that was not filled and why, offers the two choices
+ * a user can make -- fill a placeholder mismatch anyway, overwrite a field
+ * changed on the page against the values shown -- and lists each translation a
+ * fill replaced, with the old text, so it can be put back.
  *
  * The exact contract content.js validates before any page data is read:
  *
@@ -11,6 +21,9 @@
  *   showDraft({ fingerprint, draft })
  *   showError({ fingerprint, message })
  *   close({ fingerprint, reason })
+ *
+ * callbacks.onFill({ text, include, overrides }) resolves to the worker's
+ * answer; the panel renders it only if the same run is still on screen.
  *
  * The panel mounts on open(), before the read lands, because resolving a frame
  * and reading an Angular scope is not instant and a blank screen is worse than
@@ -183,6 +196,44 @@
     .excluded-list .untranslated{display:block;color:#85859f;font-size:12px}
     .excluded-list .where{color:#85859f}
     .verify-none{font-size:11px;color:#b9ad8a}
+    .step{margin:22px 0 0;padding:16px 0 0;border-top:1px solid #2e2e4e}
+    h3{font-size:14px;line-height:1.3;margin:0 0 5px;color:#f0f0fa;font-weight:650}
+    .reply{
+      display:block;width:100%;min-height:96px;resize:vertical;margin:8px 0 10px;padding:8px 10px;
+      font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:#dedeee;
+      background:#16162a;border:1px solid #3a3a5c;border-radius:7px;
+    }
+    .reply:focus{border-color:var(--teal);outline:none}
+    .reply-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+    .action{
+      border:1px solid #4a4a70;background:#2c2c48;color:#f0f0fa;border-radius:7px;
+      padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;
+    }
+    .action:hover{background:#37375a;color:#fff}
+    .action:disabled,.choice:disabled{opacity:.55;cursor:default}
+    .reply-status{margin:8px 0 0;font-size:12px;color:#aaaac1;min-height:1em}
+    .reply-status.err{color:#ffc9c9}
+    .report-head{margin:0 0 6px;color:#f5f5ff;font-size:14px;font-weight:650}
+    .report-sub{margin:0 0 10px;color:#aaaac1;font-size:12px}
+    .excerpt{
+      margin:6px 0 0;padding:8px 10px;border-radius:7px;background:#16162a;color:#aaaac1;
+      font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;
+    }
+    .report-list{list-style:none;margin:6px 0 14px;padding:0 0 0 12px;border-left:2px solid #2e2e4e}
+    .report-list li{padding:8px 0;border-top:1px solid #29293f}
+    .report-list li:first-child{border-top:0;padding-top:2px}
+    .report-list .src,.report-list .tgt,.report-list .was{
+      display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    .report-list .src{color:#ececf8}
+    .report-list .tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
+    .report-list .was{color:#85859f}
+    .report-list .reason{display:block;color:var(--flag);font-size:12px}
+    .choice{
+      margin-top:5px;border:1px solid #4a4a70;background:#2c2c48;color:#f0f0fa;border-radius:6px;
+      padding:4px 10px;font-size:12px;cursor:pointer;
+    }
+    .choice:hover{background:#37375a}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
@@ -208,6 +259,9 @@
   let callbacks = {};
   let runFingerprint = null;
   let previousFocus = null;
+  /* One fill at a time from this panel. The worker holds the real lock; this
+   * only stops a second click sending a request the worker would refuse. */
+  let filling = false;
 
   const str = (value) => (typeof value === "string" ? value : "");
   const count = (value) => (Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
@@ -468,6 +522,7 @@
     bodyEl = null;
     subtitleEl = null;
     runFingerprint = null;
+    filling = false;
     if (previousFocus && isFn(previousFocus.focus)) {
       try {
         previousFocus.focus();
@@ -769,6 +824,7 @@
     if (Array.isArray(draft.instanceWide) && draft.instanceWide.length) {
       bodyEl.appendChild(sharedNote(draft.instanceWide, draft.languages));
     }
+    bodyEl.appendChild(replySection(""));
     return true;
   }
 
@@ -837,6 +893,299 @@
     });
     box.appendChild(ul);
     return box;
+  }
+
+  /* ------------------------------------------------------ step 2: the reply */
+
+  function say(node, text, isError) {
+    if (!node) return;
+    node.textContent = text;
+    node.className = isError ? "reply-status err" : "reply-status";
+  }
+
+  /* A reply is capped at 5 MB of text by the engine; this only stops a file
+   * that cannot be one from being read into memory at all. */
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+  /*
+   * Where the model's reply comes back. Fill is a plain button, not the pink
+   * one: on the export view Download keeps the one primary. The upload is the
+   * escape hatch, as Copy is for the export, and it only loads the file into
+   * the box -- choosing a file should not write to the page by itself.
+   */
+  function replySection(text) {
+    const section = el("section", "step");
+    section.appendChild(el("h3", "", "Got the reply back?"));
+    section.appendChild(el("p", "hint",
+      "Paste it here to fill the page. Nothing is saved until you press Publish, and reloading " +
+      "the page before then discards every fill."));
+    const box = el("textarea", "reply");
+    box.setAttribute("aria-label", "The reply from your AI tool");
+    box.setAttribute("spellcheck", "false");
+    box.value = str(text);
+    section.appendChild(box);
+
+    const actions = el("div", "reply-actions");
+    const fill = el("button", "action", "Fill the page");
+    fill.type = "button";
+    const upload = el("button", "secondary", "Upload a file instead");
+    upload.type = "button";
+    const picker = el("input");
+    picker.type = "file";
+    picker.setAttribute("accept", ".json,application/json,text/plain");
+    picker.hidden = true;
+    actions.appendChild(fill);
+    actions.appendChild(upload);
+    actions.appendChild(picker);
+    section.appendChild(actions);
+    const status = el("p", "reply-status");
+    status.setAttribute("aria-live", "polite");
+    section.appendChild(status);
+
+    fill.addEventListener("click", () => {
+      const reply = str(box.value);
+      if (!reply.trim()) {
+        say(status, "Paste the reply first, or upload its file.", true);
+        return;
+      }
+      runFill({ text: reply, include: [], overrides: [] }, [fill, upload], status);
+    });
+    upload.addEventListener("click", () => {
+      picker.value = "";
+      picker.click();
+    });
+    picker.addEventListener("change", () => { loadReplyFile(picker, box, status); });
+    return section;
+  }
+
+  async function loadReplyFile(picker, box, status) {
+    const file = picker.files && picker.files[0];
+    if (!file) return;
+    if (Number(file.size) > MAX_UPLOAD_BYTES) {
+      say(status, "That file is too large to be a reply.", true);
+      return;
+    }
+    try {
+      box.value = await file.text();
+      say(status, `Loaded ${str(file.name) || "the file"}. Press Fill the page.`, false);
+    } catch (error) {
+      say(status, "That file could not be read.", true);
+    }
+  }
+
+  async function runFill(request, controls, status) {
+    if (filling || !isFn(callbacks.onFill)) return;
+    const fingerprint = runFingerprint;
+    filling = true;
+    controls.forEach((node) => { node.disabled = true; });
+    say(status, "Filling the page…", false);
+    let result;
+    try {
+      result = await callbacks.onFill(request);
+    } catch (error) {
+      result = { ok: false, message: "The fill could not run: " + String(error && error.message ? error.message : error) };
+    }
+    /* Closed or replaced while it waited: nothing to show. The fill itself is
+     * the worker's, and has run or not either way. */
+    if (!sameRun(fingerprint)) return;
+    filling = false;
+    showReport(request, result || { ok: false, message: "No answer came back from the fill." });
+  }
+
+  const tokens = (list) => (Array.isArray(list) && list.length ? list.map(str).join(" ") : "none");
+
+  /* Why a row was not filled, in the user's terms. Never "verified", and never
+   * a reason the engine did not give. */
+  function reasonFor(row) {
+    const detail = (row && row.detail) || {};
+    const who = str(detail.elementId);
+    switch (str(row && row.verdict)) {
+      case "fill":
+        return row.warning === "placeholder"
+          ? `placeholders differ — the source has ${tokens(detail.source)}, the translation has ${tokens(detail.target)}`
+          : "";
+      case "not_returned": return "not in the reply";
+      case "blank": return "blank in the reply — an existing translation is never cleared";
+      case "locked":
+        return who
+          ? `“${who}” is locked, and they share one translation — unlock it on the page to fill this`
+          : "locked — unlock it on the page to fill this";
+      case "too_long":
+        return `${count(detail.length)} characters — this field holds ${count(detail.maxLength)}`;
+      case "source_changed": return "its source text changed since the draft — draft again to translate it";
+      case "edited":
+        return row.overrideVoid
+          ? "changed on the page again since you chose to overwrite it"
+          : "changed on the page since the draft";
+      case "not_exported":
+        return who
+          ? `shares its translation with “${who}”, which was not in the draft — draft again`
+          : "shares its translation with a field that was not in the draft — draft again";
+      case "missing": return "no longer on this page";
+      case "ineligible": return "can no longer be filled on this page";
+      default: return str(row && row.verdict) || "not filled";
+    }
+  }
+
+  function distinctTargets(row) {
+    const seen = [];
+    ((row && row.members) || []).forEach((member) => {
+      const value = str(member && member.liveTarget);
+      if (value && !seen.includes(value)) seen.push(value);
+    });
+    return seen;
+  }
+
+  function reportRow(row) {
+    const li = el("li");
+    li.appendChild(quotedPreview("src", "", row.source, false));
+    if (str(row.target)) li.appendChild(quotedPreview("tgt", "→ ", row.target, false));
+    return li;
+  }
+
+  function showReport(request, result) {
+    clear(bodyEl);
+    const res = result || {};
+    if (!res.ok) {
+      if (res.indeterminate) {
+        bodyEl.appendChild(el("p", "note flag", str(res.message) ||
+          "The fill may still be running. Check the page before filling again."));
+      } else {
+        bodyEl.appendChild(el("p", "error", str(res.message) || "Nothing was filled."));
+        if (str(res.excerpt)) {
+          bodyEl.appendChild(el("p", "report-sub", "The reply starts:"));
+          bodyEl.appendChild(el("pre", "excerpt", str(res.excerpt)));
+        }
+      }
+      bodyEl.appendChild(replySection(request.text));
+      return;
+    }
+
+    const report = res.report || {};
+    const rows = Array.isArray(report.rows) ? report.rows : [];
+    const filled = new Set((Array.isArray(report.filled) ? report.filled : []).map(Number));
+    const missed = new Set((Array.isArray(res.missed) ? res.missed : []).map(Number));
+    const landed = count(res.landed);
+    const attempted = count(res.attempted);
+
+    if (res.written && landed === attempted) {
+      bodyEl.appendChild(el("p", "report-head", `Filled ${landed} ${plural(landed, "field")}.`));
+    } else if (res.written) {
+      bodyEl.appendChild(el("p", "note flag",
+        `Filled ${landed} of ${attempted} fields — ${attempted - landed} did not take on the page. ` +
+        "Check those before you publish."));
+    } else {
+      bodyEl.appendChild(el("p", "report-head", "Nothing was filled."));
+    }
+    if (res.written) {
+      bodyEl.appendChild(el("p", "hint",
+        "Review them on the page, then press Publish. To leave one out, correct or clear its box " +
+        "before publishing; reloading the page discards every fill."));
+    }
+
+    const unchanged = rows.filter((row) => row.verdict === "unchanged").length;
+    if (unchanged) {
+      bodyEl.appendChild(el("p", "report-sub",
+        `${unchanged} ${unchanged === 1 ? "field already holds" : "fields already hold"} the reply's translation.`));
+    }
+    if (count(report.unknown)) {
+      bodyEl.appendChild(el("p", "report-sub",
+        `${count(report.unknown)} ${plural(count(report.unknown), "row")} in the reply ` +
+        `${count(report.unknown) === 1 ? "is" : "are"} not part of this draft and ${count(report.unknown) === 1 ? "was" : "were"} ignored.`));
+    }
+
+    const controls = [];
+    const status = el("p", "reply-status");
+    status.setAttribute("aria-live", "polite");
+    const wrote = (row) => filled.has(row.k) && !missed.has(row.k);
+
+    /* A fill that replaced a translation the user had unlocked to redo. The old
+     * text is shown because clearing the box would not bring it back: a blank
+     * publishes as a deletion. */
+    const replaced = rows.filter((row) => wrote(row) && distinctTargets(row).length);
+    if (res.written && replaced.length) {
+      bodyEl.appendChild(el("h3", "", `Replaced ${replaced.length} existing ${plural(replaced.length, "translation")}`));
+      bodyEl.appendChild(el("p", "report-sub",
+        "To keep an old one, type it back into its box before you publish — clearing the box deletes it."));
+      const ul = el("ul", "report-list");
+      replaced.forEach((row) => {
+        const li = reportRow(row);
+        li.appendChild(quotedPreview("was", "was ", distinctTargets(row).join(" / "), false));
+        ul.appendChild(li);
+      });
+      bodyEl.appendChild(ul);
+    }
+
+    const order = { fill: 0, block: 1, skip: 2 };
+    const left = rows
+      .filter((row) => missed.has(row.k) || (!filled.has(row.k) && row.verdict !== "unchanged"))
+      .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || a.k - b.k);
+    if (left.length) {
+      bodyEl.appendChild(el("h3", "", `Not filled (${left.length})`));
+      const ul = el("ul", "report-list");
+      left.forEach((row) => {
+        const li = reportRow(row);
+        li.appendChild(el("span", "reason",
+          missed.has(row.k) ? "did not take on the page — check this field before you publish" : reasonFor(row)));
+        const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
+        const foot = footLine(where, null);
+        if (foot) li.appendChild(foot);
+
+        if (!missed.has(row.k) && row.status === "fill" && row.warning) {
+          const choice = el("button", "choice", "Fill anyway");
+          choice.type = "button";
+          choice.addEventListener("click", () => runFill({
+            text: request.text,
+            include: (request.include || []).concat(row.k),
+            overrides: request.overrides || [],
+          }, controls, status));
+          controls.push(choice);
+          li.appendChild(choice);
+        } else if (row.verdict === "edited" && row.overridable) {
+          /* Bound to exactly the values shown here. If the page moves again
+           * before the fill runs, the engine voids it and the row comes back. */
+          li.appendChild(quotedPreview("was", "on the page ", distinctTargets(row).join(" / ") || "(empty)", false));
+          const choice = el("button", "choice", "Overwrite");
+          choice.type = "button";
+          choice.addEventListener("click", () => runFill({
+            text: request.text,
+            include: request.include || [],
+            overrides: (request.overrides || []).filter((entry) => entry.k !== row.k).concat({
+              k: row.k,
+              reviewed: (row.members || []).map((member) => ({
+                identityKey: str(member.identityKey),
+                target: str(member.liveTarget),
+              })),
+            }),
+          }, controls, status));
+          controls.push(choice);
+          li.appendChild(choice);
+        }
+        ul.appendChild(li);
+      });
+      bodyEl.appendChild(ul);
+    }
+
+    const shared = rows.filter((row) => wrote(row) && row.instanceWide).length;
+    if (res.written && shared) {
+      bodyEl.appendChild(el("p", "note flag",
+        shared === 1
+          ? "One translation just filled is shared: publishing it changes that translation for every " +
+            "catalog item on this instance whose field uses the same source text."
+          : `${shared} translations just filled are shared: publishing them changes those translations ` +
+            "for every catalog item on this instance whose fields use the same source text."));
+    }
+
+    bodyEl.appendChild(status);
+    const again = el("button", "secondary", "Fill from a different reply");
+    again.type = "button";
+    again.addEventListener("click", () => {
+      if (filling) return;
+      clear(bodyEl);
+      bodyEl.appendChild(replySection(""));
+    });
+    controls.push(again);
+    bodyEl.appendChild(again);
   }
 
   function close(options) {

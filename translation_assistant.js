@@ -953,6 +953,10 @@
         elementId: entry.elementId,
         maxLength: entry.maxLength,
         shared: (entry.members || []).length > 1,
+        /* Stored by source string, so publishing it changes the translation for
+         * every item on the instance with the same text - the report says so
+         * about what it filled, as the draft did about what it exported. */
+        instanceWide: STRING_SCOPED_TYPES.has(fieldType(entry.additionalParameters)),
         members: [],
         target: "",
         warning: null,
@@ -1261,7 +1265,20 @@
       targets.forEach((pair) => {
         const field = pair.field;
         clone[field.elementIndex].fieldInfo[field.fieldIndex].translatedValue = fill.value;
-        applied.push({ k: fill.k, identityKey: field.identityKey, value: fill.value });
+        /* Position and record identity both, so the page-side writer can read
+         * each field back after the event and count only the ones that hold
+         * this value on this record - never the number it attempted. */
+        applied.push({
+          k: fill.k,
+          identityKey: field.identityKey,
+          value: fill.value,
+          elementIndex: field.elementIndex,
+          fieldIndex: field.fieldIndex,
+          type: field.type,
+          table: text(field.params.table),
+          name: text(field.params.name),
+          sysId: text(field.params.sysId),
+        });
       });
     });
 

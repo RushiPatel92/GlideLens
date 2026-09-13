@@ -449,6 +449,30 @@ test("two rows sharing a destination export once and apply to both", () => {
   const merged = TA.buildMergedContent({ content, plan: TA.buildApplyPlan({ evaluation: result }) });
   assert.strictEqual(merged.content[0].fieldInfo[0].translatedValue, "Centre de cout");
   assert.strictEqual(merged.content[1].fieldInfo[0].translatedValue, "Centre de cout");
+
+  /* Each written field is addressed by position AND record, which is what the
+   * page-side writer reads back to count what actually landed. */
+  assert.deepStrictEqual(json(merged.applied).map((entry) =>
+    [entry.k, entry.elementIndex, entry.fieldIndex, entry.type, entry.table, entry.name, entry.sysId]), [
+    [1, 0, 0, "translated_field", "question", "question_text", a.additionalParameters.sysId],
+    [1, 1, 0, "translated_field", "question", "question_text", b.additionalParameters.sysId],
+  ]);
+});
+
+test("a row says whether publishing it changes the translation instance-wide", () => {
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({
+      groupName: "Variable: Cost centre",
+      label: "Help text",
+      fields: [field({ source: "Charged monthly.", type: "translated_text", name: "help_text" })],
+    }),
+  ];
+  const draft = draftFrom(content);
+  const result = evaluate(draft, content, replyFor(draft, { 1: "Centre de cout", 2: "Facture chaque mois." }));
+  const byKind = Object.fromEntries(result.rows.map((row) => [row.kind, row.instanceWide]));
+  assert.deepStrictEqual(json(byKind), { Question: true, "Help text": false },
+    "stored by source string is shared; stored per record is not");
 });
 
 test("two reply rows for one destination is a duplicate-key refusal", () => {

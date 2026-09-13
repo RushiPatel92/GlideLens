@@ -434,8 +434,14 @@ test("the panel carries the house footer and exactly one pink action", () => {
   const primaries = findAll(shadow, (node) => node.className === "primary");
   assert.strictEqual(primaries.length, 1, "one primary route");
   assert.strictEqual(primaries[0].textContent, "Download JSON");
+  /* Each step has one button and one escape hatch drawn as a link. The reply's
+   * Fill is a plain button, so Download stays the only pink one on this view. */
   const links = findAll(shadow, (node) => node.tagName === "BUTTON" && node.className === "secondary");
-  assert.strictEqual(links.length, 1, "and one escape hatch, drawn as a link");
+  assert.deepStrictEqual(links.map((node) => node.textContent),
+    ["Copy prompt + JSON instead", "Upload a file instead"]);
+  const fill = findAll(shadow, (node) => node.tagName === "BUTTON" && node.textContent === "Fill the page");
+  assert.strictEqual(fill.length, 1);
+  assert.strictEqual(fill[0].className, "action", "not a second pink button");
 });
 
 test("the subtitle names the language pair in the mono accent", () => {
@@ -822,4 +828,253 @@ test("plain text keeps its angle brackets; only rich text is shown as words", ()
   const titles = findAll(detail, (node) => node.className === "src" || node.className === "tgt")
     .map((node) => node.title);
   assert.deepStrictEqual(titles, ["Enter <account> here", "Saisir <compte> ici", "<account>", "<compte>"]);
+});
+
+/* ------------------------------------------------------------------ *
+ * Step 2: the reply comes back (phase 3)
+ *
+ * No preview before the fill, by the owner's decision: the comparison page is
+ * the preview. So the report carries the weight -- every row not filled is
+ * named with its reason, the two choices a user can make resend the same
+ * reply, and a replaced translation shows its old text. Evaluations are the
+ * real engine's, over content a draft was really built from.
+ * ------------------------------------------------------------------ */
+
+const FILL_IDENTITY = {
+  artifactInternalName: "catalog_item",
+  artifactSysId: "0".repeat(31) + "1",
+  sourceLanguage: "en",
+  targetLanguage: "fr",
+};
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+function evaluationFor(content, answers, live) {
+  const draft = draftFrom(content);
+  const reply = clone(draft.payload);
+  reply.rows.forEach((row) => {
+    if (Object.prototype.hasOwnProperty.call(answers, row.source)) row.target = answers[row.source];
+  });
+  return clone(TA.evaluateReply({
+    draft: TA.storedDraft(draft),
+    reply,
+    content: live || content,
+    identity: FILL_IDENTITY,
+  }));
+}
+
+function filledAnswer(evaluation, filled, extra) {
+  return Object.assign({
+    ok: true,
+    written: filled.length > 0,
+    landed: filled.length,
+    attempted: filled.length,
+    missed: [],
+    report: { rows: evaluation.rows, unknown: 0, filled },
+  }, extra || {});
+}
+
+function withFill(harness, answer) {
+  const calls = [];
+  harness.callbacks.onFill = (request) => {
+    calls.push(clone(request));
+    return typeof answer === "function" ? answer(request, calls.length) : Promise.resolve(answer);
+  };
+  return calls;
+}
+
+async function pasteAndFill(harness, text) {
+  const box = findAll(harness.shadow(), (node) => node.tagName === "TEXTAREA")[0];
+  assert.ok(box, "the reply box is on the panel");
+  box.value = text;
+  press(buttonNamed(harness.shadow(), "Fill the page"));
+  await flush();
+}
+
+test("Fill sends the pasted reply and reports how many fields it filled", async () => {
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Approver", fields: [field({ source: "Approver" })] }),
+  ];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût", Approver: "Approbateur" });
+  const harness = load();
+  const calls = withFill(harness, filledAnswer(evaluation, [1, 2]));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "{ \"reply\": true }");
+
+  assert.deepStrictEqual(calls, [{ text: "{ \"reply\": true }", include: [], overrides: [] }]);
+  const text = harness.text();
+  assert.match(text, /Filled 2 fields\./);
+  assert.match(text, /Review them on the page, then press Publish/);
+  assert.match(text, /reloading the page discards every fill/);
+  assert.doesNotMatch(text, /Not filled/);
+});
+
+test("an empty box sends nothing and says what to do", async () => {
+  const harness = load();
+  const calls = withFill(harness, { ok: true });
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  await pasteAndFill(harness, "   ");
+  assert.strictEqual(calls.length, 0);
+  assert.match(harness.text(), /Paste the reply first/);
+});
+
+test("a placeholder mismatch waits for Fill anyway, which resends the reply with that row", async () => {
+  const content = [element({ groupName: "Variable: Charge", fields: [field({ source: "Charge ${account}" })] })];
+  const evaluation = evaluationFor(content, { "Charge ${account}": "Débiter le compte" });
+  const k = evaluation.rows[0].k;
+  const harness = load();
+  const calls = withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Nothing was filled\./);
+  assert.match(text, /Not filled \(1\)/);
+  assert.match(text, /placeholders differ — the source has \$\{account\}, the translation has none/);
+  press(buttonNamed(harness.shadow(), "Fill anyway"));
+  await flush();
+  assert.deepStrictEqual(calls[1], { text: "reply text", include: [k], overrides: [] });
+});
+
+test("a field changed on the page offers Overwrite, bound to the value it shows", async () => {
+  const content = [element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] })];
+  const live = clone(content);
+  live[0].fieldInfo[0].translatedValue = "typed by hand";
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" }, live);
+  assert.strictEqual(evaluation.rows[0].verdict, "edited");
+  const harness = load();
+  const calls = withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /changed on the page since the draft/);
+  assert.match(text, /on the page “typed by hand”/);
+  press(buttonNamed(harness.shadow(), "Overwrite"));
+  await flush();
+  assert.deepStrictEqual(calls[1].overrides, [{
+    k: evaluation.rows[0].k,
+    reviewed: [{ identityKey: evaluation.rows[0].members[0].identityKey, target: "typed by hand" }],
+  }]);
+});
+
+test("a fill that replaced a translation shows the old text, and how to keep it", async () => {
+  /* Unlocked to be redone: eligible by lock state, with a translation already
+   * in the box. Clearing that box would not bring the old one back. */
+  const content = [element({
+    groupName: "Variable: Cost centre",
+    fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })],
+  })];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1]));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Replaced 1 existing translation/);
+  assert.match(text, /was “Centre de frais”/);
+  assert.match(text, /clearing the box deletes it/);
+});
+
+test("a partial landing names the fields that did not take", async () => {
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Approver", fields: [field({ source: "Approver" })] }),
+  ];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût", Approver: "Approbateur" });
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1, 2], { landed: 1, attempted: 2, missed: [2] }));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Filled 1 of 2 fields — 1 did not take on the page/);
+  assert.match(text, /Not filled \(1\)/);
+  assert.match(text, /“Approver”.*did not take on the page/);
+});
+
+test("a refusal keeps the reply in the box and shows how it starts", async () => {
+  const harness = load();
+  withFill(harness, { ok: false, code: "unparseable", message: "That is not JSON: bad token", excerpt: "Sure! Here it is" });
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  await pasteAndFill(harness, "Sure! Here it is {");
+
+  const text = harness.text();
+  assert.match(text, /That is not JSON: bad token/);
+  assert.match(text, /The reply starts:Sure! Here it is/);
+  assert.strictEqual(findAll(harness.shadow(), (node) => node.tagName === "TEXTAREA")[0].value, "Sure! Here it is {");
+});
+
+test("a fill that may still be running says so, rather than failing", async () => {
+  const harness = load();
+  withFill(harness, { ok: false, indeterminate: true, message: "It may still be filling." });
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  await pasteAndFill(harness, "reply text");
+  const flagged = findAll(harness.shadow(), (node) => node.className === "note flag");
+  assert.strictEqual(flagged.length, 1);
+  assert.match(flagged[0].textContent, /may still be filling/);
+  assert.strictEqual(findAll(harness.shadow(), (node) => node.className === "error").length, 0);
+});
+
+test("a second press while a fill runs sends nothing", async () => {
+  const harness = load();
+  let release;
+  const calls = withFill(harness, () => new Promise((resolve) => { release = resolve; }));
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  const box = findAll(harness.shadow(), (node) => node.tagName === "TEXTAREA")[0];
+  box.value = "reply text";
+  const fill = buttonNamed(harness.shadow(), "Fill the page");
+  press(fill);
+  press(fill);
+  await flush();
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(fill.disabled, true);
+  release({ ok: false, message: "done" });
+  await flush();
+});
+
+test("an answer for a panel that has since been replaced is not drawn", async () => {
+  const content = [element({ fields: [field({ source: "Cost centre" })] })];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  const harness = load();
+  let release;
+  withFill(harness, () => new Promise((resolve) => { release = resolve; }));
+  show(harness, draftFrom(content));
+  const box = findAll(harness.shadow(), (node) => node.tagName === "TEXTAREA")[0];
+  box.value = "reply text";
+  press(buttonNamed(harness.shadow(), "Fill the page"));
+
+  harness.ui.open({ fingerprint: "ta-test-2", context: {}, callbacks: harness.callbacks });
+  release(filledAnswer(evaluation, [1]));
+  await flush();
+  assert.doesNotMatch(harness.text(), /Filled/);
+});
+
+test("an uploaded file lands in the box and fills nothing by itself", async () => {
+  const harness = load();
+  const calls = withFill(harness, { ok: true });
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  press(buttonNamed(harness.shadow(), "Upload a file instead"));
+  const picker = findAll(harness.shadow(), (node) => node.tagName === "INPUT" && node.type === "file")[0];
+  assert.ok(picker && picker.clicked === 1, "the link opens the file picker");
+  picker.files = [{ name: "reply.json", size: 12, text: () => Promise.resolve("{\"rows\":[]}") }];
+  (picker.handlers.change || []).forEach((handler) => handler({ target: picker }));
+  await flush();
+
+  assert.strictEqual(findAll(harness.shadow(), (node) => node.tagName === "TEXTAREA")[0].value, "{\"rows\":[]}");
+  assert.strictEqual(calls.length, 0, "choosing a file does not write to the page");
+  assert.match(harness.text(), /Loaded reply\.json\. Press Fill the page\./);
+});
+
+test("shared translations a fill wrote are named once, as the draft named them", async () => {
+  const content = [element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] })];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  assert.strictEqual(evaluation.rows[0].instanceWide, true);
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1]));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+  assert.match(harness.text(),
+    /One translation just filled is shared: publishing it changes that translation for every catalog item/);
 });

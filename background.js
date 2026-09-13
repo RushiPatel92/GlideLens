@@ -318,6 +318,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   /* The page an abandoned fill was typing into is gone, which is what the
    * "reload the form" message asks for, so the tab can accept a fill again. */
   releasePrefillLock(tabId, null);
+  /* Likewise a Translation Assistant fill: the page it was writing into is
+   * unloading, and the fresh page has none of that fill's content to revert. */
+  releaseLfAssistantApplyLock(tabId, null);
 });
 
 function runFrameDiscovery(tabId, purpose) {
@@ -776,6 +779,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   forgetFrameList(tabId);
   frameGenerationByTab.delete(tabId);
   releasePrefillLock(tabId, null);
+  releaseLfAssistantApplyLock(tabId, null);
 });
 
 async function fillPortalVariables(variables) {
@@ -3321,6 +3325,345 @@ async function readLfAssistantContext(tabId) {
 }
 
 /* ---------------------------------------------------------------------------
+   Translation Assistant: the write path.
+
+   Filling hands the page's own updateDocumentContent event a content array with
+   translatedValue set on the rows that pass every rule. That event REPLACES the
+   whole array, so the array has to match what is on the page at the moment it
+   is fired: a copy taken earlier would silently revert whatever the user typed
+   in between. So the worker reads fresh, re-checks every rule and merges with
+   the engine, and the page-side writer fires only if the page still holds
+   exactly the content that merge was built from. The compare and the fire run
+   in one synchronous stretch of page script, so nothing can land between them.
+
+   One fill per tab, held until the injection SETTLES rather than until the
+   worker stops waiting. Promise.race does not cancel executeScript, so a fill
+   the worker gave up on can still land, and a second one built from an older
+   read would then revert it. Nothing here saves or publishes: filling the model
+   is not saving, and Publish stays the user's.
+   --------------------------------------------------------------------------- */
+
+// Self-contained MAIN-world writer. Re-checks the page states a fill depends
+// on, refuses unless the page still holds `base`, fires the page's own event
+// with `merged`, then reads every filled field back and reports what landed.
+async function writeLfAssistantContent(request) {
+  const out = { written: false, why: "", landed: 0, missed: [] };
+  try {
+    const root = document.querySelector(".main-content");
+    if (!root || typeof angular === "undefined") { out.why = "not_page"; return out; }
+    const scope = angular.element(root).scope();
+    if (!scope || typeof scope.isAdhocMode !== "function" || !scope.isAdhocMode()) {
+      out.why = "not_page";
+      return out;
+    }
+    /* Each refuses unless the page answers "no" outright. The in-progress
+     * accessor throws when additionalInfo is undefined, and a page that cannot
+     * say whether a translation job is running is not one to write into. */
+    if (typeof scope.isReadOnlyMode !== "function" || scope.isReadOnlyMode()) {
+      out.why = "read_only";
+      return out;
+    }
+    let busy = true;
+    try {
+      busy = typeof scope.isLastRequestInProgress !== "function" || !!scope.isLastRequestInProgress();
+    } catch (error) { busy = true; }
+    if (busy) { out.why = "request_in_progress"; return out; }
+    if (typeof CustomEvent === "undefined" || !CustomEvent || typeof CustomEvent.fire !== "function") {
+      out.why = "no_channel";
+      return out;
+    }
+
+    /* The same read the context reader takes, so the two agree on what the
+     * page holds: the bound copy flattened over the original. */
+    const current = () => {
+      const adhoc = scope.itemsToTranslate && scope.itemsToTranslate.adhoc;
+      const original = adhoc && adhoc.documentContent && adhoc.documentContent.content;
+      if (!Array.isArray(original)) return null;
+      const grouped = scope.groupedItemsToTranslate &&
+        scope.groupedItemsToTranslate.adhoc &&
+        scope.groupedItemsToTranslate.adhoc.documentContent;
+      if (grouped && typeof scope.retrieveCurrentContent === "function") {
+        const live = scope.retrieveCurrentContent(grouped, original);
+        if (Array.isArray(live)) return live;
+      }
+      return original;
+    };
+
+    /*
+     * Compared as content, not as text. Chrome carries executeScript arguments
+     * and results as its own value type, and objects come back from that with
+     * their keys in sorted order -- so the read the merge was built from never
+     * serialises the way the live model does, and a string compare refused an
+     * untouched page (observed on the PDI). Angular's $$hashKey is bookkeeping,
+     * not content, and is left out. The path of the first difference comes back
+     * with a refusal: field names and indices only, never a value.
+     */
+    const differenceAt = (a, b, where) => {
+      const here = where || "(root)";
+      if (Array.isArray(a) || Array.isArray(b)) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return here;
+        for (let i = 0; i < a.length; i += 1) {
+          const found = differenceAt(a[i], b[i], where + "[" + i + "]");
+          if (found) return found;
+        }
+        return "";
+      }
+      if (a && b && typeof a === "object" && typeof b === "object") {
+        const keys = (value) => Object.keys(value)
+          .filter((key) => key !== "$$hashKey" && value[key] !== undefined && typeof value[key] !== "function")
+          .sort();
+        const left = keys(a);
+        const right = keys(b);
+        if (left.length !== right.length || left.some((key, i) => key !== right[i])) return here + "{keys}";
+        for (let i = 0; i < left.length; i += 1) {
+          const found = differenceAt(a[left[i]], b[left[i]], where + "." + left[i]);
+          if (found) return found;
+        }
+        return "";
+      }
+      return a === b ? "" : here;
+    };
+
+    const before = current();
+    if (!before) { out.why = "not_page"; return out; }
+    const changedAt = differenceAt(before, request.base, "");
+    if (changedAt) {
+      out.why = "changed";
+      out.changedAt = changedAt;
+      return out;
+    }
+    CustomEvent.fire("updateDocumentContent", { detail: request.merged });
+    out.written = true;
+
+    /* Counted from the model after the event, by position AND record identity,
+     * so a field only counts if this record's field holds this value. */
+    const expected = Array.isArray(request.expected) ? request.expected : [];
+    const holds = (entry, flat) => {
+      const element = flat && flat[entry.elementIndex];
+      const info = element && Array.isArray(element.fieldInfo) ? element.fieldInfo[entry.fieldIndex] : null;
+      const params = (info && info.additionalParameters) || {};
+      return !!info &&
+        String(params.type || "") === entry.type &&
+        String(params.table || "") === entry.table &&
+        String(params.name || "") === entry.name &&
+        String(params.sysId || "") === entry.sysId &&
+        info.translatedValue === entry.value;
+    };
+    const settleUntil = Date.now() + Math.max(0, Number(request.settleMs) || 0);
+    let flat = current();
+    while (expected.some((entry) => !holds(entry, flat)) && Date.now() < settleUntil) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      flat = current();
+    }
+    expected.forEach((entry) => {
+      if (holds(entry, flat)) out.landed += 1;
+      else if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+    });
+    return out;
+  } catch (error) {
+    out.why = String(error && error.message ? error.message : error);
+    return out;
+  }
+}
+
+const LF_ASSISTANT_APPLY_TIMEOUT_MS = 10000;
+const LF_ASSISTANT_SETTLE_MS = 1500;
+/* A reply can carry 2000 rows, so no honest list of choices is longer. */
+const LF_ASSISTANT_CHOICE_LIMIT = 2000;
+const lfAssistantApplyByTab = new Map();
+
+function releaseLfAssistantApplyLock(tabId, op) {
+  if (!op || lfAssistantApplyByTab.get(tabId) === op) lfAssistantApplyByTab.delete(tabId);
+}
+
+/* The two choices a user can add to a fill: a placeholder row filled anyway,
+ * and an edited row overwritten against the values they were shown. The panel
+ * builds them, but the engine trusts the shape of what it is handed, so they
+ * are rebuilt here from primitives rather than passed straight through. */
+function lfAssistantFillChoices(msg) {
+  const positive = (value) => Number.isInteger(value) && value > 0;
+  const include = (Array.isArray(msg && msg.include) ? msg.include : [])
+    .filter(positive)
+    .slice(0, LF_ASSISTANT_CHOICE_LIMIT);
+  const overrides = (Array.isArray(msg && msg.overrides) ? msg.overrides : [])
+    .slice(0, LF_ASSISTANT_CHOICE_LIMIT)
+    .filter((entry) => entry && positive(entry.k) && Array.isArray(entry.reviewed))
+    .map((entry) => ({
+      k: entry.k,
+      reviewed: entry.reviewed
+        .slice(0, LF_ASSISTANT_CHOICE_LIMIT)
+        .filter((row) => row && typeof row.identityKey === "string" && typeof row.target === "string")
+        .map((row) => ({ identityKey: row.identityKey, target: row.target })),
+    }));
+  return { include, overrides };
+}
+
+function lfAssistantWriteRefusal(why) {
+  if (why === "changed") {
+    return "The page changed just as it was being filled, so nothing was filled. Press Fill again.";
+  }
+  if (why === "read_only") return "This page is read-only, so nothing was filled.";
+  if (why === "request_in_progress") {
+    return "This page is busy with a translation request, so nothing was filled. " +
+      "Wait for it to finish, then try again.";
+  }
+  if (why === "not_page") {
+    return "The comparison page was gone by the time it came to filling, so nothing was filled. " +
+      "Reload it and try again.";
+  }
+  if (why === "no_channel") {
+    return "This page does not offer the update Translation Assistant fills through, so nothing was filled.";
+  }
+  return "Nothing was filled" + (why ? " (" + why + ")." : ".");
+}
+
+async function applyLfAssistantReply(tabId, msg) {
+  if (lfAssistantApplyByTab.has(tabId)) {
+    return {
+      ok: false,
+      code: "busy",
+      message: "A fill is still running on this page. Wait for it to finish and check the page " +
+        "before filling again.",
+    };
+  }
+  const op = { startedAt: Date.now() };
+  lfAssistantApplyByTab.set(tabId, op);
+  let handedOff = false;
+  try {
+    const engine = assistantEngine();
+    const parsed = engine.parseReply(typeof (msg && msg.replyText) === "string" ? msg.replyText : "");
+    if (!parsed.ok) {
+      return { ok: false, code: parsed.code, message: parsed.message, excerpt: parsed.excerpt || "" };
+    }
+    const choices = lfAssistantFillChoices(msg);
+
+    /* The draft first: a reply from a draft this browser no longer has says
+     * that, rather than whatever else might be wrong with it. */
+    const draft = await readLfAssistantDraft(parsed.reply.exportId);
+    if (!draft) {
+      const refused = engine.evaluateReply({ draft: null, reply: parsed.reply });
+      return { ok: false, code: refused.code, message: refused.message };
+    }
+
+    const read = await readLfAssistantContext(tabId);
+    if (!read.selected) return { ok: false, code: "no_page", rejected: read.rejected };
+    const context = read.selected.context || {};
+    /* Refused unless the page says "no" outright, as the writer refuses. */
+    if (context.readOnlyMode !== false) {
+      return { ok: false, code: "read_only", message: lfAssistantWriteRefusal("read_only") };
+    }
+    if (context.requestInProgress !== false) {
+      return { ok: false, code: "request_in_progress", message: lfAssistantWriteRefusal("request_in_progress") };
+    }
+
+    const evaluation = engine.evaluateReply({
+      draft,
+      reply: parsed.reply,
+      content: context.content,
+      identity: {
+        artifactInternalName: context.artifactInternalName,
+        artifactSysId: context.artifactSysId,
+        sourceLanguage: context.sourceLanguage,
+        targetLanguage: context.targetLanguage,
+      },
+      overrides: choices.overrides,
+    });
+    if (!evaluation.ok) return { ok: false, code: evaluation.code, message: evaluation.message };
+
+    /* Every row that passes, except a placeholder warning nobody has said yes
+     * to: that check is advisory, so the row waits for a deliberate choice. */
+    const include = new Set(choices.include);
+    const selection = evaluation.rows
+      .filter((row) => row.status === "fill" && (!row.warning || include.has(row.k)))
+      .map((row) => row.k);
+    const report = { rows: evaluation.rows, unknown: evaluation.unknown.length, filled: selection };
+    if (!selection.length) {
+      return { ok: true, written: false, landed: 0, attempted: 0, missed: [], report };
+    }
+
+    const plan = engine.buildApplyPlan({ evaluation, selection });
+    const merge = engine.buildMergedContent({ content: context.content, plan });
+    if (merge.stale.length || !merge.applied.length) {
+      return {
+        ok: false,
+        code: "stale",
+        message: "The page changed while the reply was being checked, so nothing was filled. Press Fill again.",
+      };
+    }
+    const expected = merge.applied.map((entry) => ({
+      k: entry.k,
+      value: entry.value,
+      elementIndex: entry.elementIndex,
+      fieldIndex: entry.fieldIndex,
+      type: entry.type,
+      table: entry.table,
+      name: entry.name,
+      sysId: entry.sysId,
+    }));
+
+    /* Into the frame this fill's own read selected a moment ago, never a
+     * remembered one. A reload in between gives the writer different content,
+     * and it refuses. */
+    const write = chrome.scripting.executeScript({
+      target: { tabId, frameIds: [read.selected.frameId] },
+      world: "MAIN",
+      func: writeLfAssistantContent,
+      args: [{ base: context.content, merged: merge.content, expected, settleMs: LF_ASSISTANT_SETTLE_MS }],
+    });
+    handedOff = true;
+    write.then(
+      () => releaseLfAssistantApplyLock(tabId, op),
+      () => releaseLfAssistantApplyLock(tabId, op)
+    );
+
+    let timer = null;
+    const outcome = await Promise.race([
+      write.then((results) => ({ results }), (error) => ({ error })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), LF_ASSISTANT_APPLY_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (!outcome) {
+      /* Not a failure and not a "no": the injection was never cancelled, and
+       * the lock stays held until it settles. */
+      return {
+        ok: false,
+        indeterminate: true,
+        code: "timeout",
+        message: "The page has not confirmed the fill after " + (LF_ASSISTANT_APPLY_TIMEOUT_MS / 1000) +
+          " seconds. It may still be filling. Wait, check the page, and do not fill again until it settles.",
+      };
+    }
+    if (outcome.error) {
+      return {
+        ok: false,
+        code: "write_failed",
+        message: "The page could not be filled (" + errorText(outcome.error) + "). Check the page before trying again.",
+      };
+    }
+    const answer = (outcome.results || []).map((entry) => entry && entry.result).find(Boolean) || {};
+    if (!answer.written) {
+      return {
+        ok: false,
+        code: "not_written",
+        why: String(answer.why || ""),
+        changedAt: String(answer.changedAt || ""),
+        message: lfAssistantWriteRefusal(answer.why),
+      };
+    }
+    return {
+      ok: true,
+      written: true,
+      landed: Number(answer.landed) || 0,
+      attempted: expected.length,
+      missed: Array.isArray(answer.missed) ? answer.missed : [],
+      report,
+    };
+  } finally {
+    if (!handedOff) releaseLfAssistantApplyLock(tabId, op);
+  }
+}
+
+/* ---------------------------------------------------------------------------
    The draft store.
 
    storage.session, not a module variable, for the same reason the Debug
@@ -5164,6 +5507,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     readLfAssistantDraft(msg.exportId)
       .then((draft) => sendResponse({ ok: true, draft }))
       .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "APPLY_LF_ASSISTANT" && sender.tab) {
+    applyLfAssistantReply(sender.tab.id, msg)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, code: "error", message: errorText(error) }));
     return true;
   }
   if (msg && msg.type === "INJECT_CODE_SEARCH" && sender.tab) {

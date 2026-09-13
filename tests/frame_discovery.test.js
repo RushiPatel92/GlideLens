@@ -73,15 +73,18 @@ function loadSharedFrameHelpers(options) {
       "const PREFILL_CEILING_MS = " + (opts.ceilingMs || 600000) + ";"
     );
 
+  /* The navigation listener also releases the Translation Assistant's fill
+   * lock, which lives with that feature further down the file. */
   const factory = new Function(
     "chrome",
     "fillPortalVariables",
+    "releaseLfAssistantApplyLock",
     block +
       "\nreturn { registerContentFrame, discoverContentFrames, injectInFrame, " +
       "injectInDiscoveredFrames, readFromPageFrames, forgetFrameList, " +
       "fillPortalVariablesInFrames, notePrefillActivity, prefillOpByTab };"
   );
-  api = factory(chrome, function fill() {});
+  api = factory(chrome, function fill() {}, function releaseAssistantLock() {});
   return {
     api,
     calls,

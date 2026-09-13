@@ -47,9 +47,10 @@ test("the content script pins the complete panel contract it depends on", () => 
       method + " must actually be exported by the panel"
     );
   });
-  /* Phase 2 ships no write path, so the panel must not be claiming one. */
-  assert.ok(!/showPreview|applyRows|onApply/.test(uiSource),
-    "the apply step belongs to phase 3; the panel must not pretend to offer it");
+  /* The fill is a callback, not a fifth method: the panel asks, the worker
+   * writes, and the contract content.js pins does not grow. */
+  const runner = between(contentSource, "async function runTranslationAssistant(", "function translationLensUi(");
+  assert.ok(/onFill: \(request\) => fillTranslationAssistantReply\(request\)/.test(runner));
 });
 
 test("the command is listed from the URL and only acts on a probed scope", () => {
@@ -115,10 +116,41 @@ test("the MAIN-world reader reports why a frame is not the page", () => {
 test("the reader never writes to the page", () => {
   const inspector = between(backgroundSource, "function inspectLfAssistantContext(", "function selectLfAssistantFrame(");
   ["updateDocumentContent", "CustomEvent.fire", "translatedValue =", "$apply"].forEach((write) => {
-    assert.ok(!inspector.includes(write), "phase 2 ships no write path: found " + write);
+    assert.ok(!inspector.includes(write), "the context read must not write: found " + write);
   });
-  assert.ok(!/APPLY_LF_ASSISTANT/.test(backgroundSource), "the apply route belongs to phase 3");
-  assert.ok(!/APPLY_LF_ASSISTANT/.test(contentSource));
+});
+
+test("the one write is the page's own event, fired by the worker into one frame", () => {
+  /* Phase 3 replaces phase 2's "no write path" assertions with the shape of
+   * the write there now is. */
+  const writer = between(backgroundSource, "async function writeLfAssistantContent(", "const LF_ASSISTANT_APPLY_TIMEOUT_MS");
+  assert.strictEqual((stripComments(writer).match(/CustomEvent\.fire\(/g) || []).length, 1);
+  assert.ok(writer.includes('"updateDocumentContent"'));
+  assert.ok(!writer.includes("$apply"), "the page's own listener runs the digest");
+  assert.ok(!/translatedValue\s*=[^=]/.test(writer), "the writer sets no value itself; the engine's merge does");
+  assert.ok(/const changedAt = differenceAt\(before, request\.base, ""\);/.test(writer),
+    "it fires only when the page still holds what the merge was built from");
+
+  ["content.js", "translation_assistant_ui.js"].forEach((name) => {
+    const source = name === "content.js" ? contentSource : uiSource;
+    assert.ok(!/CustomEvent\.fire|updateDocumentContent/.test(stripComments(source)),
+      name + " must not write to the page; only the worker's writer does");
+  });
+
+  const apply = between(backgroundSource, "async function applyLfAssistantReply(", "/* ------");
+  assert.ok(apply.includes('world: "MAIN"'));
+  assert.ok(apply.includes("frameIds: [read.selected.frameId]"),
+    "one frame: the one this fill's own fresh read selected");
+  assert.ok(!/allFrames/.test(apply));
+  assert.ok(apply.includes("readLfAssistantContext(tabId)"), "read fresh on every fill");
+  assert.ok(/msg\.type === "APPLY_LF_ASSISTANT" && sender\.tab/.test(backgroundSource));
+});
+
+test("a navigation or a closed tab releases the fill lock", () => {
+  const updated = between(backgroundSource, "chrome.tabs.onUpdated.addListener(", "\n});");
+  assert.ok(updated.includes("releaseLfAssistantApplyLock(tabId, null)"));
+  const removed = between(backgroundSource, "chrome.tabs.onRemoved.addListener(", "\n});");
+  assert.ok(removed.includes("releaseLfAssistantApplyLock(tabId, null)"));
 });
 
 test("the draft is persisted in session memory, through the engine's own cap", () => {
@@ -545,6 +577,11 @@ function loadRunner(options) {
         "the panel is opened with an onClose the runner uses to learn about a dismissal");
       captured.onClose("close-button");
     },
+    fill(request) {
+      assert.ok(captured && typeof captured.onFill === "function",
+        "the panel is opened with an onFill that carries its reply to the worker");
+      return captured.onFill(request);
+    },
     of(method) { return calls.filter((entry) => entry.method === method); },
   };
 }
@@ -855,4 +892,490 @@ test("the worker tells the panel which frames failed to answer", () => {
   const block = between(backgroundSource, "async function readLfAssistantContext(", "/* ---");
   assert.ok(/answered:/.test(block),
     "'not the page' and 'never answered' are different answers and the panel has to tell them apart");
+});
+
+/* ==================================================================== *
+ * Phase 3: the fill, executed.
+ *
+ * The worker's fill route runs against a real engine, a faked page read and
+ * a faked executeScript; the page-side writer runs against a faked Angular
+ * scope. The failure modes worth pinning here -- a timed-out write that is
+ * still live, a stale array reverting an edit, a lock released early -- are
+ * all invisible to a source assertion.
+ * ==================================================================== */
+
+const json = (value) => JSON.parse(JSON.stringify(value));
+
+function loadEngineContext() {
+  const context = { globalThis: null, crypto: nodeCrypto.webcrypto };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(engineSourceText, context, { filename: "translation_assistant.js" });
+  return context.SNTranslationAssistant;
+}
+
+const FILL_TA = loadEngineContext();
+
+let fillSysId = 0;
+function fillField(source, extra) {
+  fillSysId += 1;
+  const info = Object.assign({
+    originalValue: source,
+    textType: "plain",
+    isFieldLocked: false,
+    additionalParameters: {
+      sysId: String(fillSysId).padStart(32, "c"),
+      name: "question_text",
+      type: "translated_field",
+      table: "question",
+      scope: "global",
+    },
+  }, extra || {});
+  return info;
+}
+
+const FILL_IDENTITY = {
+  artifactInternalName: "catalog_item",
+  artifactSysId: "0".repeat(31) + "1",
+  sourceLanguage: "en",
+  targetLanguage: "fr",
+};
+
+/* Three rows: a plain one to fill, one whose placeholder the reply drops, and a
+ * rich text row carrying a translation that R1 never fills but always rewrites
+ * as part of the array. */
+function fillContent() {
+  return [
+    { groupName: "Variable: Cost centre", label: "Question", id: "Variable: Cost centre: Question", isInternal: false,
+      fieldInfo: [fillField("Cost centre")] },
+    { groupName: "Variable: Charge", label: "Question", id: "Variable: Charge: Question", isInternal: false,
+      fieldInfo: [fillField("Charge ${account}")] },
+    { groupName: "Basic Info", label: "Description", id: "Basic Info: Description", isInternal: false,
+      fieldInfo: [fillField("<p>Notes</p>", {
+        textType: "html",
+        translatedValue: "<p>Brouillon</p>",
+        additionalParameters: {
+          sysId: "d".repeat(32), name: "description", type: "translated_html", table: "sc_cat_item", scope: "global",
+        },
+      })] },
+  ];
+}
+
+function fillFixture() {
+  const content = fillContent();
+  const draft = json(FILL_TA.buildDraft(Object.assign({ content: json(content), exportId: "f".repeat(32), now: 1 }, FILL_IDENTITY)));
+  const reply = json(draft.payload);
+  reply.rows.forEach((row) => {
+    row.target = row.source === "Cost centre" ? "Centre de coût" : "Débiter le compte";
+  });
+  return { content, stored: json(FILL_TA.storedDraft(draft)), replyText: JSON.stringify(reply) };
+}
+
+function readAnswer(content, overrides) {
+  return {
+    selected: {
+      frameId: 5,
+      context: Object.assign({
+        isLfPage: true,
+        isAdhoc: true,
+        readOnlyMode: false,
+        requestInProgress: false,
+        content: json(content),
+        elementCount: content.length,
+      }, FILL_IDENTITY, overrides || {}),
+    },
+    rejected: [],
+  };
+}
+
+function loadFill(options) {
+  const opts = options || {};
+  const block = between(backgroundSource, "const LF_ASSISTANT_APPLY_TIMEOUT_MS", "/* ------");
+  const timers = [];
+  const injections = [];
+  let reads = 0;
+  const context = {
+    globalThis: null,
+    crypto: nodeCrypto.webcrypto,
+    console,
+    Promise,
+    /* The ceiling is driven by hand, so a test decides when "10 seconds"
+     * have passed rather than waiting for them. */
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: () => {},
+  };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(engineSourceText, context, { filename: "translation_assistant.js" });
+  context.assistantEngine = () => context.SNTranslationAssistant;
+  context.errorText = (error) => String((error && error.message) || error);
+  context.writeLfAssistantContent = function writeLfAssistantContent() {};
+  context.readLfAssistantDraft = async (exportId) =>
+    (opts.stored && opts.stored.exportId === exportId ? json(opts.stored) : null);
+  context.readLfAssistantContext = async () => {
+    reads += 1;
+    return opts.read();
+  };
+  context.chrome = {
+    scripting: {
+      executeScript(injection) {
+        injections.push(injection);
+        return opts.write(injection);
+      },
+    },
+  };
+  vm.runInContext(block, context, { filename: "background.js (fill)" });
+  return {
+    context,
+    injections,
+    get reads() { return reads; },
+    fill: (msg) => context.applyLfAssistantReply(7, Object.assign({ type: "APPLY_LF_ASSISTANT" }, msg)),
+    expire: () => timers.splice(0).forEach((fn) => fn()),
+  };
+}
+
+const landedAnswer = (landed, missed) =>
+  Promise.resolve([{ frameId: 5, result: { written: true, why: "", landed, missed: missed || [] } }]);
+
+test("a fill writes every passing row, holds a placeholder mismatch back, and reports what landed", async () => {
+  const fixture = fillFixture();
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => landedAnswer(1),
+  });
+
+  const result = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(result.ok, true, result.message);
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.landed, 1);
+  assert.strictEqual(result.attempted, 1, "the placeholder row is advisory, so it waits for a yes");
+
+  assert.strictEqual(harness.injections.length, 1);
+  const injection = harness.injections[0];
+  assert.strictEqual(injection.world, "MAIN");
+  assert.deepStrictEqual(json(injection.target), { tabId: 7, frameIds: [5] });
+  const request = json(injection.args[0]);
+  assert.deepStrictEqual(request.base, json(fixture.content), "the writer compares against the read the merge used");
+  assert.strictEqual(request.merged[0].fieldInfo[0].translatedValue, "Centre de coût");
+  assert.ok(!("translatedValue" in request.merged[1].fieldInfo[0]), "the mismatch was not written");
+  assert.deepStrictEqual(request.expected.map((entry) => [entry.elementIndex, entry.fieldIndex, entry.value]),
+    [[0, 0, "Centre de coût"]]);
+
+  const charge = result.report.rows.find((row) => row.source === "Charge ${account}");
+  assert.strictEqual(charge.warning, "placeholder");
+  assert.ok(!result.report.filled.includes(charge.k));
+});
+
+test("Fill anyway includes a placeholder row only when that row is asked for", async () => {
+  const fixture = fillFixture();
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => landedAnswer(2),
+  });
+  const charge = json(FILL_TA.buildDraft(Object.assign({ content: json(fixture.content), exportId: "f".repeat(32), now: 1 }, FILL_IDENTITY)))
+    .payload.rows.find((row) => row.source === "Charge ${account}").k;
+
+  /* Shapes the engine would choke on are dropped before it sees them. */
+  await harness.fill({ replyText: fixture.replyText, include: [String(charge), { k: charge }, 2.5, -1],
+    overrides: [null, { k: "1" }, { k: 1, reviewed: [{ identityKey: 3, target: {} }] }] });
+  assert.ok(!("translatedValue" in json(harness.injections[0].args[0]).merged[1].fieldInfo[0]));
+
+  await harness.fill({ replyText: fixture.replyText, include: [charge] });
+  assert.strictEqual(json(harness.injections[1].args[0]).merged[1].fieldInfo[0].translatedValue, "Débiter le compte");
+});
+
+test("untouched rows survive the array replacement byte for byte", async () => {
+  const fixture = fillFixture();
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => landedAnswer(1),
+  });
+  await harness.fill({ replyText: fixture.replyText });
+  const request = json(harness.injections[0].args[0]);
+  assert.deepStrictEqual(request.merged[1], request.base[1]);
+  assert.deepStrictEqual(request.merged[2], request.base[2],
+    "the rich text row and its existing draft translation are carried through untouched");
+  const filled = json(request.merged[0]);
+  delete filled.fieldInfo[0].translatedValue;
+  assert.deepStrictEqual(filled, request.base[0], "the filled row gains translatedValue and nothing else");
+});
+
+test("a fill that never settles is indeterminate, and a retry is refused until it does", async () => {
+  /* The plan's named test: a timeout followed by a read that succeeds must not
+   * unlock a retry while the first injection is still live, because that
+   * injection carries a snapshot of every other row and can still land. */
+  const fixture = fillFixture();
+  const pending = deferred();
+  let writes = 0;
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => {
+      writes += 1;
+      return writes === 1 ? pending.promise : landedAnswer(1);
+    },
+  });
+
+  const first = harness.fill({ replyText: fixture.replyText });
+  await settle();
+  harness.expire();
+  const timedOut = json(await first);
+  assert.strictEqual(timedOut.ok, false);
+  assert.strictEqual(timedOut.indeterminate, true, "a timeout is not a no");
+  assert.match(timedOut.message, /may still be filling/);
+
+  const readsBefore = harness.reads;
+  const retry = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(retry.code, "busy");
+  assert.strictEqual(harness.injections.length, 1, "nothing else is sent while the first may land");
+  assert.strictEqual(harness.reads, readsBefore, "and the lock is checked before the page is read");
+
+  pending.resolve([{ frameId: 5, result: { written: true, landed: 1, missed: [] } }]);
+  await settle();
+  const after = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(after.ok, true, "the lock releases when the injection settles");
+  assert.strictEqual(harness.injections.length, 2);
+});
+
+test("releasing a tab's lock, as a navigation does, lets the next fill run", async () => {
+  const fixture = fillFixture();
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => (harness.injections.length === 1 ? new Promise(() => {}) : landedAnswer(1)),
+  });
+  const first = harness.fill({ replyText: fixture.replyText });
+  await settle();
+  harness.expire();
+  await first;
+  harness.context.releaseLfAssistantApplyLock(7, null);
+  assert.strictEqual(json(await harness.fill({ replyText: fixture.replyText })).ok, true);
+});
+
+test("every page precondition refuses the whole fill before anything is written", async () => {
+  const fixture = fillFixture();
+  const cases = [
+    { name: "read-only mode", read: () => readAnswer(fixture.content, { readOnlyMode: true }), code: "read_only" },
+    { name: "a request in flight", read: () => readAnswer(fixture.content, { requestInProgress: true }), code: "request_in_progress" },
+    { name: "additionalInfo undefined (the accessor threw)", read: () => readAnswer(fixture.content, { requestInProgress: null }), code: "request_in_progress" },
+    { name: "another item", read: () => readAnswer(fixture.content, { artifactSysId: "0".repeat(31) + "2" }), code: "identity_moved" },
+    { name: "another language", read: () => readAnswer(fixture.content, { targetLanguage: "de" }), code: "identity_moved" },
+    { name: "a changed element count", read: () => readAnswer(fixture.content.concat(fixture.content[0])), code: "element_count" },
+    { name: "no comparison page", read: () => ({ selected: null, rejected: [{ frameId: 0, answered: true, isLfPage: false }] }), code: "no_page" },
+  ];
+  for (const entry of cases) {
+    const harness = loadFill({ stored: fixture.stored, read: entry.read, write: () => landedAnswer(1) });
+    const result = json(await harness.fill({ replyText: fixture.replyText }));
+    assert.strictEqual(result.ok, false, entry.name);
+    assert.strictEqual(result.code, entry.code, entry.name);
+    assert.strictEqual(harness.injections.length, 0, entry.name + ": nothing written");
+    const again = json(await harness.fill({ replyText: fixture.replyText }));
+    assert.notStrictEqual(again.code, "busy", entry.name + ": a refusal releases the lock");
+  }
+});
+
+test("a reply from a draft this browser no longer has refuses before the page is read", async () => {
+  const fixture = fillFixture();
+  const harness = loadFill({ stored: null, read: () => readAnswer(fixture.content), write: () => landedAnswer(1) });
+  const result = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(result.code, "unknown_draft");
+  assert.match(result.message, /no longer has/);
+  assert.strictEqual(harness.reads, 0);
+
+  const garbled = json(await harness.fill({ replyText: "Sure! Here you go: {not json" }));
+  assert.strictEqual(garbled.code, "unparseable");
+  assert.match(garbled.excerpt, /^Sure!/);
+});
+
+test("a writer that refuses is reported as nothing filled, and releases the lock", async () => {
+  const fixture = fillFixture();
+  let answer = { written: false, why: "changed", landed: 0, missed: [] };
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => Promise.resolve([{ frameId: 5, result: answer }]),
+  });
+  const refused = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(refused.ok, false);
+  assert.match(refused.message, /nothing was filled/i);
+  answer = { written: true, landed: 0, missed: [1] };
+  const short = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(short.ok, true, "a refusal did not hold the lock");
+  assert.strictEqual(short.landed, 0, "the count is what landed, never what was attempted");
+  assert.deepStrictEqual(short.missed, [1]);
+});
+
+/* ------------------------------------------------------------------ *
+ * The page-side writer
+ * ------------------------------------------------------------------ */
+
+function fakePage(content, options) {
+  const opts = options || {};
+  const state = { fired: [] };
+  const scope = {
+    isAdhocMode: () => opts.adhoc !== false,
+    isReadOnlyMode: () => !!opts.readOnly,
+    isLastRequestInProgress: () => {
+      if (opts.noAdditionalInfo) throw new TypeError("Cannot read properties of undefined (reading 'readOnly')");
+      return !!opts.inProgress;
+    },
+    itemsToTranslate: { adhoc: { documentContent: { content: json(content) } } },
+    groupedItemsToTranslate: { adhoc: { documentContent: {} } },
+    retrieveCurrentContent: (grouped, original) => original,
+  };
+  const context = {
+    Promise,
+    Date,
+    setTimeout,
+    document: { querySelector: (selector) => (selector === ".main-content" ? {} : null) },
+    angular: { element: () => ({ scope: () => scope }) },
+    CustomEvent: {
+      fire(name, payload) {
+        state.fired.push(name);
+        if (name === "updateDocumentContent" && !opts.ignoreEvent) {
+          scope.itemsToTranslate.adhoc.documentContent.content = payload.detail;
+        }
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    between(backgroundSource, "async function writeLfAssistantContent(", "const LF_ASSISTANT_APPLY_TIMEOUT_MS"),
+    context,
+    { filename: "background.js (writer)" }
+  );
+  return { state, scope, write: (request) => context.writeLfAssistantContent(request) };
+}
+
+function writerRequest(content, settleMs) {
+  const merged = json(content);
+  merged[0].fieldInfo[0].translatedValue = "Centre de coût";
+  const params = content[0].fieldInfo[0].additionalParameters;
+  return {
+    base: json(content),
+    merged,
+    settleMs: settleMs || 0,
+    expected: [{
+      k: 1, value: "Centre de coût", elementIndex: 0, fieldIndex: 0,
+      type: params.type, table: params.table, name: params.name, sysId: params.sysId,
+    }],
+  };
+}
+
+test("the writer fires once, and counts only fields that hold the value on their own record", async () => {
+  const content = fillContent();
+  const page = fakePage(content);
+  const result = json(await page.write(writerRequest(content)));
+  assert.deepStrictEqual(page.state.fired, ["updateDocumentContent"]);
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.landed, 1);
+
+  const other = fakePage(content);
+  const request = writerRequest(content);
+  request.expected[0].sysId = "e".repeat(32);
+  const misaddressed = json(await other.write(request));
+  assert.strictEqual(misaddressed.landed, 0, "the right value on the wrong record does not count");
+  assert.deepStrictEqual(misaddressed.missed, [1]);
+});
+
+test("the writer refuses when the page moved since the read, so an edit is never reverted", async () => {
+  const content = fillContent();
+  const page = fakePage(content);
+  /* The user typed into another row after the worker read the page. */
+  page.scope.itemsToTranslate.adhoc.documentContent.content[1].fieldInfo[0].translatedValue = "typed by hand";
+  const result = json(await page.write(writerRequest(content)));
+  assert.strictEqual(result.written, false);
+  assert.strictEqual(result.why, "changed");
+  /* The row had no translation, so the edit added the key rather than changing
+   * a value. */
+  assert.strictEqual(result.changedAt, "[1].fieldInfo[0]{keys}",
+    "where it moved, by field name and index, never by value");
+  assert.deepStrictEqual(page.state.fired, [], "nothing fired");
+  assert.strictEqual(page.scope.itemsToTranslate.adhoc.documentContent.content[1].fieldInfo[0].translatedValue,
+    "typed by hand");
+});
+
+test("an untouched page is not refused because its snapshot came back through Chrome", async () => {
+  /* Found live on the PDI: executeScript hands objects back with their keys in
+   * sorted order, and Angular leaves $$hashKey on the model, so a compare of the
+   * two as JSON text refused a page nobody had touched. The unit test that
+   * passed then handed both sides the same key order. */
+  const sortKeys = (value) => {
+    if (Array.isArray(value)) return value.map(sortKeys);
+    if (value && typeof value === "object") {
+      return Object.keys(value).sort().reduce((out, key) => {
+        out[key] = sortKeys(value[key]);
+        return out;
+      }, {});
+    }
+    return value;
+  };
+  const content = fillContent();
+  const page = fakePage(content);
+  page.scope.itemsToTranslate.adhoc.documentContent.content.forEach((element, index) => {
+    element.$$hashKey = "object:" + (index + 10);
+  });
+  const request = writerRequest(content);
+  request.base = sortKeys(request.base);
+  assert.notStrictEqual(JSON.stringify(request.base), JSON.stringify(content), "the fixture really is reordered");
+
+  const result = json(await page.write(request));
+  assert.strictEqual(result.written, true, "refused at " + result.changedAt);
+  assert.strictEqual(result.landed, 1);
+});
+
+test("the writer re-checks each page state and refuses on any it cannot confirm", async () => {
+  const content = fillContent();
+  for (const [option, why] of [
+    [{ readOnly: true }, "read_only"],
+    [{ inProgress: true }, "request_in_progress"],
+    [{ noAdditionalInfo: true }, "request_in_progress"],
+    [{ adhoc: false }, "not_page"],
+  ]) {
+    const page = fakePage(content, option);
+    const result = json(await page.write(writerRequest(content)));
+    assert.strictEqual(result.written, false, JSON.stringify(option));
+    assert.strictEqual(result.why, why, JSON.stringify(option));
+    assert.deepStrictEqual(page.state.fired, [], JSON.stringify(option));
+  }
+});
+
+test("a page that ignores the event is reported as filled nowhere, after a short settle", async () => {
+  const content = fillContent();
+  const page = fakePage(content, { ignoreEvent: true });
+  const result = json(await page.write(writerRequest(content, 250)));
+  assert.strictEqual(result.written, true, "the event was fired");
+  assert.strictEqual(result.landed, 0);
+  assert.deepStrictEqual(result.missed, [1]);
+});
+
+/* ------------------------------------------------------------------ *
+ * The content script's Fill
+ * ------------------------------------------------------------------ */
+
+test("the panel's Fill reaches the worker as one request, and a missing page gets the draft's sentence", async () => {
+  let answer = { ok: false, code: "no_page", rejected: [{ frameId: 0, answered: true, isLfPage: false, why: "no page-owned angular" }] };
+  const harness = loadRunner({
+    send(message) {
+      if (message.type === "GET_LF_ASSISTANT_CONTEXT") return Promise.resolve(contextAnswer());
+      if (message.type === "APPLY_LF_ASSISTANT") {
+        return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+      }
+      return Promise.resolve({ ok: true, held: 1 });
+    },
+  });
+  await harness.context.runTranslationAssistant();
+
+  const refused = await harness.fill({ text: "{ }", include: [2], overrides: [] });
+  const sent = harness.sent.filter((message) => message.type === "APPLY_LF_ASSISTANT");
+  assert.strictEqual(sent.length, 1);
+  assert.deepStrictEqual(json(sent[0]), { type: "APPLY_LF_ASSISTANT", replyText: "{ }", include: [2], overrides: [] });
+  assert.match(refused.message, /press Edit Translations/);
+
+  answer = new Error("The message port closed before a response was received.");
+  const gone = await harness.fill({ text: "{ }" });
+  assert.strictEqual(gone.indeterminate, true, "a worker that vanished mid-fill may have filled");
 });

@@ -5568,6 +5568,39 @@ async function translationAssistantLanguageNames(engine, context) {
   }
 }
 
+/* The panel's Fill. The worker does all of it -- parses the reply, finds its
+ * draft, re-reads the page, re-checks every rule and fills what still passes --
+ * because it holds the lock a fill needs. This side carries the request and
+ * turns "that is not the comparison page" into the sentence the draft uses.
+ * Nothing here gates on the run: a fill already handed to the worker cannot be
+ * recalled, and the panel discards an answer for a run it no longer shows. */
+async function fillTranslationAssistantReply(request) {
+  const req = request || {};
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "APPLY_LF_ASSISTANT",
+      replyText: typeof req.text === "string" ? req.text : "",
+      include: Array.isArray(req.include) ? req.include : [],
+      overrides: Array.isArray(req.overrides) ? req.overrides : [],
+    });
+  } catch (error) {
+    /* The worker went away mid-request, so the fill may or may not have run. */
+    return {
+      ok: false,
+      indeterminate: true,
+      message: "Translation Assistant stopped answering while filling. Check the page before filling again.",
+    };
+  }
+  if (!response) {
+    return { ok: false, message: "Translation Assistant did not answer. Reload the page and try again." };
+  }
+  if (response.code === "no_page") {
+    return Object.assign({}, response, { message: translationAssistantRefusal(response.rejected) });
+  }
+  return response;
+}
+
 /* Why the draft could not be made, in the user's terms. The worker reports each
  * frame it asked, so "the page is open but not in ad-hoc mode" and "this is not
  * the comparison page at all" get different sentences. */
@@ -5647,6 +5680,7 @@ async function runTranslationAssistant() {
         }
       },
       onNotify: (message, isError) => showToast(message, !!isError, isError ? 7000 : 4000),
+      onFill: (request) => fillTranslationAssistantReply(request),
     },
   });
 

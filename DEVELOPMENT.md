@@ -205,7 +205,10 @@ The suites cover:
   must hold no frame handle. Also the language names: the `sys_language` query
   is built only from ids shaped like one, so page text naming `javascript:` or
   carrying a caret or comma never reaches it, and a name is used only when the
-  rows give exactly one — otherwise the draft shows the page's codes.
+  rows give exactly one — otherwise the draft shows the page's codes. And what
+  the fill reads back: every merged field is addressed by position and by
+  record, and each row says whether publishing it changes the translation
+  instance-wide.
 - `translation_assistant_ui.test.js` — the panel, loaded under `node:vm`
   against the same small DOM shim the Translation Lens panel uses. Drafts are
   built by the real engine rather than written as literals, because the
@@ -233,6 +236,18 @@ The suites cover:
   text — the text, its translation, then one line holding where it lives and
   its link — and the stylesheet the panel injects keeps each text to one line,
   cut at a whole word, with the whole of it on hover.
+
+  Then the reply coming back. There is no preview before the fill — the
+  comparison page is the preview — so the report is what these pin, against
+  evaluations the real engine produced: Fill sends the pasted text and reports
+  the fields filled; an empty box sends nothing; a placeholder mismatch is not
+  filled until Fill anyway resends the same reply with that row; a field changed
+  on the page offers Overwrite bound to the value it shows; a replaced
+  translation shows its old text, because clearing the box would delete it; a
+  partial landing names what did not take; a refusal keeps the reply in the box
+  and shows how it starts; a timeout says the fill may still be running. A
+  second press while a fill runs sends nothing, an answer for a replaced panel
+  is not drawn, and choosing a file loads it into the box without filling.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that
@@ -240,9 +255,12 @@ The suites cover:
   editability states it reads rather than infers, the draft held in
   `storage.session` before it is ever offered, both output routes emitting the
   one serialised string, the panel's link guard run against a same-origin link
-  and three it must refuse, and the packaging allowlist. Also the negatives:
-  phase 2 ships no write path, nothing persists a frame handle, and no
-  user-facing string calls a locked field verified.
+  and three it must refuse, and the packaging allowlist. Also the shape of the
+  one write: the page's own `updateDocumentContent` event, fired only by the
+  worker's MAIN-world writer into the one frame that fill's own fresh read
+  selected, never by the panel or the content script; the fill lock released
+  by a navigation or a closed tab; nothing persisting a frame handle; and no
+  user-facing string calling a locked field verified.
 
   The second half of the file executes the worker's draft store and the
   content script's runner rather than reading them, against storage and
@@ -252,9 +270,27 @@ The suites cover:
   and a frame that never answered is not reported as the wrong page. The
   language-name read runs through the same shims: its names reach the prompt
   and subtitle, a refused read still yields a draft in codes, a run dismissed
-  during it saves nothing, and codes that are not id-shaped send no read. Those
-  blocks are lifted from their real files by the same anchors the source
-  assertions use, so moving one fails loudly instead of testing nothing.
+  during it saves nothing, and codes that are not id-shaped send no read.
+
+  The fill route runs too, against a real engine, a faked page read and a
+  faked `executeScript`: every passing row is written and a placeholder
+  mismatch held back until asked for; rows the fill does not touch survive the
+  array replacement byte for byte; a fill that never settles is reported as
+  indeterminate and a retry is refused — before the page is even read — until
+  the injection settles, which is the case a timeout followed by a clean read
+  must not unlock; every page precondition (read-only, a request in flight or
+  unknowable, another item or language, a changed element count, no page)
+  refuses before anything is written and releases the lock; a reply from a
+  draft this browser no longer has refuses before the page is read; and the
+  count reported is what landed. The page-side writer runs against a faked
+  Angular scope: it fires once and counts only fields holding the value on
+  their own record, refuses when the page moved since the read and names where,
+  refuses on any page state it cannot confirm — including the accessor that
+  throws when `additionalInfo` is undefined — and does not refuse an untouched
+  page whose snapshot came back through Chrome with its keys reordered, the
+  defect the live check found. Those blocks are lifted from their real files by
+  the same anchors the source assertions use, so moving one fails loudly
+  instead of testing nothing.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real
