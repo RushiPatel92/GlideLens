@@ -1215,10 +1215,109 @@ test("a fill the page could not confirm keeps every attempted row's old text, an
   await pasteAndFill(harness, "reply text");
 
   const text = harness.text();
-  assert.match(text, /Filled 1 field, but the page could not confirm it \(boom\)\. Check each one on the page before you publish\./);
+  assert.match(text, /Attempted to fill 1 field, but the page could not confirm it \(boom\)\. Check each one on the page before you publish\./);
   assert.doesNotMatch(text, /Not filled/);
-  assert.match(text, /Replaced 1 existing translation.*Was“Centre de frais”/);
-  assert.match(text, /One translation filled on this page is shared/);
+  assert.match(text, /Replaced 1 existing translation.*Attempted“Centre de coût”Was“Centre de frais”/,
+    "the old text is kept, and the write is labelled as attempted, not filled");
+  assert.match(text, /One translation filled or attempted on this page is shared/);
+  assert.doesNotMatch(text, /never confirmed by the page/, "the headline already says so on this report");
+
+  /* Codex review, P2: after a refused click the uncertainty vanished while
+   * the replacement and shared claims stayed. */
+  press(buttonNamed(harness.shadow(), "Fill from a different reply"));
+  harness.callbacks.onFill = () => Promise.resolve({ ok: false, code: "not_written", message: "The page changed just as it was being filled, so nothing was filled." });
+  await pasteAndFill(harness, "another reply");
+  const later = harness.text();
+  assert.match(later, /1 attempted fill on this page was never confirmed by the page — check that field before you publish/);
+  assert.match(later, /Attempted“Centre de coût”Was“Centre de frais”/);
+  assert.match(later, /filled or attempted on this page is shared/);
+  assert.doesNotMatch(later, /Filled“/);
+});
+
+test("the history is kept by field, so a reused row number and a later-landing member both survive", async () => {
+  /* Codex review, P2: keyed by row number, the history froze a whole draft
+   * row on first sight. A reply from another draft reusing the number for a
+   * different destination lost its old text, and a member of a shared row
+   * that landed only on a later fill was never remembered. */
+  const shared = [
+    element({ groupName: "Variable: Cost centre", label: "Question", id: "Variable: Cost centre: Question",
+      fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
+    element({ groupName: "Variable: Cost centre (copy)", label: "Question", id: "Variable: Cost centre (copy): Question",
+      fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
+  ];
+  const first = evaluationFor(shared, { "Cost centre": "Centre de coût" });
+  const row = first.rows[0];
+  assert.strictEqual(row.members.length, 2);
+  const harness = load();
+  const answers = [
+    /* Click 1: only the first member lands. */
+    filledAnswer(first, [row.k], {
+      landed: 1, attempted: 2, missed: [row.k], missedFields: [{ k: row.k, identityKey: row.members[1].identityKey }],
+    }),
+    /* Click 2: the second member lands (the page took it this time). */
+    filledAnswer(first, [row.k], { landed: 2, attempted: 2 }),
+  ];
+  let click = 0;
+  harness.callbacks.onFill = () => Promise.resolve(answers[click++]);
+  show(harness, draftFrom(shared));
+  await pasteAndFill(harness, "reply text");
+  let text = harness.text();
+  assert.match(text, /Replaced 1 existing translation/);
+  assert.match(text, /Was“Centre de frais”/);
+  assert.match(text, /One translation filled on this page is shared/, "one destination, however many fields");
+
+  press(buttonNamed(harness.shadow(), "Fill from a different reply"));
+  await pasteAndFill(harness, "reply text again");
+  text = harness.text();
+  const replaced = findAll(harness.shadow(), (node) =>
+    node.tagName === "LI" && node.parentNode && node.parentNode.className === "report-list")[0];
+  const pair = replaced.children.find((child) => child.className === "pair");
+  assert.deepStrictEqual(pair.children.map((child) => child.textContent), [
+    "Filled", "“Centre de coût”", "Was", "“Centre de frais”",
+  ], "both members' old text is one line because they agree; the later member joined");
+  assert.strictEqual(findAll(harness.shadow(), (node) => node.className === "mem").length, 0);
+  assert.match(text, /One translation filled on this page is shared/, "still one destination");
+
+  /* A second draft on the same page reuses row number 1 for a different
+   * destination: its old text must not be swallowed by the first row's. */
+  const other = [element({ groupName: "Variable: Approver", label: "Question", id: "Variable: Approver: Question",
+    fields: [field({ source: "Approver", target: "Approbateur", locked: false })] })];
+  const second = evaluationFor(other, { Approver: "Valideur" });
+  assert.strictEqual(second.rows[0].k, row.k, "the fixture really does reuse the number");
+  harness.callbacks.onFill = () => Promise.resolve(filledAnswer(second, [second.rows[0].k]));
+  press(buttonNamed(harness.shadow(), "Fill from a different reply"));
+  await pasteAndFill(harness, "a reply for another draft");
+  text = harness.text();
+  assert.match(text, /Replaced 2 existing translations/);
+  assert.match(text, /Was“Centre de frais”/);
+  assert.match(text, /“Approver”Filled“Valideur”Was“Approbateur”/);
+  assert.match(text, /2 translations filled on this page are shared/);
+});
+
+test("Overwrite from a per-field display binds every field to the value shown for it", async () => {
+  const content = [
+    element({ groupName: "Variable: Cost centre", label: "Question", id: "Variable: Cost centre: Question",
+      fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Cost centre (copy)", label: "Question", id: "Variable: Cost centre (copy): Question",
+      fields: [field({ source: "Cost centre" })] }),
+  ];
+  const live = clone(content);
+  live[0].fieldInfo[0].translatedValue = "typed by hand";
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" }, live);
+  const row = evaluation.rows[0];
+  const harness = load();
+  const calls = withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+  press(buttonNamed(harness.shadow(), "Overwrite"));
+  await flush();
+  assert.deepStrictEqual(calls[1].overrides, [{
+    k: row.k,
+    reviewed: [
+      { identityKey: row.members[0].identityKey, target: "typed by hand" },
+      { identityKey: row.members[1].identityKey, target: "" },
+    ],
+  }]);
 });
 
 test("a shared row whose fields hold different values shows every value, each named", async () => {

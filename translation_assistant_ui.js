@@ -1099,34 +1099,69 @@
   }
 
   /*
-   * Everything a fill wrote on this page during this run, with the text each
-   * field held before. Kept across clicks: after Fill anyway or Overwrite the
-   * worker evaluates the earlier rows as unchanged, because the page now holds
+   * Every FIELD a fill wrote on this page during this run, by record
+   * identity, with the text it held before and whether the page confirmed
+   * the write. Kept across clicks: after Fill anyway or Overwrite the worker
+   * evaluates the earlier rows as unchanged, because the page now holds
    * their replacement -- but the replacement is still unpublished, and the
-   * old text is still what a user needs to put a row back. The first write
-   * of a row is the one that knew the old text, so it is never replaced.
-   * A refused click leaves the page as it was, so the history shows through
-   * a refusal too.
+   * old text is still what a user needs to put a field back. The first write
+   * of a field is the one that knew the old text, so it is never replaced;
+   * a field written later joins. Keyed by field, not by row number: a row
+   * number belongs to one draft, and a reply from another draft can reuse it
+   * for another destination. A refused click leaves the page as it was, so
+   * the history shows through a refusal too.
    */
-  function recordWritten(rows, wroteMember) {
+  function recordWritten(rows, wroteMember, confirmed) {
     rows.forEach((row) => {
-      if (fillHistory.has(row.k)) return;
-      const members = (row.members || []).filter((member) => wroteMember(row, member));
-      if (!members.length) return;
-      fillHistory.set(row.k, {
-        row,
-        members: members.map((member) => ({ elementId: str(member.elementId), liveTarget: str(member.liveTarget) })),
+      (row.members || []).forEach((member) => {
+        const id = str(member && member.identityKey);
+        if (!id || fillHistory.has(id) || !wroteMember(row, member)) return;
+        fillHistory.set(id, {
+          /* The stored translation this field writes to, stable across drafts. */
+          destination: str(row.destinationKey) || `row:${row.k}`,
+          row,
+          elementId: str(member.elementId),
+          liveTarget: str(member.liveTarget),
+          confirmed: !!confirmed,
+        });
       });
     });
   }
 
-  /* The two things a user must know before Publish about what this run has
-   * put on the page: which translations it replaced, with their old text
-   * because clearing the box would not bring one back (a blank publishes as
-   * a deletion), and how many of the filled translations are shared. */
+  /* The history grouped the way the page stores it: one group per
+   * destination, holding every written field that shares that stored
+   * translation. Shared translations are counted by destination, not by
+   * field, so two fields sharing one stored row count once. */
+  function historyGroups() {
+    const groups = new Map();
+    fillHistory.forEach((entry) => {
+      let group = groups.get(entry.destination);
+      if (!group) {
+        group = { row: entry.row, members: [], confirmed: true };
+        groups.set(entry.destination, group);
+      }
+      group.members.push({ elementId: entry.elementId, liveTarget: entry.liveTarget });
+      if (!entry.confirmed) group.confirmed = false;
+    });
+    return Array.from(groups.values());
+  }
+
+  /* What a user must know before Publish about what this run has put on the
+   * page: any write the page never confirmed, which translations were
+   * replaced, with their old text because clearing the box would not bring
+   * one back (a blank publishes as a deletion), and how many of the filled
+   * translations are shared. An unconfirmed write is never presented as a
+   * replacement that happened: its old text is kept, labelled as attempted. */
   function recoverySections() {
-    const written = Array.from(fillHistory.values());
-    const replaced = written.filter((entry) => entry.members.some((member) => member.liveTarget));
+    const groups = historyGroups();
+    const unconfirmed = Array.from(fillHistory.values()).filter((entry) => !entry.confirmed).length;
+    const unconfirmedNode = unconfirmed
+      ? el("p", "note flag",
+        `${unconfirmed} attempted ${plural(unconfirmed, "fill")} on this page ${unconfirmed === 1 ? "was" : "were"} ` +
+        "never confirmed by the page — check " + (unconfirmed === 1 ? "that field" : "those fields") + " before you publish.")
+      : null;
+
+    const replaced = groups.filter((group) => group.members.some((member) => member.liveTarget));
     let replacedNode = null;
     if (replaced.length) {
       replacedNode = el("div");
@@ -1134,22 +1169,25 @@
       replacedNode.appendChild(el("p", "report-sub",
         "To keep an old one, type it back into its box before you publish — clearing the box deletes it."));
       const ul = el("ul", "report-list");
-      replaced.forEach((entry) => {
-        ul.appendChild(reportRow(entry.row, [["Filled", "tgt", entry.row.target]]
-          .concat(valuePairs("Was", "was", entry.members))));
+      replaced.forEach((group) => {
+        ul.appendChild(reportRow(group.row, [[group.confirmed ? "Filled" : "Attempted", "tgt", group.row.target]]
+          .concat(valuePairs("Was", "was", group.members))));
       });
       replacedNode.appendChild(ul);
     }
-    const shared = written.filter((entry) => entry.row.instanceWide).length;
+
+    const sharedGroups = groups.filter((group) => group.row.instanceWide);
+    const shared = sharedGroups.length;
+    const how = sharedGroups.some((group) => !group.confirmed) ? "filled or attempted" : "filled";
     const sharedNode = shared
       ? el("p", "note flag",
         shared === 1
-          ? "One translation filled on this page is shared: publishing it changes that translation for every " +
+          ? `One translation ${how} on this page is shared: publishing it changes that translation for every ` +
             "catalog item on this instance whose field uses the same source text."
-          : `${shared} translations filled on this page are shared: publishing them changes those translations ` +
+          : `${shared} translations ${how} on this page are shared: publishing them changes those translations ` +
             "for every catalog item on this instance whose fields use the same source text.")
       : null;
-    return { replaced: replacedNode, shared: sharedNode };
+    return { unconfirmed: unconfirmedNode, replaced: replacedNode, shared: sharedNode };
   }
 
   function showReport(request, result) {
@@ -1167,6 +1205,7 @@
         }
       }
       const recovery = recoverySections();
+      if (recovery.unconfirmed) bodyEl.appendChild(recovery.unconfirmed);
       if (recovery.replaced) bodyEl.appendChild(recovery.replaced);
       if (recovery.shared) bodyEl.appendChild(recovery.shared);
       bodyEl.appendChild(replySection(request.text));
@@ -1198,7 +1237,7 @@
        * not be read back: no count is honest, so every attempted field is one
        * to look at. */
       bodyEl.appendChild(el("p", "note flag",
-        `Filled ${attempted} ${plural(attempted, "field")}, but the page could not confirm it` +
+        `Attempted to fill ${attempted} ${plural(attempted, "field")}, but the page could not confirm it` +
         (str(res.why) ? ` (${str(res.why)})` : "") + ". Check each one on the page before you publish."));
     } else if (res.written && landed === attempted) {
       bodyEl.appendChild(el("p", "report-head", `Filled ${landed} ${plural(landed, "field")}.`));
@@ -1232,8 +1271,9 @@
     const status = el("p", "reply-status");
     status.setAttribute("aria-live", "polite");
 
-    if (res.written) recordWritten(rows, wroteMember);
+    if (res.written) recordWritten(rows, wroteMember, !unconfirmed);
     const recovery = recoverySections();
+    if (recovery.unconfirmed && !unconfirmed) bodyEl.appendChild(recovery.unconfirmed);
     if (recovery.replaced) bodyEl.appendChild(recovery.replaced);
 
     const order = { fill: 0, block: 1, skip: 2 };

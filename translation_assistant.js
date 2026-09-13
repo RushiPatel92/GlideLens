@@ -952,6 +952,10 @@
         source: text(entry.source),
         elementId: entry.elementId,
         maxLength: entry.maxLength,
+        /* The stored translation this row writes to. Stable across drafts,
+         * which k is not, so a panel that remembers what it filled can tell
+         * the same destination from a renumbered one. */
+        destinationKey: text(entry.destinationKey),
         shared: (entry.members || []).length > 1,
         /* Stored by source string, so publishing it changes the translation for
          * every item on the instance with the same text - the report says so

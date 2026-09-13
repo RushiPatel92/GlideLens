@@ -3254,6 +3254,11 @@ function inspectLfAssistantContext() {
     out.artifactSysId = pick("artifactSysId", "sysparm_artifact_sys_id");
     out.sourceLanguage = pick("sourceLanguage", "sysparm_source_language");
     out.targetLanguage = pick("targetLanguage", "sysparm_target_language");
+    /* Which DOCUMENT answered, read rather than stamped: a document's time
+     * origin is fixed when it is created and a reload creates a new one, so
+     * a writer that finds a different value is on a page this read never saw,
+     * however alike its content. */
+    out.documentStamp = typeof performance !== "undefined" && performance ? Number(performance.timeOrigin) || 0 : 0;
 
     const adhoc = scope.itemsToTranslate && scope.itemsToTranslate.adhoc;
     const original = adhoc && adhoc.documentContent && adhoc.documentContent.content;
@@ -3426,6 +3431,24 @@ async function writeLfAssistantContent(request) {
       return a === b ? "" : here;
     };
 
+    /* The same page, not merely the same content. A replacement page -- the
+     * item reopened for another language, or reloaded with nothing yet typed
+     * -- can hold content identical to the read this merge was built from, so
+     * the content compare below cannot tell them apart. The document stamp
+     * and the identity the reader saw can. */
+    const identity = (request && request.identity) || {};
+    const params = new URLSearchParams(location.search);
+    const pick = (onScope, fromUrl) => String(scope[onScope] || params.get(fromUrl) || "");
+    const stamp = typeof performance !== "undefined" && performance ? Number(performance.timeOrigin) || 0 : 0;
+    if (stamp !== Number(identity.documentStamp) ||
+        pick("artifactInternalName", "sysparm_artifact_internal_name") !== String(identity.artifactInternalName || "") ||
+        pick("artifactSysId", "sysparm_artifact_sys_id") !== String(identity.artifactSysId || "") ||
+        pick("sourceLanguage", "sysparm_source_language") !== String(identity.sourceLanguage || "") ||
+        pick("targetLanguage", "sysparm_target_language") !== String(identity.targetLanguage || "")) {
+      out.why = "other_page";
+      return out;
+    }
+
     const before = current();
     if (!before) { out.why = "not_page"; return out; }
     const changedAt = differenceAt(before, request.base, "");
@@ -3523,6 +3546,10 @@ function lfAssistantFillChoices(msg) {
 function lfAssistantWriteRefusal(why) {
   if (why === "changed") {
     return "The page changed just as it was being filled, so nothing was filled. Press Fill again.";
+  }
+  if (why === "other_page") {
+    return "The page was replaced just as it was being filled — reloaded, or opened for another item or " +
+      "language — so nothing was filled. Run Translation Assistant again on the page that is open now.";
   }
   if (why === "read_only") return "This page is read-only, so nothing was filled.";
   if (why === "request_in_progress") {
@@ -3644,7 +3671,21 @@ async function applyLfAssistantReply(tabId, msg) {
       target: { tabId, frameIds: [read.selected.frameId] },
       world: "MAIN",
       func: writeLfAssistantContent,
-      args: [{ base: context.content, merged: merge.content, expected, settleMs: LF_ASSISTANT_SETTLE_MS }],
+      args: [{
+        base: context.content,
+        merged: merge.content,
+        expected,
+        settleMs: LF_ASSISTANT_SETTLE_MS,
+        /* Which page the read came from, so the writer can refuse a
+         * replacement page that happens to hold the same content. */
+        identity: {
+          artifactInternalName: String(context.artifactInternalName || ""),
+          artifactSysId: String(context.artifactSysId || ""),
+          sourceLanguage: String(context.sourceLanguage || ""),
+          targetLanguage: String(context.targetLanguage || ""),
+          documentStamp: Number(context.documentStamp) || 0,
+        },
+      }],
     });
     handedOff = true;
     write.then(

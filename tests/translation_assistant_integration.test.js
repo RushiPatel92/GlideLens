@@ -1187,8 +1187,45 @@ test("a navigation while a fill is still reading the page stops that fill, and o
   assert.strictEqual(stale.code, "navigated");
   assert.match(stale.message, /reloaded or moved while the fill was being prepared/);
   assert.strictEqual(harness.injections.length, 1, "the fill that lost its page never injects");
-  assert.strictEqual(json(await harness.fill({ replyText: fixture.replyText })).ok, true,
-    "and the stale fill did not release the newer fill's lock on its way out");
+});
+
+test("a stale fill leaving does not release a newer fill's lock that is still held", async () => {
+  /* Codex, on the test above: it finishes the newer fill before the stale
+   * one resolves, so it never showed the stale fill's finally leaving a
+   * still-running newer lock alone. Here the newer fill's injection is still
+   * pending when the stale read resolves. */
+  const fixture = fillFixture();
+  const firstRead = deferred();
+  const secondWrite = deferred();
+  let reads = 0;
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => {
+      reads += 1;
+      return reads === 1 ? firstRead.promise : readAnswer(fixture.content);
+    },
+    write: () => secondWrite.promise,
+  });
+
+  const first = harness.fill({ replyText: fixture.replyText });
+  await settle();
+  harness.context.releaseLfAssistantApplyLock(7, null);
+  const second = harness.fill({ replyText: fixture.replyText });
+  await settle();
+  assert.strictEqual(harness.injections.length, 1, "the newer fill has injected and is waiting");
+
+  firstRead.resolve(readAnswer(fixture.content));
+  const stale = json(await first);
+  assert.strictEqual(stale.code, "navigated");
+  const meanwhile = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(meanwhile.code, "busy", "the newer fill's lock is still held after the stale one left");
+  assert.strictEqual(harness.injections.length, 1);
+
+  secondWrite.resolve([{ frameId: 5, result: { written: true, confirmed: true, landed: 1, missed: [], missedFields: [] } }]);
+  assert.strictEqual(json(await second).ok, true);
+  await settle();
+  assert.strictEqual(json(await harness.fill({ replyText: fixture.replyText })).code, undefined,
+    "and it releases when its own injection settles");
 });
 
 test("a write the page could not confirm comes back unconfirmed with its rows, and a half-landed row by field", async () => {
@@ -1301,6 +1338,12 @@ function fakePage(content, options) {
     Promise,
     Date,
     setTimeout,
+    URLSearchParams,
+    /* The document the read came from: its time origin and the identity the
+     * reader picks from the scope or the URL. A test replaces either to stand
+     * for a replacement page. */
+    performance: { timeOrigin: opts.timeOrigin === undefined ? 1000 : opts.timeOrigin },
+    location: { search: opts.search || "" },
     document: { querySelector: (selector) => (selector === ".main-content" ? {} : null) },
     angular: { element: () => ({ scope: () => scope }) },
     CustomEvent: {
@@ -1313,6 +1356,7 @@ function fakePage(content, options) {
       },
     },
   };
+  Object.assign(scope, opts.identity || {});
   vm.createContext(context);
   vm.runInContext(
     between(backgroundSource, "async function writeLfAssistantContent(", "const LF_ASSISTANT_APPLY_TIMEOUT_MS"),
@@ -1334,6 +1378,9 @@ function writerRequest(content, settleMs) {
       k: 1, value: "Centre de coût", elementIndex: 0, fieldIndex: 0,
       type: params.type, table: params.table, name: params.name, sysId: params.sysId,
     }],
+    /* As the fake page answers by default: no artifact fields on the scope
+     * or the URL, and the document created at time origin 1000. */
+    identity: { artifactInternalName: "", artifactSysId: "", sourceLanguage: "", targetLanguage: "", documentStamp: 1000 },
   };
 }
 
@@ -1465,6 +1512,57 @@ test("a fill the writer cannot read back is unconfirmed, never a count", async (
   assert.strictEqual(result.landed, 0);
   assert.deepStrictEqual(result.missed, []);
   assert.deepStrictEqual(result.missedFields, []);
+});
+
+test("the writer refuses a replacement page holding the same content", async () => {
+  /* Codex review, P2: the ownership checks close the worker's side, but the
+   * injection targets a frame number, and a replacement page -- the item
+   * reopened for another language, or reloaded before anything is typed --
+   * can hold content identical to the read the merge was built from. The
+   * content compare cannot tell them apart; the document's time origin and
+   * the identity the reader picked can. */
+  const content = fillContent();
+  for (const [option, what] of [
+    [{ timeOrigin: 2000 }, "a reloaded document"],
+    [{ search: "?sysparm_target_language=de" }, "another target language from the URL"],
+    [{ identity: { targetLanguage: "de" } }, "another target language on the scope"],
+    [{ identity: { artifactSysId: "e".repeat(32) } }, "another item"],
+  ]) {
+    const page = fakePage(content, option);
+    const result = json(await page.write(writerRequest(content)));
+    assert.strictEqual(result.written, false, what);
+    assert.strictEqual(result.why, "other_page", what);
+    assert.deepStrictEqual(page.state.fired, [], what + ": nothing fired");
+  }
+  /* And the page the read came from, identified the same way, is written. */
+  const same = fakePage(content, { search: "?sysparm_target_language=fr", timeOrigin: 4321 });
+  const request = writerRequest(content);
+  request.identity.targetLanguage = "fr";
+  request.identity.documentStamp = 4321;
+  assert.strictEqual(json(await same.write(request)).written, true);
+});
+
+test("the reader reports the document it read, and the fill hands the writer that identity", async () => {
+  const inspector = between(backgroundSource, "function inspectLfAssistantContext(", "function selectLfAssistantFrame(");
+  assert.ok(inspector.includes("out.documentStamp ="), "the reader records the document's time origin");
+  assert.ok(inspector.includes("performance.timeOrigin"));
+
+  const fixture = fillFixture();
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content, { documentStamp: 98765 }),
+    write: () => landedAnswer(1),
+  });
+  assert.strictEqual(json(await harness.fill({ replyText: fixture.replyText })).ok, true);
+  const identity = json(harness.injections[0].args[0].identity);
+  assert.deepStrictEqual(identity, {
+    artifactInternalName: "catalog_item",
+    artifactSysId: "0".repeat(31) + "1",
+    sourceLanguage: "en",
+    targetLanguage: "fr",
+    documentStamp: 98765,
+  });
+  assert.match(harness.context.lfAssistantWriteRefusal("other_page"), /replaced just as it was being filled/);
 });
 
 /* ------------------------------------------------------------------ *

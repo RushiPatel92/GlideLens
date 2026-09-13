@@ -254,7 +254,13 @@ The suites cover:
   translation and the shared-translation warning survive the next click and a
   refusal; a shared row that half landed names the field that missed and
   keeps the old text of the one that did; a fill the page could not confirm
-  keeps every attempted row's old text and says to check each.
+  keeps every attempted row's old text, labelled as attempted rather than
+  filled, and that uncertainty survives a refused click. The history is
+  kept by field and grouped by destination: a reply from another draft that
+  reuses a row number keeps its own old text, a member of a shared row that
+  lands only on a later fill joins, and shared translations are counted by
+  destination, not by field. And Overwrite from a per-field display binds
+  every field to the value shown for it, an empty one included.
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that
@@ -302,7 +308,13 @@ The suites cover:
   a fill is still awaiting its read stops that fill, and only the next one
   injects; a shared row that half landed comes back by field, not only by
   row; and a fill whose read-back threw after the event fired comes back
-  unconfirmed with its rows, never as a count of zero. Those blocks are lifted
+  unconfirmed with its rows, never as a count of zero. From the round after:
+  the writer refuses a replacement page holding the same content — a
+  reloaded document, another target language from the URL or the scope,
+  another item — and writes the page the read came from, identified the same
+  way; the reader records the document's time origin and the fill hands the
+  writer that identity; and a stale fill leaving does not release a newer
+  fill's lock that is still held. Those blocks are lifted
   from their real files by the same anchors the source assertions use, so
   moving one fails loudly instead of testing nothing.
 

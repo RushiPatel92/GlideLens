@@ -389,6 +389,10 @@ because the platform's deserialiser moves unknown keys into
 `additionalParameters` and posts them on Publish. The write is one
 `executeScript` into the frame this fill's own read selected, running
 `writeLfAssistantContent` in the MAIN world: it re-checks the page states,
+refuses unless it is on the document the read came from (the reader records
+`performance.timeOrigin`, which a reload changes, plus the artifact and
+language pair it saw, so a replacement page holding identical content — the
+item reopened for another language — is refused rather than filled),
 compares the live model with the base the merge was built from as content
 (Chrome returns injection values with keys sorted, and Angular leaves
 `$$hashKey` on the model, so a text compare refused an untouched page),
@@ -401,9 +405,11 @@ injection settles, on navigation, or on tab close; a fill still awaiting a
 read when a navigation releases the lock refuses rather than injecting into
 the new page. A fill that does not settle in 10 s is reported as
 indeterminate and keeps its lock. The panel reports what was not filled and
-why, and keeps a per-run history of every replaced translation's old text
-through later clicks and refusals, since clearing a box would publish a
-deletion.
+why, and keeps a per-run history of every field its fills wrote — by record
+identity, grouped by destination for display, with the old text and whether
+the page confirmed the write — through later clicks and refusals, since
+clearing a box would publish a deletion. An unconfirmed write is shown as
+attempted, never as a replacement that happened.
 
 ## Catalog and Service Portal behavior
 
