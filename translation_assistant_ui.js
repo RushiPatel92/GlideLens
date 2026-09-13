@@ -274,6 +274,8 @@
   /* One fill at a time from this panel. The worker holds the real lock; this
    * only stops a second click sending a request the worker would refuse. */
   let filling = false;
+  /* What this run's fills have put on the page, by row: see recordWritten. */
+  let fillHistory = new Map();
 
   const str = (value) => (typeof value === "string" ? value : "");
   const count = (value) => (Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
@@ -535,6 +537,7 @@
     subtitleEl = null;
     runFingerprint = null;
     filling = false;
+    fillHistory = new Map();
     if (previousFocus && isFn(previousFocus.focus)) {
       try {
         previousFocus.focus();
@@ -646,6 +649,7 @@
     if (host) unmount();
     callbacks = request.callbacks && typeof request.callbacks === "object" ? request.callbacks : {};
     runFingerprint = fingerprint;
+    fillHistory = new Map();
     mount(request.context);
     clear(bodyEl);
     bodyEl.appendChild(el("p", "status", "Reading this item…"));
@@ -1082,6 +1086,64 @@
     return line;
   }
 
+  /*
+   * Everything a fill wrote on this page during this run, with the text each
+   * field held before. Kept across clicks: after Fill anyway or Overwrite the
+   * worker evaluates the earlier rows as unchanged, because the page now holds
+   * their replacement -- but the replacement is still unpublished, and the
+   * old text is still what a user needs to put a row back. The first write
+   * of a row is the one that knew the old text, so it is never replaced.
+   * A refused click leaves the page as it was, so the history shows through
+   * a refusal too.
+   */
+  function recordWritten(rows, wroteMember) {
+    rows.forEach((row) => {
+      if (fillHistory.has(row.k)) return;
+      const members = (row.members || []).filter((member) => wroteMember(row, member));
+      if (!members.length) return;
+      const was = [];
+      members.forEach((member) => {
+        const value = str(member.liveTarget);
+        if (value && !was.includes(value)) was.push(value);
+      });
+      fillHistory.set(row.k, { row, was });
+    });
+  }
+
+  /* The two things a user must know before Publish about what this run has
+   * put on the page: which translations it replaced, with their old text
+   * because clearing the box would not bring one back (a blank publishes as
+   * a deletion), and how many of the filled translations are shared. */
+  function recoverySections() {
+    const written = Array.from(fillHistory.values());
+    const replaced = written.filter((entry) => entry.was.length);
+    let replacedNode = null;
+    if (replaced.length) {
+      replacedNode = el("div");
+      replacedNode.appendChild(el("h3", "", `Replaced ${replaced.length} existing ${plural(replaced.length, "translation")}`));
+      replacedNode.appendChild(el("p", "report-sub",
+        "To keep an old one, type it back into its box before you publish — clearing the box deletes it."));
+      const ul = el("ul", "report-list");
+      replaced.forEach((entry) => {
+        ul.appendChild(reportRow(entry.row, [
+          ["Filled", "tgt", entry.row.target],
+          ["Was", "was", entry.was.join(" / ")],
+        ]));
+      });
+      replacedNode.appendChild(ul);
+    }
+    const shared = written.filter((entry) => entry.row.instanceWide).length;
+    const sharedNode = shared
+      ? el("p", "note flag",
+        shared === 1
+          ? "One translation filled on this page is shared: publishing it changes that translation for every " +
+            "catalog item on this instance whose field uses the same source text."
+          : `${shared} translations filled on this page are shared: publishing them changes those translations ` +
+            "for every catalog item on this instance whose fields use the same source text.")
+      : null;
+    return { replaced: replacedNode, shared: sharedNode };
+  }
+
   function showReport(request, result) {
     clear(bodyEl);
     const res = result || {};
@@ -1096,6 +1158,9 @@
           bodyEl.appendChild(el("pre", "excerpt", str(res.excerpt)));
         }
       }
+      const recovery = recoverySections();
+      if (recovery.replaced) bodyEl.appendChild(recovery.replaced);
+      if (recovery.shared) bodyEl.appendChild(recovery.shared);
       bodyEl.appendChild(replySection(request.text));
       return;
     }
@@ -1103,11 +1168,31 @@
     const report = res.report || {};
     const rows = Array.isArray(report.rows) ? report.rows : [];
     const filled = new Set((Array.isArray(report.filled) ? report.filled : []).map(Number));
-    const missed = new Set((Array.isArray(res.missed) ? res.missed : []).map(Number));
+    const missedRows = new Set((Array.isArray(res.missed) ? res.missed : []).map(Number));
+    /* Which member of a row did not take, when the worker could say. Several
+     * fields can share one row, and one landing while another misses is both
+     * a replacement to remember and a field to check. A miss named by row
+     * only is the whole row. */
+    const missedFields = (Array.isArray(res.missedFields) ? res.missedFields : [])
+      .filter((entry) => entry && typeof entry.identityKey === "string");
+    const missedMembers = new Set(missedFields.map((entry) => entry.identityKey));
+    const detailed = new Set(missedFields.map((entry) => Number(entry.k)));
+    const memberMissed = (row, member) =>
+      missedMembers.has(str(member.identityKey)) || (missedRows.has(row.k) && !detailed.has(row.k));
+    const unconfirmed = !!res.written && res.confirmed === false;
+    const wroteMember = (row, member) =>
+      !!res.written && filled.has(row.k) && (unconfirmed || !memberMissed(row, member));
     const landed = count(res.landed);
     const attempted = count(res.attempted);
 
-    if (res.written && landed === attempted) {
+    if (unconfirmed) {
+      /* The event fired and the page holds what it took, but the model could
+       * not be read back: no count is honest, so every attempted field is one
+       * to look at. */
+      bodyEl.appendChild(el("p", "note flag",
+        `Filled ${attempted} ${plural(attempted, "field")}, but the page could not confirm it` +
+        (str(res.why) ? ` (${str(res.why)})` : "") + ". Check each one on the page before you publish."));
+    } else if (res.written && landed === attempted) {
       bodyEl.appendChild(el("p", "report-head", `Filled ${landed} ${plural(landed, "field")}.`));
     } else if (res.written) {
       bodyEl.appendChild(el("p", "note flag",
@@ -1122,10 +1207,12 @@
         "before publishing; reloading the page discards every fill."));
     }
 
+    /* A row is one translation, which several fields can share, so it is
+     * counted as one. */
     const unchanged = rows.filter((row) => row.verdict === "unchanged").length;
     if (unchanged) {
       bodyEl.appendChild(el("p", "report-sub",
-        `${unchanged} ${unchanged === 1 ? "field already holds" : "fields already hold"} the reply's translation.`));
+        `${unchanged} ${plural(unchanged, "translation")} in the reply ${unchanged === 1 ? "is" : "are"} already on the page.`));
     }
     if (count(report.unknown)) {
       bodyEl.appendChild(el("p", "report-sub",
@@ -1136,29 +1223,14 @@
     const controls = [];
     const status = el("p", "reply-status");
     status.setAttribute("aria-live", "polite");
-    const wrote = (row) => filled.has(row.k) && !missed.has(row.k);
 
-    /* A fill that replaced a translation the user had unlocked to redo. The old
-     * text is shown because clearing the box would not bring it back: a blank
-     * publishes as a deletion. */
-    const replaced = rows.filter((row) => wrote(row) && distinctTargets(row).length);
-    if (res.written && replaced.length) {
-      bodyEl.appendChild(el("h3", "", `Replaced ${replaced.length} existing ${plural(replaced.length, "translation")}`));
-      bodyEl.appendChild(el("p", "report-sub",
-        "To keep an old one, type it back into its box before you publish — clearing the box deletes it."));
-      const ul = el("ul", "report-list");
-      replaced.forEach((row) => {
-        ul.appendChild(reportRow(row, [
-          ["Filled", "tgt", row.target],
-          ["Was", "was", distinctTargets(row).join(" / ")],
-        ]));
-      });
-      bodyEl.appendChild(ul);
-    }
+    if (res.written) recordWritten(rows, wroteMember);
+    const recovery = recoverySections();
+    if (recovery.replaced) bodyEl.appendChild(recovery.replaced);
 
     const order = { fill: 0, block: 1, skip: 2 };
     const left = rows
-      .filter((row) => missed.has(row.k) || (!filled.has(row.k) && row.verdict !== "unchanged"))
+      .filter((row) => missedRows.has(row.k) || (!filled.has(row.k) && row.verdict !== "unchanged"))
       .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || a.k - b.k);
     if (left.length) {
       bodyEl.appendChild(el("h3", "", `Not filled (${left.length})`));
@@ -1170,12 +1242,19 @@
          * against, which is the value that the override is bound to. */
         if (overridable) pairs.push(["On the page", "was", distinctTargets(row).join(" / ") || "(empty)"]);
         const li = reportRow(row, pairs);
-        const reason = missed.has(row.k)
-          ? "did not take on the page — check this field before you publish"
-          : reasonFor(row);
+        let reason = reasonFor(row);
+        if (missedRows.has(row.k)) {
+          const members = row.members || [];
+          const names = members.filter((member) => memberMissed(row, member))
+            .map((member) => str(member.elementId)).filter(Boolean);
+          reason = names.length && names.length < members.length
+            ? `did not take on the page for ${names.map((name) => `“${name}”`).join(", ")}, though the rest ` +
+              "of this row did — check it before you publish"
+            : "did not take on the page — check this field before you publish";
+        }
 
         let choice = null;
-        if (!missed.has(row.k) && row.status === "fill" && row.warning) {
+        if (!missedRows.has(row.k) && row.status === "fill" && row.warning) {
           choice = el("button", "choice", "Fill anyway");
           choice.type = "button";
           choice.addEventListener("click", () => runFill({
@@ -1207,15 +1286,7 @@
       bodyEl.appendChild(ul);
     }
 
-    const shared = rows.filter((row) => wrote(row) && row.instanceWide).length;
-    if (res.written && shared) {
-      bodyEl.appendChild(el("p", "note flag",
-        shared === 1
-          ? "One translation just filled is shared: publishing it changes that translation for every " +
-            "catalog item on this instance whose field uses the same source text."
-          : `${shared} translations just filled are shared: publishing them changes those translations ` +
-            "for every catalog item on this instance whose fields use the same source text."));
-    }
+    if (recovery.shared) bodyEl.appendChild(recovery.shared);
 
     bodyEl.appendChild(status);
     const again = el("button", "secondary", "Fill from a different reply");

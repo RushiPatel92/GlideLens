@@ -1118,5 +1118,105 @@ test("shared translations a fill wrote are named once, as the draft named them",
   show(harness, draftFrom(content));
   await pasteAndFill(harness, "reply text");
   assert.match(harness.text(),
-    /One translation just filled is shared: publishing it changes that translation for every catalog item/);
+    /One translation filled on this page is shared: publishing it changes that translation for every catalog item/);
+});
+
+test("the old text of a replaced translation survives the next click, and a refusal", async () => {
+  /* Codex review, P2: after Fill anyway on a second row the worker evaluates
+   * the first row as unchanged -- the page now holds its replacement -- and
+   * the rebuilt report dropped the old text while the replacement stayed on
+   * the page, unpublished. The shared warning went the same way. */
+  const content = [
+    element({ groupName: "Variable: Cost centre",
+      fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
+    element({ groupName: "Variable: Charge", fields: [field({ source: "Charge ${account}" })] }),
+  ];
+  const answers = { "Cost centre": "Centre de coût", "Charge ${account}": "Débiter le compte" };
+  const first = evaluationFor(content, answers);
+  const costCentre = first.rows.find((row) => row.source === "Cost centre");
+  const charge = first.rows.find((row) => row.source === "Charge ${account}");
+  assert.strictEqual(charge.warning, "placeholder");
+  /* The page after the first fill: the replacement is in the box. */
+  const live = clone(content);
+  live[0].fieldInfo[0].translatedValue = "Centre de coût";
+  const second = evaluationFor(content, answers, live);
+  assert.strictEqual(second.rows.find((row) => row.source === "Cost centre").verdict, "unchanged");
+
+  const harness = load();
+  withFill(harness, (request, call) => {
+    if (call === 1) return Promise.resolve(filledAnswer(first, [costCentre.k]));
+    if (call === 2) return Promise.resolve(filledAnswer(second, [charge.k]));
+    return Promise.resolve({ ok: false, code: "not_written", message: "The page changed just as it was being filled, so nothing was filled." });
+  });
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+  assert.match(harness.text(), /Replaced 1 existing translation.*Was“Centre de frais”/);
+  assert.match(harness.text(), /One translation filled on this page is shared/);
+
+  press(buttonNamed(harness.shadow(), "Fill anyway"));
+  await flush();
+  let text = harness.text();
+  assert.match(text, /Filled 1 field\./);
+  assert.match(text, /1 translation in the reply is already on the page/);
+  assert.match(text, /Replaced 1 existing translation.*Was“Centre de frais”/, "the old text is still there to type back");
+  assert.match(text, /2 translations filled on this page are shared/, "both fills count, not only this click's");
+
+  press(buttonNamed(harness.shadow(), "Fill from a different reply"));
+  await pasteAndFill(harness, "another reply");
+  text = harness.text();
+  assert.match(text, /The page changed just as it was being filled/);
+  assert.match(text, /Replaced 1 existing translation.*Was“Centre de frais”/, "a refusal changes nothing on the page");
+  assert.match(text, /2 translations filled on this page are shared/);
+});
+
+test("a shared row that half landed names the field that missed, and keeps the old text of the one that did", async () => {
+  /* Codex review, P2: several fields can share one row. When one lands and
+   * another misses, the row was neither written nor unwritten: it is a
+   * replacement to remember and a field to check, and the panel has to say
+   * which. */
+  const content = [
+    element({ groupName: "Variable: Cost centre", label: "Question", id: "Variable: Cost centre: Question",
+      fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
+    element({ groupName: "Variable: Cost centre (copy)", label: "Question", id: "Variable: Cost centre (copy): Question",
+      fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
+  ];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  assert.strictEqual(evaluation.rows.length, 1, "one translation, two fields");
+  const row = evaluation.rows[0];
+  assert.strictEqual(row.members.length, 2);
+  const missedMember = row.members[1];
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [row.k], {
+    landed: 1, attempted: 2, missed: [row.k], missedFields: [{ k: row.k, identityKey: missedMember.identityKey }],
+  }));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Filled 1 of 2 fields — 1 did not take on the page/);
+  assert.match(text, /Replaced 1 existing translation.*Was“Centre de frais”/, "the field that landed replaced its text");
+  assert.match(text, /One translation filled on this page is shared/);
+  const notFilled = text.indexOf("Not filled (1)");
+  assert.ok(notFilled > 0);
+  assert.ok(text.indexOf("did not take on the page for “" + missedMember.elementId + "”, though the rest of this row did") > notFilled,
+    "the member that missed is named, under Not filled");
+});
+
+test("a fill the page could not confirm keeps every attempted row's old text, and says to check each", async () => {
+  /* Codex review, P2: the event fired, then reading the model back threw. The
+   * worker used to report that as written with nothing landed and nothing
+   * missed -- a success with a count of zero. */
+  const content = [element({ groupName: "Variable: Cost centre",
+    fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] })];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1], { confirmed: false, why: "boom", landed: 0, attempted: 1 }));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Filled 1 field, but the page could not confirm it \(boom\)\. Check each one on the page before you publish\./);
+  assert.doesNotMatch(text, /Not filled/);
+  assert.match(text, /Replaced 1 existing translation.*Was“Centre de frais”/);
+  assert.match(text, /One translation filled on this page is shared/);
 });

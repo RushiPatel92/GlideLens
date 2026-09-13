@@ -1155,6 +1155,69 @@ test("releasing a tab's lock, as a navigation does, lets the next fill run", asy
   assert.strictEqual(json(await harness.fill({ replyText: fixture.replyText })).ok, true);
 });
 
+test("a navigation while a fill is still reading the page stops that fill, and only the next one injects", async () => {
+  /* Codex review, P2: the navigation handler deleted the lock while the first
+   * fill was awaiting its read. A second fill then started, and when the
+   * first read resolved the first fill carried on to inject as well -- two
+   * unsettled injections, the older built from a page that had unloaded. */
+  const fixture = fillFixture();
+  const firstRead = deferred();
+  let reads = 0;
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => {
+      reads += 1;
+      return reads === 1 ? firstRead.promise : readAnswer(fixture.content);
+    },
+    write: () => landedAnswer(1),
+  });
+
+  const first = harness.fill({ replyText: fixture.replyText });
+  await settle();
+  assert.strictEqual(reads, 1, "the first fill is waiting on its read");
+  /* The page reloads: the navigation handler releases the tab's lock. */
+  harness.context.releaseLfAssistantApplyLock(7, null);
+  const second = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(second.ok, true, "the fresh page accepts a fill");
+  assert.strictEqual(harness.injections.length, 1);
+
+  firstRead.resolve(readAnswer(fixture.content));
+  const stale = json(await first);
+  assert.strictEqual(stale.ok, false);
+  assert.strictEqual(stale.code, "navigated");
+  assert.match(stale.message, /reloaded or moved while the fill was being prepared/);
+  assert.strictEqual(harness.injections.length, 1, "the fill that lost its page never injects");
+  assert.strictEqual(json(await harness.fill({ replyText: fixture.replyText })).ok, true,
+    "and the stale fill did not release the newer fill's lock on its way out");
+});
+
+test("a write the page could not confirm comes back unconfirmed with its rows, and a half-landed row by field", async () => {
+  const fixture = fillFixture();
+  let answer = { written: true, confirmed: false, why: "boom", landed: 0, missed: [], missedFields: [] };
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => Promise.resolve([{ frameId: 5, result: answer }]),
+  });
+  const unconfirmed = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(unconfirmed.ok, true);
+  assert.strictEqual(unconfirmed.written, true);
+  assert.strictEqual(unconfirmed.confirmed, false);
+  assert.strictEqual(unconfirmed.why, "boom");
+  assert.strictEqual(unconfirmed.attempted, 1, "the attempted rows still come back");
+  assert.strictEqual(unconfirmed.landed, 0);
+  assert.ok(unconfirmed.report.filled.length === 1, "with the report that names them");
+
+  answer = {
+    written: true, confirmed: true, landed: 1,
+    missed: [1, "1", -2], missedFields: [{ k: 1, identityKey: "second" }, { k: "1", identityKey: "x" }, { k: 2 }],
+  };
+  const partial = json(await harness.fill({ replyText: fixture.replyText }));
+  assert.strictEqual(partial.confirmed, true);
+  assert.deepStrictEqual(partial.missed, [1], "only row numbers pass");
+  assert.deepStrictEqual(partial.missedFields, [{ k: 1, identityKey: "second" }], "only well-formed field entries pass");
+});
+
 test("every page precondition refuses the whole fill before anything is written", async () => {
   const fixture = fillFixture();
   const cases = [
@@ -1212,6 +1275,11 @@ test("a writer that refuses is reported as nothing filled, and releases the lock
  * The page-side writer
  * ------------------------------------------------------------------ */
 
+/* Two copies, as the platform keeps them: the original the page was loaded
+ * with, and the bound copy the boxes edit, which retrieveCurrentContent
+ * flattens over the original. A user's typing lands ONLY in the bound copy,
+ * so a writer that read the original instead would never see it (Codex
+ * review, P3: with one copy standing in for both, that mutation passed). */
 function fakePage(content, options) {
   const opts = options || {};
   const state = { fired: [] };
@@ -1223,8 +1291,11 @@ function fakePage(content, options) {
       return !!opts.inProgress;
     },
     itemsToTranslate: { adhoc: { documentContent: { content: json(content) } } },
-    groupedItemsToTranslate: { adhoc: { documentContent: {} } },
-    retrieveCurrentContent: (grouped, original) => original,
+    groupedItemsToTranslate: { adhoc: { documentContent: { bound: json(content) } } },
+    retrieveCurrentContent: (grouped, original) => {
+      if (opts.readbackThrows && state.fired.length) throw new TypeError("Cannot read properties of undefined (reading 'content')");
+      return grouped.bound;
+    },
   };
   const context = {
     Promise,
@@ -1237,6 +1308,7 @@ function fakePage(content, options) {
         state.fired.push(name);
         if (name === "updateDocumentContent" && !opts.ignoreEvent) {
           scope.itemsToTranslate.adhoc.documentContent.content = payload.detail;
+          scope.groupedItemsToTranslate.adhoc.documentContent.bound = json(payload.detail);
         }
       },
     },
@@ -1284,18 +1356,20 @@ test("the writer fires once, and counts only fields that hold the value on their
 test("the writer refuses when the page moved since the read, so an edit is never reverted", async () => {
   const content = fillContent();
   const page = fakePage(content);
-  /* The user typed into another row after the worker read the page. */
-  page.scope.itemsToTranslate.adhoc.documentContent.content[1].fieldInfo[0].translatedValue = "typed by hand";
+  /* The user typed into another row after the worker read the page. Typing
+   * reaches the bound copy only; the original still matches the read. */
+  const bound = page.scope.groupedItemsToTranslate.adhoc.documentContent.bound;
+  bound[1].fieldInfo[0].translatedValue = "typed by hand";
+  assert.ok(!("translatedValue" in page.scope.itemsToTranslate.adhoc.documentContent.content[1].fieldInfo[0]));
   const result = json(await page.write(writerRequest(content)));
-  assert.strictEqual(result.written, false);
+  assert.strictEqual(result.written, false, "the writer read the bound copy, where the typing is");
   assert.strictEqual(result.why, "changed");
   /* The row had no translation, so the edit added the key rather than changing
    * a value. */
   assert.strictEqual(result.changedAt, "[1].fieldInfo[0]{keys}",
     "where it moved, by field name and index, never by value");
   assert.deepStrictEqual(page.state.fired, [], "nothing fired");
-  assert.strictEqual(page.scope.itemsToTranslate.adhoc.documentContent.content[1].fieldInfo[0].translatedValue,
-    "typed by hand");
+  assert.strictEqual(bound[1].fieldInfo[0].translatedValue, "typed by hand", "and the typing is still there");
 });
 
 test("an untouched page is not refused because its snapshot came back through Chrome", async () => {
@@ -1348,8 +1422,49 @@ test("a page that ignores the event is reported as filled nowhere, after a short
   const page = fakePage(content, { ignoreEvent: true });
   const result = json(await page.write(writerRequest(content, 250)));
   assert.strictEqual(result.written, true, "the event was fired");
+  assert.strictEqual(result.confirmed, true, "the model was read back, and held nothing");
   assert.strictEqual(result.landed, 0);
   assert.deepStrictEqual(result.missed, [1]);
+  assert.deepStrictEqual(result.missedFields, [{ k: 1, identityKey: "" }]);
+});
+
+test("a shared row that half landed is reported by field, not only by row", async () => {
+  /* Codex review, P2: two fields on one row. The writer used to return the
+   * row number alone, so the panel could not tell one landing from none. */
+  const content = fillContent();
+  content.push({ groupName: "Variable: Cost centre (copy)", label: "Question", id: "Variable: Cost centre (copy): Question",
+    isInternal: false, fieldInfo: [fillField("Cost centre")] });
+  const page = fakePage(content);
+  const request = writerRequest(content);
+  request.merged[3].fieldInfo[0].translatedValue = "Centre de coût";
+  const params = content[3].fieldInfo[0].additionalParameters;
+  request.expected[0].identityKey = "first";
+  request.expected.push({
+    k: 1, identityKey: "second", value: "Centre de coût", elementIndex: 3, fieldIndex: 0,
+    type: params.type, table: params.table, name: params.name, sysId: "e".repeat(32),
+  });
+  const result = json(await page.write(request));
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.landed, 1);
+  assert.deepStrictEqual(result.missed, [1], "the row, once");
+  assert.deepStrictEqual(result.missedFields, [{ k: 1, identityKey: "second" }], "and which field of it");
+});
+
+test("a fill the writer cannot read back is unconfirmed, never a count", async () => {
+  /* Codex review, P2: the event fired, then retrieveCurrentContent threw. That
+   * came back as written with zero landed and nothing missed, which the panel
+   * read as a success. The page holds what it took; the honest answer is that
+   * the writer cannot say what. */
+  const content = fillContent();
+  const page = fakePage(content, { readbackThrows: true });
+  const result = json(await page.write(writerRequest(content, 250)));
+  assert.deepStrictEqual(page.state.fired, ["updateDocumentContent"]);
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.confirmed, false);
+  assert.match(result.why, /reading 'content'/);
+  assert.strictEqual(result.landed, 0);
+  assert.deepStrictEqual(result.missed, []);
+  assert.deepStrictEqual(result.missedFields, []);
 });
 
 /* ------------------------------------------------------------------ *

@@ -3347,11 +3347,13 @@ async function readLfAssistantContext(tabId) {
 // on, refuses unless the page still holds `base`, fires the page's own event
 // with `merged`, then reads every filled field back and reports what landed.
 async function writeLfAssistantContent(request) {
-  const out = { written: false, why: "", landed: 0, missed: [] };
+  const out = { written: false, confirmed: false, why: "", landed: 0, missed: [], missedFields: [] };
+  let scope = null;
+  let current = null;
   try {
     const root = document.querySelector(".main-content");
     if (!root || typeof angular === "undefined") { out.why = "not_page"; return out; }
-    const scope = angular.element(root).scope();
+    scope = angular.element(root).scope();
     if (!scope || typeof scope.isAdhocMode !== "function" || !scope.isAdhocMode()) {
       out.why = "not_page";
       return out;
@@ -3375,7 +3377,7 @@ async function writeLfAssistantContent(request) {
 
     /* The same read the context reader takes, so the two agree on what the
      * page holds: the bound copy flattened over the original. */
-    const current = () => {
+    current = () => {
       const adhoc = scope.itemsToTranslate && scope.itemsToTranslate.adhoc;
       const original = adhoc && adhoc.documentContent && adhoc.documentContent.content;
       if (!Array.isArray(original)) return null;
@@ -3434,9 +3436,20 @@ async function writeLfAssistantContent(request) {
     }
     CustomEvent.fire("updateDocumentContent", { detail: request.merged });
     out.written = true;
+  } catch (error) {
+    out.why = String(error && error.message ? error.message : error);
+    return out;
+  }
 
+  /* The event has fired, so from here the page holds whatever it took from
+   * the merge, and nothing below can say otherwise. A throw while reading the
+   * model back is therefore not "nothing landed": it is a fill that could not
+   * be confirmed, which the worker reports as such rather than as a count. */
+  try {
     /* Counted from the model after the event, by position AND record identity,
-     * so a field only counts if this record's field holds this value. */
+     * so a field only counts if this record's field holds this value. Missed
+     * fields are named by record as well as by row: several fields can share
+     * one row, and the panel has to say which of them did not take. */
     const expected = Array.isArray(request.expected) ? request.expected : [];
     const holds = (entry, flat) => {
       const element = flat && flat[entry.elementIndex];
@@ -3456,11 +3469,20 @@ async function writeLfAssistantContent(request) {
       flat = current();
     }
     expected.forEach((entry) => {
-      if (holds(entry, flat)) out.landed += 1;
-      else if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+      if (holds(entry, flat)) {
+        out.landed += 1;
+        return;
+      }
+      if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+      out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || "") });
     });
+    out.confirmed = true;
     return out;
   } catch (error) {
+    out.confirmed = false;
+    out.landed = 0;
+    out.missed = [];
+    out.missedFields = [];
     out.why = String(error && error.message ? error.message : error);
     return out;
   }
@@ -3523,12 +3545,23 @@ async function applyLfAssistantReply(tabId, msg) {
       ok: false,
       code: "busy",
       message: "A fill is still running on this page. Wait for it to finish and check the page " +
-        "before filling again.",
+        "before filling again. Reloading the page ends it, and discards every fill on the page.",
     };
   }
   const op = { startedAt: Date.now() };
   lfAssistantApplyByTab.set(tabId, op);
   let handedOff = false;
+  /* A navigation releases the lock while this fill may still be awaiting a
+   * read. Deleting the lock alone would let a second fill start AND let this
+   * one carry on to inject a merge built from the page that just unloaded, so
+   * after every await the fill checks that it still owns the tab. */
+  const navigated = () => lfAssistantApplyByTab.get(tabId) !== op;
+  const navigatedRefusal = () => ({
+    ok: false,
+    code: "navigated",
+    message: "The page reloaded or moved while the fill was being prepared, so nothing was filled. " +
+      "Once it has loaded, press Fill again.",
+  });
   try {
     const engine = assistantEngine();
     const parsed = engine.parseReply(typeof (msg && msg.replyText) === "string" ? msg.replyText : "");
@@ -3540,12 +3573,14 @@ async function applyLfAssistantReply(tabId, msg) {
     /* The draft first: a reply from a draft this browser no longer has says
      * that, rather than whatever else might be wrong with it. */
     const draft = await readLfAssistantDraft(parsed.reply.exportId);
+    if (navigated()) return navigatedRefusal();
     if (!draft) {
       const refused = engine.evaluateReply({ draft: null, reply: parsed.reply });
       return { ok: false, code: refused.code, message: refused.message };
     }
 
     const read = await readLfAssistantContext(tabId);
+    if (navigated()) return navigatedRefusal();
     if (!read.selected) return { ok: false, code: "no_page", rejected: read.rejected };
     const context = read.selected.context || {};
     /* Refused unless the page says "no" outright, as the writer refuses. */
@@ -3592,6 +3627,7 @@ async function applyLfAssistantReply(tabId, msg) {
     }
     const expected = merge.applied.map((entry) => ({
       k: entry.k,
+      identityKey: entry.identityKey,
       value: entry.value,
       elementIndex: entry.elementIndex,
       fieldIndex: entry.fieldIndex,
@@ -3630,7 +3666,8 @@ async function applyLfAssistantReply(tabId, msg) {
         indeterminate: true,
         code: "timeout",
         message: "The page has not confirmed the fill after " + (LF_ASSISTANT_APPLY_TIMEOUT_MS / 1000) +
-          " seconds. It may still be filling. Wait, check the page, and do not fill again until it settles.",
+          " seconds. It may still be filling. Wait, check the page, and do not fill again until it settles. " +
+          "Reloading the page ends it, and discards every fill on the page.",
       };
     }
     if (outcome.error) {
@@ -3650,12 +3687,36 @@ async function applyLfAssistantReply(tabId, msg) {
         message: lfAssistantWriteRefusal(answer.why),
       };
     }
+    /* The event fired but the model could not be read back afterwards. The
+     * page holds whatever it took, so this is neither a count nor a "no": the
+     * attempted rows go back with the report, marked unconfirmed, so the panel
+     * keeps their old text and says to check each one before Publish. */
+    if (answer.confirmed === false) {
+      return {
+        ok: true,
+        written: true,
+        confirmed: false,
+        why: String(answer.why || ""),
+        landed: 0,
+        attempted: expected.length,
+        missed: [],
+        missedFields: [],
+        report,
+      };
+    }
+    const positive = (value) => Number.isInteger(value) && value > 0;
     return {
       ok: true,
       written: true,
+      confirmed: true,
       landed: Number(answer.landed) || 0,
       attempted: expected.length,
-      missed: Array.isArray(answer.missed) ? answer.missed : [],
+      missed: (Array.isArray(answer.missed) ? answer.missed : []).filter(positive),
+      /* By record as well as by row, so the panel can say which member of a
+       * shared row did not take when the others did. */
+      missedFields: (Array.isArray(answer.missedFields) ? answer.missedFields : [])
+        .filter((entry) => entry && positive(entry.k) && typeof entry.identityKey === "string")
+        .map((entry) => ({ k: entry.k, identityKey: entry.identityKey })),
       report,
     };
   } finally {
