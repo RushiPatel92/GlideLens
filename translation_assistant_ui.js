@@ -1111,11 +1111,24 @@
    * for another destination. A refused click leaves the page as it was, so
    * the history shows through a refusal too.
    */
+  let historySeq = 0;
   function recordWritten(rows, wroteMember, confirmed) {
+    historySeq += 1;
     rows.forEach((row) => {
       (row.members || []).forEach((member) => {
         const id = str(member && member.identityKey);
-        if (!id || fillHistory.has(id) || !wroteMember(row, member)) return;
+        if (!id || !wroteMember(row, member)) return;
+        const known = fillHistory.get(id);
+        if (known) {
+          /* Written again by a later reply. The old text is still what the
+           * field held before any fill, but what it holds now, and whether
+           * the page confirmed it, are this write's -- an unconfirmed write
+           * over a confirmed one leaves the field uncertain (Codex review). */
+          known.row = row;
+          known.confirmed = !!confirmed;
+          known.seq = historySeq;
+          return;
+        }
         fillHistory.set(id, {
           /* The stored translation this field writes to, stable across drafts. */
           destination: str(row.destinationKey) || `row:${row.k}`,
@@ -1123,6 +1136,7 @@
           elementId: str(member.elementId),
           liveTarget: str(member.liveTarget),
           confirmed: !!confirmed,
+          seq: historySeq,
         });
       });
     });
@@ -1130,15 +1144,20 @@
 
   /* The history grouped the way the page stores it: one group per
    * destination, holding every written field that shares that stored
-   * translation. Shared translations are counted by destination, not by
-   * field, so two fields sharing one stored row count once. */
+   * translation. The group shows the most recent write's row, so its target
+   * is what the page holds now. Shared translations are counted by
+   * destination, not by field, so two fields sharing one stored row count
+   * once. */
   function historyGroups() {
     const groups = new Map();
     fillHistory.forEach((entry) => {
       let group = groups.get(entry.destination);
       if (!group) {
-        group = { row: entry.row, members: [], confirmed: true };
+        group = { row: entry.row, seq: entry.seq, members: [], confirmed: true };
         groups.set(entry.destination, group);
+      } else if (entry.seq > group.seq) {
+        group.row = entry.row;
+        group.seq = entry.seq;
       }
       group.members.push({ elementId: entry.elementId, liveTarget: entry.liveTarget });
       if (!entry.confirmed) group.confirmed = false;

@@ -1239,11 +1239,14 @@ test("the history is kept by field, so a reused row number and a later-landing m
    * row on first sight. A reply from another draft reusing the number for a
    * different destination lost its old text, and a member of a shared row
    * that landed only on a later fill was never remembered. */
+  /* The two members hold DIFFERENT old text (one of them none), so a history
+   * holding one member renders differently from one holding both (Codex:
+   * with identical old text, a join that never happened still passed). */
   const shared = [
     element({ groupName: "Variable: Cost centre", label: "Question", id: "Variable: Cost centre: Question",
       fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
     element({ groupName: "Variable: Cost centre (copy)", label: "Question", id: "Variable: Cost centre (copy): Question",
-      fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] }),
+      fields: [field({ source: "Cost centre" })] }),
   ];
   const first = evaluationFor(shared, { "Cost centre": "Centre de coût" });
   const row = first.rows[0];
@@ -1263,19 +1266,23 @@ test("the history is kept by field, so a reused row number and a later-landing m
   await pasteAndFill(harness, "reply text");
   let text = harness.text();
   assert.match(text, /Replaced 1 existing translation/);
-  assert.match(text, /Was“Centre de frais”/);
+  const pairText = () => {
+    const replaced = findAll(harness.shadow(), (node) =>
+      node.tagName === "LI" && node.parentNode && node.parentNode.className === "report-list")[0];
+    return replaced.children.find((child) => child.className === "pair").children.map((child) => child.textContent);
+  };
+  assert.deepStrictEqual(pairText(), ["Filled", "“Centre de coût”", "Was", "“Centre de frais”"],
+    "one member so far, so one unnamed line");
   assert.match(text, /One translation filled on this page is shared/, "one destination, however many fields");
 
   press(buttonNamed(harness.shadow(), "Fill from a different reply"));
   await pasteAndFill(harness, "reply text again");
   text = harness.text();
-  const replaced = findAll(harness.shadow(), (node) =>
-    node.tagName === "LI" && node.parentNode && node.parentNode.className === "report-list")[0];
-  const pair = replaced.children.find((child) => child.className === "pair");
-  assert.deepStrictEqual(pair.children.map((child) => child.textContent), [
-    "Filled", "“Centre de coût”", "Was", "“Centre de frais”",
-  ], "both members' old text is one line because they agree; the later member joined");
-  assert.strictEqual(findAll(harness.shadow(), (node) => node.className === "mem").length, 0);
+  assert.deepStrictEqual(pairText(), [
+    "Filled", "“Centre de coût”",
+    "Was", "“Centre de frais”Variable: Cost centre: Question",
+    "", "“(empty)”Variable: Cost centre (copy): Question",
+  ], "the later member joined, and the two old values are shown apart, each named");
   assert.match(text, /One translation filled on this page is shared/, "still one destination");
 
   /* A second draft on the same page reuses row number 1 for a different
@@ -1318,6 +1325,48 @@ test("Overwrite from a per-field display binds every field to the value shown fo
       { identityKey: row.members[1].identityKey, target: "" },
     ],
   }]);
+});
+
+test("a field written again by a later reply keeps its first old text but takes the later write's uncertainty", async () => {
+  /* Codex review, P2: a confirmed fill, then a different reply writing the
+   * same field whose read-back failed, then a refused reply. The history
+   * skipped the second write, so the field stayed "Filled" with the first
+   * target while the page held an unconfirmed second one. */
+  const content = [element({ groupName: "Variable: Cost centre",
+    fields: [field({ source: "Cost centre", target: "Centre de frais", locked: false })] })];
+  const first = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  /* The page after the first fill, and a second reply with a different translation. */
+  const live = clone(content);
+  live[0].fieldInfo[0].translatedValue = "Centre de coût";
+  const second = evaluationFor(content, { "Cost centre": "Centre de coûts" }, live);
+  assert.strictEqual(second.rows[0].verdict, "edited", "the page moved since the draft: the first fill is on it");
+  const harness = load();
+  const answers = [
+    filledAnswer(first, [1]),
+    Object.assign(filledAnswer(second, [1]), { confirmed: false, why: "boom", landed: 0, attempted: 1 }),
+    { ok: false, code: "not_written", message: "The page changed just as it was being filled, so nothing was filled." },
+  ];
+  let click = 0;
+  harness.callbacks.onFill = () => Promise.resolve(answers[click++]);
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply one");
+  assert.match(harness.text(), /Filled“Centre de coût”Was“Centre de frais”/);
+
+  press(buttonNamed(harness.shadow(), "Fill from a different reply"));
+  await pasteAndFill(harness, "reply two");
+  let text = harness.text();
+  assert.match(text, /Attempted to fill 1 field, but the page could not confirm it/);
+  assert.match(text, /Attempted“Centre de coûts”Was“Centre de frais”/,
+    "the later target, the first old text, and the later write's uncertainty");
+  assert.doesNotMatch(text, /Filled“/);
+
+  press(buttonNamed(harness.shadow(), "Fill from a different reply"));
+  await pasteAndFill(harness, "reply three");
+  text = harness.text();
+  assert.match(text, /1 attempted fill on this page was never confirmed by the page/);
+  assert.match(text, /Attempted“Centre de coûts”Was“Centre de frais”/);
+  assert.match(text, /filled or attempted on this page is shared/);
+  assert.doesNotMatch(text, /Filled“/);
 });
 
 test("a shared row whose fields hold different values shows every value, each named", async () => {
