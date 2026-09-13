@@ -90,11 +90,15 @@ test("dictionary types route to their verified stores", () => {
 
 test("value query chunks preserve commas and equals while refusing unsafe values", () => {
   const values = Array.from({ length: 41 }, (_, index) => "value," + index + "=ok");
-  values.push("value,0=ok", "bad^query", "bad\nquery", "x".repeat(256));
+  /* 255 characters is the last accepted length and 256 the first refused;
+   * both sit in the list so a slip to >= 255 fails here (Codex, fourth
+   * round: the boundary was asserted from the refused side only). */
+  values.push("value,0=ok", "bad^query", "bad\nquery", "x".repeat(255), "x".repeat(256));
   const result = TL.buildValueQueryChunks("name=example^element=label", "value", values);
   assert.strictEqual(result.chunks.length, 2);
   assert.strictEqual(result.chunks[0].values.length, 40);
-  assert.strictEqual(result.chunks[1].values.length, 1);
+  assert.strictEqual(result.chunks[1].values.length, 2);
+  assert.ok(result.chunks[1].values.includes("x".repeat(255)), "a 255-character value is accepted");
   assert.ok(result.chunks[0].query.includes("value=value,0=ok"));
   assert.ok(result.chunks.every((chunk) => chunk.query.length <= TL.MAX_QUERY_LENGTH));
   assert.deepStrictEqual(own(result.rejected).map((item) => item.reason), [
