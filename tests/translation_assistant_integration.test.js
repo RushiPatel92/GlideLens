@@ -1475,6 +1475,74 @@ test("a page that ignores the event is reported as filled nowhere, after a short
   assert.deepStrictEqual(result.missedFields, [{ k: 1, identityKey: "" }]);
 });
 
+/* A script message as the page builds one: no type, no record, and a key
+ * parameter only when the source language gives the key different text. */
+function messageElement(source, key) {
+  const params = { scope: "global" };
+  if (key) params.key = key;
+  return { groupName: "Catalog Client Script: Lookup", label: "Script", id: "Catalog Client Script: Lookup: Script",
+    isInternal: false, fieldInfo: [{ originalValue: source, isFieldLocked: false, additionalParameters: params }] };
+}
+
+function messageWriterRequest(content, elementIndex, messageKey) {
+  const merged = json(content);
+  merged[elementIndex].fieldInfo[0].translatedValue = "Date de début manquante.";
+  return Object.assign(writerRequest(content), {
+    merged,
+    expected: [{
+      k: 1, value: "Date de début manquante.", elementIndex, fieldIndex: 0,
+      type: "", table: "", name: "", sysId: "", messageKey,
+    }],
+  });
+}
+
+test("the writer counts a script message only where a message with that key stands", async () => {
+  /* type, table, name and sysId are blank on every message, so without the
+   * key any message at that position -- or none -- would count. */
+  const content = fillContent();
+  content.push(messageElement("Start date is missing.", "lookup.start_date_missing"));
+  content.push(messageElement("Pick a date"));
+
+  const keyed = json(await fakePage(content).write(messageWriterRequest(content, 3, "lookup.start_date_missing")));
+  assert.strictEqual(keyed.landed, 1, "stored under its key parameter");
+
+  const textKeyed = json(await fakePage(content).write(messageWriterRequest(content, 4, "Pick a date")));
+  assert.strictEqual(textKeyed.landed, 1, "stored under its own text when the page set no key");
+
+  const wrongKey = json(await fakePage(content).write(messageWriterRequest(content, 3, "Start date is missing.")));
+  assert.strictEqual(wrongKey.landed, 0, "the text is not the key when the page named one");
+  assert.deepStrictEqual(wrongKey.missed, [1]);
+});
+
+test("a message entry never counts a typed field at its position", async () => {
+  const content = fillContent();
+  const request = messageWriterRequest(content, 0, "Cost centre");
+  const result = json(await fakePage(content).write(request));
+  assert.strictEqual(result.landed, 0, "a translated_field holding the value is not the message");
+});
+
+test("the worker hands the writer each message's key for the read-back", async () => {
+  const content = [messageElement("Start date is missing.", "lookup.start_date_missing")];
+  const draft = json(FILL_TA.buildDraft(Object.assign({ content: json(content), exportId: "e".repeat(32), now: 1 }, FILL_IDENTITY)));
+  const reply = json(draft.payload);
+  reply.rows[0].target = "Date de début manquante.";
+  const harness = loadFill({
+    stored: json(FILL_TA.storedDraft(draft)),
+    read: () => readAnswer(content),
+    write: () => landedAnswer(1),
+  });
+  const result = json(await harness.fill({ replyText: JSON.stringify(reply) }));
+  assert.strictEqual(result.ok, true, result.message);
+  assert.strictEqual(result.written, true);
+  const request = json(harness.injections[0].args[0]);
+  assert.deepStrictEqual(request.expected.map((entry) => [entry.elementIndex, entry.type, entry.sysId, entry.messageKey]),
+    [[0, "", "", "lookup.start_date_missing"]]);
+  assert.deepStrictEqual(Object.keys(request.merged[0].fieldInfo[0]).sort(),
+    ["additionalParameters", "isFieldLocked", "originalValue", "translatedValue"]);
+  assert.deepStrictEqual(request.merged[0].fieldInfo[0].additionalParameters,
+    { scope: "global", key: "lookup.start_date_missing" }, "passed through untouched, scope included");
+});
+
 test("a shared row that half landed is reported by field, not only by row", async () => {
   /* Codex review, P2: two fields on one row. The writer used to return the
    * row number alone, so the panel could not tell one landing from none. */

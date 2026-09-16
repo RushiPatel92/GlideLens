@@ -1410,3 +1410,142 @@ test("a shared row whose fields hold different values shows every value, each na
   assert.deepStrictEqual(onePair.children.map((child) => child.textContent),
     ["Reply", "“Centre de coût”", "On the page", "“typed by hand”"]);
 });
+
+/* ------------------------------------------------------------------ *
+ * Script messages (owner request, 2026-09-16)
+ *
+ * A message is stored in sys_ui_message by key, and what shares it is every
+ * script asking for that key, so the panel names it as a message, links to
+ * the row a publish would write, and offers no usage list it cannot build.
+ * ------------------------------------------------------------------ */
+
+function message(options) {
+  const opts = options || {};
+  const params = { scope: "global" };
+  if (opts.key !== undefined) params.key = opts.key;
+  const info = { originalValue: opts.source, isFieldLocked: !!opts.locked, additionalParameters: params };
+  if (opts.target !== undefined) info.translatedValue = opts.target;
+  return info;
+}
+
+function script(fields) {
+  return element({ groupName: "Catalog Client Script: Lookup", label: "Script", fields });
+}
+
+test("a script message is warned about as a message, and linked to its stored row only", () => {
+  const harness = load();
+  show(harness, draftFrom([script([message({ key: "lookup.start_date_missing", source: "Start date is missing." })])]));
+  const text = harness.text();
+  assert.match(text, /One of these translations is a script message: publishing it changes that message for every script on this instance that uses the same message key\./);
+  assert.doesNotMatch(text, /every catalog item/, "no catalog item shares a message");
+  assert.match(text, /Each links to where its French translation is stored — empty unless/);
+  assert.match(text, /Script message · Catalog Client Script: Lookup/);
+  assert.strictEqual(buttonNamed(harness.shadow(), "Where this text is used ↗"), null,
+    "the scripts asking for a key are not something a list filter can find");
+
+  press(buttonNamed(harness.shadow(), "Stored French translation ↗"));
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/sys_ui_message_list.do?sysparm_query=" +
+      "key%3Dlookup.start_date_missing%5Elanguage%3Dfr",
+  ]);
+});
+
+test("fields and messages on one item each get their own sentence", () => {
+  const harness = load();
+  show(harness, draftFrom([
+    element({ fields: [field({ source: "Cost centre" })] }),
+    script([message({ source: "Pick a date" })]),
+    script([message({ source: "Pick a start date" })]),
+  ]));
+  const text = harness.text();
+  assert.match(text, /One of these translations is shared: publishing it changes that translation for every catalog item/);
+  assert.match(text, /2 of these translations are script messages: publishing them changes those messages for every script/);
+  assert.match(text, /Each links to where its French translation is stored, and each field also to the fields that use its text/);
+});
+
+test("a message key no list filter can carry gets no link, and says so", () => {
+  const harness = load();
+  show(harness, draftFrom([script([message({ source: "Pick one ^ or the other" })])]));
+  assert.strictEqual(verifyButtons(harness.shadow()).length, 0);
+  assert.match(harness.text(), /no list links: a list filter cannot express this text/);
+});
+
+test("a message that looks like a key is listed, and linked to that key in every language", () => {
+  const harness = load();
+  show(harness, draftFrom([
+    script([message({ source: "help.cost_centre" })]),
+    element({ fields: [field({ source: "Cost centre" })] }),
+  ]));
+  assert.match(harness.text(), /script messages that look like a key/);
+  const toggle = bucketToggle(harness.shadow(), "script messages that look like a key");
+  assert.ok(toggle, "the count alone cannot say which key needs its text");
+  const detail = detailOf(toggle);
+  press(toggle);
+  assert.match(detail.textContent, /“help\.cost_centre”/);
+  const link = verifyButtons(detail)[0];
+  assert.strictEqual(link.textContent, "Messages for this key ↗");
+  press(link);
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/sys_ui_message_list.do?sysparm_query=key%3Dhelp.cost_centre",
+  ]);
+});
+
+test("an already-translated message links to its stored row in the target language", () => {
+  const harness = load();
+  show(harness, draftFrom([
+    script([message({ source: "Pick a date", locked: true, target: "Choisissez une date" })]),
+    element({ fields: [field({ source: "Cost centre" })] }),
+  ]));
+  const detail = detailOf(bucketToggle(harness.shadow(), "already translated"));
+  assert.match(detail.textContent, /→ “Choisissez une date”/);
+  press(verifyButtons(detail)[0]);
+  assert.deepStrictEqual(harness.opened, [
+    "https://example.service-now.com/sys_ui_message_list.do?sysparm_query=key%3DPick%20a%20date%5Elanguage%3Dfr",
+  ]);
+});
+
+test("a lock in the row's own element is not named as another field", async () => {
+  /* Review finding: a locked appearance of the key added to the same script
+   * carried that script's element id, so the report said the row shared a
+   * translation with itself. */
+  const content = [script([message({ source: "Pick a date" })])];
+  const live = clone(content);
+  live[0].fieldInfo.push(message({ source: "pick a date", locked: true, target: "Choisissez une date" }));
+  const evaluation = evaluationFor(content, { "Pick a date": "Choisissez une date" }, live);
+  assert.strictEqual(evaluation.rows[0].verdict, "locked");
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+  assert.match(harness.text(), /locked — unlock it on the page to fill this/);
+  assert.doesNotMatch(harness.text(), /“Catalog Client Script: Lookup: Script” is locked/);
+
+  /* A lock in another script is another place, and is named. Both scripts
+   * were there at draft time -- a new section would refuse the whole reply --
+   * and the second was locked since. */
+  const two = [
+    script([message({ source: "Pick a date" })]),
+    element({ groupName: "Catalog Client Script: Submit", label: "Script", fields: [message({ source: "Pick a date" })] }),
+  ];
+  const lockedSince = clone(two);
+  lockedSince[1].fieldInfo[0].isFieldLocked = true;
+  const other = load();
+  withFill(other, filledAnswer(evaluationFor(two, { "Pick a date": "Choisissez une date" }, lockedSince), []));
+  show(other, draftFrom(two));
+  await pasteAndFill(other, "reply text");
+  assert.match(other.text(), /“Catalog Client Script: Submit: Script” is locked, and they share one translation/);
+});
+
+test("a message a fill wrote is named as a shared script message, not a catalog field", async () => {
+  const content = [script([message({ source: "Pick a date" })])];
+  const evaluation = evaluationFor(content, { "Pick a date": "Choisissez une date" });
+  assert.strictEqual(evaluation.rows[0].store, "sys_ui_message");
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1]));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "reply text");
+  const text = harness.text();
+  assert.match(text,
+    /One script message filled on this page is shared: publishing it changes that message for every script on this instance that uses the same message key\./);
+  assert.doesNotMatch(text, /One translation filled on this page is shared/);
+});

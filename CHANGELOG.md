@@ -18,11 +18,14 @@ reconstructed version by version.
   (**Edit Translations**, in ad-hoc mode). Step 1 downloads one JSON file
   holding the item's untranslated, unlocked text together with the
   instructions an AI tool needs to translate it, or copies the same prompt
-  and JSON to the clipboard. The panel counts what it left out and why —
-  already translated, rich text, a message key, a text shared with a locked
-  field — and lists each text whose translation is stored instance-wide by
-  source string, linked to the fields that use it and to the row a publish
-  would write. Step 2 takes the tool's reply, pasted or uploaded, and fills
+  and JSON to the clipboard. The file includes the item's script messages —
+  the `getMessage` keys in its client scripts, UI policies and producer
+  script — once per key. The panel counts what it left out and why —
+  already translated, rich text, a message that looks like a key rather
+  than text, a text shared with a locked field — and lists each text whose
+  translation is stored instance-wide, by source string or by message key,
+  linked to the row a publish would write and, for a field, to the fields
+  that use its text. Step 2 takes the tool's reply, pasted or uploaded, and fills
   the page: every row that still passes the checks is written into the page's
   own unsaved model through its own update channel, and the panel then lists
   each row it did not fill with the reason, offers **Fill anyway** for a

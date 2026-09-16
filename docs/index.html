@@ -1384,8 +1384,9 @@ a { color: var(--teal); }
           <h2>Translate a catalog item with the AI tool you already use</h2>
           <p>
             On a catalog item's <strong>Edit Translations</strong> page, one
-            command hands every untranslated, unlocked text to your own AI tool
-            as a single JSON file that carries its own instructions. Paste the
+            command hands every untranslated, unlocked text &mdash; its fields and
+            the messages its scripts show &mdash; to your own AI tool as a single
+            JSON file that carries its own instructions. Paste the
             reply back and it fills the page's boxes for you to read over; the
             page's own <strong>Publish</strong> button stays yours. Nothing is
             saved until you press it, and a reload discards every fill.
@@ -1419,20 +1420,19 @@ a { color: var(--teal); }
               </div>
               <div class="dm-ta-body" data-tapane="draft">
                 <ul class="dm-ta-tally">
-                  <li><span class="n">9</span><span class="what">to translate</span></li>
+                  <li><span class="n">11</span><span class="what">to translate</span></li>
                   <li><span class="n">3</span><span class="what">already translated</span><span class="why">unlock one on this page to redo it</span></li>
                   <li><span class="n">1</span><span class="what">rich text</span><span class="why">HTML is not sent</span></li>
-                  <li><span class="n">2</span><span class="what">message keys</span><span class="why">shared across the instance</span></li>
                   <li class="total"><span class="n">15</span><span class="what">fields on this item</span></li>
                 </ul>
                 <span class="dm-ta-primary">Download JSON</span>
                 <p class="dm-ta-hint">Upload the file to your AI tool and say: &ldquo;Follow the instructions in this file.&rdquo;</p>
                 <p class="dm-ta-privacy">The file holds this item's field text. It leaves your browser when you upload it somewhere.</p>
                 <span class="dm-ta-link">Copy prompt + JSON instead</span>
-                <p class="dm-ta-note">4 of these translations are shared instance-wide: publishing one changes it for every catalog item whose field uses the same source text.</p>
+                <p class="dm-ta-note">4 of these translations are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text. 2 of these translations are script messages: publishing them changes those messages for every script on this instance that uses the same message key.</p>
               </div>
               <div class="dm-ta-body" data-tapane="report" hidden>
-                <p class="dm-ta-head">Filled 8 fields.</p>
+                <p class="dm-ta-head">Filled 10 fields.</p>
                 <p class="dm-ta-hint">Review them on the page, then press Publish. To leave one out, correct or clear its box before publishing; reloading the page discards every fill.</p>
                 <h4 class="dm-ta-h3">Replaced 1 existing translation</h4>
                 <p class="dm-ta-sub">To keep an old one, type it back into its box before you publish &mdash; clearing the box deletes it.</p>
@@ -1452,7 +1452,7 @@ a { color: var(--teal); }
                     <div class="verdict"><span class="reason">changed on the page since the draft</span><span class="choice">Overwrite</span></div>
                   </li>
                 </ul>
-                <p class="dm-ta-note">3 translations filled on this page are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text.</p>
+                <p class="dm-ta-note">3 translations filled on this page are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text. 2 script messages filled on this page are shared: publishing them changes those messages for every script on this instance that uses the same message key.</p>
               </div>
               <p class="dm-foot">Never saves or publishes &mdash; Translation Assistant leaves Publish to you.</p>
             </div>

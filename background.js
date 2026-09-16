@@ -3478,7 +3478,15 @@ async function writeLfAssistantContent(request) {
       const element = flat && flat[entry.elementIndex];
       const info = element && Array.isArray(element.fieldInfo) ? element.fieldInfo[entry.fieldIndex] : null;
       const params = (info && info.additionalParameters) || {};
-      return !!info &&
+      /* A script message has no type, table, name or sysId, so those four
+       * match any message at that position. It is pinned by the key the
+       * platform stores it under instead, derived the way the save derives it. */
+      const messageKey = String(entry.messageKey || "");
+      const keyHolds = messageKey
+        ? !Object.prototype.hasOwnProperty.call(params, "type") &&
+          String(params.key || (info && info.originalValue) || "") === messageKey
+        : true;
+      return !!info && keyHolds &&
         String(params.type || "") === entry.type &&
         String(params.table || "") === entry.table &&
         String(params.name || "") === entry.name &&
@@ -3662,6 +3670,7 @@ async function applyLfAssistantReply(tabId, msg) {
       table: entry.table,
       name: entry.name,
       sysId: entry.sysId,
+      messageKey: entry.messageKey,
     }));
 
     /* Into the frame this fill's own read selected a moment ago, never a

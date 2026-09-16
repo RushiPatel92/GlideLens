@@ -38,9 +38,10 @@
  *     the payload carries its own instructions; the copy link is there for a
  *     model with no file upload. Nobody is asked to compare them.
  *   - Every excluded field is counted under a named reason. A field this build
- *     will not translate is a stated limit, never a silent omission. Two of
- *     the buckets -- already translated, and rich text -- open into a list
- *     on request, each field linked to where its translation is kept. The
+ *     will not translate is a stated limit, never a silent omission. Three of
+ *     the buckets -- already translated, rich text, and messages that look
+ *     like a key -- open into a list on request, each field linked to where its
+ *     translation is kept. The
  *     counts stay first; the list is for checking, not reading.
  *   - The tally is one accounting system, and it is counted in FIELDS. The
  *     exported row count is a different number -- two fields can share one
@@ -55,8 +56,9 @@
  *     toast is gone by the time this panel is up, so a notice sent there is
  *     never seen: a copy that worked looked exactly like one that did not.
  *   - A claim the user cannot check is named and linked. Every shared
- *     translation is listed, with a link to the fields that use its text and
- *     another to the sys_translated row a publish would write.
+ *     translation is listed: a field's with a link to the fields that use its
+ *     text and another to the sys_translated row a publish would write, a
+ *     script message's with a link to the sys_ui_message row for its key.
  *   - "Locked" is never described as verified. In ad-hoc mode the flag is
  *     derived from whether a translation exists, so the panel says the field
  *     already has one and says how to redo it.
@@ -155,6 +157,7 @@
     .note.info{color:var(--info);background:var(--info-bg);border:1px solid var(--info-line)}
     .note.flag{color:var(--flag);background:var(--flag-bg);border:1px solid var(--flag-line)}
     .note p{margin:0}
+    .note p + p{margin-top:6px}
     .shared-list{list-style:none;margin:8px 0 0;padding:0}
     .shared-list li{padding:6px 0 5px;border-top:1px solid var(--flag-line)}
     .shared-list li:first-child{border-top:0}
@@ -424,6 +427,26 @@
   }
 
   /*
+   * The row a publish writes for a script message: sys_ui_message on (key,
+   * language) and nothing else, the query the platform's save runs, so the
+   * list holds the row it would update. With no language it lists the key in
+   * every language -- for a key the page could only show as itself, that is
+   * where its source-language text is added.
+   */
+  function storedMessageUrl(key, language) {
+    const value = str(key);
+    const lang = str(language);
+    if (!queryValueOk(value) || (lang && !LANGUAGE_PATTERN.test(lang))) return "";
+    const query = lang ? `key=${value}^language=${lang}` : `key=${value}`;
+    return `/sys_ui_message_list.do?sysparm_query=${encodeURIComponent(query)}`;
+  }
+
+  const MESSAGE_STORE = "sys_ui_message";
+  const isMessage = (row) => str(row && row.store) === MESSAGE_STORE;
+  /* What a message's list links are built from, and so what a refusal names. */
+  const linkValue = (row) => (isMessage(row) ? str(row && row.key) : str(row && row.source));
+
+  /*
    * Where an excluded field's translation is kept, for the lists behind the
    * "already translated" and "rich text" counts. A shared-text field uses the
    * same sys_translated key as the shared list. A per-record field is keyed by
@@ -438,6 +461,9 @@
     if (!LANGUAGE_PATTERN.test(lang)) return "";
     const store = str(entry && entry.store);
     if (store === "sys_translated") return storedTranslationUrl(entry, lang);
+    if (store === MESSAGE_STORE) {
+      return storedMessageUrl(entry.key, str(entry.reason) === "message_key_only" ? "" : lang);
+    }
     if (store !== "sys_translated_text") return "";
     const sysId = str(entry && entry.sysId).toLowerCase();
     const column = str(entry && entry.column);
@@ -492,9 +518,11 @@
     return foot;
   }
 
-  /* The two counts that can open into a list. The counts stay the first thing
-   * shown; the list is there to check, not to read. */
-  const DETAIL_BUCKETS = new Set(["locked", "rich_text"]);
+  /* The counts that can open into a list. The counts stay the first thing
+   * shown; the list is there to check, not to read. A message that looks like
+   * a key is listed because the count alone cannot say which key needs its
+   * text, or which one the shape test got wrong. */
+  const DETAIL_BUCKETS = new Set(["locked", "rich_text", "message_key_only"]);
 
   function excludedList(entries, languages) {
     const language = str(languages && languages.targetLanguage);
@@ -515,13 +543,14 @@
       const url = excludedStoreUrl(entry, language);
       let trailing = null;
       if (url && isFn(callbacks.onOpenUrl)) {
-        trailing = el("button", "verify", `Stored ${inLanguage} ↗`);
+        trailing = el("button", "verify", entry.reason === "message_key_only"
+          ? "Messages for this key ↗" : `Stored ${inLanguage} ↗`);
         trailing.type = "button";
         trailing.addEventListener("click", () => { openUrl(url); });
-      } else if (str(entry.store) === "sys_translated" && queryValueProblem(entry.source)) {
-        /* Stored under its text, so a text no filter can carry gets no link,
-         * and the entry says so rather than leaving a gap. */
-        trailing = el("span", "verify-none", `no list link: ${queryValueProblem(entry.source)}`);
+      } else if ((str(entry.store) === "sys_translated" || isMessage(entry)) && queryValueProblem(linkValue(entry))) {
+        /* Stored under its text or its key, so one no filter can carry gets no
+         * link, and the entry says so rather than leaving a gap. */
+        trailing = el("span", "verify-none", `no list link: ${queryValueProblem(linkValue(entry))}`);
       }
       const foot = footLine([str(entry.label), str(entry.groupName)].filter(Boolean).join(" · "), trailing);
       if (foot) li.appendChild(foot);
@@ -684,7 +713,13 @@
       why: "filling them would rewrite it" },
     { key: "uncertain_destination", what: "may share a translation with each other",
       why: "GlideLens cannot prove it, so it leaves them alone" },
-    { key: "shared_message", what: "script messages", why: "shared by every script using the key" },
+    /* "Looks like", because the engine tells a key from text by its shape and
+     * can be wrong both ways (review finding). */
+    { key: "message_key_only", what: "script messages that look like a key",
+      why: "the page shows a key when its message has no source-language text — add that text first" },
+    { key: "message_key_too_long", what: "script messages with a key over 255 characters",
+      why: "too long for ServiceNow to store a translation under" },
+    { key: "no_record", what: "fields with no record id", why: "a reply could not be matched to them" },
     { key: "unsupported_type", what: "other field types", why: "not covered by this release" },
     { key: "empty_source", what: "empty", why: "nothing to translate" },
   ];
@@ -857,28 +892,46 @@
    */
   function sharedNote(rows, languages) {
     const list = Array.isArray(rows) ? rows : [];
-    const n = list.length;
+    const messages = list.filter(isMessage).length;
+    const fields = list.length - messages;
     const language = str(languages && languages.targetLanguage);
     const languageLabel = str(languages && languages.targetLanguageName) || language;
     const inLanguage = languageLabel ? `${languageLabel} translation` : "translation";
     const linked = isFn(callbacks.onOpenUrl);
     const box = el("div", "note flag");
-    box.appendChild(el("p", "",
-      n === 1
-        ? "One of these translations is shared: publishing it changes that translation " +
-          "for every catalog item on this instance whose field uses the same source text."
-        : n + " of these translations are shared: publishing them changes those translations " +
-          "for every catalog item on this instance whose fields use the same source text."));
+    if (fields) {
+      box.appendChild(el("p", "",
+        fields === 1
+          ? "One of these translations is shared: publishing it changes that translation " +
+            "for every catalog item on this instance whose field uses the same source text."
+          : fields + " of these translations are shared: publishing them changes those translations " +
+            "for every catalog item on this instance whose fields use the same source text."));
+    }
+    /* A message is shared by key, and what shares it is every script that asks
+     * for that key -- not a catalog item -- so it gets a sentence of its own. */
+    if (messages) {
+      box.appendChild(el("p", "",
+        messages === 1
+          ? "One of these translations is a script message: publishing it changes that message " +
+            "for every script on this instance that uses the same message key."
+          : messages + " of these translations are script messages: publishing them changes those " +
+            "messages for every script on this instance that uses the same message key."));
+    }
     if (linked) {
       /* Every row listed here is unlocked. In ad-hoc mode that usually means
        * no translation exists yet, so the stored list is usually empty, and
        * saying so stops an empty list reading as a broken link. But a
        * translation unlocked to be redone is unlocked too and still stored
        * (Codex review), so the sentence names both cases rather than
-       * promising the first. */
+       * promising the first. A message has no usage list: the scripts asking
+       * for a key are not something a list filter can find. */
+      const links = !messages
+        ? `Each links to the fields that use its text, and to where its ${inLanguage} is stored`
+        : (fields
+          ? `Each links to where its ${inLanguage} is stored, and each field also to the fields that use its text`
+          : `Each links to where its ${inLanguage} is stored`);
       box.appendChild(el("p", "sub",
-        `Each links to the fields that use its text, and to where its ${inLanguage} ` +
-        "is stored — empty unless one was published and then unlocked to be redone."));
+        links + " — empty unless one was published and then unlocked to be redone."));
     }
 
     /* Named, and linked to where each text is used and where its translation
@@ -888,10 +941,12 @@
       const li = el("li");
       li.appendChild(el("span", "src", `“${str(row.source)}”`));
       const where = [str(row.kind), str(row.context)].filter(Boolean).join(" · ");
-      const links = [
-        { url: whereUsedUrl(row), label: "Where this text is used ↗" },
-        { url: storedTranslationUrl(row, language), label: `Stored ${inLanguage} ↗` },
-      ].filter((entry) => entry.url);
+      const links = (isMessage(row)
+        ? [{ url: storedMessageUrl(row.key, language), label: `Stored ${inLanguage} ↗` }]
+        : [
+          { url: whereUsedUrl(row), label: "Where this text is used ↗" },
+          { url: storedTranslationUrl(row, language), label: `Stored ${inLanguage} ↗` },
+        ]).filter((entry) => entry.url);
       let trailing = null;
       if (links.length && linked) {
         trailing = el("span", "verify-links");
@@ -901,8 +956,8 @@
           link.addEventListener("click", () => { openUrl(entry.url); });
           trailing.appendChild(link);
         });
-      } else if (queryValueProblem(row.source)) {
-        trailing = el("span", "verify-none", `no list links: ${queryValueProblem(row.source)}`);
+      } else if (queryValueProblem(linkValue(row))) {
+        trailing = el("span", "verify-none", `no list links: ${queryValueProblem(linkValue(row))}`);
       }
       const foot = footLine(where, trailing);
       if (foot) li.appendChild(foot);
@@ -1015,7 +1070,12 @@
    * a reason the engine did not give. */
   function reasonFor(row) {
     const detail = (row && row.detail) || {};
-    const who = str(detail.elementId);
+    /* The other field, named only when it is another place on the page. Two
+     * fields of one element share its id -- two appearances of a message key
+     * in one script, say -- and naming the row's own element reads as the row
+     * sharing a translation with itself (review finding). */
+    const named = str(detail.elementId);
+    const who = named && named !== str(row && row.elementId) ? named : "";
     switch (str(row && row.verdict)) {
       case "fill":
         return row.warning === "placeholder"
@@ -1196,16 +1256,31 @@
     }
 
     const sharedGroups = groups.filter((group) => group.row.instanceWide);
-    const shared = sharedGroups.length;
-    const how = sharedGroups.some((group) => !group.confirmed) ? "filled or attempted" : "filled";
-    const sharedNode = shared
-      ? el("p", "note flag",
-        shared === 1
+    const messageGroups = sharedGroups.filter((group) => isMessage(group.row));
+    const fieldGroups = sharedGroups.filter((group) => !isMessage(group.row));
+    const howOf = (list) => (list.some((group) => !group.confirmed) ? "filled or attempted" : "filled");
+    let sharedNode = null;
+    if (sharedGroups.length) {
+      sharedNode = el("div", "note flag");
+      const fields = fieldGroups.length;
+      const messages = messageGroups.length;
+      if (fields) {
+        const how = howOf(fieldGroups);
+        sharedNode.appendChild(el("p", "", fields === 1
           ? `One translation ${how} on this page is shared: publishing it changes that translation for every ` +
             "catalog item on this instance whose field uses the same source text."
-          : `${shared} translations ${how} on this page are shared: publishing them changes those translations ` +
-            "for every catalog item on this instance whose fields use the same source text.")
-      : null;
+          : `${fields} translations ${how} on this page are shared: publishing them changes those translations ` +
+            "for every catalog item on this instance whose fields use the same source text."));
+      }
+      if (messages) {
+        const how = howOf(messageGroups);
+        sharedNode.appendChild(el("p", "", messages === 1
+          ? `One script message ${how} on this page is shared: publishing it changes that message for every ` +
+            "script on this instance that uses the same message key."
+          : `${messages} script messages ${how} on this page are shared: publishing them changes those messages ` +
+            "for every script on this instance that uses the same message key."));
+      }
+    }
     return { unconfirmed: unconfirmedNode, replaced: replacedNode, shared: sharedNode };
   }
 

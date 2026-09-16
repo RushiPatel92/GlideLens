@@ -18,6 +18,10 @@
  *   stored in sys_translated keyed by (table, column, source string), so two
  *   different records sharing one source string share one stored translation.
  *   Destination groups are therefore the unit of protection: all-or-nothing.
+ * - A row with no `type` at all is a script message. The platform saves it to
+ *   sys_ui_message keyed by (message key, language) and nothing else, so it has
+ *   no record to be identified by and is shared by every script on the
+ *   instance that asks for the same key.
  *
  * The engine never writes a record and never publishes. It produces a merged
  * content array for the page's own `updateDocumentContent` channel, and the
@@ -47,9 +51,9 @@
    *
    * Only the three types observed on a catalog item are listed. sys_choice and
    * sys_documentation rows land in a column this engine has not verified
-   * (sys_documentation splits across label/hint/plural), and a getMessage row
-   * has no record anchor at all, so all three are excluded with a stated
-   * reason rather than given a guessed limit. */
+   * (sys_documentation splits across label/hint/plural), so both are excluded
+   * with a stated reason rather than given a guessed limit. A script message
+   * has no type and its own limits, below. */
   const DESTINATION_LIMITS = Object.freeze({
     translated_field: 255,
     translated_text: 65000,
@@ -60,6 +64,37 @@
   const RECORD_SCOPED_TYPES = new Set(["translated_text", "translated_html"]);
   /* Stored per source string: (table, column, value). Shared instance-wide. */
   const STRING_SCOPED_TYPES = new Set(["translated_field"]);
+
+  /*
+   * Script messages: the getMessage keys the page scans out of the item's
+   * client scripts, UI policies and producer script. The platform's save
+   * routes a field to sys_ui_message when its additionalParameters has no
+   * `type` property at all, and writes it on (key, language) only, where the
+   * key is additionalParameters.key when the page set one and the source text
+   * otherwise. No scope, no record: one key is one stored translation for
+   * every script on the instance.
+   *
+   * Both limits were read from sys_dictionary on the configured customer
+   * instance: `message` holds 8000 and `key` holds 255. A longer key could not
+   * be stored whole, so a translation published under it would never be found
+   * again.
+   */
+  const MESSAGE_STORE = "sys_ui_message";
+  const MESSAGE_LIMIT = 8000;
+  const MESSAGE_KEY_LIMIT = 255;
+  /* The row kind a model reads. The page labels these rows "Script", which
+   * describes where the key was found rather than what is being translated. */
+  const MESSAGE_KIND = "Script message";
+  /* When the source language has no row for a key, the page offers the key
+   * itself as the text to translate - measured live, where a dotted code key
+   * with a row in one other language only came through as its own source.
+   * Words have spaces; a key standing in for them usually has none, and a dot
+   * or an underscore BETWEEN two letters or digits. Between, because trailing
+   * punctuation is how one-word messages end ("Loading...", "Done.") and those
+   * are text (review finding). This is a heuristic both ways -- "e.g." is left
+   * out, a camelCase key goes through -- so the exclusion is named, and the
+   * panel says the text looks like a key rather than that it is one. */
+  const KEY_LIKE = /^[^\s]*[\p{L}\p{N}][._][\p{L}\p{N}][^\s]*$/u;
 
   /* Keys the platform's deserialiser handles by name. Anything else on a
    * fieldInfo object is moved into additionalParameters and posted to the
@@ -76,7 +111,9 @@
    * one, and every excluded row is reported - a silent drop is a bug. */
   const REASON = Object.freeze({
     RICH_TEXT: "rich_text",
-    SHARED_MESSAGE: "shared_message",
+    MESSAGE_KEY_ONLY: "message_key_only",
+    MESSAGE_KEY_TOO_LONG: "message_key_too_long",
+    NO_RECORD: "no_record",
     UNSUPPORTED_TYPE: "unsupported_type",
     EMPTY_SOURCE: "empty_source",
     LOCKED: "locked",
@@ -247,9 +284,55 @@
     return text(params && params.type);
   }
 
+  /* The platform's own test, `hasOwnProperty('type')`, and not a blank type:
+   * a row whose type is present but empty is routed nowhere by the save, so it
+   * is an unsupported field rather than a message.
+   *
+   * Narrower than the platform on purpose in one place. Its save reads
+   * `getAdditionalParameters() || {}`, so a field with no parameters object at
+   * all would also be saved as a message under its own text. No page has been
+   * seen to build one, and a field shape nobody has seen should be refused by
+   * name rather than quietly translated into sys_ui_message (review finding),
+   * so only an object without its own `type` is a message. */
+  function isMessageParams(params) {
+    return isObject(params) && !Object.prototype.hasOwnProperty.call(params, "type");
+  }
+
+  /* The key a message is stored under, as the platform's save derives it. */
+  function messageKeyOf(params, source) {
+    return text(params && params.key) || text(source);
+  }
+
+  function storeFor(params) {
+    if (isMessageParams(params)) return MESSAGE_STORE;
+    const type = fieldType(params);
+    if (STRING_SCOPED_TYPES.has(type)) return "sys_translated";
+    if (RECORD_SCOPED_TYPES.has(type)) return "sys_translated_text";
+    return "";
+  }
+
+  /* Stores keyed by text rather than by record, where publishing one row
+   * changes that translation for everything on the instance sharing the text. */
+  function isInstanceWide(params) {
+    const store = storeFor(params);
+    return store === "sys_translated" || store === MESSAGE_STORE;
+  }
+
   function identityKey(params) {
     const p = params || {};
     return [fieldType(p), text(p.table), text(p.name), text(p.sysId)].join(UNIT);
+  }
+
+  /*
+   * A message row has no record, so (type, table, name, sysId) is blank on
+   * every one of them and would make them all one field. Its identity is its
+   * exact key and which appearance of that key on the page it is. That ordinal
+   * is only an address inside a group, never a way to tell two destinations
+   * apart: every appearance of a key has the same source text and the same
+   * stored translation, and the key's group is filled or refused as a whole.
+   */
+  function messageIdentityKey(key, ordinal) {
+    return [MESSAGE_STORE, "", text(key), String(ordinal)].join(UNIT);
   }
 
   /*
@@ -258,6 +341,13 @@
    */
   function destinationKey(field) {
     const p = field.params || {};
+    if (field.message) {
+      /* Capitalisation only, because that is all that has been measured to
+       * fold on sys_ui_message.key (a getMessage render on the PDI, and case
+       * variants returned by a key query on the configured instance). Anything
+       * wider is left to the suspect key, which refuses rather than merges. */
+      return ["message", MESSAGE_STORE, text(field.messageKey).toLowerCase()].join(UNIT);
+    }
     const type = fieldType(p);
     if (STRING_SCOPED_TYPES.has(type)) {
       return ["string", type, text(p.table), text(p.name), foldSourceKey(field.source)].join(UNIT);
@@ -265,21 +355,28 @@
     if (RECORD_SCOPED_TYPES.has(type)) {
       return ["record", type, text(p.table), text(p.name), text(p.sysId)].join(UNIT);
     }
-    /* Unsupported and message rows never group: they are excluded anyway, and
-     * an invented group would drag eligible rows down with them. */
+    /* Unsupported rows never group: they are excluded anyway, and an invented
+     * group would drag eligible rows down with them. */
     return ["row", String(field.elementIndex), String(field.fieldIndex)].join(UNIT);
   }
 
-  /* The same address under the looser key. Only string-scoped rows can collide
-   * this way; a record-scoped destination is a sys_id and needs no guessing. */
+  /* The same address under the looser key. Only text-keyed rows can collide
+   * this way; a record-scoped destination is a sys_id and needs no guessing.
+   * For a message this is where accents and trailing spaces go: they fold on
+   * sys_translated, have not been measured on sys_ui_message.key, and so two
+   * keys differing only by them are refused together rather than merged. */
   function suspectDestinationKey(field) {
     const p = field.params || {};
+    if (field.message) {
+      return ["message", MESSAGE_STORE, suspectSourceKey(field.messageKey)].join(UNIT);
+    }
     const type = fieldType(p);
     if (!STRING_SCOPED_TYPES.has(type)) return null;
     return ["string", type, text(p.table), text(p.name), suspectSourceKey(field.source)].join(UNIT);
   }
 
   function limitFor(params) {
+    if (isMessageParams(params)) return MESSAGE_LIMIT;
     const limit = DESTINATION_LIMITS[fieldType(params)];
     return typeof limit === "number" ? limit : 0;
   }
@@ -287,7 +384,18 @@
   function exclusionFor(field) {
     const type = fieldType(field.params);
     if (field.textType === "html" || type === "translated_html") return REASON.RICH_TEXT;
-    if (!text(field.params && field.params.sysId)) return REASON.SHARED_MESSAGE;
+    if (field.message) {
+      if (!field.source) return REASON.EMPTY_SOURCE;
+      if (field.messageKey.length > MESSAGE_KEY_LIMIT) return REASON.MESSAGE_KEY_TOO_LONG;
+      /* Only when the page set no separate key: then the text shown IS the key,
+       * and a key standing in for words is not something to translate. */
+      if (!text(field.params && field.params.key) && KEY_LIKE.test(field.source)) {
+        return REASON.MESSAGE_KEY_ONLY;
+      }
+      if (field.locked) return REASON.LOCKED;
+      return null;
+    }
+    if (!text(field.params && field.params.sysId)) return REASON.NO_RECORD;
     if (!DESTINATION_LIMITS[type]) return REASON.UNSUPPORTED_TYPE;
     if (!field.source) return REASON.EMPTY_SOURCE;
     if (field.locked) return REASON.LOCKED;
@@ -302,10 +410,15 @@
   function readFields(input) {
     const elements = contentArray(input);
     const fields = [];
+    /* Appearances so far of each exact message key, in page order. */
+    const messageSeen = new Map();
     elements.forEach((element, elementIndex) => {
       const infos = (element && Array.isArray(element.fieldInfo)) ? element.fieldInfo : [];
       infos.forEach((info, fieldIndex) => {
-        const params = isObject(info && info.additionalParameters) ? info.additionalParameters : {};
+        /* The raw value decides what the row is; the object stands in for it
+         * everywhere else, so a missing one reads as blank rather than throws. */
+        const raw = info && info.additionalParameters;
+        const params = isObject(raw) ? raw : {};
         const field = {
           elementIndex,
           fieldIndex,
@@ -318,10 +431,19 @@
           locked: !!(info && info.isFieldLocked),
           params,
           type: fieldType(params),
+          message: isMessageParams(raw),
+          store: storeFor(raw),
         };
-        field.identityKey = identityKey(params);
+        field.messageKey = field.message ? messageKeyOf(params, field.source) : "";
+        if (field.message) {
+          const ordinal = (messageSeen.get(field.messageKey) || 0) + 1;
+          messageSeen.set(field.messageKey, ordinal);
+          field.identityKey = messageIdentityKey(field.messageKey, ordinal);
+        } else {
+          field.identityKey = identityKey(params);
+        }
         field.destinationKey = destinationKey(field);
-        field.limit = limitFor(params);
+        field.limit = limitFor(raw);
         field.exclusion = exclusionFor(field);
         fields.push(field);
       });
@@ -462,6 +584,9 @@
       " Do not translate anything inside ${...}, {0} or {{...}}, and do not translate" +
       " the terms listed in `doNotTranslate`. Keep each `target` within its row's" +
       " `maxLength` and use wording appropriate for a short user-interface label." +
+      /* A script message is often joined to a value at run time, so a trailing
+       * space in "no record for id: " is part of the sentence. */
+      " Keep any space at the start or end of a `source` in its `target`." +
       " Reply with the JSON only.";
   }
 
@@ -469,12 +594,17 @@
     return JSON.stringify(payload, null, 2);
   }
 
+  /* What a row is called where a person or a model reads it. */
+  function kindOf(field) {
+    return field.message ? MESSAGE_KIND : field.label;
+  }
+
   function excludedEntry(field) {
     const params = field.params || {};
     return {
       elementId: field.elementId,
       groupName: field.groupName,
-      label: field.label,
+      label: kindOf(field),
       fieldIndex: field.fieldIndex,
       reason: field.exclusion,
       type: field.type,
@@ -486,8 +616,8 @@
       table: text(params.table),
       column: text(params.name),
       sysId: text(params.sysId),
-      store: STRING_SCOPED_TYPES.has(field.type) ? "sys_translated"
-        : (RECORD_SCOPED_TYPES.has(field.type) ? "sys_translated_text" : ""),
+      key: field.messageKey,
+      store: field.store,
     };
   }
 
@@ -524,18 +654,22 @@
       }
       k += 1;
       const lead = group.members[0];
+      const kind = kindOf(lead);
       eligibleFields += group.members.length;
-      if (STRING_SCOPED_TYPES.has(lead.type)) {
+      if (isInstanceWide(lead.params)) {
         instanceWide.push({
           k,
-          kind: lead.label,
+          kind,
           context: lead.groupName,
           source: lead.source,
+          store: lead.store,
           /* The platform's own (table, column) for this field, straight from
            * additionalParameters and never inferred, so a list built from them
-           * holds exactly the records the stored row is keyed against. */
+           * holds exactly the records the stored row is keyed against. A
+           * message has neither, and is found by its key instead. */
           table: text(lead.params && lead.params.table),
           column: text(lead.params && lead.params.name),
+          key: lead.messageKey,
         });
       }
       const maxLength = group.members.reduce(
@@ -543,7 +677,7 @@
       );
       rows.push({
         k,
-        kind: lead.label,
+        kind,
         context: lead.groupName,
         source: lead.source,
         maxLength,
@@ -555,7 +689,7 @@
         destinationKey: group.destinationKey,
         /* Carried so the preview can still describe a row that has since left
          * the model. Display only - matching never reads them. */
-        kind: lead.label,
+        kind,
         context: lead.groupName,
         source: lead.source,
         sourceHash: hashText(lead.source),
@@ -957,10 +1091,12 @@
          * the same destination from a renumbered one. */
         destinationKey: text(entry.destinationKey),
         shared: (entry.members || []).length > 1,
-        /* Stored by source string, so publishing it changes the translation for
-         * every item on the instance with the same text - the report says so
-         * about what it filled, as the draft did about what it exported. */
-        instanceWide: STRING_SCOPED_TYPES.has(fieldType(entry.additionalParameters)),
+        /* Stored by text, so publishing it changes the translation for
+         * everything on the instance with the same text or key - the report
+         * says so about what it filled, as the draft did about what it
+         * exported. */
+        instanceWide: isInstanceWide(entry.additionalParameters),
+        store: storeFor(entry.additionalParameters),
         members: [],
         target: "",
         warning: null,
@@ -1043,8 +1179,26 @@
       base.members = liveMembers.map(displayOf);
       base.shared = liveMembers.length > 1;
 
+      /* Blocks, evaluated against every current member of the group: filling
+       * one member of a shared destination rewrites the stored row for all of
+       * them, so a locked member is not something to fill around. */
+      const locked = liveMembers.find((member) => member.locked);
+      const lockedRow = () => rows.push(Object.assign(base, {
+        verdict: VERDICT.LOCKED,
+        status: "block",
+        detail: { member: locked.identityKey, elementId: locked.elementId },
+      }));
+
       const stranger = liveMembers.find((member) => !drafted.has(member.identityKey));
       if (stranger) {
+        /* Refused either way. When the group now holds a locked field -- one
+         * that arrived since the draft, say, already translated -- that is the
+         * reason a person can act on, and "draft again" would only lead to the
+         * same lock (review finding). */
+        if (locked) {
+          lockedRow();
+          return;
+        }
         rows.push(Object.assign(base, {
           verdict: VERDICT.NOT_EXPORTED,
           status: "skip",
@@ -1053,24 +1207,18 @@
         return;
       }
 
-      if (!target) {
+      if (!target.trim()) {
         /* Never an instruction to erase: an empty translated value reaching the
          * platform's save deletes the stored row, and for a translated_field
-         * that row is shared by every item using the same source string. */
+         * that row is shared by every item using the same source string. A
+         * reply of spaces is no translation either, and filling it would put
+         * blanks in place of text (review finding), so it counts as blank. */
         rows.push(Object.assign(base, { verdict: VERDICT.BLANK, status: "skip" }));
         return;
       }
 
-      /* Blocks, evaluated against every current member of the group: filling
-       * one member of a shared destination rewrites the stored row for all of
-       * them, so a locked member is not something to fill around. */
-      const locked = liveMembers.find((member) => member.locked);
       if (locked) {
-        rows.push(Object.assign(base, {
-          verdict: VERDICT.LOCKED,
-          status: "block",
-          detail: { member: locked.identityKey, elementId: locked.elementId },
-        }));
+        lockedRow();
         return;
       }
 
@@ -1262,7 +1410,12 @@
       const group = grouped.byKey.get(targets[0].field.destinationKey);
       const members = group ? group.members : targets.map((pair) => pair.field);
       if (members.some((field) => !planned.has(field.identityKey))) {
-        stale.push({ k: fill.k, reason: VERDICT.NOT_EXPORTED });
+        /* The same reason evaluateReply gives: a lock in the group outranks
+         * the unreviewed member, since it is what blocks the fill for good. */
+        stale.push({
+          k: fill.k,
+          reason: members.some((field) => field.locked) ? VERDICT.LOCKED : VERDICT.NOT_EXPORTED,
+        });
         return;
       }
 
@@ -1282,6 +1435,9 @@
           table: text(field.params.table),
           name: text(field.params.name),
           sysId: text(field.params.sysId),
+          /* A message has none of the four above, so the read-back also needs
+           * the key the page will store it under. Empty for every other row. */
+          messageKey: field.messageKey,
         });
       });
     });
@@ -1315,6 +1471,9 @@
     MAX_REPLY_ROWS,
     MAX_TARGET_CHARS,
     DESTINATION_LIMITS,
+    MESSAGE_LIMIT,
+    MESSAGE_KEY_LIMIT,
+    MESSAGE_KIND,
     SUPPORTED_ARTIFACT_TYPES,
     FIELD_KEYS,
     REASON,
@@ -1328,6 +1487,8 @@
     placeholders,
     placeholdersDiffer,
     identityKey,
+    messageIdentityKey,
+    isMessageParams,
     destinationKey,
     limitFor,
     exclusionFor,

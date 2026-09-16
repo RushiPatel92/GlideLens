@@ -159,7 +159,7 @@ test("a destination group with one locked member exports nothing at all", () => 
   assert.strictEqual(draft.counts.shared_with_ineligible, 1);
 });
 
-test("rich text and message rows are excluded whatever their lock state", () => {
+test("rich text is excluded whatever its lock state, and a script message is exported", () => {
   const draft = draftFrom([element({
     fields: [
       field({ source: "Describe it", textType: "html", type: "translated_html", name: "description", table: "sc_cat_item" }),
@@ -168,9 +168,11 @@ test("rich text and message rows are excluded whatever their lock state", () => 
       field({ source: "Cost centre" }),
     ],
   })]);
-  assert.strictEqual(draft.payload.rows.length, 1);
+  assert.strictEqual(draft.payload.rows.length, 2);
   assert.strictEqual(draft.counts.rich_text, 1);
-  assert.strictEqual(draft.counts.shared_message, 1);
+  const message = draft.payload.rows.find((row) => row.source === "Pick one");
+  assert.strictEqual(message.kind, "Script message", "named for what it is, not the page's \"Script\" label");
+  assert.strictEqual(message.maxLength, 8000, "sys_ui_message.message holds 8000");
 });
 
 /* 2. Absent and empty translatedValue are the same state. */
@@ -184,8 +186,8 @@ test("an absent translatedValue and an empty one both read as untranslated", () 
   assert.strictEqual(draft.map["2"].targetBaseline, "");
 });
 
-/* 3. Matching is on record identity, and a row without a sys_id never leaves. */
-test("identity is (type, table, sysId, name) and a row without a sysId is never exported", () => {
+/* 3. Matching is on record identity, and a typed row without a sys_id never leaves. */
+test("identity is (type, table, sysId, name) and a typed row without a sysId is never exported", () => {
   const withId = field({ sysId: OTHER_SYS_ID, name: "question_text", table: "question" });
   assert.strictEqual(
     TA.identityKey(withId.additionalParameters),
@@ -195,7 +197,8 @@ test("identity is (type, table, sysId, name) and a row without a sysId is never 
     fields: [field({ sysId: "", source: "Nameless" })],
   })]);
   assert.strictEqual(draft.payload.rows.length, 0);
-  assert.strictEqual(draft.counts.shared_message, 1);
+  assert.strictEqual(draft.counts.no_record, 1,
+    "it has a type, so it is not a message, and it has no record to match a reply to");
 });
 
 /* 4. The platform's ordinal element id must never decide where a value lands. */
@@ -914,12 +917,25 @@ test("the merge rederives destination membership, not only the planned members",
   const merged = TA.buildMergedContent({ content: renamed, plan });
   assert.deepStrictEqual(json(merged.applied), [],
     "filling the unlocked row would rewrite the locked row's shared destination");
-  assert.deepStrictEqual(json(merged.stale), [{ k: 1, reason: TA.VERDICT.NOT_EXPORTED }]);
+  /* Named for the lock the renamed row brought with it, which is what a person
+   * can act on; "draft again" would only meet the same lock (review finding). */
+  assert.deepStrictEqual(json(merged.stale), [{ k: 1, reason: TA.VERDICT.LOCKED }]);
   assert.ok(!Object.prototype.hasOwnProperty.call(merged.content[0].fieldInfo[0], "translatedValue"));
   assert.strictEqual(
     verdictOf(evaluate(draft, renamed, replyFor(draft, { 1: "Centre de cout" })), 1),
-    TA.VERDICT.NOT_EXPORTED,
+    TA.VERDICT.LOCKED,
     "the preview and the merge must agree"
+  );
+
+  /* An unlocked row renamed in is still the member nobody reviewed. */
+  const unlocked = json(content);
+  unlocked[1].fieldInfo[0].originalValue = "Cost centre";
+  unlocked[1].fieldInfo[0].isFieldLocked = false;
+  assert.deepStrictEqual(json(TA.buildMergedContent({ content: unlocked, plan }).stale),
+    [{ k: 1, reason: TA.VERDICT.NOT_EXPORTED }]);
+  assert.strictEqual(
+    verdictOf(evaluate(draft, unlocked, replyFor(draft, { 1: "Centre de cout" })), 1),
+    TA.VERDICT.NOT_EXPORTED
   );
 });
 
@@ -1043,8 +1059,10 @@ test("each instance-wide row is named with the platform's own table and column",
     kind: "Question",
     context: "Variable: Cost centre",
     source: "Cost centre",
+    store: "sys_translated",
     table: "question",
     column: "question_text",
+    key: "",
   }]);
 });
 
@@ -1075,4 +1093,260 @@ test("an excluded field carries what the panel needs to show it and link to its 
   const rich = json(draft.excluded.find((entry) => entry.reason === TA.REASON.RICH_TEXT));
   assert.strictEqual(rich.store, "sys_translated_text", "a translated_html is keyed by its record");
   assert.strictEqual(rich.column, "description");
+});
+
+/* ------------------------------------------------------------------ *
+ * Script messages (owner request, 2026-09-16)
+ *
+ * The page's getMessage rows carry no `type`, and the platform's save stores
+ * them in sys_ui_message on (key, language) alone, the key being
+ * additionalParameters.key when the page set one and the source text
+ * otherwise. The two parameter shapes below are the ones the page was seen to
+ * produce; neither carries textType.
+ * ------------------------------------------------------------------ */
+
+function message(options) {
+  const opts = options || {};
+  const params = { scope: "global" };
+  if (opts.key !== undefined) params.key = opts.key;
+  const info = {
+    originalValue: opts.source === undefined ? "Please choose a cost centre" : opts.source,
+    isFieldLocked: !!opts.locked,
+    additionalParameters: params,
+  };
+  if (opts.target !== undefined) info.translatedValue = opts.target;
+  return info;
+}
+
+function script(name, fields) {
+  return element({ groupName: "Catalog Client Script: " + name, label: "Script", fields });
+}
+
+test("a row is a script message exactly when its parameters have no type property", () => {
+  assert.strictEqual(TA.isMessageParams({ scope: "global" }), true);
+  assert.strictEqual(TA.isMessageParams({ key: "lookup.missing", scope: "global" }), true);
+  assert.strictEqual(TA.isMessageParams({ type: "", sysId: OTHER_SYS_ID }), false,
+    "the save checks hasOwnProperty('type'), so a blank type is routed nowhere rather than to messages");
+
+  /* Review finding: the platform would save a field with no parameters object
+   * as a message too, but no page builds one, so the shape is refused by name
+   * rather than translated into sys_ui_message under its own text. */
+  [undefined, null, [], "scope"].forEach((value) => {
+    assert.strictEqual(TA.isMessageParams(value), false, JSON.stringify(value));
+  });
+  const shapeless = [undefined, [], "scope"].map((value) => {
+    const info = { originalValue: "Pick a date", isFieldLocked: false };
+    if (value !== undefined) info.additionalParameters = value;
+    return info;
+  });
+  const refused = draftFrom([element({ fields: shapeless })]);
+  assert.strictEqual(refused.payload.rows.length, 0);
+  assert.strictEqual(refused.counts.no_record, 3);
+
+  const blank = field({ source: "Blank type" });
+  blank.additionalParameters.type = "";
+  const draft = draftFrom([element({ fields: [blank] })]);
+  assert.strictEqual(draft.payload.rows.length, 0);
+  assert.strictEqual(draft.counts.unsupported_type, 1);
+});
+
+test("every appearance of one message key is one row, written to each appearance by its own identity", () => {
+  const content = [
+    script("Validate", [message({ source: "Please choose a cost centre" })]),
+    script("Submit", [message({ source: "Please choose a cost centre" })]),
+  ];
+  const draft = draftFrom(content);
+  assert.strictEqual(draft.payload.rows.length, 1, "one key is one stored translation");
+  assert.strictEqual(draft.counts.eligibleFields, 2);
+
+  const result = evaluate(draft, content, replyFor(draft, { 1: "Veuillez choisir un centre de coût" }));
+  assert.strictEqual(verdictOf(result, 1), TA.VERDICT.FILL);
+  const identities = result.rows[0].members.map((member) => member.identityKey);
+  assert.strictEqual(new Set(identities).size, 2,
+    "type, table, name and sysId are blank on both, which would have made them one field");
+
+  const plan = TA.buildApplyPlan({ evaluation: result });
+  const merged = TA.buildMergedContent({ content, plan });
+  assert.deepStrictEqual(json(merged.content.map((entry) => entry.fieldInfo[0].translatedValue)),
+    ["Veuillez choisir un centre de coût", "Veuillez choisir un centre de coût"]);
+  assert.deepStrictEqual(json(merged.applied).map((entry) => [entry.elementIndex, entry.type, entry.messageKey]), [
+    [0, "", "Please choose a cost centre"],
+    [1, "", "Please choose a cost centre"],
+  ]);
+  assert.strictEqual(TA.countApplied(merged.content, plan), 2);
+  assert.deepStrictEqual(Object.keys(merged.content[0].fieldInfo[0]).sort(),
+    ["additionalParameters", "isFieldLocked", "originalValue", "translatedValue"],
+    "the merge adds translatedValue and no key of its own");
+});
+
+test("a message whose page names a separate key is translated by its text and stored under its key", () => {
+  const content = [
+    script("Lookup", [message({ key: "lookup.start_date_missing", source: "Start date is missing." })]),
+    script("Other", [message({ key: "other.start_date_missing", source: "Start date is missing." })]),
+  ];
+  const draft = draftFrom(content);
+  assert.deepStrictEqual(json(draft.payload.rows.map((row) => row.source)),
+    ["Start date is missing.", "Start date is missing."],
+    "the model gets the words, and two keys are two stored translations however alike their text");
+
+  const result = evaluate(draft, content, replyFor(draft, { 1: "Date de début manquante.", 2: "Date de début absente." }));
+  const merged = TA.buildMergedContent({ content, plan: TA.buildApplyPlan({ evaluation: result }) });
+  assert.deepStrictEqual(json(merged.applied).map((entry) => entry.messageKey),
+    ["lookup.start_date_missing", "other.start_date_missing"]);
+});
+
+test("message keys that differ only in capitalisation share one destination", () => {
+  const draft = draftFrom([
+    script("A", [message({ source: "Cost centre required" })]),
+    script("B", [message({ source: "cost centre required" })]),
+  ]);
+  assert.strictEqual(draft.payload.rows.length, 1, "measured to fold on sys_ui_message.key");
+  assert.strictEqual(draft.counts.eligibleFields, 2);
+});
+
+test("message keys that differ only by an accent or a trailing space are refused together", () => {
+  /* Both fold on sys_translated and neither has been measured on
+   * sys_ui_message.key, so neither may merge two keys, and neither may let
+   * one be filled independently of the other. */
+  const accent = draftFrom([
+    script("A", [message({ source: "Resume" })]),
+    script("B", [message({ source: "Résumé" })]),
+  ]);
+  assert.strictEqual(accent.payload.rows.length, 0);
+  assert.strictEqual(accent.counts.uncertain_destination, 2);
+
+  const space = draftFrom([
+    script("A", [message({ source: "No record for id: " })]),
+    script("B", [message({ source: "No record for id:" })]),
+  ]);
+  assert.strictEqual(space.payload.rows.length, 0);
+  assert.strictEqual(space.counts.uncertain_destination, 2);
+});
+
+test("a key standing in for text is excluded, and a one-word message is not", () => {
+  const draft = draftFrom([
+    script("A", [message({ source: "help.cost_centre" })]),
+    script("B", [message({ source: "Department" })]),
+    script("C", [message({ key: "help.cost_centre_text", source: "Enter the cost centre." })]),
+  ]);
+  assert.deepStrictEqual(json(draft.payload.rows.map((row) => row.source)), ["Department", "Enter the cost centre."]);
+  assert.strictEqual(draft.counts.message_key_only, 1);
+
+  /* Review finding: trailing punctuation is how one-word messages end, so a
+   * dot or underscore only marks a key when it sits between two characters. */
+  const words = ["Loading...", "Saving...", "Done.", "Required.", "_Draft_"];
+  const keys = ["snake_case_key", "form.title", "v2.label"];
+  const mixed = draftFrom([script("D", words.concat(keys).map((source) => message({ source })))]);
+  assert.deepStrictEqual(json(mixed.payload.rows.map((row) => row.source)), words);
+  assert.deepStrictEqual(json(mixed.excluded.map((entry) => [entry.source, entry.reason])),
+    keys.map((source) => [source, "message_key_only"]));
+  const excluded = json(draft.excluded.find((entry) => entry.reason === TA.REASON.MESSAGE_KEY_ONLY));
+  assert.strictEqual(excluded.store, "sys_ui_message");
+  assert.strictEqual(excluded.key, "help.cost_centre");
+  assert.strictEqual(excluded.label, "Script message");
+});
+
+test("a message key longer than the key column is excluded", () => {
+  const long = "x ".repeat(128) + "end";
+  assert.ok(long.length > TA.MESSAGE_KEY_LIMIT);
+  const draft = draftFrom([
+    script("A", [message({ source: long })]),
+    script("B", [message({ source: "y".repeat(TA.MESSAGE_KEY_LIMIT - 1) + " " })]),
+  ]);
+  assert.strictEqual(draft.counts.message_key_too_long, 1);
+  assert.strictEqual(draft.payload.rows.length, 1, "a key of exactly the limit still fits");
+});
+
+test("a translated appearance of a key blocks every other appearance of it", () => {
+  const draft = draftFrom([
+    script("A", [message({ source: "Pick a date", locked: true, target: "Choisissez une date" })]),
+    script("B", [message({ source: "Pick a date" })]),
+  ]);
+  assert.strictEqual(draft.payload.rows.length, 0);
+  assert.strictEqual(draft.counts.locked, 1);
+  assert.strictEqual(draft.counts.shared_with_ineligible, 1);
+});
+
+test("a script message is instance-wide and names its key", () => {
+  const content = [script("Lookup", [message({ key: "lookup.start_date_missing", source: "Start date is missing." })])];
+  const draft = draftFrom(content);
+  assert.deepStrictEqual(json(draft.instanceWide), [{
+    k: 1,
+    kind: "Script message",
+    context: "Catalog Client Script: Lookup",
+    source: "Start date is missing.",
+    store: "sys_ui_message",
+    table: "",
+    column: "",
+    key: "lookup.start_date_missing",
+  }]);
+  const result = evaluate(draft, content, replyFor(draft, { 1: "Date de début manquante." }));
+  assert.strictEqual(result.rows[0].instanceWide, true);
+  assert.strictEqual(result.rows[0].store, "sys_ui_message");
+});
+
+test("a message and a field with the same text are separate destinations", () => {
+  const draft = draftFrom([
+    element({ fields: [field({ source: "Cost centre" })] }),
+    script("A", [message({ source: "Cost centre" })]),
+  ]);
+  assert.strictEqual(draft.payload.rows.length, 2, "sys_translated and sys_ui_message are different stores");
+});
+
+test("a message that drops its placeholder is held for Fill anyway", () => {
+  const content = [script("A", [message({ source: "Approve request: {0}" })])];
+  const draft = draftFrom(content);
+  const result = evaluate(draft, content, replyFor(draft, { 1: "Approuver la demande" }));
+  assert.strictEqual(verdictOf(result, 1), TA.VERDICT.FILL);
+  assert.strictEqual(result.rows[0].warning, "placeholder");
+});
+
+test("a message whose text changed after the draft is not filled", () => {
+  /* With no separate key the text IS the key, so a changed text is a
+   * different stored translation, and the drafted one is gone. */
+  const content = [script("A", [message({ source: "Pick a date" })])];
+  const draft = draftFrom(content);
+  const live = json(content);
+  live[0].fieldInfo[0].originalValue = "Pick a start date";
+  const result = evaluate(draft, live, replyFor(draft, { 1: "Choisissez une date" }));
+  assert.strictEqual(verdictOf(result, 1), TA.VERDICT.MISSING);
+});
+
+test("a reply of only spaces is blank, for a message and for a field", () => {
+  /* Review finding: `!target` let "   " through as a fill. */
+  const content = [
+    script("A", [message({ source: "Pick a date" })]),
+    element({ fields: [field({ source: "Cost centre" })] }),
+  ];
+  const draft = draftFrom(content);
+  const result = evaluate(draft, content, replyFor(draft, { 1: "   ", 2: "\t\n" }));
+  assert.strictEqual(verdictOf(result, 1), TA.VERDICT.BLANK);
+  assert.strictEqual(verdictOf(result, 2), TA.VERDICT.BLANK);
+  assert.strictEqual(TA.buildApplyPlan({ evaluation: result }).fills.length, 0);
+});
+
+test("a locked appearance of a key that arrives after the draft is named as the lock", () => {
+  /* Review finding: the unreviewed-member check ran first and said "not in
+   * the draft", when the reason nothing can be filled is the lock. Added inside
+   * an existing script, so the section count does not move. */
+  const content = [script("A", [message({ source: "Pick a date" })])];
+  const draft = draftFrom(content);
+  const live = json(content);
+  live[0].fieldInfo.push(message({ source: "pick a date", locked: true, target: "Choisissez une date" }));
+  const result = evaluate(draft, live, replyFor(draft, { 1: "Choisissez une date" }));
+  assert.strictEqual(verdictOf(result, 1), TA.VERDICT.LOCKED);
+  const merged = TA.buildMergedContent({ content: live, plan: {
+    fills: [{ k: 1, value: "Choisissez une date", members: [{
+      identityKey: draft.map["1"].members[0].identityKey,
+      expectedSourceHash: TA.hashText("Pick a date"),
+      expectedTarget: "",
+    }] }],
+  } });
+  assert.deepStrictEqual(json(merged.stale), [{ k: 1, reason: TA.VERDICT.LOCKED }]);
+  assert.deepStrictEqual(json(merged.applied), []);
+});
+
+test("the prompt asks for a leading or trailing space to be kept", () => {
+  /* Messages are joined to values at run time: "No record for id: " + id. */
+  assert.match(TA.buildPrompt("English", "French"), /Keep any space at the start or end of a `source` in its `target`\./);
 });

@@ -355,15 +355,41 @@ variables are renamed and is only ever an address. A row's *destination* is
 not its identity: `translated_field` values are stored in `sys_translated`
 keyed by source string, so two records sharing one source text share one
 stored translation, and destination groups are the unit of every decision —
-all or nothing. Exclusions are named, never silent: rich text, a message
-key, an unsupported type, an empty source, a locked field, a text shared
-with a locked field, and an uncertain destination. Locked means only that a
-translation exists, and the panel never repeats the platform's "verified".
+all or nothing. Exclusions are named, never silent: rich text, a script
+message that looks like a key, a message key too long to store, a field with
+no record id, an unsupported type, an empty source, a locked field, a
+text shared with a locked field, and an uncertain destination. Locked means
+only that a translation exists, and the panel never repeats the platform's
+"verified".
 The draft is held in `storage.session`, capped at five, before it is offered,
 because the MV3 worker can be torn down between the download and the reply.
 Language names are read from `sys_language` through a query built only from
 id-shaped codes, and used only when the rows give exactly one; otherwise the
 codes stay.
+
+**Script messages** are the `getMessage` keys the page scans from the item's
+client scripts, UI policies and producer script. The platform's save routes
+any field whose `additionalParameters` has no `type` property to
+`sys_ui_message`, written on the key and language alone — the key is
+`additionalParameters.key` when the page set one, which it does only when the
+source language gives the key different text, and the source text
+otherwise. A message has no record, so its identity is its exact key plus
+which appearance of that key it is on the page; every appearance of a key is
+one destination, and it is always instance-wide. The destination folds
+capitalisation, which is measured on that column; a key differing only by an
+accent or a trailing space, which fold on `sys_translated` but are unmeasured
+here, is refused together with its twin rather than merged. When the source
+language has no row for a key, the page offers the key itself as the text,
+so a source with no spaces and a dot or underscore between two letters or
+digits is excluded as looking like a key rather than sent to a model; that
+is a shape test, and the panel says "looks like". Only a parameters object
+without its own `type` is a message: the platform would also save a field
+with no parameters object at all as one, but no page builds that shape, so
+it is refused with the fields that have no record id. `sys_ui_message.key`
+holds 255 and `message` 8000, read from the configured instance's
+dictionary. The save updates the first row matching key and language
+whatever its application scope, so a key stored twice in one language is a
+limitation this feature does not yet detect.
 
 **Export.** One JSON file carrying its own instruction block, a schema
 version, an export id, the language pair as codes, and one row per
@@ -380,13 +406,16 @@ and the worker does everything under a per-tab lock: parse the reply
 by export id, read the page again, refuse unless it is editable, re-evaluate
 every row against the live page, and merge. A row is filled only when its
 source text still hashes the same, its field is unlocked, its translation
-fits the destination column (255 for `translated_field`), every member of
-its destination group is in the draft, and the field still holds what the
-draft saw — or the user chose Overwrite against the exact values shown.
-A placeholder mismatch waits for Fill anyway; a blank never clears an
-existing translation. The merge writes `translatedValue` and no other key,
-because the platform's deserialiser moves unknown keys into
-`additionalParameters` and posts them on Publish. The write is one
+fits the destination column (255 for `translated_field`, 8000 for a script
+message), every member of its destination group is in the draft, and the
+field still holds what the draft saw — or the user chose Overwrite against
+the exact values shown. A placeholder mismatch waits for Fill anyway; a
+blank, or a reply of only white space, never clears or fills an existing
+translation. When a field that was not in the draft has joined a group, the
+row is refused, and named for the lock if any member of the group is locked.
+The merge writes `translatedValue` and no other key, because the platform's
+deserialiser moves unknown keys into `additionalParameters` and posts them
+on Publish. The write is one
 `executeScript` into the frame this fill's own read selected, running
 `writeLfAssistantContent` in the MAIN world: it re-checks the page states,
 refuses unless it is on the document the read came from (the reader records
@@ -397,13 +426,14 @@ compares the live model with the base the merge was built from as content
 (Chrome returns injection values with keys sorted, and Angular leaves
 `$$hashKey` on the model, so a text compare refused an untouched page),
 fires the page's own `updateDocumentContent` event only if they match, then
-reads each filled field back by position and record identity. What comes
-back is a count of fields that hold their value, the rows and fields that
-did not, or "unconfirmed" when the read-back itself failed after the event
-fired — never a count of what was attempted. The lock is released when the
-injection settles, on navigation, or on tab close; a fill still awaiting a
-read when a navigation releases the lock refuses rather than injecting into
-the new page. A fill that does not settle in 10 s is reported as
+reads each filled field back by position and record identity — for a script
+message, which has no record, by position and the key it is stored under.
+What comes back is a count of fields that hold their value, the rows and
+fields that did not, or "unconfirmed" when the read-back itself failed after
+the event fired — never a count of what was attempted. The lock is released
+when the injection settles, on navigation, or on tab close; a fill still
+awaiting a read when a navigation releases the lock refuses rather than
+injecting into the new page. A fill that does not settle in 10 s is reported as
 indeterminate and keeps its lock. The panel reports what was not filled and
 why, and keeps a per-run history of every field its fills wrote — by record
 identity, grouped by destination for display, with the old text and whether
