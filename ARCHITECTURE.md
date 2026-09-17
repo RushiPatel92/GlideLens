@@ -464,6 +464,11 @@ not recorded). The replacement check is what keeps the two halves from
 diverging: finding the planned-against object still in place means the page
 has not run its digest, so a write would land in an object about to be thrown
 away and then be swapped out behind an editor still showing the translation.
+It applies only when the event fired. A fill with no plain rows fires nothing,
+replaces no object and demands no replacement, which is also the way out of a
+refusal: a mixed fill stopped by this check reports those fields as not ready,
+and filling again finds the plain rows already unchanged, so the second fill
+is rich-only and writes straight into the object each editor is bound to.
 After writing, the words must match what was written, the editor's
 serialisation must fit 65000 characters, and the model, the textarea and the
 editor must agree; otherwise the writer puts back what the editor showed,

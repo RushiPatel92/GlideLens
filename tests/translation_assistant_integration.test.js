@@ -142,6 +142,24 @@ function editorPredicate(block, what) {
   return stripComments(block.slice(start, close + tail.length)).replace(/\s+/g, " ").trim();
 }
 
+test("every reason the writer can give for a rich-text field is one the panel has words for", () => {
+  /* Two lists of the same seven strings in two files. A reason added to the
+   * writer alone survives the worker's filter nowhere and reaches the panel as
+   * the generic "did not take on the page"; one added to the panel alone is
+   * dead wording. Neither fails anything today, so pin them instead. */
+  const quoted = (block) => (block.match(/"[a-z_]+"/g) || []).map((one) => one.slice(1, -1)).sort();
+  /* The reasons are an object, so its keys are bare identifiers, and only the
+   * ones starting a line are keys -- a colon inside a sentence is not one. */
+  const keys = (block) => (stripComments(block).match(/^\s*([a-z_]+):/gm) || [])
+    .map((one) => one.replace(/[^a-z_]/g, "")).sort();
+  const writer = quoted(between(backgroundSource, "const LF_ASSISTANT_RICH_MISSES = new Set([", "]);"));
+  const words = keys(between(uiSource, "const RICH_MISS_REASONS = {", "};"));
+  const order = quoted(between(uiSource, "const RICH_MISS_ORDER = [", "];"));
+  assert.ok(writer.length >= 7, "the writer's reasons were not found");
+  assert.deepStrictEqual(words, writer, "the panel has no words for a reason the writer can give, or the other way round");
+  assert.deepStrictEqual(order, writer, "a reason is missing from the order a shared row picks by");
+});
+
 test("the reader and the writer decide an editor is this field's by the very same test", () => {
   /* The writer adds the lock, started/editable and editor-versus-model checks
    * on top, by design. What must not drift is the binding test underneath: if

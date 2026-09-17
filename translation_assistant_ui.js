@@ -492,6 +492,12 @@
     const engine = globalThis.SNTranslationAssistant;
     const readable = engine &&
       typeof engine.tokenizeHtml === "function" && typeof engine.richWords === "function";
+    /* `readable` false is not a supported mode, and no caller should treat it
+     * as one: the worker injects the engine ahead of this file, and the
+     * content script refuses to open the panel at all when the engine did not
+     * load, so the engine is always here. It is written as a fall back rather
+     * than an assumption only so that a missing engine degrades to a literal
+     * preview instead of throwing inside the list. */
     const tokens = readable ? engine.tokenizeHtml(value) : null;
     if (!tokens) return oneLine(value);
     /* The engine's own measure of the words, not the raw text between tags:

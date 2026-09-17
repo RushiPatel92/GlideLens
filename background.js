@@ -3612,9 +3612,16 @@ async function writeLfAssistantContent(request) {
         out.written = true;
         editor.setContent(String(entry.value));
         const landed = editor.getContent();
-        const limit = Number(entry.maxLength) > 0 ? Number(entry.maxLength) : 65000;
+        /* The field's own limit, with no default behind it: exclusionFor
+         * refuses any type that has no destination limit, so every rich entry
+         * arrives carrying one. An entry without it is a malformed request,
+         * not an unlimited field, and one is put back rather than kept. */
+        const limit = Number(entry.maxLength);
         if (wordsOf(landed) !== wordsOf(entry.value)) failed = "rich_rewritten";
-        else if (landed.length > limit) failed = "rich_too_long";
+        /* Written as "not within the limit", not as "over" it: an absent limit
+         * is NaN, and NaN fails every comparison, so "over" would wave it
+         * through while this puts it back. */
+        else if (!(landed.length <= limit)) failed = "rich_too_long";
         else if (richFieldAt(current(), entry) !== info || modelText(info) !== landed ||
             editor.getElement().value !== landed) failed = "rich_unsynced";
         else {
