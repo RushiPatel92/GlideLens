@@ -355,12 +355,13 @@ variables are renamed and is only ever an address. A row's *destination* is
 not its identity: `translated_field` values are stored in `sys_translated`
 keyed by source string, so two records sharing one source text share one
 stored translation, and destination groups are the unit of every decision —
-all or nothing. Exclusions are named, never silent: rich text, a script
-message that looks like a key, a message key too long to store, a field with
-no record id, an unsupported type, an empty source, a locked field, a
-text shared with a locked field, and an uncertain destination. Locked means
-only that a translation exists, and the panel never repeats the platform's
-"verified".
+all or nothing. Exclusions are named, never silent: a script message that
+looks like a key, a message key too long to store, a field with no record id,
+an unsupported type, an empty source (for rich text, markup with no words),
+rich text whose markup is left to a person, a locked field, rich text whose
+editor is not ready, a text shared with a locked field, and an uncertain
+destination. Locked means only that a translation exists, and the panel never
+repeats the platform's "verified".
 The draft is held in `storage.session`, capped at five, before it is offered,
 because the MV3 worker can be torn down between the download and the reply.
 Language names are read from `sys_language` through a query built only from
@@ -440,6 +441,61 @@ identity, grouped by destination for display, with the old text and whether
 the page confirmed the write — through later clicks and refusals, since
 clearing a box would publish a deletion. An unconfirmed write is shown as
 attempted, never as a replacement that happened.
+
+**Rich text** (`translated_html`, drawn by the page as a TinyMCE editor: an
+item's description and a variable's rich text or instructions) is never
+written through `updateDocumentContent`. The page copies model text into an
+editor only when that editor starts, and the event reuses every row — the
+page's rows are `ng-repeat` lists tracked by `$$hashKey`, which the merged
+array keeps — so a model write leaves the visible editor on the old text
+while Publish sends the new. The writer calls `editor.setContent` instead,
+after the event: the page's own `SetContent` handler moves the model and the
+hidden textarea to `editor.getContent()`, so the editor, the textarea and
+what Publish sends agree (measured on the configured instance with TinyMCE
+6.8.4, including that a write after the event lands in the model object the
+event installed). An editor is found by reference — the one whose textarea's
+row scope holds that very field object — never by its ordinal DOM id; the
+reader reports each rich field's editor as ready only when exactly one is
+bound, started and editable, and the writer re-finds it after the event and
+requires a field object the event replaced, the same editor, an unlocked
+field, and an editor showing exactly what the model holds (the page syncs on
+key-up, toolbar commands and `setContent`, so a difference is an edit it has
+not recorded). The replacement check is what keeps the two halves from
+diverging: finding the planned-against object still in place means the page
+has not run its digest, so a write would land in an object about to be thrown
+away and then be swapped out behind an editor still showing the translation.
+After writing, the words must match what was written, the editor's
+serialisation must fit 65000 characters, and the model, the textarea and the
+editor must agree; otherwise the writer puts back what the editor showed,
+which re-sets exactly, and reports which of those three failed — each asks
+something different of the user — or reports the field as uncertain, with a
+reload advised, if the put-back cannot be confirmed.
+
+A reply is untrusted HTML, and `setContent` parses it in a same-origin frame.
+So the draft names rich rows `format: "html"` and tells the model to change
+only the words between tags, and the fill never writes a reply's markup: one
+strict scanner cuts source and reply into tags and text, the reply's tags
+must match the source's one for one (name, then attribute names and values
+in order, quoting and case aside), and what is written is the source's own
+tag bytes with the reply's text between them. Text holds no `<`, and HTML
+opens a tag only at `<`, so a model cannot add or change an element, an
+attribute or a link. The scanner refuses what it does not fully read —
+comments, declarations, a stray `<`, attributes not parted by white space, a
+quoted value holding `<` or `>` — so it and a browser agree on every tag
+boundary; a reply that fails is blocked with no override, naming the first
+tag that differs. A source holding a script, style, form, embedded frame,
+event handler or non-web URL is left to a person. The panel shows rich values
+as words through that same scanner rather than a pattern over angle brackets,
+which would read a `>` inside a quoted value as the end of a tag and put the
+rest of it on screen dressed as words; a source the scanner refuses is shown
+as written instead. TinyMCE rewrites markup (`<b>` to `<strong>`, a non-breaking space
+raw, line breaks between blocks), so rich text is compared by its words: a
+reply that reads the same as the page is unchanged, and one with tags but no
+words is blank, because `<p></p>` would publish as an empty-looking
+translation rather than a deletion. The drafted baseline and the live value
+are both the editor's serialisation, so "changed since the draft" stays an
+exact compare. A field whose kind changed between plain and rich since the
+draft is refused.
 
 ## Catalog and Service Portal behavior
 

@@ -3281,6 +3281,41 @@ function inspectLfAssistantContext() {
      * to reach back into page objects. */
     out.content = JSON.parse(JSON.stringify(content));
     out.elementCount = out.content.length;
+
+    /* Rich text is filled through its TinyMCE editor, so each rich field's
+     * editor is found here, by reference: the one editor whose textarea's
+     * scope holds this very field object, the object Publish reads. Its DOM id
+     * is ordinal and is never used to find it. Ready means found once, started
+     * and editable; whether it agrees with the model is the writer's check, at
+     * the moment it writes. Kept beside the content, never on it. */
+    out.richEditors = [];
+    const editors = typeof tinymce !== "undefined" && tinymce && typeof tinymce.get === "function"
+      ? tinymce.get() : [];
+    content.forEach((element, elementIndex) => {
+      const infos = element && Array.isArray(element.fieldInfo) ? element.fieldInfo : [];
+      infos.forEach((info, fieldIndex) => {
+        const params = (info && info.additionalParameters) || {};
+        if (!info || !(info.textType === "html" || params.type === "translated_html")) return;
+        const bound = (Array.isArray(editors) ? editors : []).filter((editor) => {
+          try {
+            const node = editor && typeof editor.getElement === "function" ? editor.getElement() : null;
+            if (!node || !node.isConnected) return false;
+            const handle = angular.element(node);
+            const fieldScope = handle.scope();
+            return !!fieldScope && fieldScope.fieldInfoElement === info && !!handle.controller("ngModel");
+          } catch (error) { return false; }
+        });
+        let ready = false;
+        if (bound.length === 1) {
+          try {
+            const editor = bound[0];
+            const mode = editor.mode && typeof editor.mode.get === "function" ? editor.mode.get() : "";
+            ready = !!editor.initialized && mode === "design" && !editor.getElement().readOnly;
+          } catch (error) { ready = false; }
+        }
+        out.richEditors.push({ elementIndex, fieldIndex, editors: bound.length, ready });
+      });
+    });
     return out;
   } catch (error) {
     out.why = String(error && error.message ? error.message : error);
@@ -3350,11 +3385,18 @@ async function readLfAssistantContext(tabId) {
 
 // Self-contained MAIN-world writer. Re-checks the page states a fill depends
 // on, refuses unless the page still holds `base`, fires the page's own event
-// with `merged`, then reads every filled field back and reports what landed.
+// with `merged`, fills each rich-text field through its own editor, then reads
+// every filled field back and reports what landed.
 async function writeLfAssistantContent(request) {
   const out = { written: false, confirmed: false, why: "", landed: 0, missed: [], missedFields: [] };
   let scope = null;
   let current = null;
+  const expected = Array.isArray(request && request.expected) ? request.expected : [];
+  const rich = Array.isArray(request && request.rich) ? request.rich : [];
+  /* What became of each rich-text field, settled before the event's read-back
+   * begins: { entry } landed, { entry, why } did not. */
+  const richLanded = [];
+  const richMissed = [];
   try {
     const root = document.querySelector(".main-content");
     if (!root || typeof angular === "undefined") { out.why = "not_page"; return out; }
@@ -3457,8 +3499,164 @@ async function writeLfAssistantContent(request) {
       out.changedAt = changedAt;
       return out;
     }
-    CustomEvent.fire("updateDocumentContent", { detail: request.merged });
-    out.written = true;
+
+    /*
+     * Rich text. The page copies model text into a TinyMCE editor only when
+     * the editor starts, so a rich field written through the event would keep
+     * showing its old text while Publish sent the new. It is written through
+     * the editor instead: the page's own SetContent handler moves the model
+     * and the hidden textarea to editor.getContent(), so all three agree
+     * (measured, 2026-09-17).
+     *
+     * An editor is found by reference -- the one whose textarea's scope holds
+     * this very field object -- never by its ordinal DOM id. It must be the
+     * only one, started, editable, on an unlocked field, and showing exactly
+     * what the model holds: a difference is an edit the page has not recorded
+     * (the page syncs on key-up, toolbar commands and setContent), and a write
+     * would silently replace it.
+     */
+    const modelText = (info) => (info.translatedValue == null ? "" : String(info.translatedValue));
+    const richFieldAt = (flat, entry) => {
+      const element = flat && flat[entry.elementIndex];
+      const info = element && Array.isArray(element.fieldInfo) ? element.fieldInfo[entry.fieldIndex] : null;
+      const params = (info && info.additionalParameters) || {};
+      if (!info || !(info.textType === "html" || params.type === "translated_html")) return null;
+      const same = String(params.type || "") === String(entry.type || "") &&
+        String(params.table || "") === String(entry.table || "") &&
+        String(params.name || "") === String(entry.name || "") &&
+        String(params.sysId || "") === String(entry.sysId || "");
+      return same ? info : null;
+    };
+    const richState = (info) => {
+      if (!info || info.isFieldLocked) return { why: "rich_editor" };
+      const list = typeof tinymce !== "undefined" && tinymce && typeof tinymce.get === "function" ? tinymce.get() : [];
+      const bound = (Array.isArray(list) ? list : []).filter((editor) => {
+        try {
+          const node = editor && typeof editor.getElement === "function" ? editor.getElement() : null;
+          if (!node || !node.isConnected) return false;
+          const handle = angular.element(node);
+          const fieldScope = handle.scope();
+          return !!fieldScope && fieldScope.fieldInfoElement === info && !!handle.controller("ngModel");
+        } catch (error) { return false; }
+      });
+      if (bound.length !== 1) return { why: "rich_editor" };
+      const editor = bound[0];
+      const mode = editor.mode && typeof editor.mode.get === "function" ? editor.mode.get() : "";
+      if (!editor.initialized || mode !== "design" || editor.getElement().readOnly) return { why: "rich_editor" };
+      const shown = editor.getContent();
+      if (shown !== modelText(info) || editor.getElement().value !== shown) return { why: "rich_unrecorded" };
+      return { editor };
+    };
+    /* The words of some HTML, with no white space at all: TinyMCE collapses
+     * spaces and breaks lines between blocks, and neither changes what a
+     * person reads. DOMParser builds an inert document; nothing in it runs. */
+    const wordsOf = (html) => {
+      const parsed = new DOMParser().parseFromString(String(html), "text/html");
+      return String((parsed && parsed.body && parsed.body.textContent) || "").replace(/\s+/g, "");
+    };
+
+    /* Checked before anything is written, against the content just compared.
+     * The field object seen here is kept: once the event has fired, the object
+     * standing in that position must not be this one. */
+    const planned = [];
+    rich.forEach((entry) => {
+      try {
+        const was = richFieldAt(before, entry);
+        const state = richState(was);
+        if (state.editor) planned.push({ entry, editor: state.editor, was });
+        else richMissed.push({ entry, why: state.why });
+      } catch (error) {
+        richMissed.push({ entry, why: "rich_editor" });
+      }
+    });
+
+    const fired = expected.length > 0;
+    if (fired) {
+      CustomEvent.fire("updateDocumentContent", { detail: request.merged });
+      out.written = true;
+    }
+
+    /* After the event, which replaced every model object: the array kept
+     * $$hashKey, so the page reused its rows and editors, and each editor must
+     * now be bound to the NEW object for its field. The same editor, found the
+     * same way, or nothing is written. Everything from the compare above to
+     * the last read-back here runs without yielding, so no typing lands in
+     * between. */
+    planned.forEach(({ entry, editor, was }) => {
+      let info = null;
+      let previous = "";
+      let touched = false;
+      /* Which check the write failed. Left as the plain "put back" reason for
+       * a failure an error interrupted before any check could attribute it. */
+      let failed = "rich_reverted";
+      try {
+        info = richFieldAt(current(), entry);
+        /* The event replaced every model object, so the object standing here
+         * must not be the one planned against. If it still is, the page's
+         * handler has not run its digest: this editor is bound to an object
+         * about to be thrown away, so the write would land in it and then be
+         * swapped out behind an editor still showing the translation -- the
+         * one divergent state this design must never reach. The handler is
+         * synchronous as measured; this refuses rather than rest on it. */
+        if (fired && info === was) {
+          richMissed.push({ entry, why: "rich_editor" });
+          return;
+        }
+        const state = richState(info);
+        if (state.editor !== editor) {
+          richMissed.push({ entry, why: state.why || "rich_editor" });
+          return;
+        }
+        previous = editor.getContent();
+        touched = true;
+        out.written = true;
+        editor.setContent(String(entry.value));
+        const landed = editor.getContent();
+        const limit = Number(entry.maxLength) > 0 ? Number(entry.maxLength) : 65000;
+        if (wordsOf(landed) !== wordsOf(entry.value)) failed = "rich_rewritten";
+        else if (landed.length > limit) failed = "rich_too_long";
+        else if (richFieldAt(current(), entry) !== info || modelText(info) !== landed ||
+            editor.getElement().value !== landed) failed = "rich_unsynced";
+        else {
+          richLanded.push({ entry });
+          return;
+        }
+      } catch (error) {
+        if (!touched) {
+          richMissed.push({ entry, why: "rich_editor" });
+          return;
+        }
+      }
+      /* It did not hold as written -- the editor changed its words, it came
+       * out over the limit, or the model did not follow. Put back what the
+       * editor showed, which is its own serialisation and so re-sets exactly,
+       * and say which it was: each asks something different of the user. */
+      try {
+        editor.setContent(previous);
+        if (info && editor.getContent() === previous && modelText(info) === previous &&
+            editor.getElement().value === previous) {
+          richMissed.push({ entry, why: failed });
+          return;
+        }
+      } catch (error) { /* reported as unconfirmed below */ }
+      richMissed.push({ entry, why: "rich_unconfirmed" });
+    });
+    /* setContent syncs the model outside a digest, as typing does; one digest
+     * brings the page's own bindings up to date. */
+    if (planned.length && typeof scope.$applyAsync === "function") {
+      try { scope.$applyAsync(); } catch (error) { /* bindings catch up on the next digest */ }
+    }
+
+    if (!out.written) {
+      /* Every field was rich text, and none could be written. Nothing on the
+       * page moved, and each field says why. */
+      out.why = "rich_refused";
+      richMissed.forEach(({ entry, why }) => {
+        if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+        out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || ""), why });
+      });
+      return out;
+    }
   } catch (error) {
     out.why = String(error && error.message ? error.message : error);
     return out;
@@ -3473,7 +3671,6 @@ async function writeLfAssistantContent(request) {
      * so a field only counts if this record's field holds this value. Missed
      * fields are named by record as well as by row: several fields can share
      * one row, and the panel has to say which of them did not take. */
-    const expected = Array.isArray(request.expected) ? request.expected : [];
     const holds = (entry, flat) => {
       const element = flat && flat[entry.elementIndex];
       const info = element && Array.isArray(element.fieldInfo) ? element.fieldInfo[entry.fieldIndex] : null;
@@ -3507,6 +3704,12 @@ async function writeLfAssistantContent(request) {
       if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
       out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || "") });
     });
+    /* Rich text was read back the moment it was written, above. */
+    out.landed += richLanded.length;
+    richMissed.forEach(({ entry, why }) => {
+      if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+      out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || ""), why });
+    });
     out.confirmed = true;
     return out;
   } catch (error) {
@@ -3521,6 +3724,15 @@ async function writeLfAssistantContent(request) {
 
 const LF_ASSISTANT_APPLY_TIMEOUT_MS = 10000;
 const LF_ASSISTANT_SETTLE_MS = 1500;
+/* Why the writer did not fill a rich-text field: no single ready editor, an
+ * edit in the editor the page had not recorded, a write that was put back --
+ * because the editor changed its words, because it came out over the limit,
+ * because the model did not follow, or for a reason an error interrupted --
+ * or one that could not be put back. */
+const LF_ASSISTANT_RICH_MISSES = new Set([
+  "rich_editor", "rich_unrecorded", "rich_rewritten", "rich_too_long",
+  "rich_unsynced", "rich_reverted", "rich_unconfirmed",
+]);
 /* A reply can carry 2000 rows, so no honest list of choices is longer. */
 const LF_ASSISTANT_CHOICE_LIMIT = 2000;
 const lfAssistantApplyByTab = new Map();
@@ -3637,6 +3849,8 @@ async function applyLfAssistantReply(tabId, msg) {
         targetLanguage: context.targetLanguage,
       },
       overrides: choices.overrides,
+      /* Whether each rich-text field's editor is ready, from this same read. */
+      richEditors: context.richEditors,
     });
     if (!evaluation.ok) return { ok: false, code: evaluation.code, message: evaluation.message };
 
@@ -3652,8 +3866,9 @@ async function applyLfAssistantReply(tabId, msg) {
     }
 
     const plan = engine.buildApplyPlan({ evaluation, selection });
-    const merge = engine.buildMergedContent({ content: context.content, plan });
-    if (merge.stale.length || !merge.applied.length) {
+    const merge = engine.buildMergedContent({ content: context.content, plan, richEditors: context.richEditors });
+    const richFills = Array.isArray(merge.rich) ? merge.rich : [];
+    if (merge.stale.length || !(merge.applied.length || richFills.length)) {
       return {
         ok: false,
         code: "stale",
@@ -3672,6 +3887,21 @@ async function applyLfAssistantReply(tabId, msg) {
       sysId: entry.sysId,
       messageKey: entry.messageKey,
     }));
+    /* Rich text is not in the merged array; the writer fills each of these
+     * through its editor, and reads it back there. */
+    const rich = richFills.map((entry) => ({
+      k: entry.k,
+      identityKey: entry.identityKey,
+      value: entry.value,
+      elementIndex: entry.elementIndex,
+      fieldIndex: entry.fieldIndex,
+      type: entry.type,
+      table: entry.table,
+      name: entry.name,
+      sysId: entry.sysId,
+      maxLength: entry.maxLength,
+    }));
+    const attempted = expected.length + rich.length;
 
     /* Into the frame this fill's own read selected a moment ago, never a
      * remembered one. A reload in between gives the writer different content,
@@ -3684,6 +3914,7 @@ async function applyLfAssistantReply(tabId, msg) {
         base: context.content,
         merged: merge.content,
         expected,
+        rich,
         settleMs: LF_ASSISTANT_SETTLE_MS,
         /* Which page the read came from, so the writer can refuse a
          * replacement page that happens to hold the same content. */
@@ -3728,6 +3959,29 @@ async function applyLfAssistantReply(tabId, msg) {
       };
     }
     const answer = (outcome.results || []).map((entry) => entry && entry.result).find(Boolean) || {};
+    const positive = (value) => Number.isInteger(value) && value > 0;
+    /* By record as well as by row, so the panel can say which member of a
+     * shared row did not take when the others did -- and, for rich text, why:
+     * each of those reasons asks something different of the user. */
+    const missedFields = () => (Array.isArray(answer.missedFields) ? answer.missedFields : [])
+      .filter((entry) => entry && positive(entry.k) && typeof entry.identityKey === "string")
+      .map((entry) => (LF_ASSISTANT_RICH_MISSES.has(entry.why)
+        ? { k: entry.k, identityKey: entry.identityKey, why: entry.why }
+        : { k: entry.k, identityKey: entry.identityKey }));
+    if (!answer.written && answer.why === "rich_refused") {
+      /* Nothing on the page moved, and each rich-text field has its reason:
+       * a report, not an error. */
+      return {
+        ok: true,
+        written: false,
+        confirmed: true,
+        landed: 0,
+        attempted,
+        missed: (Array.isArray(answer.missed) ? answer.missed : []).filter(positive),
+        missedFields: missedFields(),
+        report,
+      };
+    }
     if (!answer.written) {
       return {
         ok: false,
@@ -3748,25 +4002,20 @@ async function applyLfAssistantReply(tabId, msg) {
         confirmed: false,
         why: String(answer.why || ""),
         landed: 0,
-        attempted: expected.length,
+        attempted,
         missed: [],
         missedFields: [],
         report,
       };
     }
-    const positive = (value) => Number.isInteger(value) && value > 0;
     return {
       ok: true,
       written: true,
       confirmed: true,
       landed: Number(answer.landed) || 0,
-      attempted: expected.length,
+      attempted,
       missed: (Array.isArray(answer.missed) ? answer.missed : []).filter(positive),
-      /* By record as well as by row, so the panel can say which member of a
-       * shared row did not take when the others did. */
-      missedFields: (Array.isArray(answer.missedFields) ? answer.missedFields : [])
-        .filter((entry) => entry && positive(entry.k) && typeof entry.identityKey === "string")
-        .map((entry) => ({ k: entry.k, identityKey: entry.identityKey })),
+      missedFields: missedFields(),
       report,
     };
   } finally {

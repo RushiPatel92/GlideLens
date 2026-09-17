@@ -38,11 +38,13 @@
  *     the payload carries its own instructions; the copy link is there for a
  *     model with no file upload. Nobody is asked to compare them.
  *   - Every excluded field is counted under a named reason. A field this build
- *     will not translate is a stated limit, never a silent omission. Three of
- *     the buckets -- already translated, rich text, and messages that look
- *     like a key -- open into a list on request, each field linked to where its
- *     translation is kept. The
+ *     will not translate is a stated limit, never a silent omission. Four of
+ *     the buckets -- already translated, the two rich-text ones, and messages
+ *     that look like a key -- open into a list on request, each field linked
+ *     to where its translation is kept. The
  *     counts stay first; the list is for checking, not reading.
+ *   - Rich text is markup, so wherever one of its texts is shown -- a list, a
+ *     report row, a replaced translation -- it is shown as plain words.
  *   - The tally is one accounting system, and it is counted in FIELDS. The
  *     exported row count is a different number -- two fields can share one
  *     destination -- and where they differ the panel says so rather than
@@ -472,14 +474,31 @@
     return `/sys_translated_text_list.do?sysparm_query=${encodeURIComponent(query)}`;
   }
 
-  /* Rich text arrives as markup, so the list shows it as plain words. Every
-   * other type is literal text and keeps every character -- "Enter <account>
-   * here" is not markup -- with only its runs of white space folded, as one
-   * line would fold them anyway. Both go in through textContent like
+  /* Rich text arrives as markup, so the list shows it as plain words -- taken
+   * from the same scanner the fill itself uses, never from a pattern over
+   * angle brackets. A regex reads a ">" inside a quoted attribute as the end
+   * of a tag, and a bare "<" in text as the start of one, either of which puts
+   * a fragment of a tag on screen dressed as a word (review finding). A value
+   * that scanner cannot read at all -- which is one this feature leaves to the
+   * user anyway -- is shown as written, markup and all on one line, rather
+   * than stripped into something that only looks like words.
+   *
+   * Every other type is literal text and keeps every character -- "Enter
+   * <account> here" is not markup -- with only its runs of white space folded,
+   * as one line would fold them anyway. Both go in through textContent like
    * everything else here, never as markup. */
   const SPACE = String.fromCharCode(32);
   function plainWords(value) {
-    return str(value).replace(/<[^>]*>/g, SPACE).replace(/\s+/g, SPACE).trim();
+    const engine = globalThis.SNTranslationAssistant;
+    const readable = engine &&
+      typeof engine.tokenizeHtml === "function" && typeof engine.richWords === "function";
+    const tokens = readable ? engine.tokenizeHtml(value) : null;
+    if (!tokens) return oneLine(value);
+    /* The engine's own measure of the words, not the raw text between tags:
+     * it decodes character references, so a stored "&amp;" reads as "&"
+     * rather than as itself, and it is the very measure the fill compares
+     * rich text by, so the list and the verdict cannot disagree. */
+    return engine.richWords(tokens);
   }
   function oneLine(value) {
     return str(value).replace(/\s+/g, SPACE).trim();
@@ -522,7 +541,7 @@
    * shown; the list is there to check, not to read. A message that looks like
    * a key is listed because the count alone cannot say which key needs its
    * text, or which one the shape test got wrong. */
-  const DETAIL_BUCKETS = new Set(["locked", "rich_text", "message_key_only"]);
+  const DETAIL_BUCKETS = new Set(["locked", "rich_text_markup", "rich_text_editor", "message_key_only"]);
 
   function excludedList(entries, languages) {
     const language = str(languages && languages.targetLanguage);
@@ -531,9 +550,9 @@
     const ul = el("ul", "excluded-list");
     entries.forEach((entry) => {
       const li = el("li");
-      /* Only rich text is markup; the engine puts every HTML field in that
-       * bucket before it looks at locks. */
-      const rich = entry.reason === "rich_text";
+      /* Only rich text is markup, and it can be in any bucket -- a locked
+       * rich-text field is in "already translated" -- so the engine marks it. */
+      const rich = entry.rich === true;
       li.appendChild(quotedPreview("src", "", entry.source, rich));
       /* Whether a translation exists is a property of the value, not of what
        * survives once markup is stripped: "<compte>" is a translation. */
@@ -707,8 +726,11 @@
    * translation derives the same flag.
    */
   const BUCKETS = [
-    { key: "rich_text", what: "rich text", why: "cannot be filled safely yet" },
+    { key: "rich_text_markup", what: "rich text with markup left to you",
+      why: "it holds a script, a form, an embedded frame or tags this fill cannot read — translate it on the page" },
     { key: "locked", what: "already translated", why: "unlock in ServiceNow to redo one" },
+    { key: "rich_text_editor", what: "rich text whose editor is not ready",
+      why: "let the page finish loading, then run Translation Assistant again" },
     { key: "shared_with_ineligible", what: "share a translation with one of those",
       why: "filling them would rewrite it" },
     { key: "uncertain_destination", what: "may share a translation with each other",
@@ -1099,10 +1121,47 @@
           ? `shares its translation with “${who}”, which was not in the draft — draft again`
           : "shares its translation with a field that was not in the draft — draft again";
       case "missing": return "no longer on this page";
-      case "ineligible": return "can no longer be filled on this page";
+      case "markup_changed": {
+        /* The tag that differs, named. Without it the row shows two texts that
+         * read alike under a reason about tags nobody can see (review
+         * finding); the engine names one whenever it could read both sides. */
+        const was = shorten(oneLine(detail.from), 40);
+        const now = shorten(oneLine(detail.to), 40);
+        const which = was && now ? `${now} where the source has ${was}`
+          : was ? `nothing where the source has ${was}`
+            : now ? `${now}, which the source does not have` : "";
+        return which
+          ? `its HTML tags are not the source's — the reply has ${which}, and only the words between tags may change, so translate this one on the page`
+          : "its HTML tags are not the source's — only the words between tags may change, so translate this one on the page";
+      }
+      case "ineligible":
+        switch (str(detail.reason)) {
+          case "format_changed": return "changed between plain and rich text since the draft — draft again";
+          case "rich_text_editor": return "its rich-text editor is not ready or not editable — let the page finish loading, then fill again";
+          case "rich_text_markup": return "its source holds markup this fill leaves to you — translate it on the page";
+          default: return "can no longer be filled on this page";
+        }
       default: return str(row && row.verdict) || "not filled";
     }
   }
+
+  /* Why the page-side writer did not fill a rich-text field. Each asks
+   * something different of the user, and one of them -- an editor that could
+   * not be put back -- is the only miss that leaves the page uncertain. */
+  const RICH_MISS_REASONS = {
+    rich_unconfirmed: "the rich-text editor could not be put back as it was — reload the page before you publish, which discards every fill",
+    rich_unsynced: "the page did not take this translation in, so the editor was put back as it was — reload the page, then fill again",
+    rich_rewritten: "the rich-text editor changed this translation's words, so it was put back as it was — translate this one on the page",
+    rich_too_long: "this translation is longer than the field holds once the editor formats it, so it was put back as it was — shorten it on the page",
+    rich_reverted: "this translation did not hold as written, so the editor was put back as it was — translate this one on the page",
+    /* An arrow key, not any key: a printable one types into the translation. */
+    rich_unrecorded: "its rich-text box holds an edit the page has not taken in — click into the box, press an arrow key, then fill again",
+    rich_editor: "its rich-text editor was not ready or not editable — let the page finish loading, then fill again",
+  };
+  const RICH_MISS_ORDER = [
+    "rich_unconfirmed", "rich_unsynced", "rich_rewritten", "rich_too_long",
+    "rich_reverted", "rich_unrecorded", "rich_editor",
+  ];
 
   /* One entry: which field, its source text, then the values that matter for
    * it as a labelled pair -- the reply's translation against what the page
@@ -1116,13 +1175,14 @@
       field.title = where;
       li.appendChild(field);
     }
-    li.appendChild(quotedPreview("src", "", row.source, false));
+    const rich = row.rich === true;
+    li.appendChild(quotedPreview("src", "", row.source, rich));
     const shown = (pairs || []).filter((pair) => str(pair[2]));
     if (shown.length) {
       const dl = el("dl", "pair");
       shown.forEach(([label, className, value, member]) => {
         dl.appendChild(el("dt", "", label));
-        const dd = quotedPreview(className, "", value, false, "dd");
+        const dd = quotedPreview(className, "", value, rich, "dd");
         if (str(member)) {
           const who = el("span", "mem", str(member));
           who.title = str(member);
@@ -1318,6 +1378,19 @@
       .filter((entry) => entry && typeof entry.identityKey === "string");
     const missedMembers = new Set(missedFields.map((entry) => entry.identityKey));
     const detailed = new Set(missedFields.map((entry) => Number(entry.k)));
+    /* The writer's reason for each rich-text field it did not fill, by row. */
+    const richMisses = new Map();
+    missedFields.forEach((entry) => {
+      if (!Object.prototype.hasOwnProperty.call(RICH_MISS_REASONS, str(entry.why))) return;
+      const k = Number(entry.k);
+      if (!richMisses.has(k)) richMisses.set(k, new Set());
+      richMisses.get(k).add(entry.why);
+    });
+    const richMissReason = (k) => {
+      const whys = richMisses.get(k);
+      const why = whys ? RICH_MISS_ORDER.find((name) => whys.has(name)) : "";
+      return why ? RICH_MISS_REASONS[why] : "";
+    };
     const memberMissed = (row, member) =>
       missedMembers.has(str(member.identityKey)) || (missedRows.has(row.k) && !detailed.has(row.k));
     const unconfirmed = !!res.written && res.confirmed === false;
@@ -1346,6 +1419,11 @@
       bodyEl.appendChild(el("p", "hint",
         "Review them on the page, then press Publish. To leave one out, correct or clear its box " +
         "before publishing; reloading the page discards every fill."));
+    }
+    if (Array.from(richMisses.values()).some((whys) => whys.has("rich_unconfirmed"))) {
+      bodyEl.appendChild(el("p", "note flag",
+        "A rich-text field could not be put back after its fill did not hold, so what its box shows and what " +
+        "Publish would send may differ. Reload the page before you publish."));
     }
 
     /* A row is one translation, which several fields can share, so it is
@@ -1389,10 +1467,10 @@
           const members = row.members || [];
           const names = members.filter((member) => memberMissed(row, member))
             .map((member) => str(member.elementId)).filter(Boolean);
-          reason = names.length && names.length < members.length
+          reason = richMissReason(row.k) || (names.length && names.length < members.length
             ? `did not take on the page for ${names.map((name) => `“${name}”`).join(", ")}, though the rest ` +
               "of this row did — check it before you publish"
-            : "did not take on the page — check this field before you publish";
+            : "did not take on the page — check this field before you publish");
         }
 
         let choice = null;

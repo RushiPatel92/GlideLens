@@ -24,8 +24,9 @@
  *   instance that asks for the same key.
  *
  * The engine never writes a record and never publishes. It produces a merged
- * content array for the page's own `updateDocumentContent` channel, and the
- * user presses Publish.
+ * content array for the page's own `updateDocumentContent` channel, plus a list
+ * of rich-text fields the page-side writer fills through their own editors,
+ * and the user presses Publish.
  */
 (function () {
   if (globalThis.SNTranslationAssistant) return;
@@ -110,16 +111,260 @@
   /* Exclusion reasons, in the order they are tested. A row carries exactly
    * one, and every excluded row is reported - a silent drop is a bug. */
   const REASON = Object.freeze({
-    RICH_TEXT: "rich_text",
     MESSAGE_KEY_ONLY: "message_key_only",
     MESSAGE_KEY_TOO_LONG: "message_key_too_long",
     NO_RECORD: "no_record",
     UNSUPPORTED_TYPE: "unsupported_type",
     EMPTY_SOURCE: "empty_source",
+    RICH_TEXT_MARKUP: "rich_text_markup",
     LOCKED: "locked",
+    RICH_TEXT_EDITOR: "rich_text_editor",
     SHARED_WITH_INELIGIBLE: "shared_with_ineligible",
     UNCERTAIN_DESTINATION: "uncertain_destination",
   });
+
+  /* --------------------------------------------------------------- rich text */
+
+  /*
+   * Rich text (translated_html) is filled through the page's own TinyMCE
+   * editor, never through the model. The page copies model text into an
+   * editor only when that editor starts, so a model write leaves the visible
+   * editor showing the old text while Publish sends the new. editor.setContent
+   * moves the model and the hidden textarea through the page's own SetContent
+   * handler, so the three agree (measured on the configured instance,
+   * 2026-09-17). This engine decides what may be written; the page-side writer
+   * does the writing.
+   *
+   * A reply is untrusted HTML, and setContent parses it in a same-origin frame
+   * before anyone has read it. So a reply never supplies markup. Source and
+   * reply are cut into tags and text by one strict scanner, the reply's tags
+   * must match the source's one for one - name, then attribute names and
+   * values, in order - and what is written is the SOURCE's own tag bytes with
+   * the reply's text between them. A text piece holds no "<", and HTML opens a
+   * tag only at "<", so a model cannot add an element, an attribute or a link,
+   * or change one. The scanner refuses whatever it does not fully read -
+   * comments, declarations, a stray "<", attributes not parted by white space,
+   * a quoted value holding "<" or ">" - so it and a browser always agree on
+   * where each tag ends.
+   */
+  const HTML_SPACE = " \t\n\r\f";
+  const TAG_NAME_START = /[A-Za-z]/;
+  const TAG_NAME_CHAR = /[A-Za-z0-9:_.-]/;
+  const ATTRIBUTE_NAME_START = /[A-Za-z_:]/;
+  const ATTRIBUTE_NAME_CHAR = /[-A-Za-z0-9_:.]/;
+  const UNQUOTED_FORBIDDEN = "\"'=<>`";
+  /* C0 controls other than tab, line feed, form feed and carriage return. */
+  const CONTROL_CHARACTER = /[\x00-\x08\x0b\x0e-\x1f\x7f]/;
+
+  function isHtmlSpace(character) {
+    return typeof character === "string" && character.length === 1 && HTML_SPACE.indexOf(character) !== -1;
+  }
+
+  /* One tag starting at html[start], which is "<", or null when it is not a
+   * tag this scanner reads completely. Linear in the tag's length, and a
+   * failure is never retried, so no input can make it slow. */
+  function scanTag(html, start) {
+    let i = start + 1;
+    const closing = html[i] === "/";
+    if (closing) i += 1;
+    if (!TAG_NAME_START.test(html[i] || "")) return null;
+    const nameStart = i;
+    while (i < html.length && TAG_NAME_CHAR.test(html[i])) i += 1;
+    const name = html.slice(nameStart, i).toLowerCase();
+    const attributes = [];
+    for (;;) {
+      const spaceStart = i;
+      while (isHtmlSpace(html[i])) i += 1;
+      if (html[i] === ">") return { end: i + 1, name, closing, attributes };
+      if (!closing && html[i] === "/" && html[i + 1] === ">") return { end: i + 2, name, closing, attributes };
+      /* A closing tag carries nothing, and an attribute needs white space
+       * before it: a browser reads "<p/onclick=...>" as an attribute. */
+      if (closing || i === spaceStart || !ATTRIBUTE_NAME_START.test(html[i] || "")) return null;
+      const attributeStart = i;
+      while (i < html.length && ATTRIBUTE_NAME_CHAR.test(html[i])) i += 1;
+      const attributeName = html.slice(attributeStart, i).toLowerCase();
+      let j = i;
+      while (isHtmlSpace(html[j])) j += 1;
+      if (html[j] !== "=") {
+        /* No value. The spaces after the name are left for the next pass,
+         * which needs them as the separator. */
+        attributes.push([attributeName, null]);
+        continue;
+      }
+      j += 1;
+      while (isHtmlSpace(html[j])) j += 1;
+      const quote = html[j];
+      if (quote === "\"" || quote === "'") {
+        const close = html.indexOf(quote, j + 1);
+        if (close === -1) return null;
+        const value = html.slice(j + 1, close);
+        if (value.indexOf("<") !== -1 || value.indexOf(">") !== -1) return null;
+        attributes.push([attributeName, value]);
+        i = close + 1;
+      } else {
+        const valueStart = j;
+        while (j < html.length && !isHtmlSpace(html[j]) && html[j] !== ">" &&
+          UNQUOTED_FORBIDDEN.indexOf(html[j]) === -1) j += 1;
+        if (j === valueStart || j >= html.length) return null;
+        if (!isHtmlSpace(html[j]) && html[j] !== ">") return null;
+        attributes.push([attributeName, html.slice(valueStart, j)]);
+        i = j;
+      }
+    }
+  }
+
+  /* { tags, texts } with texts.length === tags.length + 1, or null. */
+  function tokenizeHtml(value) {
+    const html = text(value);
+    if (CONTROL_CHARACTER.test(html)) return null;
+    const tags = [];
+    const texts = [];
+    let textStart = 0;
+    let at = html.indexOf("<");
+    while (at !== -1) {
+      const tag = scanTag(html, at);
+      if (!tag) return null;
+      texts.push(html.slice(textStart, at));
+      tags.push({ raw: html.slice(at, tag.end), name: tag.name, closing: tag.closing, attributes: tag.attributes });
+      textStart = tag.end;
+      at = html.indexOf("<", textStart);
+    }
+    texts.push(html.slice(textStart));
+    return { tags, texts };
+  }
+
+  /*
+   * Markup in a SOURCE that this feature leaves to a person. Belt and braces:
+   * the source is already on the record, and writing its own tags back adds
+   * nothing it did not already publish. But a field holding a script, a form,
+   * an embedded frame, an event handler or a script URL is not one to hand to
+   * an automatic fill. None of these appeared in over two thousand catalog
+   * descriptions and variable rich-text values scanned on a configured
+   * instance.
+   */
+  const UNSAFE_ELEMENTS = new Set([
+    "script", "style", "iframe", "frame", "frameset", "object", "embed", "applet", "svg", "math",
+    "template", "noscript", "noembed", "noframes", "xmp", "plaintext", "textarea", "title",
+    "link", "meta", "base", "form", "input", "button", "select", "option",
+  ]);
+  const URL_ATTRIBUTES = new Set([
+    "href", "src", "action", "formaction", "background", "poster", "cite", "longdesc",
+    "usemap", "lowsrc", "dynsrc", "data", "codebase", "xlink:href",
+  ]);
+  const SAFE_URL_SCHEMES = new Set(["http", "https", "mailto", "tel"]);
+
+  function urlScheme(value) {
+    const decoded = text(value)
+      .replace(/&#(?:[xX]([0-9A-Fa-f]{1,6})|([0-9]{1,7}));?/g, (whole, hex, dec) => {
+        const code = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
+      })
+      .replace(/&colon;/gi, ":")
+      .replace(/&(?:tab|newline);/gi, "")
+      .replace(/[\s\x00-\x1f\x7f]+/g, "")
+      .toLowerCase();
+    const scheme = /^([a-z][a-z0-9+.-]*):/.exec(decoded);
+    return scheme ? scheme[1] : "";
+  }
+
+  function unsafeMarkup(tokens) {
+    return tokens.tags.some((tag) => UNSAFE_ELEMENTS.has(tag.name) || tag.attributes.some((pair) => {
+      const name = pair[0];
+      if (name.indexOf("on") === 0 || name === "srcdoc") return true;
+      if (!URL_ATTRIBUTES.has(name) || pair[1] === null) return false;
+      const scheme = urlScheme(pair[1]);
+      return !!scheme && !SAFE_URL_SCHEMES.has(scheme);
+    }));
+  }
+
+  /* What two tags are compared on: the name, and each attribute's name and
+   * value in order. Quote style, case and a self-closing slash do not count,
+   * because what is written is always the source's own bytes. */
+  function tagKey(tag) {
+    if (tag.closing) return "</" + tag.name;
+    return "<" + tag.name + tag.attributes
+      .map((pair) => " " + pair[0] + (pair[1] === null ? "" : "=" + JSON.stringify(pair[1])))
+      .join("");
+  }
+
+  const NAMED_TEXT_ENTITIES = Object.freeze({
+    amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: String.fromCharCode(160),
+  });
+
+  /* The references a model or TinyMCE commonly writes. Any other named one
+   * stays as written, which can only make two texts compare as different. */
+  function decodeText(value) {
+    return text(value).replace(/&(?:#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6})|([A-Za-z][A-Za-z0-9]{1,31}));/g,
+      (whole, dec, hex, named) => {
+        if (named) {
+          return Object.prototype.hasOwnProperty.call(NAMED_TEXT_ENTITIES, named) ? NAMED_TEXT_ENTITIES[named] : whole;
+        }
+        const code = dec ? parseInt(dec, 10) : parseInt(hex, 16);
+        return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : whole;
+      });
+  }
+
+  /* The words a person reads, one space between runs: TinyMCE collapses white
+   * space, turns an empty paragraph into a non-breaking space and puts line
+   * breaks between blocks, none of which is a change of translation. */
+  function richWords(tokens) {
+    return tokens.texts
+      .map((piece) => decodeText(piece).replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function sameRichWords(a, b) {
+    const left = tokenizeHtml(a);
+    const right = tokenizeHtml(b);
+    return !!left && !!right && richWords(left) === richWords(right);
+  }
+
+  /*
+   * What a rich-text row writes for this reply: the source's own tags with the
+   * reply's text between them, or ok:false when the reply's tags are not the
+   * source's. blank is a reply with no words in it, which the platform would
+   * publish as an empty-looking translation.
+   */
+  function richFill(source, reply) {
+    const from = tokenizeHtml(source);
+    const back = tokenizeHtml(reply);
+    if (!from || !back) return { ok: false };
+    /* Which tag first differs, so the panel can name it: two texts that read
+     * alike under a reason that says their tags differ leave nothing to act on
+     * (review finding). The shared run is compared before the counts, because
+     * a differing tag says more than "one too many". */
+    const shared = Math.min(from.tags.length, back.tags.length);
+    for (let i = 0; i < shared; i += 1) {
+      if (tagKey(from.tags[i]) !== tagKey(back.tags[i])) {
+        return { ok: false, from: from.tags[i].raw, to: back.tags[i].raw };
+      }
+    }
+    if (from.tags.length !== back.tags.length) {
+      const extra = from.tags.length > shared ? from.tags[shared] : back.tags[shared];
+      return {
+        ok: false,
+        from: from.tags.length > shared ? extra.raw : "",
+        to: back.tags.length > shared ? extra.raw : "",
+      };
+    }
+    let value = back.texts[0];
+    for (let i = 0; i < from.tags.length; i += 1) value += from.tags[i].raw + back.texts[i + 1];
+    return { ok: true, value, blank: !richWords(back) };
+  }
+
+  /* The fields whose editor the page reader found ready: bound to exactly that
+   * field, started, and editable. The reader reports it; this engine cannot
+   * see a page. Anything not reported ready is not. */
+  function readyEditorSet(list) {
+    const ready = new Set();
+    (Array.isArray(list) ? list : []).forEach((entry) => {
+      if (entry && entry.ready === true && Number.isInteger(entry.elementIndex) && Number.isInteger(entry.fieldIndex)) {
+        ready.add(entry.elementIndex + ":" + entry.fieldIndex);
+      }
+    });
+    return ready;
+  }
 
   function createError(code, message) {
     const error = new Error(message);
@@ -383,7 +628,10 @@
 
   function exclusionFor(field) {
     const type = fieldType(field.params);
-    if (field.textType === "html" || type === "translated_html") return REASON.RICH_TEXT;
+    /* The page draws an editor for either signal. A rich row that is a script
+     * message, or is not stored per record, has never been seen, and filling
+     * one through the model would leave its editor stale. */
+    if (field.rich && (field.message || !RECORD_SCOPED_TYPES.has(type))) return REASON.UNSUPPORTED_TYPE;
     if (field.message) {
       if (!field.source) return REASON.EMPTY_SOURCE;
       if (field.messageKey.length > MESSAGE_KEY_LIMIT) return REASON.MESSAGE_KEY_TOO_LONG;
@@ -398,6 +646,19 @@
     if (!text(field.params && field.params.sysId)) return REASON.NO_RECORD;
     if (!DESTINATION_LIMITS[type]) return REASON.UNSUPPORTED_TYPE;
     if (!field.source) return REASON.EMPTY_SOURCE;
+    if (field.rich) {
+      const tokens = tokenizeHtml(field.source);
+      /* Markup with no words in it, "<p>&nbsp;</p>" say, has nothing to
+       * translate, and about one catalog description in a hundred scanned
+       * was like that. */
+      if (tokens && !richWords(tokens)) return REASON.EMPTY_SOURCE;
+      if (!tokens || unsafeMarkup(tokens)) return REASON.RICH_TEXT_MARKUP;
+      if (field.locked) return REASON.LOCKED;
+      /* Checked last: a locked field's editor is read-only by design, and
+       * that is the lock's reason, not the editor's. */
+      if (!field.editorReady) return REASON.RICH_TEXT_EDITOR;
+      return null;
+    }
     if (field.locked) return REASON.LOCKED;
     return null;
   }
@@ -407,8 +668,9 @@
    * is kept for writing back; identity is what matching uses, because the
    * element id carries an ordinal suffix that moves when variables move.
    */
-  function readFields(input) {
+  function readFields(input, options) {
     const elements = contentArray(input);
+    const editorsReady = readyEditorSet(options && options.richEditors);
     const fields = [];
     /* Appearances so far of each exact message key, in page order. */
     const messageSeen = new Map();
@@ -434,6 +696,8 @@
           message: isMessageParams(raw),
           store: storeFor(raw),
         };
+        field.rich = field.textType === "html" || field.type === "translated_html";
+        field.editorReady = field.rich && editorsReady.has(elementIndex + ":" + fieldIndex);
         field.messageKey = field.message ? messageKeyOf(params, field.source) : "";
         if (field.message) {
           const ordinal = (messageSeen.get(field.messageKey) || 0) + 1;
@@ -577,7 +841,15 @@
    * is generated from this template and never edited by a user, and it is
    * ignored entirely on the way back in.
    */
-  function buildPrompt(sourceName, targetName) {
+  function buildPrompt(sourceName, targetName, hasRichText) {
+    const richText = !hasRichText ? "" :
+      /* Said once, and only when a rich-text row is in the file. The fill
+       * refuses a reply whose tags differ from the source's, so the model is
+       * told the rule rather than left to discover it by refusal. */
+      " A row whose `format` is \"html\" holds HTML: translate only the text between its tags," +
+      " and copy every tag and attribute exactly as it stands, in the same order. Do not add," +
+      " remove, move or change a tag, an attribute or a link, and do not translate attribute" +
+      " values such as title or alt. Keep those rows close to the tone and length of their source.";
     return "Translate each row's `source` from " + sourceName + " into " + targetName +
       ". Reply with this same JSON object, with a `target` added to every row." +
       " Preserve `exportId`, `schemaVersion` and every `k` exactly as given." +
@@ -587,6 +859,7 @@
       /* A script message is often joined to a value at run time, so a trailing
        * space in "no record for id: " is part of the sentence. */
       " Keep any space at the start or end of a `source` in its `target`." +
+      richText +
       " Reply with the JSON only.";
   }
 
@@ -618,13 +891,15 @@
       sysId: text(params.sysId),
       key: field.messageKey,
       store: field.store,
+      /* Markup, so the panel shows it as words whatever bucket it is in. */
+      rich: !!field.rich,
     };
   }
 
   function buildDraft(options) {
     const opts = options || {};
     const identity = requireContext(opts);
-    const read = readFields(opts.content);
+    const read = readFields(opts.content, { richEditors: opts.richEditors });
     const grouped = groupByDestination(read.fields);
     const sourceName = text(opts.sourceLanguageName) || identity.sourceLanguage;
     const targetName = text(opts.targetLanguageName) || identity.targetLanguage;
@@ -675,13 +950,13 @@
       const maxLength = group.members.reduce(
         (limit, member) => Math.min(limit, member.limit), Number.MAX_SAFE_INTEGER
       );
-      rows.push({
-        k,
-        kind,
-        context: lead.groupName,
-        source: lead.source,
-        maxLength,
-      });
+      const row = { k, kind, context: lead.groupName };
+      /* Named for the model before it reads the source, and only on rich
+       * text, so a file with none is byte for byte what it was. */
+      if (lead.rich) row.format = "html";
+      row.source = lead.source;
+      row.maxLength = maxLength;
+      rows.push(row);
       map[String(k)] = {
         elementId: lead.elementId,
         fieldIndex: lead.fieldIndex,
@@ -717,7 +992,7 @@
     });
 
     const payload = {
-      prompt: buildPrompt(sourceName, targetName),
+      prompt: buildPrompt(sourceName, targetName, rows.some((row) => row.format === "html")),
       glidelens: "translation-assistant",
       schemaVersion: SCHEMA_VERSION,
       exportId: text(opts.exportId) || randomExportId(opts.random),
@@ -873,9 +1148,18 @@
     MISSING: "missing",
     TOO_LONG: "too_long",
     INELIGIBLE: "ineligible",
+    MARKUP_CHANGED: "markup_changed",
   });
 
-  const BLOCKED_VERDICTS = new Set([VERDICT.LOCKED, VERDICT.TOO_LONG]);
+  const BLOCKED_VERDICTS = new Set([VERDICT.LOCKED, VERDICT.TOO_LONG, VERDICT.MARKUP_CHANGED]);
+
+  /* A draft row's rich-ness, from what the page said when it was drafted. A
+   * field that has changed kind since is refused: the model was told what kind
+   * of text it was translating, and the two write paths are not the same. */
+  const FORMAT_CHANGED = "format_changed";
+  function isRichEntry(entry) {
+    return !!entry && (entry.textType === "html" || fieldType(entry.additionalParameters) === "translated_html");
+  }
 
   /*
    * An exclusion that applies to this field as the model reads right now. A
@@ -954,7 +1238,7 @@
     "prompt", "glidelens", "schemaVersion", "exportId", "artifactType",
     "sourceLanguage", "targetLanguage", "doNotTranslate", "rows",
   ]);
-  const ROW_KEYS = new Set(["k", "kind", "context", "source", "maxLength", "target"]);
+  const ROW_KEYS = new Set(["k", "kind", "context", "format", "source", "maxLength", "target"]);
 
   function countIgnoredKeys(reply) {
     let count = Object.keys(reply).filter((key) => !ENVELOPE_KEYS.has(key)).length;
@@ -1058,7 +1342,7 @@
     const envelopeRefusal = checkEnvelope(draft, reply);
     if (envelopeRefusal) return envelopeRefusal;
 
-    const read = readFields(opts.content);
+    const read = readFields(opts.content, { richEditors: opts.richEditors });
     const pageRefusal = checkPage(draft, opts.identity, read.elementCount);
     if (pageRefusal) return pageRefusal;
 
@@ -1097,6 +1381,8 @@
          * exported. */
         instanceWide: isInstanceWide(entry.additionalParameters),
         store: storeFor(entry.additionalParameters),
+        /* Markup: the panel shows its texts as words, never as written. */
+        rich: isRichEntry(entry),
         members: [],
         target: "",
         warning: null,
@@ -1140,6 +1426,20 @@
         locked: field.locked,
       });
       base.members = resolved.map((entryPair) => displayOf(entryPair.field));
+
+      const reshaped = resolved.find((pair) => pair.field.rich !== base.rich);
+      if (reshaped) {
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.INELIGIBLE,
+          status: "skip",
+          detail: {
+            reason: FORMAT_CHANGED,
+            member: reshaped.field.identityKey,
+            elementId: reshaped.field.elementId,
+          },
+        }));
+        return;
+      }
 
       /* Eligibility is re-tested against this read, not carried from the draft:
        * a row the page now represents as rich text is one R1 must not fill,
@@ -1217,22 +1517,53 @@
         return;
       }
 
+      /* Rich text writes the source's tags with the reply's words, so what is
+       * measured, compared and written from here on is that value. Every
+       * member must give the same one; a record-scoped destination has one. */
+      let value = target;
+      let rich = null;
+      let built = null;
+      if (base.rich) {
+        built = liveMembers.map((member) => richFill(member.source, target));
+        if (built.every((one) => one.ok && one.value === built[0].value)) rich = built[0];
+        /* Tags with no words between them publish as an empty-looking
+         * translation - the platform only deletes on an empty string. */
+        if (rich && rich.blank) {
+          rows.push(Object.assign(base, { verdict: VERDICT.BLANK, status: "skip" }));
+          return;
+        }
+      }
+
       if (locked) {
         lockedRow();
         return;
       }
 
+      if (base.rich && !rich) {
+        /* The first member whose tags the reply did not match, so the panel can
+         * say which one. A reply the scanner cannot read at all, and members
+         * that read cleanly but disagree on the value, name no tag. */
+        const differed = (built || []).find((one) => one && !one.ok && (one.from || one.to));
+        const row = { verdict: VERDICT.MARKUP_CHANGED, status: "block" };
+        if (differed) row.detail = { from: text(differed.from), to: text(differed.to) };
+        rows.push(Object.assign(base, row));
+        return;
+      }
+      if (rich) value = rich.value;
+
       const limit = liveMembers.reduce((low, member) => Math.min(low, member.limit), entry.maxLength);
-      if (target.length > limit) {
+      if (value.length > limit) {
         rows.push(Object.assign(base, {
           verdict: VERDICT.TOO_LONG,
           status: "block",
-          detail: { length: target.length, maxLength: limit },
+          detail: { length: value.length, maxLength: limit },
         }));
         return;
       }
 
-      if (liveMembers.every((member) => member.target === target)) {
+      /* The page holds rich text as its editor wrote it, which is never the
+       * reply's bytes, so rich text is unchanged when it reads the same. */
+      if (liveMembers.every((member) => (base.rich ? sameRichWords(member.target, target) : member.target === target))) {
         rows.push(Object.assign(base, { verdict: VERDICT.UNCHANGED, status: "skip" }));
         return;
       }
@@ -1264,16 +1595,19 @@
        * not. Warning on the first member alone lets a real substitution loss
        * through as a clean fill.
        */
-      const lost = liveMembers.find((member) => placeholdersDiffer(member.source, target));
+      const lost = liveMembers.find((member) => placeholdersDiffer(member.source, value));
       const warning = lost ? "placeholder" : null;
       rows.push(Object.assign(base, {
         verdict: VERDICT.FILL,
         status: "fill",
         warning,
+        /* What the fill writes. The reply's own text for plain rows; for rich
+         * text, the source's tags around the reply's words. */
+        value,
         detail: warning
           ? {
             source: placeholders(lost.source),
-            target: placeholders(target),
+            target: placeholders(value),
             member: lost.identityKey,
             elementId: lost.elementId,
           }
@@ -1340,7 +1674,8 @@
       }
       fills.push({
         k: row.k,
-        value: row.target,
+        value: typeof row.value === "string" ? row.value : row.target,
+        rich: !!row.rich,
         members: row.members.map((member) => ({
           identityKey: member.identityKey,
           elementId: member.elementId,
@@ -1369,15 +1704,25 @@
    * named set would be promoted into additionalParameters and posted to the
    * server on Publish, so no correlation id, hash or marker is ever parked on
    * the model.
+   *
+   * A rich-text field is never written into that array: its editor would keep
+   * showing the old text. It is carried through unchanged, and listed in `rich`
+   * for the page-side writer to fill through the editor after the event.
+   *
+   * The array keeps Angular's $$hashKey, and that is load-bearing: the page's
+   * rows are ng-repeat lists tracked by it, so an array that keeps it reuses
+   * every row and every editor (measured), and the editor writes that follow
+   * land in the model the event just installed.
    */
   function buildMergedContent(options) {
     const opts = options || {};
     const elements = contentArray(opts.content);
     const clone = JSON.parse(JSON.stringify(elements));
-    const read = readFields(elements);
+    const read = readFields(elements, { richEditors: opts.richEditors });
     const grouped = groupByDestination(read.fields);
     const index = indexByIdentity(read.fields);
     const applied = [];
+    const rich = [];
     const stale = [];
 
     (opts.plan && opts.plan.fills ? opts.plan.fills : []).forEach((fill) => {
@@ -1391,6 +1736,12 @@
       });
       if (missing || !targets.length) {
         stale.push({ k: fill.k, reason: VERDICT.MISSING });
+        return;
+      }
+
+      /* A plan made for one kind of field never writes the other kind. */
+      if (targets.some((pair) => pair.field.rich !== !!fill.rich)) {
+        stale.push({ k: fill.k, reason: VERDICT.INELIGIBLE });
         return;
       }
 
@@ -1421,11 +1772,10 @@
 
       targets.forEach((pair) => {
         const field = pair.field;
-        clone[field.elementIndex].fieldInfo[field.fieldIndex].translatedValue = fill.value;
         /* Position and record identity both, so the page-side writer can read
          * each field back after the event and count only the ones that hold
          * this value on this record - never the number it attempted. */
-        applied.push({
+        const entry = {
           k: fill.k,
           identityKey: field.identityKey,
           value: fill.value,
@@ -1438,11 +1788,19 @@
           /* A message has none of the four above, so the read-back also needs
            * the key the page will store it under. Empty for every other row. */
           messageKey: field.messageKey,
-        });
+        };
+        if (field.rich) {
+          /* The editor's own serialisation is what lands, and it is longer
+           * than what was written, so the writer checks the limit again. */
+          rich.push(Object.assign(entry, { maxLength: field.limit }));
+          return;
+        }
+        clone[field.elementIndex].fieldInfo[field.fieldIndex].translatedValue = fill.value;
+        applied.push(entry);
       });
     });
 
-    return { content: clone, applied, stale };
+    return { content: clone, applied, rich, stale };
   }
 
   /*
@@ -1486,6 +1844,10 @@
     suspectDestinationKey,
     placeholders,
     placeholdersDiffer,
+    tokenizeHtml,
+    richWords,
+    richFill,
+    sameRichWords,
     identityKey,
     messageIdentityKey,
     isMessageParams,

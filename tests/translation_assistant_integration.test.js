@@ -115,18 +115,60 @@ test("the MAIN-world reader reports why a frame is not the page", () => {
 
 test("the reader never writes to the page", () => {
   const inspector = between(backgroundSource, "function inspectLfAssistantContext(", "function selectLfAssistantFrame(");
-  ["updateDocumentContent", "CustomEvent.fire", "translatedValue =", "$apply"].forEach((write) => {
+  ["updateDocumentContent", "CustomEvent.fire", "translatedValue =", "$apply", "setContent"].forEach((write) => {
     assert.ok(!inspector.includes(write), "the context read must not write: found " + write);
   });
+});
+
+test("the reader finds each rich-text editor by the field object it is bound to, never by its id", () => {
+  const inspector = stripComments(between(backgroundSource, "function inspectLfAssistantContext(", "function selectLfAssistantFrame("));
+  assert.ok(inspector.includes("out.richEditors = []"));
+  assert.ok(inspector.includes("fieldScope.fieldInfoElement === info"), "bound by reference to the object Publish reads");
+  assert.ok(inspector.includes('controller("ngModel")'), "and through the textarea's own model binding");
+  assert.ok(/bound\.length === 1/.test(inspector), "exactly one editor, or none is ready");
+  assert.ok(!/getElementById|translated-value_|\.id\b/.test(inspector), "the ordinal DOM id is never used to find one");
+});
+
+/* The test that decides an editor is this field's, from ".filter((editor)" to
+ * the catch that closes it, with comments and white space folded so only the
+ * test itself is compared. The array it runs over is named differently in the
+ * two halves and is deliberately left out. */
+function editorPredicate(block, what) {
+  const start = block.indexOf(".filter((editor) => {");
+  assert.ok(start >= 0, "no editor filter in " + what);
+  const tail = "catch (error) { return false; }";
+  const close = block.indexOf(tail, start);
+  assert.ok(close > start, "the editor filter in " + what + " does not close as expected");
+  return stripComments(block.slice(start, close + tail.length)).replace(/\s+/g, " ").trim();
+}
+
+test("the reader and the writer decide an editor is this field's by the very same test", () => {
+  /* The writer adds the lock, started/editable and editor-versus-model checks
+   * on top, by design. What must not drift is the binding test underneath: if
+   * the reader called an editor this field's and the writer did not, a fill
+   * would refuse fields the panel had already offered -- and the other way
+   * round is worse. Two copies, one assertion. */
+  const reader = between(backgroundSource, "function inspectLfAssistantContext(", "function selectLfAssistantFrame(");
+  const writer = between(backgroundSource, "async function writeLfAssistantContent(", "const LF_ASSISTANT_APPLY_TIMEOUT_MS");
+  const byTheReader = editorPredicate(reader, "the reader");
+  const byTheWriter = editorPredicate(writer, "the writer");
+  assert.strictEqual(byTheReader, byTheWriter, "the two copies of the editor-binding test have drifted apart");
+  assert.ok(byTheReader.includes("fieldScope.fieldInfoElement === info"), "and it is still a test by reference");
 });
 
 test("the one write is the page's own event, fired by the worker into one frame", () => {
   /* Phase 3 replaces phase 2's "no write path" assertions with the shape of
    * the write there now is. */
   const writer = between(backgroundSource, "async function writeLfAssistantContent(", "const LF_ASSISTANT_APPLY_TIMEOUT_MS");
-  assert.strictEqual((stripComments(writer).match(/CustomEvent\.fire\(/g) || []).length, 1);
+  const code = stripComments(writer);
+  assert.strictEqual((code.match(/CustomEvent\.fire\(/g) || []).length, 1);
   assert.ok(writer.includes('"updateDocumentContent"'));
-  assert.ok(!writer.includes("$apply"), "the page's own listener runs the digest");
+  assert.ok(!/\$apply\(/.test(code), "the page's own listener runs the event's digest");
+  /* Rich text is the one other write, through the editor's own API: once to
+   * fill, once to put back what it showed. Its model sync is the page's own
+   * SetContent handler, and one deferred digest catches the bindings up. */
+  assert.strictEqual((code.match(/\.setContent\(/g) || []).length, 2);
+  assert.strictEqual((code.match(/\$applyAsync\(/g) || []).length, 1);
   assert.ok(!/translatedValue\s*=[^=]/.test(writer), "the writer sets no value itself; the engine's merge does");
   assert.ok(/const changedAt = differenceAt\(before, request\.base, ""\);/.test(writer),
     "it fires only when the page still holds what the merge was built from");
@@ -1317,10 +1359,20 @@ test("a writer that refuses is reported as nothing filled, and releases the lock
  * flattens over the original. A user's typing lands ONLY in the bound copy,
  * so a writer that read the original instead would never see it (Codex
  * review, P3: with one copy standing in for both, that mutation passed). */
+/* Words of some HTML, as the writer's inert DOMParser read gives them. */
+function FakeDOMParser() {}
+FakeDOMParser.prototype.parseFromString = (html) => ({
+  body: { textContent: String(html).replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&") },
+});
+
 function fakePage(content, options) {
   const opts = options || {};
-  const state = { fired: [] };
+  /* editors: what tinymce.get() answers. rebinders: run after the event, the
+   * way ng-repeat rebinds a reused row to its new object -- or, with
+   * rebuildRows, drops the row and its editor with it. */
+  const state = { fired: [], editors: [], rebinders: [], rebuildRows: false, digests: 0 };
   const scope = {
+    $applyAsync: () => { state.digests += 1; },
     isAdhocMode: () => opts.adhoc !== false,
     isReadOnlyMode: () => !!opts.readOnly,
     isLastRequestInProgress: () => {
@@ -1345,13 +1397,30 @@ function fakePage(content, options) {
     performance: { timeOrigin: opts.timeOrigin === undefined ? 1000 : opts.timeOrigin },
     location: { search: opts.search || "" },
     document: { querySelector: (selector) => (selector === ".main-content" ? {} : null) },
-    angular: { element: () => ({ scope: () => scope }) },
+    DOMParser: FakeDOMParser,
+    tinymce: { get: () => state.editors },
+    /* The page root answers the controller scope; an editor's textarea answers
+     * its own row scope and model controller. */
+    angular: {
+      element: (node) => (node && node.fieldScope
+        ? { scope: () => node.fieldScope, controller: (name) => (name === "ngModel" ? node.ngModel : undefined) }
+        : { scope: () => scope }),
+    },
     CustomEvent: {
       fire(name, payload) {
         state.fired.push(name);
         if (name === "updateDocumentContent" && !opts.ignoreEvent) {
           scope.itemsToTranslate.adhoc.documentContent.content = payload.detail;
-          scope.groupedItemsToTranslate.adhoc.documentContent.bound = json(payload.detail);
+          const digest = () => {
+            scope.groupedItemsToTranslate.adhoc.documentContent.bound = json(payload.detail);
+            state.rebinders.forEach((rebind) => rebind());
+          };
+          /* deferDigest stands for a page whose handler took the event but had
+           * not yet rebuilt the bound rows: for a moment the model objects are
+           * still the very ones the fill planned against. Measured synchronous
+           * on the real page; the writer refuses rather than rest on that. */
+          if (opts.deferDigest) setTimeout(digest, 0);
+          else digest();
         }
       },
     },
@@ -1608,6 +1677,296 @@ test("the writer refuses a replacement page holding the same content", async () 
   request.identity.targetLanguage = "fr";
   request.identity.documentStamp = 4321;
   assert.strictEqual(json(await same.write(request)).written, true);
+});
+
+/* ------------------------------------------------------------------ *
+ * Rich text through the editor (2026-09-17)
+ *
+ * The page copies model text into a TinyMCE editor only when the editor
+ * starts, so rich text is written with editor.setContent, whose SetContent
+ * handler moves the model and the textarea to the editor's own serialisation.
+ * These fakes wire an editor the way addTinyMce does.
+ * ------------------------------------------------------------------ */
+
+/* An editor bound to one field of the bound copy, as the page binds it: its
+ * textarea's row scope holds the field object, and setContent runs the
+ * page's handler. normalise(html, call) stands in for TinyMCE's serialiser;
+ * syncs stops the handler working after that many writes. */
+function attachEditor(page, elementIndex, fieldIndex, options) {
+  const opts = options || {};
+  const normalise = opts.normalise || ((html) => html.replace(/<b>/g, "<strong>").replace(/<\/b>/g, "</strong>"));
+  const bound = () => page.scope.groupedItemsToTranslate.adhoc.documentContent.bound;
+  const node = { isConnected: true, readOnly: !!opts.readOnly, value: "", fieldScope: { fieldInfoElement: null }, ngModel: {} };
+  let calls = 0;
+  const editor = {
+    initialized: opts.initialized !== false,
+    mode: { get: () => opts.mode || "design" },
+    content: "",
+    getElement: () => node,
+    getContent: () => editor.content,
+    setContent(html) {
+      editor.content = normalise(String(html), calls);
+      calls += 1;
+      if (opts.syncs !== undefined && calls > opts.syncs) return;
+      node.fieldScope.fieldInfoElement.translatedValue = editor.content;
+      node.value = editor.content;
+    },
+  };
+  node.fieldScope.fieldInfoElement = bound()[elementIndex].fieldInfo[fieldIndex];
+  const shown = node.fieldScope.fieldInfoElement.translatedValue;
+  editor.content = shown == null ? "" : String(shown);
+  node.value = editor.content;
+  page.state.editors.push(editor);
+  page.state.rebinders.push(() => {
+    if (page.state.rebuildRows) node.isConnected = false;
+    else node.fieldScope.fieldInfoElement = bound()[elementIndex].fieldInfo[fieldIndex];
+  });
+  return { editor, node };
+}
+
+/* fillContent's third row is rich text holding "<p>Brouillon</p>". */
+function richWriterRequest(content, extra) {
+  const request = writerRequest(content);
+  const params = content[2].fieldInfo[0].additionalParameters;
+  request.rich = [Object.assign({
+    k: 3, identityKey: "rich", value: "<p><b>Notes</b> traduites</p>", elementIndex: 2, fieldIndex: 0,
+    type: params.type, table: params.table, name: params.name, sysId: params.sysId, maxLength: 65000,
+  }, extra || {})];
+  return request;
+}
+
+const boundField = (page, e, j) => page.scope.groupedItemsToTranslate.adhoc.documentContent.bound[e].fieldInfo[j];
+
+test("rich text is written through its editor, after the event, into the model the event installed", async () => {
+  const content = fillContent();
+  const page = fakePage(content);
+  const { editor, node } = attachEditor(page, 2, 0);
+  const replaced = boundField(page, 2, 0);
+  const result = json(await page.write(richWriterRequest(content)));
+
+  assert.deepStrictEqual(page.state.fired, ["updateDocumentContent"]);
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.landed, 2, "the plain field and the rich one");
+  assert.deepStrictEqual(result.missed, []);
+  const installed = boundField(page, 2, 0);
+  assert.notStrictEqual(installed, replaced, "the event replaced the model object");
+  assert.strictEqual(editor.getContent(), "<p><strong>Notes</strong> traduites</p>", "the editor's own serialisation");
+  assert.strictEqual(installed.translatedValue, editor.getContent(), "the model Publish reads agrees with the editor");
+  assert.strictEqual(node.value, editor.getContent(), "and so does the textarea");
+  assert.strictEqual(replaced.translatedValue, "<p>Brouillon</p>", "the object the event replaced was never written");
+  assert.strictEqual(boundField(page, 0, 0).translatedValue, "Centre de coût");
+  assert.strictEqual(page.state.digests, 1, "one deferred digest for the page's bindings");
+});
+
+test("rich text alone fires no event", async () => {
+  const content = fillContent();
+  const page = fakePage(content);
+  const { editor } = attachEditor(page, 2, 0);
+  const request = richWriterRequest(content);
+  request.expected = [];
+  request.merged = json(content);
+  const result = json(await page.write(request));
+  assert.deepStrictEqual(page.state.fired, []);
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.landed, 1);
+  assert.strictEqual(boundField(page, 2, 0).translatedValue, editor.getContent());
+});
+
+test("an edit in the editor the page has not recorded is never written over", async () => {
+  /* The page syncs on key-up, toolbar commands and setContent; text that
+   * arrived another way is in the editor and not in the model. */
+  const content = fillContent();
+  const page = fakePage(content);
+  const { editor } = attachEditor(page, 2, 0);
+  editor.content = "<p>typed without a key-up</p>";
+  const mixed = json(await page.write(richWriterRequest(content)));
+  assert.strictEqual(mixed.written, true);
+  assert.strictEqual(mixed.landed, 1, "the plain field still fills");
+  assert.deepStrictEqual(mixed.missedFields, [{ k: 3, identityKey: "rich", why: "rich_unrecorded" }]);
+  assert.strictEqual(editor.getContent(), "<p>typed without a key-up</p>");
+
+  const alone = fakePage(content);
+  const second = attachEditor(alone, 2, 0);
+  second.editor.content = "<p>typed without a key-up</p>";
+  const request = richWriterRequest(content);
+  request.expected = [];
+  request.merged = json(content);
+  const refused = json(await alone.write(request));
+  assert.strictEqual(refused.written, false);
+  assert.strictEqual(refused.why, "rich_refused");
+  assert.deepStrictEqual(refused.missed, [3]);
+  assert.deepStrictEqual(refused.missedFields, [{ k: 3, identityKey: "rich", why: "rich_unrecorded" }]);
+  assert.deepStrictEqual(alone.state.fired, []);
+});
+
+test("an editor the event dropped with its row is not written", async () => {
+  const content = fillContent();
+  const page = fakePage(content);
+  const { editor } = attachEditor(page, 2, 0);
+  page.state.rebuildRows = true;
+  const result = json(await page.write(richWriterRequest(content)));
+  assert.strictEqual(result.landed, 1);
+  assert.deepStrictEqual(result.missedFields, [{ k: 3, identityKey: "rich", why: "rich_editor" }]);
+  assert.strictEqual(editor.getContent(), "<p>Brouillon</p>");
+});
+
+test("a write the editor does not keep as written is put back as the editor showed it, and says which check it failed", async () => {
+  const content = fillContent();
+  /* Three different failures, and three different things to ask of the user:
+   * one reason for all of them told two thirds of them wrong. */
+  for (const [what, options, extra, why] of [
+    ["words changed", { normalise: (html, call) => (call === 0 ? html.replace("traduites", "") : html) }, {}, "rich_rewritten"],
+    ["over the limit once serialised", {}, { maxLength: 10 }, "rich_too_long"],
+    ["the model did not follow", { syncs: 0 }, {}, "rich_unsynced"],
+  ]) {
+    const page = fakePage(content);
+    const { editor, node } = attachEditor(page, 2, 0, options);
+    const result = json(await page.write(richWriterRequest(content, extra)));
+    /* When the handler never ran, the model still holds the old text and the
+     * editor, put back, shows it again: restored, not uncertain. */
+    assert.strictEqual(result.landed, 1, what);
+    assert.deepStrictEqual(result.missedFields, [{ k: 3, identityKey: "rich", why }], what);
+    assert.strictEqual(editor.getContent(), "<p>Brouillon</p>", what);
+    assert.strictEqual(boundField(page, 2, 0).translatedValue, "<p>Brouillon</p>", what);
+    assert.strictEqual(node.value, "<p>Brouillon</p>", what);
+  }
+});
+
+test("a rich-text field is left alone while the page has yet to rebuild the rows the event replaced", async () => {
+  const content = fillContent();
+  const page = fakePage(content, { deferDigest: true });
+  const { editor, node } = attachEditor(page, 2, 0);
+  const request = richWriterRequest(content);
+  request.settleMs = 400;
+  const result = json(await page.write(request));
+  /* The plain field lands once the digest runs. The rich one is refused: its
+   * editor is still bound to an object about to be thrown away, so a write
+   * would land in that object and then be swapped out behind an editor left
+   * showing the translation -- the one state where the page and what Publish
+   * would send disagree. */
+  assert.strictEqual(result.written, true);
+  assert.strictEqual(result.landed, 1);
+  assert.deepStrictEqual(result.missedFields, [{ k: 3, identityKey: "rich", why: "rich_editor" }]);
+  assert.strictEqual(editor.getContent(), "<p>Brouillon</p>", "the editor was never written to");
+  assert.strictEqual(node.value, "<p>Brouillon</p>");
+  assert.strictEqual(boundField(page, 2, 0).translatedValue, "<p>Brouillon</p>");
+});
+
+test("a write that cannot be put back is reported as uncertain, never as filled or refused", async () => {
+  const content = fillContent();
+  const page = fakePage(content);
+  /* The first write syncs a changed text into the model; the handler then
+   * stops, so putting the editor back leaves the model on the changed text. */
+  attachEditor(page, 2, 0, { syncs: 1, normalise: (html, call) => (call === 0 ? html.replace("traduites", "") : html) });
+  const result = json(await page.write(richWriterRequest(content)));
+  assert.strictEqual(result.landed, 1);
+  assert.deepStrictEqual(result.missedFields, [{ k: 3, identityKey: "rich", why: "rich_unconfirmed" }]);
+});
+
+test("rich text is never written into a locked field, a read-only or unstarted editor, a field two editors claim, or another record", async () => {
+  const cases = [
+    { what: "locked", prepare: (content) => { content[2].fieldInfo[0].isFieldLocked = true; } },
+    { what: "read-only textarea", editor: { readOnly: true } },
+    { what: "read-only editor", editor: { mode: "readonly" } },
+    { what: "not started", editor: { initialized: false } },
+    { what: "two editors on one field", second: true },
+    { what: "another record", extra: { sysId: "e".repeat(32) } },
+  ];
+  for (const spec of cases) {
+    const content = fillContent();
+    if (spec.prepare) spec.prepare(content);
+    const page = fakePage(content);
+    const { editor } = attachEditor(page, 2, 0, spec.editor);
+    if (spec.second) attachEditor(page, 2, 0);
+    const request = richWriterRequest(content, spec.extra);
+    request.expected = [];
+    request.merged = json(content);
+    const result = json(await page.write(request));
+    assert.strictEqual(result.written, false, spec.what);
+    assert.strictEqual(result.why, "rich_refused", spec.what);
+    assert.deepStrictEqual(result.missedFields, [{ k: 3, identityKey: "rich", why: "rich_editor" }], spec.what);
+    assert.strictEqual(editor.getContent(), "<p>Brouillon</p>", spec.what);
+    assert.deepStrictEqual(page.state.fired, [], spec.what);
+  }
+});
+
+/* The worker's side: the engine's rich list goes to the writer apart from the
+ * merged array, with the editor states this fill's own read reported. */
+function richFillFixture() {
+  const content = fillContent();
+  const richEditors = [{ elementIndex: 2, fieldIndex: 0, editors: 1, ready: true }];
+  const draft = json(FILL_TA.buildDraft(Object.assign(
+    { content: json(content), exportId: "f".repeat(32), now: 1, richEditors }, FILL_IDENTITY)));
+  const richK = draft.payload.rows.find((row) => row.format === "html").k;
+  const reply = json(draft.payload);
+  reply.rows.forEach((row) => {
+    row.target = row.format === "html" ? "<p>Notes traduites</p>"
+      : (row.source === "Cost centre" ? "Centre de coût" : "Débiter le compte");
+  });
+  return { content, richEditors, richK, stored: json(FILL_TA.storedDraft(draft)), reply };
+}
+
+test("the worker hands rich text to the writer apart from the merged array", async () => {
+  const fixture = richFillFixture();
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content, { richEditors: fixture.richEditors }),
+    write: () => landedAnswer(2),
+  });
+  const result = json(await harness.fill({ replyText: JSON.stringify(fixture.reply) }));
+  assert.strictEqual(result.ok, true, result.message);
+  assert.strictEqual(result.attempted, 2, "the plain field and the rich one; the placeholder row waits");
+  const request = json(harness.injections[0].args[0]);
+  assert.deepStrictEqual(request.expected.map((entry) => entry.elementIndex), [0]);
+  assert.strictEqual(request.merged[2].fieldInfo[0].translatedValue, "<p>Brouillon</p>", "never written into the array");
+  assert.strictEqual(request.rich.length, 1);
+  const rich = request.rich[0];
+  assert.deepStrictEqual([rich.k, rich.value, rich.elementIndex, rich.fieldIndex, rich.type, rich.maxLength],
+    [fixture.richK, "<p>Notes traduites</p>", 2, 0, "translated_html", 65000]);
+
+  /* The same reply against a read whose editor is no longer ready. */
+  const notReady = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content),
+    write: () => landedAnswer(1),
+  });
+  const later = json(await notReady.fill({ replyText: JSON.stringify(fixture.reply) }));
+  assert.strictEqual(later.ok, true, later.message);
+  assert.deepStrictEqual(json(notReady.injections[0].args[0]).rich, []);
+  const row = later.report.rows.find((entry) => entry.k === fixture.richK);
+  assert.strictEqual(row.verdict, "ineligible");
+  assert.strictEqual(row.detail.reason, "rich_text_editor");
+});
+
+test("a fill whose every rich-text field was refused is a report, and keeps only the reasons it knows", async () => {
+  const fixture = richFillFixture();
+  fixture.reply.rows = fixture.reply.rows.filter((row) => row.k === fixture.richK);
+  const harness = loadFill({
+    stored: fixture.stored,
+    read: () => readAnswer(fixture.content, { richEditors: fixture.richEditors }),
+    write: () => Promise.resolve([{ frameId: 5, result: {
+      written: false, why: "rich_refused", landed: 0, missed: [fixture.richK],
+      missedFields: [
+        { k: fixture.richK, identityKey: "x", why: "rich_unrecorded" },
+        { k: fixture.richK, identityKey: "y", why: "<b>not a reason</b>" },
+      ],
+    } }]),
+  });
+  const result = json(await harness.fill({ replyText: JSON.stringify(fixture.reply) }));
+  assert.strictEqual(result.ok, true, "a report, not an error");
+  assert.strictEqual(result.written, false);
+  assert.strictEqual(result.attempted, 1);
+  assert.deepStrictEqual(result.missed, [fixture.richK]);
+  assert.deepStrictEqual(result.missedFields, [
+    { k: fixture.richK, identityKey: "x", why: "rich_unrecorded" },
+    { k: fixture.richK, identityKey: "y" },
+  ]);
+  assert.ok(result.report && Array.isArray(result.report.rows));
+});
+
+test("the content script drafts with the editor states the page read reported", () => {
+  const run = stripComments(between(contentSource, "async function runTranslationAssistant(", "function translationLensUi("));
+  assert.ok(/engine\.buildDraft\(\{[\s\S]*richEditors: context\.richEditors/.test(run));
 });
 
 test("the reader reports the document it read, and the fill hands the writer that identity", async () => {

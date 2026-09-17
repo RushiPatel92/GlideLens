@@ -176,6 +176,11 @@ function load() {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  /* The engine first, as the worker injects it (background.js injects
+   * translation_assistant.js and translation_assistant_ui.js into one world,
+   * in that order). The panel reads markup with the engine's scanner, so a
+   * sandbox without it would test a fallback the real panel never takes. */
+  vm.runInContext(ENGINE_SOURCE, sandbox, { filename: "translation_assistant.js" });
   vm.runInContext(UI_SOURCE, sandbox, { filename: "translation_assistant_ui.js" });
 
   const notices = [];
@@ -696,8 +701,9 @@ test("an already-translated field links to the sys_translated row that holds it"
 });
 
 test("a rich text field shows plain words and links to its record's translation", () => {
+  /* No editor reported ready, so it waits in the editor bucket. */
   const draft = mixedDraft();
-  const rich = draft.excluded.find((entry) => entry.reason === "rich_text");
+  const rich = draft.excluded.find((entry) => entry.reason === "rich_text_editor");
   const harness = load();
   show(harness, draft);
   const detail = detailOf(bucketToggle(harness.shadow(), "rich text"));
@@ -749,11 +755,132 @@ test("every listed field is built from the same parts, however long its text", (
       item.children.map((child) => child.className).join(" "),
       item.children[item.children.length - 1].children.map((child) => child.className).join(" "),
     ]);
+  /* In bucket order: the two already translated, then the rich text waiting
+   * for its editor. */
   assert.deepStrictEqual(shapes, [
+    ["src tgt foot", "where verify"],
+    ["src tgt foot", "where verify"],
     ["src untranslated foot", "where verify"],
-    ["src tgt foot", "where verify"],
-    ["src tgt foot", "where verify"],
   ]);
+});
+
+test("each rich-text bucket names its reason, and a locked rich-text field is shown as words too", () => {
+  const harness = load();
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Basic Info", label: "Description", fields: [field({
+      source: "<p>Hi</p><script>run()</script>", type: "translated_html", textType: "html", name: "description", table: "sc_cat_item",
+    })] }),
+    element({ groupName: "Variable: Notes", label: "Rich text", fields: [field({
+      source: "<p>Read <b>this</b></p>", type: "translated_html", textType: "html", name: "rich_text", table: "item_option_new",
+    })] }),
+    element({ groupName: "Variable: Terms", label: "Rich text", fields: [field({
+      source: "<p>Agree</p>", target: "<p><strong>Accepter</strong></p>", locked: true,
+      type: "translated_html", textType: "html", name: "rich_text", table: "item_option_new",
+    })] }),
+  ];
+  const text = show(harness, draftFrom(content));
+  assert.match(text, /rich text with markup left to you\(excluded — it holds a script, a form, an embedded frame or tags this fill cannot read — translate it on the page\)/);
+  assert.match(text, /rich text whose editor is not ready\(excluded — let the page finish loading, then run Translation Assistant again\)/);
+
+  const detail = detailOf(bucketToggle(harness.shadow(), "already translated"));
+  assert.match(detail.textContent, /“Agree”/);
+  assert.match(detail.textContent, /→ “Accepter”/);
+  assert.ok(!/<strong>|<p>/.test(detail.textContent), "markup is words, whichever bucket it is in");
+});
+
+/* A draft whose rich-text fields all have a ready editor, as the page reader
+ * reports them when the page has loaded. */
+function readyEditors(content) {
+  const list = [];
+  content.forEach((el, elementIndex) => (el.fieldInfo || []).forEach((info, fieldIndex) => {
+    if (info.textType === "html") list.push({ elementIndex, fieldIndex, editors: 1, ready: true });
+  }));
+  return list;
+}
+
+function richContent() {
+  return [
+    element({ groupName: "Basic Info", label: "Description", fields: [field({
+      source: "<p>Read the <b>notes</b></p>", target: "<p>Lire les <strong>brouillons</strong></p>",
+      type: "translated_html", textType: "html", name: "description", table: "sc_cat_item",
+    })] }),
+  ];
+}
+
+function richEvaluation(content, reply) {
+  const richEditors = readyEditors(content);
+  const draft = draftFrom(content, { richEditors });
+  const payload = clone(draft.payload);
+  payload.rows[0].target = reply;
+  return {
+    draft,
+    evaluation: clone(TA.evaluateReply({ draft: TA.storedDraft(draft), reply: payload, content, identity: FILL_IDENTITY, richEditors })),
+  };
+}
+
+test("a rich-text fill reports its texts as words, and a replaced translation as words too", async () => {
+  const content = richContent();
+  const { draft, evaluation } = richEvaluation(content, "<p>Lisez les <b>notes</b></p>");
+  assert.strictEqual(evaluation.rows[0].verdict, "fill");
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1]));
+  show(harness, draft);
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Filled 1 field\./);
+  assert.match(text, /Replaced 1 existing translation/);
+  assert.match(text, /“Read the notes”Filled“Lisez les notes”Was“Lire les brouillons”/);
+  assert.ok(!/<b>|<strong>|<p>/.test(text), "no markup is shown anywhere in the report");
+});
+
+test("a reply that changes a rich-text field's tags says only the words may change", async () => {
+  const content = richContent();
+  const { draft, evaluation } = richEvaluation(content, "<p>Lisez les <a href=\"https://example.com\">notes</a></p>");
+  assert.strictEqual(evaluation.rows[0].verdict, "markup_changed");
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, []));
+  show(harness, draft);
+  await pasteAndFill(harness, "reply text");
+
+  const text = harness.text();
+  assert.match(text, /Nothing was filled\./);
+  /* The tag is named. Both texts read alike here -- "Read the notes" against
+   * "Lisez les notes" -- so a reason that only says the tags differ leaves a
+   * user staring at two lines with nothing to act on (review finding). */
+  assert.match(
+    text,
+    /its HTML tags are not the source's — the reply has <a href="https:\/\/example\.com"> where the source has <b>, and only the words between tags may change/
+  );
+  assert.doesNotMatch(text, /Fill anyway|Overwrite/, "nothing a user can choose past it");
+});
+
+test("the writer's reason for a rich-text field it did not fill is the one the report gives", async () => {
+  const content = richContent();
+  const { draft, evaluation } = richEvaluation(content, "<p>Lisez les <b>notes</b></p>");
+  const identityKey = evaluation.rows[0].members[0].identityKey;
+  for (const [why, pattern, flagged] of [
+    ["rich_rewritten", /changed this translation's words, so it was put back as it was/, false],
+    ["rich_too_long", /longer than the field holds once the editor formats it, so it was put back as it was — shorten it/, false],
+    ["rich_unsynced", /the page did not take this translation in, so the editor was put back as it was — reload the page/, false],
+    ["rich_reverted", /did not hold as written, so the editor was put back as it was/, false],
+    /* An arrow key: telling a user to press any key types into the field. */
+    ["rich_unrecorded", /holds an edit the page has not taken in — click into the box, press an arrow key, then fill again/, false],
+    ["rich_editor", /was not ready or not editable — let the page finish loading, then fill again/, false],
+    ["rich_unconfirmed", /could not be put back as it was — reload the page before you publish/, true],
+  ]) {
+    const harness = load();
+    withFill(harness, filledAnswer(evaluation, [1], {
+      landed: 0, attempted: 1, missed: [1], missedFields: [{ k: 1, identityKey, why }],
+    }));
+    show(harness, draft);
+    await pasteAndFill(harness, "reply text");
+    const text = harness.text();
+    assert.match(text, pattern, why);
+    assert.strictEqual(/Reload the page before you publish\./.test(text), flagged, why + ": the page-level note");
+    assert.doesNotMatch(text, /Replaced 1 existing translation/, why + ": a field that did not take replaced nothing");
+  }
 });
 
 test("a long text is cut at a whole word, and the whole of it is on hover", () => {
@@ -828,6 +955,41 @@ test("plain text keeps its angle brackets; only rich text is shown as words", ()
   const titles = findAll(detail, (node) => node.className === "src" || node.className === "tgt")
     .map((node) => node.title);
   assert.deepStrictEqual(titles, ["Enter <account> here", "Saisir <compte> ici", "<account>", "<compte>"]);
+});
+
+test("a rich source this fill leaves to the user never shows a piece of a tag as a word", () => {
+  /* Review finding: the panel stripped markup with a pattern over angle
+   * brackets, which reads the ">" inside a quoted attribute as the end of the
+   * tag and puts the rest of that tag on screen dressed as words. The sources
+   * it happens to are exactly the ones in this bucket -- the ones the user is
+   * being told to go and translate by hand. The panel uses the fill's own
+   * scanner now, so a source that scanner reads is shown as words, and one it
+   * refuses is shown as written rather than stripped into something that only
+   * looks like words. Either way no fragment of a tag passes for a word. */
+  const harness = load();
+  const rich = (source) => element({ groupName: "Basic Info", fields: [field({
+    source, type: "translated_html", textType: "html", name: "description", table: "sc_cat_item",
+  })] });
+  show(harness, draftFrom([
+    /* Read by the scanner, excluded for the element it holds. Its "&amp;" is
+     * what a person reads as "&", so that is what the list shows. */
+    rich("<p>Read the <iframe src=\"https://example.com\"></iframe>notes &amp; drafts</p>"),
+    /* Refused by the scanner: a ">" inside a quoted attribute value. */
+    rich("<p>Open the <button onclick=\"a>b\">console</button></p>"),
+  ]));
+  const detail = detailOf(bucketToggle(harness.shadow(), "rich text with markup left to you"));
+  assert.match(
+    detail.textContent,
+    /“Read the notes & drafts”/,
+    "a source the scanner reads is shown as words, with character references decoded"
+  );
+  assert.doesNotMatch(detail.textContent, /&amp;/, "an entity is never shown as itself");
+  assert.match(
+    detail.textContent,
+    /“<p>Open the <button onclick="a>b">console<\/button><\/p>”/,
+    "a source it refuses is shown as written"
+  );
+  assert.doesNotMatch(detail.textContent, /“b">console/, "and never as the tail of a tag passing for words");
 });
 
 /* ------------------------------------------------------------------ *

@@ -208,7 +208,19 @@ The suites cover:
   rows give exactly one — otherwise the draft shows the page's codes. And what
   the fill reads back: every merged field is addressed by position and by
   record, and each row says whether publishing it changes the translation
-  instance-wide.
+  instance-wide. And rich text: the strict tag scanner reads ordinary markup
+  and refuses what a browser could read differently — a comment, a stray `<`,
+  `<p/onclick=…>`, a quoted value holding `>` — and stays fast on input built
+  to make it slow; a rich field is exported with `format: "html"` and a
+  prompt stating the rule only when its editor is reported ready; a source
+  with no words, a script, a form, an event handler or a script URL (entity-
+  encoded included) is excluded by name; a reply is written as the source's
+  own tag bytes around its words, and one that adds, drops, moves or changes a
+  tag, attribute or link is blocked with no override; tags with no words are
+  blank; unchanged is judged by words, since the page holds the editor's
+  serialisation; the limit is measured on what is written; and the merge
+  leaves rich text out of the array, keeps `$$hashKey`, and lists it for the
+  editor writer.
 - `translation_assistant_ui.test.js` — the panel, loaded under `node:vm`
   against the same small DOM shim the Translation Lens panel uses. Drafts are
   built by the real engine rather than written as literals, because the
@@ -227,10 +239,17 @@ The suites cover:
   target language. Both follow Translation Lens's rules for what a filter can
   carry — no link for a caret, a line break, an unsafe table or language — and
   one more: no link for a text naming a `javascript:` expression, which the
-  server would run rather than match, and the row says why. And the two counts
-  that open into a list — already translated, rich text — closed by default,
-  each field shown with its current translation (rich text as plain words,
-  every other type literally, angle brackets and all) and linked to its store:
+  server would run rather than match, and the row says why. And the counts
+  that open into a list — already translated, and the two rich-text buckets,
+  each naming its reason — closed by default,
+  each field shown with its current translation (rich text as plain words in
+  whichever bucket it sits, and in every report row and replaced translation,
+  read through the fill's own scanner rather than a pattern over angle
+  brackets, which would take a `>` inside a quoted attribute for the end of a
+  tag and put the rest of that tag on screen dressed as words — a source the
+  scanner refuses is shown as written instead, never stripped into something
+  that only looks like words; every other type literally, angle brackets and
+  all) and linked to its store:
   `sys_translated` for shared text, `sys_translated_text` by sys_id for
   per-record fields. Every entry is built from the same parts however long its
   text — the text, its translation, then one line holding where it lives and
@@ -246,6 +265,13 @@ The suites cover:
   translation shows its old text, because clearing the box would delete it; a
   partial landing names what did not take; a refusal keeps the reply in the box
   and shows how it starts; a timeout says the fill may still be running. A
+  reply whose tags are not the source's is blocked with nothing to choose past
+  it, and names the first tag that differs: the two texts read alike, so a
+  reason that only says the tags differ leaves nothing to act on. Every reason
+  the page-side writer gives for a rich-text field it did not fill reaches the
+  report as its own sentence, including the three separate ways a write can
+  fail to hold, and only the one that leaves the page uncertain advises a
+  reload. A
   second press while a fill runs sends nothing, an answer for a replaced panel
   is not drawn, and choosing a file loads it into the box without filling.
   Each report entry is built from the same parts — the field, its text, a
@@ -314,7 +340,26 @@ The suites cover:
   another item — and writes the page the read came from, identified the same
   way; the reader records the document's time origin and the fill hands the
   writer that identity; and a stale fill leaving does not release a newer
-  fill's lock that is still held. Those blocks are lifted
+  fill's lock that is still held. Rich text runs against faked TinyMCE
+  editors wired the way the page wires them — bound through the textarea's
+  row scope, with a `SetContent` handler that moves the model and the
+  textarea — and rebound to the new objects when the event reuses a row: the
+  write lands after the event in the model the event installed, never in the
+  object it replaced; a page that has taken the event but not yet rebuilt its
+  rows — the fake defers that digest — leaves the field alone rather than
+  writing into an object about to be thrown away and swapped out behind an
+  editor still showing the translation; rich text alone fires no event; an
+  editor holding an edit the page has not recorded, an editor dropped with its
+  row, a locked field, a read-only or unstarted editor, two editors on one
+  field and another record are never written; a write that does not hold is
+  put back and reports which check it failed — the editor changed its words,
+  it came out over the limit once serialised, or the model did not follow,
+  each asking something different of the user — and one that cannot be put
+  back comes back uncertain. The worker hands rich text to the writer apart
+  from the merged array, and a fill whose every rich field was refused is a
+  report keeping only the reasons it knows. The reader and the writer each
+  hold a copy of the test for an editor bound to a field, so those two blocks
+  are compared as source and cannot drift apart. Those blocks are lifted
   from their real files by the same anchors the source assertions use, so
   moving one fails loudly instead of testing nothing.
 

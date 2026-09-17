@@ -5707,6 +5707,8 @@ async function runTranslationAssistant() {
      * would refuse a returning draft for no reason. */
     const draft = engine.buildDraft({
       content: context.content,
+      /* Which rich-text fields have a ready editor to be filled through. */
+      richEditors: context.richEditors,
       artifactInternalName: context.artifactInternalName,
       artifactSysId: context.artifactSysId,
       sourceLanguage: context.sourceLanguage,

@@ -159,7 +159,7 @@ test("a destination group with one locked member exports nothing at all", () => 
   assert.strictEqual(draft.counts.shared_with_ineligible, 1);
 });
 
-test("rich text is excluded whatever its lock state, and a script message is exported", () => {
+test("rich text with no editor reported ready is excluded, and a script message is exported", () => {
   const draft = draftFrom([element({
     fields: [
       field({ source: "Describe it", textType: "html", type: "translated_html", name: "description", table: "sc_cat_item" }),
@@ -169,7 +169,7 @@ test("rich text is excluded whatever its lock state, and a script message is exp
     ],
   })]);
   assert.strictEqual(draft.payload.rows.length, 2);
-  assert.strictEqual(draft.counts.rich_text, 1);
+  assert.strictEqual(draft.counts.rich_text_editor, 1, "a page read that says nothing about editors fills none");
   const message = draft.payload.rows.find((row) => row.source === "Pick one");
   assert.strictEqual(message.kind, "Script message", "named for what it is, not the page's \"Script\" label");
   assert.strictEqual(message.maxLength, 8000, "sys_ui_message.message holds 8000");
@@ -965,7 +965,8 @@ test("a row the page now represents as rich text is neither filled nor merged", 
   asHtml[0].fieldInfo[0].textType = "html";
   const result = evaluate(draft, asHtml, replyFor(draft, { 1: "Decrivez-le" }));
   assert.strictEqual(verdictOf(result, 1), TA.VERDICT.INELIGIBLE);
-  assert.strictEqual(result.rows[0].detail.reason, TA.REASON.RICH_TEXT);
+  assert.strictEqual(result.rows[0].detail.reason, "format_changed",
+    "the model was told it was plain text, and plain text is written another way");
 
   /* A plan built before the change must not carry it through either. */
   const plan = TA.buildApplyPlan({
@@ -1090,9 +1091,11 @@ test("an excluded field carries what the panel needs to show it and link to its 
   assert.match(locked.sysId, /^[0-9a-f]{32}$/);
   assert.strictEqual(locked.store, "sys_translated", "a translated_field is keyed by its text");
 
-  const rich = json(draft.excluded.find((entry) => entry.reason === TA.REASON.RICH_TEXT));
+  const rich = json(draft.excluded.find((entry) => entry.reason === TA.REASON.RICH_TEXT_EDITOR));
   assert.strictEqual(rich.store, "sys_translated_text", "a translated_html is keyed by its record");
   assert.strictEqual(rich.column, "description");
+  assert.strictEqual(rich.rich, true, "marked as markup, so the panel shows it as words");
+  assert.strictEqual(locked.rich, false);
 });
 
 /* ------------------------------------------------------------------ *
@@ -1349,4 +1352,276 @@ test("a locked appearance of a key that arrives after the draft is named as the 
 test("the prompt asks for a leading or trailing space to be kept", () => {
   /* Messages are joined to values at run time: "No record for id: " + id. */
   assert.match(TA.buildPrompt("English", "French"), /Keep any space at the start or end of a `source` in its `target`\./);
+});
+
+/* ------------------------------------------------------------------ *
+ * Rich text (2026-09-17)
+ *
+ * translated_html is filled through the page's own TinyMCE editor, because
+ * the page moves model text into an editor only when the editor starts. A
+ * reply is untrusted HTML: its tags must be the source's, and what is written
+ * is the source's own tag bytes with the reply's words between them.
+ * ------------------------------------------------------------------ */
+
+const NBSP = String.fromCharCode(160);
+
+function richField(options) {
+  const opts = options || {};
+  return field(Object.assign({ textType: "html", type: "translated_html", name: "description", table: "sc_cat_item" }, opts));
+}
+
+/* Every rich field reported with a ready editor, as the page reader would. */
+function editorsReady(content, except) {
+  const skip = except || (() => false);
+  const list = [];
+  content.forEach((el, elementIndex) => (el.fieldInfo || []).forEach((info, fieldIndex) => {
+    if (info.textType !== "html") return;
+    list.push({ elementIndex, fieldIndex, editors: 1, ready: !skip(elementIndex, fieldIndex) });
+  }));
+  return list;
+}
+
+function richDraft(content, options) {
+  return draftFrom(content, Object.assign({ richEditors: editorsReady(content) }, options || {}));
+}
+
+function richEvaluate(draft, content, reply, extra) {
+  return evaluate(draft, content, reply, Object.assign({ richEditors: editorsReady(content) }, extra || {}));
+}
+
+test("the scanner reads ordinary markup and refuses anything a browser could read differently", () => {
+  [
+    "<p>Hi <a href=\"https://example.com/?a=1&amp;b=2\" target=_blank rel='noopener'>there</a><br/></p>",
+    "<img src=\"x.png\" alt=\"x\" /><o:p></o:p><TD colspan=2>cell</TD>",
+    "<p\n  class=\"a\"\n>text with > in it</p >",
+    "plain words, no markup at all",
+    "",
+  ].forEach((html) => assert.ok(TA.tokenizeHtml(html), "read: " + html));
+
+  [
+    "<!-- a comment --><p>x</p>",
+    "<!DOCTYPE html><p>x</p>",
+    "<?xml version=\"1.0\"?>",
+    "a < b",
+    "<3",
+    "<p/onclick=alert(1)>x</p>",
+    "<a title=\"x\"onclick=\"y\">x</a>",
+    "<a title=\"x>y\">x</a>",
+    "<a title=\"unterminated>x</a>",
+    "<a b=c\"d>x</a>",
+    "</p class=\"x\">",
+    "<p",
+    "<p>x" + String.fromCharCode(1) + "</p>",
+  ].forEach((html) => assert.strictEqual(TA.tokenizeHtml(html), null, "refused: " + JSON.stringify(html)));
+
+  const tokens = TA.tokenizeHtml("a<p class=x>b</p>c");
+  assert.deepStrictEqual(json(tokens.texts), ["a", "b", "c"], "one more text than tags, always");
+  assert.deepStrictEqual(json(tokens.tags.map((tag) => tag.raw)), ["<p class=x>", "</p>"]);
+});
+
+test("the scanner stays fast on input built to make it slow", () => {
+  const started = Date.now();
+  TA.tokenizeHtml("<a" + " b=c".repeat(20000));
+  TA.tokenizeHtml("<a title=\"" + "x".repeat(65000));
+  TA.tokenizeHtml("<".repeat(65000));
+  TA.tokenizeHtml("<p>".repeat(20000));
+  TA.richFill("<p>".repeat(20000), "<p>".repeat(20000));
+  assert.ok(Date.now() - started < 1000, "took " + (Date.now() - started) + "ms");
+});
+
+test("a rich-text field with a ready editor is exported with its format, and the prompt states the rule", () => {
+  const source = "<p>Read the <a href=\"https://example.com/notes\">notes</a> first.</p>";
+  const content = [element({ groupName: "Basic Info", label: "Description", fields: [richField({ source })] })];
+  const draft = richDraft(content);
+  assert.strictEqual(draft.payload.rows.length, 1);
+  const row = draft.payload.rows[0];
+  assert.strictEqual(row.format, "html");
+  assert.strictEqual(row.source, source, "the source goes out as it is stored");
+  assert.deepStrictEqual(Object.keys(row), ["k", "kind", "context", "format", "source", "maxLength"],
+    "the model reads the format before the source");
+  assert.strictEqual(row.maxLength, 65000);
+  assert.match(draft.payload.prompt, /A row whose `format` is "html" holds HTML/);
+  assert.match(draft.payload.prompt, /Do not add, remove, move or change a tag, an attribute or a link/);
+  assert.match(draft.payload.prompt, /Reply with the JSON only\.$/);
+
+  const plain = draftFrom([element({ fields: [field({ source: "Cost centre" })] })]);
+  assert.ok(!/html/.test(plain.payload.prompt), "a file with no rich text says nothing about it");
+  assert.ok(!Object.prototype.hasOwnProperty.call(plain.payload.rows[0], "format"));
+});
+
+test("rich text is excluded for no words, markup left to a person, a lock, or an editor that is not ready", () => {
+  const cases = [
+    [richField({ source: "<p>&nbsp;</p>" }), TA.REASON.EMPTY_SOURCE],
+    [richField({ source: "<p>" + NBSP + "</p><p> </p>" }), TA.REASON.EMPTY_SOURCE],
+    [richField({ source: "<p>Hi</p><script>run()</script>" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<p>Hi</p><style>p{}</style>" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<form action=\"https://example.com\">Name <input name=a></form>" }), TA.REASON.RICH_TEXT_MARKUP],
+    /* Nothing to translate outranks markup: there are no words to hand over. */
+    [richField({ source: "<form action=\"https://example.com\"><input name=a></form>" }), TA.REASON.EMPTY_SOURCE],
+    [richField({ source: "<img src=\"x.png\" onerror=\"run()\">Hi" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<a href=\"jav&#x61;script:run()\">Hi</a>" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<a href=\"java&#10;script:run()\">Hi</a>" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<a href=\"data:text/html,x\">Hi</a>" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<!-- note --><p>Hi</p>" }), TA.REASON.RICH_TEXT_MARKUP],
+    [richField({ source: "<p>Hi</p>", locked: true, target: "<p>Salut</p>" }), TA.REASON.LOCKED],
+    [richField({ source: "<p>Hi</p>", type: "translated_field", table: "question", name: "question_text" }),
+      TA.REASON.UNSUPPORTED_TYPE],
+  ];
+  const content = cases.map(([info], index) => element({ id: "E" + index, groupName: "G" + index, fields: [info] }));
+  const draft = richDraft(content);
+  assert.strictEqual(draft.payload.rows.length, 0);
+  cases.forEach(([, reason], index) => {
+    const entry = draft.excluded.find((excluded) => excluded.elementId === "E" + index);
+    assert.strictEqual(entry && entry.reason, reason, "case " + index);
+  });
+
+  const allowed = [
+    richField({ source: "<a href=\"https://example.com\">Hi</a>" }),
+    richField({ source: "<a href=\"/sp?id=kb\">Hi</a>" }),
+    richField({ source: "<a href=\"mailto:help@example.com\">Hi</a>" }),
+    richField({ source: "Words with no markup" }),
+  ].map((info, index) => element({ id: "A" + index, groupName: "A" + index, fields: [info] }));
+  assert.strictEqual(richDraft(allowed).payload.rows.length, 4);
+
+  const notReady = [element({ fields: [richField({ source: "<p>Hi</p>" })] })];
+  const draftNotReady = draftFrom(notReady, { richEditors: editorsReady(notReady, () => true) });
+  assert.strictEqual(draftNotReady.counts.rich_text_editor, 1);
+});
+
+test("a reply is written as the source's own tags around the reply's words", () => {
+  const source = "<p>Click <a href=\"https://example.com/start\" target=\"_blank\">here</a> to <b>begin</b>.</p>";
+  const content = [element({ fields: [richField({ source, target: "" })] })];
+  const draft = richDraft(content);
+  /* Different quoting, case and a self-closing slash: the same tags. */
+  const reply = "<P>Klicken Sie <a href='https://example.com/start' target=_blank>hier</a>, um zu <B>beginnen</B>.</P>";
+  const result = richEvaluate(draft, content, replyFor(draft, { 1: reply }));
+  const row = result.rows[0];
+  assert.strictEqual(row.verdict, TA.VERDICT.FILL);
+  assert.strictEqual(row.rich, true);
+  assert.strictEqual(row.target, reply, "the reply is still what the report shows");
+  assert.strictEqual(row.value,
+    "<p>Klicken Sie <a href=\"https://example.com/start\" target=\"_blank\">hier</a>, um zu <b>beginnen</b>.</p>",
+    "every tag byte is the source's");
+  const plan = TA.buildApplyPlan({ evaluation: result });
+  assert.strictEqual(plan.fills[0].value, row.value);
+  assert.strictEqual(plan.fills[0].rich, true);
+});
+
+test("a reply that adds, drops, moves or changes markup is blocked, and cannot be filled anyway", () => {
+  const source = "<p>Click <a href=\"https://example.com/start\">here</a> to <b>begin</b>.</p>";
+  const content = [element({ fields: [richField({ source })] })];
+  const draft = richDraft(content);
+  [
+    "<p>Klicken <a href=\"https://attacker.example\">hier</a> <b>beginnen</b>.</p>",
+    "<p>Klicken <a href=\"https://example.com/start\" onclick=\"run()\">hier</a> <b>beginnen</b>.</p>",
+    "<p>Klicken <a href=\"https://example.com/start\">hier</a> <b>beginnen</b>.</p><img src=\"https://example.com/t.gif\">",
+    "<p>Klicken <a href=\"https://example.com/start\">hier</a> beginnen.</p>",
+    "<p><b>Beginnen</b> Sie <a href=\"https://example.com/start\">hier</a>.</p>",
+    "<p>Klicken <a href=\"https://example.com/start\">hier</a> <b>beginnen</b>.</p><script>run()</script>",
+    "&lt;p&gt;Klicken hier beginnen&lt;/p&gt;",
+    "Klicken Sie hier, um zu beginnen.",
+    "<p>Klicken <a href=\"https://example.com/start\">hier</a> <b>beginnen</b>.<!-- x --></p>",
+  ].forEach((reply) => {
+    const row = richEvaluate(draft, content, replyFor(draft, { 1: reply })).rows[0];
+    assert.strictEqual(row.verdict, TA.VERDICT.MARKUP_CHANGED, reply);
+    assert.strictEqual(row.status, "block", reply);
+    assert.strictEqual(row.selectable, false, reply);
+    assert.ok(!Object.prototype.hasOwnProperty.call(row, "value"), "nothing to write: " + reply);
+  });
+  assert.ok(TA.BLOCKED_VERDICTS.has(TA.VERDICT.MARKUP_CHANGED));
+});
+
+test("a rich-text reply of tags with no words is blank, never a fill", () => {
+  const content = [element({ fields: [richField({ source: "<p>Hello</p>", target: "" })] })];
+  const draft = richDraft(content);
+  ["<p></p>", "<p>&nbsp;</p>", "<p>" + NBSP + " </p>"].forEach((reply) => {
+    assert.strictEqual(verdictOf(richEvaluate(draft, content, replyFor(draft, { 1: reply })), 1), TA.VERDICT.BLANK, reply);
+  });
+});
+
+test("rich text on the page is its editor's serialisation, so unchanged is judged by its words", () => {
+  /* TinyMCE writes <b> as <strong>, a non-breaking space raw, and breaks lines
+   * between blocks (measured). None of that is a different translation. */
+  const live = "<p><strong>Bonjour</strong>" + NBSP + "le monde</p>\n<p>Suite</p>";
+  const content = [element({ fields: [richField({ source: "<p><b>Hello</b> world</p><p>More</p>", target: live })] })];
+  const draft = richDraft(content);
+  const same = richEvaluate(draft, content, replyFor(draft, { 1: "<p><b>Bonjour</b>  le monde</p><p>Suite</p>" }));
+  assert.strictEqual(verdictOf(same, 1), TA.VERDICT.UNCHANGED);
+  const other = richEvaluate(draft, content, replyFor(draft, { 1: "<p><b>Salut</b> le monde</p><p>Suite</p>" }));
+  assert.strictEqual(verdictOf(other, 1), TA.VERDICT.FILL);
+  assert.ok(TA.sameRichWords("<p>a&amp;b</p>", "<p>a&b</p>"));
+  assert.ok(!TA.sameRichWords("<p>a b</p>", "<p>ab</p>"), "a space between words is part of the words");
+});
+
+test("the rich-text limit is measured on what is written, not on the reply", () => {
+  /* The source's tag carries white space the reply's does not; the tags are
+   * the same, and the value written is longer than the reply. */
+  const source = "<p" + " ".repeat(600) + "class=\"a\">Hello</p>";
+  const content = [element({ fields: [richField({ source })] })];
+  const draft = richDraft(content);
+  const reply = "<p class=\"a\">" + "b".repeat(64900) + "</p>";
+  assert.ok(reply.length <= TA.MAX_TARGET_CHARS);
+  const row = richEvaluate(draft, content, replyFor(draft, { 1: reply })).rows[0];
+  assert.strictEqual(row.verdict, TA.VERDICT.TOO_LONG);
+  assert.ok(row.detail.length > 65000, "measured after the rebuild: " + row.detail.length);
+});
+
+test("a rich-text placeholder the reply drops is warned on, and a field that changed kind is refused", () => {
+  /* translated_text drawn as rich text, so its kind can change while its
+   * record identity -- which includes the type -- stays the same. */
+  const content = [element({ fields: [richField({ source: "<p>Hello {0}</p>", type: "translated_text" })] })];
+  const draft = richDraft(content);
+  const row = richEvaluate(draft, content, replyFor(draft, { 1: "<p>Bonjour</p>" })).rows[0];
+  assert.strictEqual(row.verdict, TA.VERDICT.FILL);
+  assert.strictEqual(row.warning, "placeholder");
+
+  const nowPlain = json(content);
+  nowPlain[0].fieldInfo[0].textType = "plain";
+  const moved = richEvaluate(draft, nowPlain, replyFor(draft, { 1: "<p>Bonjour {0}</p>" })).rows[0];
+  assert.strictEqual(moved.verdict, TA.VERDICT.INELIGIBLE);
+  assert.strictEqual(moved.detail.reason, "format_changed");
+
+  const notReady = richEvaluate(draft, content, replyFor(draft, { 1: "<p>Bonjour {0}</p>" }),
+    { richEditors: editorsReady(content, () => true) }).rows[0];
+  assert.strictEqual(notReady.verdict, TA.VERDICT.INELIGIBLE, "an editor that stopped being ready at fill time");
+  assert.strictEqual(notReady.detail.reason, TA.REASON.RICH_TEXT_EDITOR);
+});
+
+test("the merge leaves rich text out of the array, keeps $$hashKey, and lists it for the editor writer", () => {
+  const content = [
+    element({ id: "Basic Info: Description", groupName: "Basic Info", label: "Description",
+      fields: [richField({ source: "<p>Hello <b>you</b></p>", target: "", hashKey: "object:40" })] }),
+    element({ id: "Variable: Cost centre: Question", fields: [field({ source: "Cost centre", hashKey: "object:41" })] }),
+  ];
+  content[0].$$hashKey = "object:30";
+  content[1].$$hashKey = "object:31";
+  const draft = richDraft(content);
+  const result = richEvaluate(draft, content, replyFor(draft, { 1: "<p>Bonjour <b>toi</b></p>", 2: "Centre de cout" }));
+  const plan = TA.buildApplyPlan({ evaluation: result });
+  const merged = TA.buildMergedContent({ content, plan, richEditors: editorsReady(content) });
+
+  assert.deepStrictEqual(json(merged.stale), []);
+  assert.deepStrictEqual(json(merged.content[0]), json(content[0]), "the rich field goes through untouched");
+  assert.strictEqual(merged.content[1].fieldInfo[0].translatedValue, "Centre de cout");
+  assert.strictEqual(merged.content[1].$$hashKey, "object:31",
+    "kept: the page reuses its rows, and so its editors, by it");
+  assert.strictEqual(merged.content[1].fieldInfo[0].$$hashKey, "object:41");
+  assert.deepStrictEqual(json(merged.applied.map((entry) => entry.elementIndex)), [1]);
+  assert.strictEqual(merged.rich.length, 1);
+  const entry = json(merged.rich[0]);
+  assert.strictEqual(entry.value, "<p>Bonjour <b>toi</b></p>");
+  assert.deepStrictEqual([entry.elementIndex, entry.fieldIndex, entry.type, entry.table, entry.name, entry.maxLength],
+    [0, 0, "translated_html", "sc_cat_item", "description", 65000]);
+  assert.strictEqual(entry.sysId, content[0].fieldInfo[0].additionalParameters.sysId);
+
+  /* The editor stopped being ready between the evaluation and the merge. */
+  const late = TA.buildMergedContent({ content, plan, richEditors: editorsReady(content, () => true) });
+  assert.deepStrictEqual(json(late.stale), [{ k: 1, reason: TA.VERDICT.INELIGIBLE }]);
+
+  /* A plan for plain text never reaches a rich field, nor the reverse. */
+  const crossed = TA.buildMergedContent({ content, richEditors: editorsReady(content), plan: {
+    fills: [{ k: 1, value: "<p>x</p>", rich: false, members: plan.fills[0].members }],
+  } });
+  assert.deepStrictEqual(json(crossed.stale), [{ k: 1, reason: TA.VERDICT.INELIGIBLE }]);
+  assert.deepStrictEqual(json(crossed.rich), []);
 });
