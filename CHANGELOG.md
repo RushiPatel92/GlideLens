@@ -20,8 +20,9 @@ reconstructed version by version.
   instructions an AI tool needs to translate it, or copies the same prompt
   and JSON to the clipboard. The file includes the item's script messages —
   the `getMessage` keys in its client scripts, UI policies and producer
-  script — once per key. The panel counts what it left out and why —
-  already translated, rich text, a message that looks like a key rather
+  script — once per key. Rich text goes out as HTML. The panel counts what it
+  left out and why — already translated, rich text whose markup or editor it
+  cannot handle, a message that looks like a key rather
   than text, a text shared with a locked field — and lists each text whose
   translation is stored instance-wide, by source string or by message key,
   linked to the row a publish would write and, for a field, to the fields
@@ -44,6 +45,18 @@ reconstructed version by version.
   The page is written only if it still holds exactly what the fill was built
   from, so nothing typed in between is reverted, and only one fill runs per
   tab until the page confirms it.
+- **Rich text is filled through its own editor.** An item's description and a
+  variable's rich text or instructions go out as HTML and come back through
+  the page's own editor rather than its model: the page copies model text into
+  an editor only when that editor starts, so writing the model alone would
+  leave the editor showing the old text while **Publish** sent the new. A
+  reply's markup is never written — its tags must match the source's one for
+  one, and what lands is the source's own tags with the reply's words between
+  them, so a reply cannot add an element, an attribute or a link. Rich text
+  holding a script, a form, an embedded frame or markup the check cannot fully
+  read is left to a person and named, as is a field whose editor has not
+  started yet. After a write the editor, the hidden textarea and the model
+  must agree, or the field is put back to what it showed and reported.
 
 ## [0.15.0] - 2026-09-08
 

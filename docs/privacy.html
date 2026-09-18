@@ -180,7 +180,8 @@ main.wrap { padding-top: 40px; }
     <tr>
       <td>When you run Translation Assistant: the text of the catalog item open
       on the Localization Framework comparison page, including the messages its
-      scripts show, and the language names on your instance</td>
+      scripts show and its rich text as HTML, and the language names on your
+      instance</td>
       <td>To build the file you hand to your AI tool, and to fill its reply
       back into that page for you to review. See the section below</td>
     </tr>
@@ -251,7 +252,7 @@ main.wrap { padding-top: 40px; }
     <p>Translation Assistant is the one feature that produces something
     <em>meant</em> to leave your device: a JSON file holding the untranslated
     text of the catalog item in front of you, including the messages its
-    scripts show, with instructions for an AI tool
+    scripts show and its rich text as HTML, with instructions for an AI tool
     to translate it. <strong>GlideLens does not upload that file, does not
     connect to any AI service, and does not know which one you use.</strong>
     The file leaves your device only when you upload it, or paste its contents,
@@ -280,9 +281,11 @@ main.wrap { padding-top: 40px; }
   <p><strong>Translation Assistant fills unsaved translations on the
   Localization Framework comparison page in front of you</strong>, in the same
   way: it puts your AI tool's reply into the page's own boxes, through the
-  page's own update channel, and only for rows that still pass its checks. The
-  panel then lists every row it did not fill and why, and keeps the old text of
-  any translation it replaced. Nothing is saved to the instance unless you
+  page's own update channel — or, for rich text, the page's own editor — and
+  only for rows that still pass its checks. A reply's own markup is never
+  written: a rich field keeps the source's tags exactly, and only its words
+  change. The panel then lists every row it did not fill and why, and keeps the
+  old text of any translation it replaced. Nothing is saved to the instance unless you
   press the page's own <em>Publish</em>; reloading the page discards every
   fill.</p>
 
