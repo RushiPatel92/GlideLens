@@ -725,8 +725,59 @@ test("only the already-translated and rich text counts open into a list", () => 
     element({ groupName: "Variable: Blank", fields: [field({ source: "" })] }),
   ]));
   assert.match(harness.text(), /empty/, "the empty bucket is shown");
-  assert.strictEqual(
-    findAll(harness.shadow(), (node) => node.tagName === "BUTTON" && node.className === "toggle").length, 0);
+  /* Scoped to the tally. The shared box carries a toggle of its own, and it
+   * is not one of these buckets -- its rows are eligible, not excluded. */
+  assert.strictEqual(tallyToggles(harness.shadow()).length, 0);
+});
+
+function tallyToggles(root_) {
+  return findAll(root_, (node) => node.tagName === "BUTTON" && node.className === "toggle" &&
+    node.parentNode && node.parentNode.parentNode &&
+    node.parentNode.parentNode.className === "tally");
+}
+
+test("the shared list is closed until it is asked for", () => {
+  /* Owner report, 2026-09-18, from a customer item: 157 rows rendered here at
+   * once, and the box sat between the download and the paste box, so the
+   * second step of a two-step task was several screens below the first. The
+   * sentences carry the warning; the rows are for checking it. */
+  const harness = load();
+  show(harness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Department", fields: [field({ source: "Department" })] }),
+  ]));
+  const list = findAll(harness.shadow(), (node) => node.className === "shared-list")[0];
+  assert.strictEqual(list.hidden, true, "the rows are detail, not the warning");
+  assert.match(harness.text(), /2 of these translations are shared/,
+    "the warning itself is never behind the toggle");
+
+  const toggle = buttonNamed(harness.shadow(), "Show all 2");
+  assert.ok(toggle, "the label names the total it would open");
+  press(toggle);
+  assert.strictEqual(list.hidden, false);
+  assert.strictEqual(toggle.textContent, "Hide");
+  assert.strictEqual(toggle.attributes["aria-expanded"], "true");
+  press(toggle);
+  assert.strictEqual(list.hidden, true);
+  assert.strictEqual(toggle.textContent, "Show all 2");
+});
+
+test("the paste box comes before the notes rather than below them", () => {
+  const harness = load();
+  show(harness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({
+      groupName: "Variable: Approver",
+      fields: [field({ source: "Approver", locked: true, target: "Approbateur" })],
+    }),
+  ]));
+  const body = findAll(harness.shadow(), (node) => node.className === "body")[0];
+  const at = (className) => body.children.findIndex((node) => node.className === className);
+  const reply = at("step");
+  assert.ok(reply >= 0, "step 2 is on the export view");
+  assert.ok(at("note info") > reply, "the unlock note follows it");
+  assert.ok(at("note flag") > reply,
+    "so does the shared warning -- the fill is done before anything is published");
 });
 
 test("every listed field is built from the same parts, however long its text", () => {

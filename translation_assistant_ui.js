@@ -160,7 +160,20 @@
     .note.flag{color:var(--flag);background:var(--flag-bg);border:1px solid var(--flag-line)}
     .note p{margin:0}
     .note p + p{margin-top:6px}
-    .shared-list{list-style:none;margin:8px 0 0;padding:0}
+    .note .note-title{font-weight:650;margin:0 0 4px;color:#ffe6b8}
+    /* The sub line and the toggle share one baseline row, so the toggle lands
+       on the right of the box the way it does on a tally row. */
+    .shared-head{display:flex;align-items:baseline;gap:14px}
+    .shared-head .sub{flex:1;min-width:0}
+    /* Bounded even when opened. A real item put 157 rows in here; left to
+       grow, the list is taller than everything else in the panel put
+       together and the step below it is only reachable by scrolling. */
+    /* A visible thin scrollbar, so the row the cap cuts through reads as more
+       to scroll rather than as a clipped list. */
+    .shared-list{
+      list-style:none;margin:8px 0 0;padding:0 10px 0 0;max-height:260px;overflow:auto;
+      scrollbar-width:thin;scrollbar-color:var(--flag-line) transparent;
+    }
     .shared-list li{padding:6px 0 5px;border-top:1px solid var(--flag-line)}
     .shared-list li:first-child{border-top:0}
     .shared-list .src{display:block;color:#fff3d6;font-weight:650;overflow-wrap:anywhere}
@@ -897,6 +910,14 @@
     copyLink.addEventListener("click", () => { copy(draft, copyLink); });
     bodyEl.appendChild(copyLink);
 
+    /* Step 2 follows step 1's controls directly, ahead of the notes. The two
+     * steps are one task and the user returns to this view to do the second
+     * half of it; the notes are read before Publish, which comes after the
+     * fill, so this is their order in time as well as on the screen. Putting
+     * the shared list between them made a real item's 157 rows something to
+     * scroll past before the paste box could be found. */
+    bodyEl.appendChild(replySection(""));
+
     if (draft.counts && count(draft.counts.locked)) bodyEl.appendChild(unlockNote());
     /* instanceWide, never sharedRows. A row with one member on this item is
      * still shared instance-wide when the platform keys it by source string,
@@ -904,7 +925,6 @@
     if (Array.isArray(draft.instanceWide) && draft.instanceWide.length) {
       bodyEl.appendChild(sharedNote(draft.instanceWide, draft.languages));
     }
-    bodyEl.appendChild(replySection(""));
     return true;
   }
 
@@ -927,6 +947,9 @@
     const inLanguage = languageLabel ? `${languageLabel} translation` : "translation";
     const linked = isFn(callbacks.onOpenUrl);
     const box = el("div", "note flag");
+    /* Titled, because it now sits below step 2 rather than between the steps,
+     * and a warning about publishing should say when it applies. */
+    box.appendChild(el("p", "note-title", "Before you publish"));
     if (fields) {
       box.appendChild(el("p", "",
         fields === 1
@@ -945,6 +968,7 @@
           : messages + " of these translations are script messages: publishing them changes those " +
             "messages for every script on this instance that uses the same message key."));
     }
+    const head = el("div", "shared-head");
     if (linked) {
       /* Every row listed here is unlocked. In ad-hoc mode that usually means
        * no translation exists yet, so the stored list is usually empty, and
@@ -958,13 +982,17 @@
         : (fields
           ? `Each links to where its ${inLanguage} is stored, and each field also to the fields that use its text`
           : `Each links to where its ${inLanguage} is stored`);
-      box.appendChild(el("p", "sub",
+      head.appendChild(el("p", "sub",
         links + " — empty unless one was published and then unlocked to be redone."));
     }
 
     /* Named, and linked to where each text is used and where its translation
-     * is kept, so the claim above can be checked rather than taken on trust. */
+     * is kept, so the claim above can be checked rather than taken on trust.
+     * Closed by default, like every other list in this panel: the sentences
+     * above carry the warning, and the rows are for checking it against the
+     * instance, which is not something the user does on the way past. */
     const ul = el("ul", "shared-list");
+    ul.hidden = true;
     list.forEach((row) => {
       const li = el("li");
       li.appendChild(el("span", "src", `“${str(row.source)}”`));
@@ -991,6 +1019,22 @@
       if (foot) li.appendChild(foot);
       ul.appendChild(li);
     });
+
+    /* The count is in the label rather than only in the sentences above,
+     * because those count fields and messages separately and what opening
+     * this costs the reader is the total. */
+    const shut = list.length === 1 ? "Show it" : `Show all ${list.length}`;
+    const toggle = el("button", "toggle", shut);
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", () => {
+      ul.hidden = !ul.hidden;
+      toggle.textContent = ul.hidden ? shut : "Hide";
+      toggle.setAttribute("aria-expanded", ul.hidden ? "false" : "true");
+    });
+    head.appendChild(toggle);
+
+    box.appendChild(head);
     box.appendChild(ul);
     return box;
   }

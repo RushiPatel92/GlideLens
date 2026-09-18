@@ -397,7 +397,11 @@ version, an export id, the language pair as codes, and one row per
 destination group with the source text and the placeholders it holds. The
 copy route emits the identical string. The panel says plainly that the file
 holds the item's text and leaves the browser when uploaded; GlideLens itself
-never contacts an AI service.
+never contacts an AI service. Both steps are one view, in this order: the
+tally, the export controls, the reply box, then the notes. Every list in the
+panel is closed until asked for and bounded when open — a real item put 157
+rows in the instance-wide list alone, and a note placed between the two steps
+is a note the user scrolls past to reach the second one.
 
 **Fill.** There is no preview step: the comparison page is the preview,
 since nothing is saved until Publish and a reload discards every fill. The
