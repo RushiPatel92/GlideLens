@@ -664,6 +664,7 @@ a { color: var(--teal); }
 .dm-ta-link { color: color-mix(in srgb, var(--teal) 84%, white); text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
 .dm-ta-note { margin: 14px 0 0; padding: 9px 12px; border-radius: 7px; font-size: 12px; line-height: 1.5; color: #f3d9a4; background: rgba(231, 177, 85, 0.10); border: 1px solid rgba(231, 177, 85, 0.35); }
 .dm-ta-note.info { color: #bfe9e4; background: rgba(49, 212, 196, 0.08); border-color: rgba(49, 212, 196, 0.30); }
+.dm-ta-note b { display: block; margin-bottom: 4px; color: #ffe6b8; font-weight: 650; }
 .dm-ta-head { margin: 0 0 6px; color: #f5f5ff; font-size: 14px; font-weight: 650; }
 .dm-ta-h3 { font-size: 14px; margin: 14px 0 5px; color: #f0f0fa; font-weight: 650; }
 .dm-ta-sub { margin: 0 0 10px; color: #aaaac1; font-size: 12px; }
@@ -1428,7 +1429,7 @@ a { color: var(--teal); }
                 <p class="dm-ta-hint">Upload the file to your AI tool and say: &ldquo;Follow the instructions in this file.&rdquo;</p>
                 <p class="dm-ta-privacy">The file holds this item's field text. It leaves your browser when you upload it somewhere.</p>
                 <span class="dm-ta-link">Copy prompt + JSON instead</span>
-                <p class="dm-ta-note">4 of these translations are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text. 2 of these translations are script messages: publishing them changes those messages for every script on this instance that uses the same message key.</p>
+                <p class="dm-ta-note"><b>Before you publish</b>4 of these translations are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text. 2 of these translations are script messages: publishing them changes those messages for every script on this instance that uses the same message key.</p>
               </div>
               <div class="dm-ta-body" data-tapane="report" hidden>
                 <p class="dm-ta-head">Filled 10 fields.</p>
