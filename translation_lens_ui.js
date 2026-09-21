@@ -162,6 +162,7 @@
       background:#2c2d4a;border:1px solid #3c3e62;
     }
     .score.pending{color:#b6b6d0;font-weight:600;font-size:12px}
+    .score.flagged{color:var(--flag)}
     .count{color:#e6e6f5}
     .count b{color:#f0f0fa;font-weight:650}
     .chip-warn{
@@ -176,6 +177,21 @@
       color:var(--gap);background:var(--gap-bg);border:1px solid var(--gap-line);
       border-radius:5px;padding:2px 8px;
     }
+    /* The other advisories qualify a row or two. This one says the headline
+       number is not the whole truth about the surface, so it is deliberately
+       out of the amber family they share: louder, next to the score it
+       contradicts, and clickable through to the list it is talking about. */
+    .chip-alert{
+      display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:11px;
+      color:#ffe0e0;background:#48242f;border:1px solid var(--gap);
+      border-radius:5px;padding:2px 9px 2px 3px;font-weight:650;
+      text-align:left;cursor:pointer;
+    }
+    .chip-alert .mark{
+      background:var(--gap);color:#2a1620;border-radius:3px;padding:1px 5px;
+      font-size:10px;font-weight:700;white-space:nowrap;
+    }
+    .chip-alert:hover{background:#5b2b3b;border-color:#ffc4c4;color:#fff}
     .banner{
       padding:9px 20px;font-size:12px;border-bottom:1px solid #292944;line-height:1.5;
     }
@@ -353,6 +369,35 @@
       font-size:11px;color:#a0a0b8;line-height:1.6;padding:2px 0 2px 13px;position:relative;
     }
     .evidence li::before{content:"•";position:absolute;left:0;color:#5b5b7e}
+    button.more{
+      margin:9px 9px 0 0;padding:5px 11px;font:inherit;font-size:11px;cursor:pointer;
+      color:var(--info);background:var(--info-bg);border:1px solid var(--info-line);
+      border-radius:4px;
+    }
+    button.more:hover{filter:brightness(1.25)}
+    .findings{margin:9px 0 0;border-top:1px solid #2c2c46}
+    .finding{padding:8px 0;border-bottom:1px solid #2a2a42}
+    .finding:last-child{border-bottom:0}
+    .finding-head{display:flex;gap:10px;align-items:baseline;justify-content:space-between}
+    .finding-where{
+      display:flex;gap:8px;align-items:baseline;min-width:0;font-size:11px;color:#dcdcf0;
+    }
+    .finding-line{
+      flex:none;color:#8686a0;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
+    }
+    .finding-trigger{
+      flex:none;color:var(--info);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
+    }
+    .finding-text{
+      font-size:11px;color:#a0a0b8;line-height:1.6;margin-top:4px;overflow-wrap:anywhere;
+      padding-left:9px;border-left:2px solid #3a3a5c;
+    }
+    .finding-flag{font-size:11px;color:var(--flag);margin-top:5px}
+    button.link{
+      background:none;border:0;padding:0;font:inherit;color:var(--info);cursor:pointer;
+      text-align:left;overflow-wrap:anywhere;
+    }
+    button.link:hover{text-decoration:underline}
     .choice-list{margin:11px 0 0;border-top:1px solid #2c2c46}
     .choice{
       display:grid;grid-template-columns:minmax(0,230px) 92px minmax(0,1fr);gap:10px;
@@ -1195,7 +1240,8 @@
   function warningCounts() {
     const counts = {
       conflict: 0, unavailable: 0, nearDuplicate: 0, stranded: 0,
-      override: 0, alternate: 0, extra: 0, unverified: 0, sameAsSource: 0,
+      override: 0, scriptOverride: 0, alternate: 0, extra: 0, unverified: 0,
+      sameAsSource: 0,
     };
     forEachRow((row) => {
       const evidence = row.evidence || {};
@@ -1207,6 +1253,7 @@
       if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) counts.nearDuplicate++;
       if (evidence.stranded && evidence.stranded.rowCount) counts.stranded++;
       if (evidence.overrides && evidence.overrides.rowCount) counts.override++;
+      if (evidence.scriptOverrides && evidence.scriptOverrides.rowCount) counts.scriptOverride++;
       if (evidence.extras && evidence.extras.rowCount) counts.extra++;
       if ((evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) ||
         (evidence.alternateSources && evidence.alternateSources.rowCount)) counts.alternate++;
@@ -1214,10 +1261,14 @@
     return counts;
   }
 
+  /* Messages carry their own denominator and the hardcoded scan carries none
+   * at all, so neither may reach the headline score. Both are named rather
+   * than relying on them happening to hold no rows. */
   function mainSectionRows() {
     const rows = [];
     panel.sections.forEach((section) => {
-      if (str(section.id) === "messages") return;
+      const id = str(section.id);
+      if (id === "messages" || id === "hardcoded") return;
       (section.rows || []).forEach((row) => rows.push(row));
     });
     return rows;
@@ -1276,13 +1327,31 @@
     const summary = mainSummary();
     const complete = panel.status === "complete";
     const scoreText = summary.counted ? summary.percent + "%" : "—";
-    const score = el("span", complete ? "score" : "score pending", scoreText);
+    /* A surface with hardcoded text is never finished, whatever the stored
+     * translations say, so the score is not allowed to render in its settled
+     * form while findings exist. The number is still the truth about the
+     * store; what it must not do is look like a clean bill of health. */
+    const hardcoded = hardcodedCount();
+    const unfinished = hardcodedUnfinished();
+    /* `flagged` rather than `pending`: a finished run with findings is not an
+     * unfinished run, and drawing it as one would leave the panel looking
+     * like it never loaded. */
+    const flagged = complete && (hardcoded || unfinished);
+    const score = el(
+      "span", complete ? (flagged ? "score flagged" : "score") : "score pending", scoreText
+    );
+    const reading = summary.counted
+      ? summary.percent + " percent covered across " +
+        (scope ? "the " + scope.length + " selected languages" : "every counted language")
+      : "No coverage has been counted yet";
     score.setAttribute(
       "aria-label",
-      summary.counted
-        ? summary.percent + " percent covered across " +
-          (scope ? "the " + scope.length + " selected languages" : "every counted language")
-        : "No coverage has been counted yet"
+      flagged
+        ? reading + ". This counts stored translations only; " +
+          (hardcoded ? hardcoded + " hardcoded strings on this surface have none to count" : "") +
+          (hardcoded && unfinished ? ", and " : "") +
+          (unfinished ? "the scan for them did not finish" : "") + "."
+        : reading
     );
     node.appendChild(score);
     if (!summary.counted) {
@@ -1290,6 +1359,31 @@
         "span", "muted",
         scope ? "nothing counted in the selected languages" : "nothing counted yet"
       ));
+    }
+
+    /* The score answers "are the translations stored?". This answers "will
+     * the form actually show them?", and the two can disagree completely. It
+     * sits immediately after the number rather than at the end of the row of
+     * advisories, because it is the reason the number cannot be read alone. */
+    if (hardcoded) {
+      const chip = el("button", "chip-alert");
+      chip.type = "button";
+      chip.appendChild(el("span", "mark", "Not in any score"));
+      chip.appendChild(el(
+        "span", "",
+        plural(hardcoded, "hardcoded string") + " — never translated in any language"
+      ));
+      chip.title =
+        "Text written into a script instead of asked for with getMessage. It has no " +
+        "translation record to be missing, so no score on this panel can count it and " +
+        "no translation can fix it. Click to open the list.";
+      chip.setAttribute(
+        "aria-label",
+        plural(hardcoded, "hardcoded string") + " on this surface are never translated in " +
+        "any language and are counted by no score here. Opens the list of them."
+      );
+      chip.addEventListener("click", revealHardcoded);
+      node.appendChild(chip);
     }
 
     addCount(node, summary.complete, "complete");
@@ -1336,6 +1430,20 @@
     if (warnings.nearDuplicate) node.appendChild(el("span", "chip-warn", plural(warnings.nearDuplicate, "row") + " with near-duplicates"));
     if (warnings.stranded) node.appendChild(el("span", "chip-warn", plural(warnings.stranded, "row") + " with stranded rows"));
     if (warnings.override) node.appendChild(el("span", "chip-warn", plural(warnings.override, "row") + " with overrides"));
+    if (warnings.scriptOverride) {
+      node.appendChild(el(
+        "span", "chip-warn",
+        plural(warnings.scriptOverride, "row") + " a script writes over"
+      ));
+    }
+    if (hardcodedUnfinished()) {
+      const scan = hardcodedScan() || {};
+      node.appendChild(el(
+        "span", "chip-warn",
+        "hardcoded scan stopped early — " +
+        plural(Number(scan.skippedCount), "script") + " unchecked"
+      ));
+    }
 
     const failures = ((panel.result && panel.result.failures) || []).length;
     if (failures) node.appendChild(el("span", "chip-warn", plural(failures, "read failure")));
@@ -1612,6 +1720,11 @@
     if (evidence.stranded && evidence.stranded.rowCount) {
       add("flag", plural(evidence.stranded.rowCount, "stranded row"));
     }
+    /* Deliberately worded as what the script does, not as a verdict: whether
+     * the line runs depends on a condition nothing here evaluates. */
+    if (evidence.scriptOverrides && evidence.scriptOverrides.rowCount) {
+      add("flag", "script sets this text");
+    }
     if (evidence.overrides && evidence.overrides.rowCount) {
       add("info", plural(evidence.overrides.rowCount, "override"));
     }
@@ -1711,9 +1824,12 @@
     });
   }
 
+  /* Returns the line so a caller can append a control to it. */
   function evidenceLine(list, text) {
-    if (!text) return;
-    list.appendChild(el("li", "", text));
+    if (!text) return null;
+    const item = el("li", "", text);
+    list.appendChild(item);
+    return item;
   }
 
   function languageList(summary) {
@@ -1801,6 +1917,34 @@
     if (Number(evidence.choiceCount)) {
       evidenceLine(list, plural(Number(evidence.choiceCount), "base choice") + " were assessed.");
     }
+    const overrides = (evidence.scriptOverrides && evidence.scriptOverrides.findings) || [];
+    overrides.forEach((finding) => {
+      const where = str(finding.scriptName) || "a client script";
+      const line = Number(finding.line) ? " line " + finding.line : "";
+      const wording = (Array.isArray(finding.texts) ? finding.texts : [])
+        .map((text) => JSON.stringify(str(text))).join(" + ");
+      /* Only setLabelOf and addOption replace what this row measures.
+       * showFieldMsg adds a message under the field, setValue's third
+       * argument is a displayed value and addDecoration's is an icon title;
+       * saying "this is what the form shows instead" about those would be
+       * false about a stored label that is perfectly fine. */
+      const item = evidenceLine(list,
+        where + line + " calls " + str(finding.api) + " with fixed text " + wording +
+        (finding.overrides
+          ? ". Whatever is stored here, that is what the form shows when that line runs."
+          : ". That text is put on this field by the script rather than replacing what is " +
+            "stored here.") +
+        " It is written into the script, so no translation of it exists in any language and " +
+        "the states above cannot see it.");
+      const target = validatedUrl(finding.link);
+      if (item && target) {
+        const open = el("button", "link", "Open the script");
+        open.type = "button";
+        open.addEventListener("click", () => openUrl(target));
+        item.appendChild(el("span", "", " "));
+        item.appendChild(open);
+      }
+    });
     if (list.children && list.children.length) detail.appendChild(list);
   }
 
@@ -2061,6 +2205,185 @@
     return shown;
   }
 
+  const FINDING_TEXT_LIMIT = 400;
+  const FINDING_PAGE = 25;
+
+  const HARDCODED_NOTE =
+    "Text written straight into a script instead of asked for with getMessage. " +
+    "It has no translation record to be missing, so it is outside every score " +
+    "above and is a list to review, not a set of gaps.";
+
+  function hardcodedScan() {
+    const section = panel.sections.find((item) => str(item.id) === "hardcoded");
+    return (section && section.findings) || null;
+  }
+
+  /* Everything the scan found, including what the list itself had to leave
+   * out: the headline must report the size of the problem, not the size of
+   * the page showing it. */
+  function hardcodedCount() {
+    const scan = hardcodedScan();
+    if (!scan) return 0;
+    const listed = Array.isArray(scan.findings) ? scan.findings.length : 0;
+    return listed + (Number(scan.omittedCount) || 0);
+  }
+
+  /* A scan that ran out of time has not cleared the surface, so the headline
+   * may not settle on the strength of it. */
+  function hardcodedUnfinished() {
+    const scan = hardcodedScan();
+    return Boolean(scan && scan.timedOut);
+  }
+
+  /* What triggered the finding, in the reader's terms rather than the
+   * scanner's: the platform call it sits in, the property it was written
+   * under, or the variable it was followed through. */
+  function hardcodedTrigger(finding) {
+    if (str(finding.kind) === "property") return str(finding.property) + ":";
+    const api = str(finding.api);
+    return str(finding.via) ? api + " via " + str(finding.via) : api;
+  }
+
+  function renderHardcodedFinding(parent, finding) {
+    const item = el("div", "finding");
+    const head = el("div", "finding-head");
+    const where = el("span", "finding-where");
+    const name = str(finding.scriptName) || "Unnamed script";
+    const link = validatedUrl(finding.link);
+    if (link) {
+      const anchor = el("button", "link", name);
+      anchor.type = "button";
+      anchor.title = "Open this script";
+      anchor.addEventListener("click", () => openUrl(link));
+      where.appendChild(anchor);
+    } else where.appendChild(el("span", "", name));
+    if (Number(finding.line)) where.appendChild(el("span", "finding-line", "line " + finding.line));
+    head.appendChild(where);
+    head.appendChild(el("span", "finding-trigger", hardcodedTrigger(finding)));
+    item.appendChild(head);
+    /* Several literals mean one argument built by concatenation; they are
+     * shown as the pieces they are rather than glued into a sentence the
+     * script never actually writes. */
+    /* A hardcoded string can be a whole HTML block. Shown to its first few
+     * hundred characters, which is enough to recognise it; the record it
+     * links to holds the rest. */
+    const texts = Array.isArray(finding.texts) ? finding.texts : [];
+    texts.forEach((value) => {
+      const text = str(value);
+      item.appendChild(el(
+        "div", "finding-text",
+        text.length > FINDING_TEXT_LIMIT ? text.slice(0, FINDING_TEXT_LIMIT) + "…" : text
+      ));
+    });
+    if (finding.alsoAKey) {
+      item.appendChild(el(
+        "div", "finding-flag",
+        "This exact text is also passed to getMessage in the same script."
+      ));
+    }
+    parent.appendChild(item);
+  }
+
+  /* The headline chip is the panel's loudest claim, so it has to lead
+   * somewhere: it opens the list it is talking about and puts the reader --
+   * and the keyboard -- on it, rather than leaving them to scroll for it
+   * past every section that did pass. */
+  function revealHardcoded() {
+    panel.collapsedSections.delete("hardcoded");
+    paint();
+    const head = panel.refs && panel.refs.hardcodedHead;
+    if (!head) return;
+    if (isFn(head.scrollIntoView)) head.scrollIntoView({ block: "center" });
+    if (isFn(head.focus)) head.focus();
+  }
+
+  function renderHardcodedGroup(parent) {
+    panel.refs.hardcodedHead = null;
+    const scan = hardcodedScan();
+    if (!scan || !Number(scan.scriptCount)) return;
+    const findings = Array.isArray(scan.findings) ? scan.findings : [];
+    const group = el("div", "group");
+    const collapsed = isCollapsed("hardcoded");
+    const head = el("button", "group-head plain");
+    panel.refs.hardcodedHead = head;
+    head.type = "button";
+    head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    head.appendChild(el("span", "group-caret", collapsed ? "▸" : "▾"));
+    head.appendChild(el("span", "group-name", "Hardcoded text"));
+    /* A scan that gave up must never describe itself as having found
+     * nothing: "none found" and "stopped looking" are different answers and
+     * only one of them is good news. */
+    let headNote;
+    if (scan.timedOut) {
+      headNote = plural(Number(scan.skippedCount), "script") + " were not scanned";
+    } else if (findings.length) {
+      headNote = "Never asked to be translated, so never counted above";
+    } else {
+      headNote = "None found in " + plural(Number(scan.scriptCount), "scanned script");
+    }
+    head.appendChild(el("span", "group-note", headNote));
+    /* The badge says how many are listed against how many were found, so a
+     * capped list does not read as the whole answer. */
+    const omitted = Number(scan.omittedCount) || 0;
+    head.appendChild(el(
+      "span", "group-count",
+      omitted ? findings.length + " of " + (findings.length + omitted) : String(findings.length)
+    ));
+    head.addEventListener("click", () => {
+      if (collapsed) panel.collapsedSections.delete("hardcoded");
+      else panel.collapsedSections.add("hardcoded");
+      paint();
+    });
+    group.appendChild(head);
+    if (!collapsed && (findings.length || scan.timedOut)) {
+      if (findings.length) group.appendChild(el("div", "section-note", HARDCODED_NOTE));
+      /* Shown a page at a time. The whole list is in hand -- this is about
+       * how many nodes the panel builds on each paint, not about hiding
+       * anything -- so the button reveals the rest rather than re-reading.
+       * "Show all" is remembered as a decision rather than as a number, so a
+       * later result carrying more findings does not re-hide them. */
+      const shown = panel.hardcodedShowAll
+        ? findings.length
+        : Math.min(findings.length, panel.hardcodedShown || FINDING_PAGE);
+      const list = el("div", "findings");
+      findings.slice(0, shown).forEach((finding) => renderHardcodedFinding(list, finding));
+      group.appendChild(list);
+      if (shown < findings.length) {
+        const more = el("button", "more", "Show " +
+          Math.min(FINDING_PAGE, findings.length - shown) + " more of " + findings.length);
+        more.type = "button";
+        more.addEventListener("click", () => {
+          panel.hardcodedShown = shown + FINDING_PAGE;
+          paint();
+        });
+        group.appendChild(more);
+        const all = el("button", "more", "Show all " + findings.length);
+        all.type = "button";
+        all.addEventListener("click", () => {
+          panel.hardcodedShowAll = true;
+          paint();
+        });
+        group.appendChild(all);
+      }
+      if (scan.timedOut) {
+        group.appendChild(el(
+          "div", "section-note",
+          "The scan stopped at its time limit to keep the page responsive; " +
+          plural(Number(scan.skippedCount), "script") + " were not scanned. " +
+          "Absence of a finding for them is not a clean result."
+        ));
+      }
+      if (scan.capped) {
+        group.appendChild(el(
+          "div", "section-note",
+          "The list hit its cap; " + plural(Number(scan.omittedCount), "further finding") +
+          " were omitted."
+        ));
+      }
+    }
+    parent.appendChild(group);
+  }
+
   function renderFailures(parent) {
     const failures = (panel.result && panel.result.failures) || [];
     if (!failures.length) return;
@@ -2145,10 +2468,15 @@
     let shown = 0;
     let groups = 0;
     panel.sections.forEach((section) => {
+      /* An advisory section holds findings rather than coverage rows, so it
+       * is not a group the row renderer can draw and is not counted among
+       * the groups that decide whether anything was read at all. */
+      if (section.advisory) return;
       groups++;
       shown += renderSectionTree(node, section, languages);
     });
     shown += renderLookupGroup(node, languages);
+    renderHardcodedGroup(node);
     renderFailures(node);
 
     if (!groups) {
@@ -2491,6 +2819,10 @@
       sections: [],
       seenSections: new Set(),
       collapsedSections: new Set(),
+      /* How many findings the hardcoded group is currently drawing. Reset per
+       * run, so a new surface does not inherit the last one's scroll. */
+      hardcodedShown: 0,
+      hardcodedShowAll: false,
       expanded: new Set(),
       expandAll: false,
       filter: "all",

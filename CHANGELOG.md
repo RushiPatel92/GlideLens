@@ -57,6 +57,45 @@ reconstructed version by version.
   read is left to a person and named, as is a field whose editor has not
   started yet. After a write the editor, the hidden textarea and the model
   must agree, or the field is put back to what it showed and reported.
+- **Translation Lens finds text that never asked to be translated.** A new
+  **Hardcoded text** group lists wording written straight into a client script
+  or UI policy instead of being requested with `getMessage` — a label set by
+  `setLabelOf`, a message passed to `showFieldMsg`, an option label, an alert.
+  Any alphabet counts, not only English: an instance whose base language is
+  something else hardcodes that instead, and it is the same defect.
+  It reads the same scripts the message scan already reads, so it costs no
+  extra query. Three shapes are found: a literal sitting in the call, a
+  literal reached through one local variable on the line above, and a
+  hand-rolled translation table — an object whose `label`, `title` or
+  `helpText` property holds a bare string, which is how text arrives at a call
+  site that is several dynamic hops from the words. A string that is also
+  passed to `getMessage` somewhere in the same script is called out, because a
+  translation for that exact text is being asked for a few lines away. These
+  are findings to review, not gaps: hardcoded text has no translation record
+  to be missing, so the group keeps its own count and never moves any score.
+  The copied report carries the counts and the platform API names and neither
+  the text itself, the script's name, nor its identifier. The scan hands the
+  page's thread back as it goes and stops at a time limit rather than
+  freezing the tab, saying how many scripts it did not reach so silence never
+  reads as a clean result, and the panel lists findings a page at a time with
+  **Show all** rather than truncating at a cap with no way to see the rest.
+- **A high score can no longer look like a clean form.** While hardcoded text
+  exists the coverage score is drawn flagged rather than plain, with the count
+  beside it: the number still describes what is stored, and it now cannot be
+  read as a promise about what the form will show. That count is not drawn as
+  one more amber advisory among the row-level ones — a 99% is exactly what
+  gets believed when the sentence contradicting it looks like a note about
+  three stranded rows. It is marked **Not in any score**, styled apart from
+  the advisories, placed immediately after the number it qualifies rather
+  than at the end of the row, and clicking it opens the **Hardcoded text**
+  group and puts the keyboard on it. A finding whose call names
+  its field is also flagged on that field's own row, with the script, the line
+  and what it writes — which surfaces the case the score is blind to, a field
+  translated correctly in every language that a script overwrites with a fixed
+  string every time the form opens. It is a flag to check, never a gap: the
+  call is usually inside a condition, so it moves no count. A finding stays on
+  the half it came from, a `getMessage` key is never mistaken for a field, and
+  only the calls that actually replace stored text say that they do.
 
 ## [0.15.0] - 2026-09-08
 

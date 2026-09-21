@@ -284,7 +284,94 @@ set titles are string-keyed in `sys_translated` under their defining table.
 `getMessage` keys are scanned from the surface's client scripts and UI
 policies and checked in `sys_ui_message`. For every string-keyed text, a row
 found in the record-keyed store instead is reported as stranded, never
-counted. The reverse check is not made for `translated_text` and
+counted.
+
+The **Hardcoded text** group is the complement of that scan, over the same
+script bodies and so at no extra read: the message scan asks whether a
+requested key is translated, this one asks whether a translation was ever
+requested. A finding is not a coverage row and carries no per-language
+states — hardcoded text has no store row, so there is no language in which it
+is Missing and none in which it could be created — and the section is
+excluded from the headline denominator by name in both `summarizeResult` and
+the panel, not by happening to hold no rows. Three shapes are reported: a
+string literal in an argument that carries user-visible text, a literal
+reached by following one local assignment when the whole argument is a bare
+identifier, and a literal under a text-shaped property name (`label`,
+`title`, `helpText` and the like, matched as a whole word or a camelCase tail
+so `context` and `headers` are not text, and read whether the key is bare or
+quoted). The third exists because a hand-rolled translation table reaches its
+call site through dynamic hops no text scan can follow, while the object
+literal holding the words sits in the same script.
+
+The filters are what keep it honest, and each answers a measured false
+positive. Argument indexes are exact rather than at-or-after, since
+`showFieldMsg`'s third argument is the message type. Only literals at the
+argument's own bracket depth count, so a nested call's arguments stay that
+call's business and a field name read by `getLabelOf` is not reported as
+English. A literal with no two letters is concatenation glue rather than
+text, measured in any script and not only in Latin, because an instance whose
+base language is not English hardcodes its own language and that is the same
+defect. Text arriving from a server response is deliberately not attributed
+to the script, which holds no text to fix. The `getMessage` exclusion is
+deliberately broader than `extractMessageKeys`' own pattern and accepts any
+receiver: extraction must be strict because a key it invents gets queried,
+while exclusion must be generous because every call it fails to recognise
+becomes a false claim that text was never translated.
+
+All of it is a text scan over a masked copy of the source — comments, regex
+literals and string bodies blanked, offsets preserved — never an evaluation,
+so a traced finding names the identifier it followed. Regex literals are
+lexed rather than ignored because one ordinary regex silently deletes every
+later finding in its script: `/\/*$/` opens a block comment that masks the
+rest of the file, and a regex holding a backtick opens a template literal
+that swallows it. Line numbers come from a binary search over a newline index
+built once per script, and literals are indexed by offset, because the
+obvious per-finding walk turns a large hand-rolled table — the very shape
+this scan is built for — into a frozen tab.
+
+Cost is a correctness concern here, not a nicety, because the engine is
+injected into the page and not into the worker: every millisecond the scan
+spends is a millisecond that tab is frozen. So the scan is `async` and
+sliced — it hands the thread back every few milliseconds — and it stops at a
+budget, reporting how many scripts it did not reach rather than letting
+silence read as a clean surface. Its patterns are written so that no two
+unbounded quantifiers sit next to each other. That is not hypothetical: the
+receiver and its dot were once `\s*\.?\s*`, comments are masked to spaces,
+and a real 2 KB script that had been commented out took **44 seconds** on one
+regex because the engine tried every way to split the run of spaces.
+Commenting a script out is ordinary, so that shape has a regression test with
+a time assertion and a second test that pins the pattern rule at the source.
+The panel draws the list a page at a time with the whole list in hand, so a
+long report costs nodes only as a reader asks for them, and "show all" is
+remembered as a decision rather than as a count.
+
+A finding whose call names its field plainly is attached to that field's own
+row as `evidence.scriptOverrides`, by `attachScriptOverrides` at the end of
+`summarizeResult`. This exists for the one case the score cannot see: a field
+translated correctly in every language which a script overwrites with a fixed
+string at runtime, so the row reads 100% and the form is still English. It is
+evidence and never a state — whether the line runs depends on a condition
+nothing here evaluates — so it moves no count, and the headline instead
+refuses to settle: while findings exist the score renders flagged rather than
+plain, with the count beside it and the reason in its `aria-label`. That
+count is a `chip-alert`, not one of the `chip-warn` advisories, and it is
+appended directly after the score rather than with them. The distinction is
+the point rather than decoration: the advisories qualify a row or two, this
+one says the number itself is not the whole truth about the surface, and in
+the amber family at the end of the same row it read as the smallest of the
+four. It is a button, so the claim leads somewhere — it expands the
+**Hardcoded text** group and moves focus to its head. Three
+rules keep the attachment honest. A finding only lands on the half it came
+from, because a catalog variable and an `sc_cat_item` column routinely share
+a name and the script's table is what tells them apart. A message row is
+never a target, because its element is a `getMessage` key and a key spelled
+like a field is still a key. And only `setLabelOf` and `addOption` claim to
+replace what a row measures; `showFieldMsg`, `setValue` and `addDecoration`
+put their own text on a field without touching what is stored, and are worded
+that way. A literal that is also a
+`getMessage` key in the same script is flagged. The copied report carries
+counts and this file's own fixed API names; the source text, the property
+name, the record name and the sys_id stay on screen. The reverse check is not made for `translated_text` and
 `translated_html`: their values are long text that is rarely expressible as
 a query key.
 

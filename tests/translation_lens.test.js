@@ -13,7 +13,13 @@ const vm = require("node:vm");
 
 function loadEngine(extra) {
   const file = path.join(__dirname, "..", "translation_lens.js");
-  const context = Object.assign({ globalThis: null, URL, URLSearchParams }, extra || {});
+  /* setTimeout is handed in so the hardcoded scan's slicing runs for real
+   * here. Without it the engine falls back to a microtask, which yields to
+   * nothing and would let a freeze go unnoticed by these tests. */
+  const context = Object.assign(
+    { globalThis: null, URL, URLSearchParams, setTimeout, setInterval, clearInterval },
+    extra || {}
+  );
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(file, "utf8"), context, { filename: file });
@@ -1299,7 +1305,7 @@ test("form sections are handed over as their rows exist, before the message scan
     onSection: (section) => events.push(section.id),
   }, transport);
   assert.deepStrictEqual(seenAtScan, ["labels", "values", "choices"], "three sections were on their way before the scan started");
-  assert.deepStrictEqual(events, ["labels", "values", "choices", "messages"]);
+  assert.deepStrictEqual(events, ["labels", "values", "choices", "messages", "hardcoded"]);
   /* Array.from: the engine's arrays come from its VM realm, whose Array
    * prototype is not this one's, and deepStrictEqual compares prototypes. */
   assert.deepStrictEqual(Array.from(result.sections, (section) => section.id), events, "the final result is the same sections in the same order");
@@ -1318,7 +1324,7 @@ test("catalog sections are handed over before the client-script scan", async () 
     onSection: (section) => events.push(section.id),
   }, transport);
   assert.deepStrictEqual(seenAtScan, ["values", "choices"]);
-  assert.deepStrictEqual(events, ["values", "choices", "messages"]);
+  assert.deepStrictEqual(events, ["values", "choices", "messages", "hardcoded"]);
   assert.deepStrictEqual(Array.from(result.sections, (section) => section.id), events);
 });
 
@@ -1489,11 +1495,1000 @@ test("scoping to a language the row never carried counts it missing, not covered
   assert.strictEqual(scoped.partial, 1, "absence of a state is a gap, never a pass");
 });
 
-test("an empty scope counts nothing rather than silently meaning every language", () => {
+test("an empty scope counts nothing rather than silently meaning every language", async () => {
   const rows = [summaryRow({ fr: { state: "direct" }, de: { state: "missing" } }, ["fr", "de"])];
   const scoped = TL.sectionSummary(rows, []);
   assert.strictEqual(scoped.counted, 0);
   assert.strictEqual(scoped.percent, null);
   assert.strictEqual(scoped.scoped, true, "deselecting everything is still a selection");
   assert.strictEqual(scoped.scopeCount, 0);
+});
+
+/* ------------------------------------------------------------------ *
+ * Hardcoded text scan
+ *
+ * Every fixture below is invented. The shapes are drawn from a sample of
+ * real catalog client scripts, but no source text, record name, field name
+ * or identifier from any instance appears here.
+ * ------------------------------------------------------------------ */
+
+const ORIGIN = "https://example.service-now.com";
+
+function script(source, extra) {
+  return Object.assign({
+    table: "catalog_script_client",
+    sysId: "0000000000000000000000000000abcd",
+    name: "Example script",
+    field: "script",
+    source,
+  }, extra || {});
+}
+
+/* Returns the scan's promise; every caller awaits it. */
+function scan(source, extra) {
+  return TL.scanHardcodedText([script(source, extra)], ORIGIN);
+}
+
+const textsOf = (result) =>
+  own(result.findings).map((finding) => own(finding.texts).join("|"));
+
+test("a literal in a text argument is found in either quote style or a backtick", async () => {
+  const result = await scan([
+    "g_form.setLabelOf('a_field', 'Single quoted');",
+    "g_form.setLabelOf('b_field', \"Double quoted\");",
+    "g_form.setLabelOf('c_field', `Backticked`);",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), ["Single quoted", "Double quoted", "Backticked"]);
+});
+
+test("a quote of the other kind inside a literal is content, and an escape does not end it", async () => {
+  const result = await scan([
+    "g_form.setLabelOf('a_field', \"Manager's approval\");",
+    "g_form.setLabelOf('b_field', 'She said \"yes\" today');",
+    "g_form.setLabelOf('c_field', 'It\\'s ready');",
+  ].join("\n"));
+  assert.deepStrictEqual(
+    textsOf(result),
+    ["Manager's approval", "She said \"yes\" today", "It's ready"]
+  );
+});
+
+test("text already asked for with getMessage is not a finding", async () => {
+  const result = await scan([
+    "g_form.setLabelOf('a_field', getMessage('Approver'));",
+    "g_form.addInfoMessage(gs.getMessage('Saved'));",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), []);
+});
+
+test("only the exact text argument counts, so a message type is not read as English", async () => {
+  /* The third argument of showFieldMsg is the message type. An
+   * at-or-after-this-index rule reported every 'error' in the sample. */
+  const result = await scan("g_form.showFieldMsg('a_field', 'Enter a number', 'error');");
+  assert.deepStrictEqual(textsOf(result), ["Enter a number"]);
+});
+
+test("a field name in the first argument is never read as text", async () => {
+  const result = await scan("g_form.setLabelOf('some_field_name', labelFromServer);");
+  assert.deepStrictEqual(textsOf(result), []);
+});
+
+test("one argument built by concatenation is one finding holding its pieces", async () => {
+  const result = await scan(
+    "g_form.addErrorMessage('Provided value ' + entered + ' is not valid');"
+  );
+  assert.strictEqual(result.findings.length, 1);
+  assert.deepStrictEqual(own(result.findings[0].texts), ["Provided value ", " is not valid"]);
+});
+
+test("punctuation glue is not text anyone translates", async () => {
+  const result = await scan([
+    "g_form.showFieldMsg('a_field', ': ' + value, 'info');",
+    "g_form.showFieldMsg('b_field', ' - ' + value, 'info');",
+    "g_form.showFieldMsg('c_field', 'Original value: ' + value, 'info');",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), ["Original value: "],
+    "a separator carries no words; a prefix with words does");
+});
+
+test("a text argument spread over several lines is read whole", async () => {
+  const result = await scan([
+    "g_form.setLabelOf(",
+    "    'a_field',",
+    "    isSpecial ?",
+    "    'Special case label' :",
+    "    'Ordinary label'",
+    ");",
+  ].join("\n"));
+  assert.strictEqual(result.findings.length, 1,
+    "the argument is one place in the code, however many lines it takes");
+  assert.deepStrictEqual(
+    own(result.findings[0].texts), ["Special case label", "Ordinary label"]
+  );
+});
+
+test("a text-shaped property holding a literal is found wherever the object is read", async () => {
+  /* The hand-rolled translation table: the call site is several dynamic hops
+   * from the words, and no text scan can follow it, but the object literal is
+   * in the same script with the property name in front of each string. */
+  const result = await scan([
+    "var RULES = {",
+    "    aa: { label: 'Registration number', order: 1 },",
+    "    bb: { label: 'Tax number', order: 2 }",
+    "};",
+    "g_form.setLabelOf(field, RULES[code].label);",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), ["Registration number", "Tax number"]);
+  assert.strictEqual(result.findings[0].kind, "property");
+  assert.strictEqual(result.findings[0].property, "label");
+});
+
+test("a property whose value asks for a translation is not a finding", async () => {
+  const result = await scan([
+    "var RULES = { aa: { label: getMessage('Registration number') } };",
+    "g_form.setLabelOf(field, RULES.aa.label);",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), []);
+});
+
+test("a ternary is not mistaken for an object entry", async () => {
+  /* `cond ? label : 'text'` has the same identifier-colon-literal shape as an
+   * object key. What separates them is the character in front. */
+  const result = await scan("var chosen = isSpecial ? label : 'Fallback wording';");
+  assert.deepStrictEqual(textsOf(result), [],
+    "nothing here is a property, and nothing reaches a text argument");
+});
+
+test("a literal reached through one local variable is found and says so", async () => {
+  const result = await scan([
+    "var err_message = 'That value is not an address';",
+    "g_form.addErrorMessage(err_message);",
+  ].join("\n"));
+  assert.strictEqual(result.findings.length, 1);
+  assert.deepStrictEqual(own(result.findings[0].texts), ["That value is not an address"]);
+  assert.strictEqual(result.findings[0].kind, "traced");
+  assert.strictEqual(result.findings[0].via, "err_message",
+    "a trace names the identifier it followed, because it is a trace and not an evaluation");
+});
+
+test("text the script does not own is not attributed to it", async () => {
+  /* An option label arriving from a server call is a server-side concern.
+   * Reporting it here would send someone to a script that holds no text. */
+  const result = await scan([
+    "function onResponse(answer) {",
+    "    var choices = JSON.parse(answer);",
+    "    for (var i in choices) {",
+    "        g_form.addOption('a_field', choices[i].value, choices[i].text);",
+    "    }",
+    "}",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), []);
+});
+
+test("a literal that is also a getMessage key in the same script is flagged as reused", async () => {
+  const result = await scan([
+    "var LABEL = getMessage('Tax number');",
+    "g_form.setLabelOf('a_field', LABEL);",
+    "g_form.setLabelOf('b_field', 'Tax number');",
+  ].join("\n"));
+  assert.strictEqual(result.findings.length, 1);
+  assert.strictEqual(result.findings[0].alsoAKey, true,
+    "the same text is translated a line above and bypassed here");
+});
+
+test("comments hold no findings and cannot hide a real one", async () => {
+  const result = await scan([
+    "// g_form.setLabelOf('a_field', 'Commented out');",
+    "/* g_form.setLabelOf('b_field', 'Also commented'); */",
+    "g_form.setLabelOf('c_field', 'Live one'); // trailing 'not a literal'",
+  ].join("\n"));
+  assert.deepStrictEqual(textsOf(result), ["Live one"]);
+});
+
+test("a finding links to its own record, same-origin, and survives a bad origin without one", async () => {
+  const found = (await TL.scanHardcodedText(
+    [script("g_form.setLabelOf('a_field', 'Some label');")], ORIGIN
+  )).findings[0];
+  assert.strictEqual(
+    found.link,
+    ORIGIN + "/catalog_script_client.do?sys_id=0000000000000000000000000000abcd"
+  );
+  assert.strictEqual(found.line, 1);
+  assert.strictEqual(found.scriptName, "Example script");
+
+  const hostile = (await TL.scanHardcodedText(
+    [script("g_form.setLabelOf('a_field', 'Some label');")], "https://example.com"
+  )).findings[0];
+  assert.strictEqual(hostile.link, "", "a refused origin costs the link");
+  assert.deepStrictEqual(own(hostile.texts), ["Some label"], "and never the finding");
+});
+
+test("a script whose identity is missing still reports its text, without a link", async () => {
+  const found = (await TL.scanHardcodedText(
+    [script("g_form.setLabelOf('a_field', 'Some label');", { sysId: "", name: "" })], ORIGIN
+  )).findings[0];
+  assert.strictEqual(found.link, "");
+  assert.deepStrictEqual(own(found.texts), ["Some label"]);
+});
+
+test("the finding list is capped and says how many it left out", async () => {
+  const lines = [];
+  for (let index = 0; index < 8; index++) {
+    lines.push("g_form.setLabelOf('field_" + index + "', 'Label number " + index + "');");
+  }
+  const result = await TL.scanHardcodedText([script(lines.join("\n"))], ORIGIN, 3);
+  assert.strictEqual(result.findings.length, 3);
+  assert.strictEqual(result.capped, true);
+  assert.strictEqual(result.omittedCount, 5);
+});
+
+test("an empty or unreadable script body is counted as scanned only when it has one", async () => {
+  const result = await TL.scanHardcodedText([
+    script(""),
+    script("   \n  "),
+    script("g_form.setLabelOf('a_field', 'Real label');"),
+  ], ORIGIN);
+  assert.strictEqual(result.scriptCount, 1);
+  assert.strictEqual(result.scriptsWithFindings, 1);
+});
+
+test("hardcoded findings never move the coverage score", async () => {
+  const languageContext = languages();
+  const labelRow = TL.analyzeStringRows({
+    element: "title", source: "Base", effectiveTable: "example_record",
+    rows: [{ name: "example_record", element: "title", language: "fr", label: "Titre" }],
+    languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [labelRow] },
+      {
+        id: "hardcoded",
+        label: "Hardcoded text",
+        rows: [],
+        advisory: true,
+        findings: await TL.scanHardcodedText(
+          [script("g_form.setLabelOf('a_field', 'Never translated');")], ORIGIN
+        ),
+      },
+    ],
+    languages: languageContext,
+  });
+  assert.strictEqual(result.summary.counted, labelRow.coverage.counted,
+    "the denominator is the label row's alone");
+  assert.strictEqual(result.hardcodedSummary.count, 1);
+  assert.strictEqual(result.hardcodedSummary.scriptCount, 1,
+    "the scan reports separately, and reports that it ran");
+});
+
+test("the copied report carries the shape of the findings and none of the text", async () => {
+  const report = TL.formatResultsAsText({
+    context: { mode: "catalog" },
+    sections: [{
+      id: "hardcoded",
+      label: "Hardcoded text",
+      rows: [],
+      advisory: true,
+      findings: await TL.scanHardcodedText([script([
+        "var RULES = { aa: { label: 'Secret wording' } };",
+        "g_form.setLabelOf('a_field', 'Other wording');",
+      ].join("\n"), { name: "Identifying script name" })], ORIGIN),
+    }],
+  });
+  assert.ok(report.includes("2 findings in 1 scanned script"));
+  assert.ok(report.includes("setLabelOf: 1"), "a platform API name is this file's own");
+  assert.ok(report.includes("text-shaped property: 1"), "a property name is read from the instance");
+  assert.ok(!report.includes("Secret wording"), "no source text travels");
+  assert.ok(!report.includes("Other wording"));
+  assert.ok(!report.includes("label"), "not even the property name it was written under");
+  assert.ok(!report.includes("Identifying script name"), "and no record name");
+  assert.ok(!report.includes("0000000000000000000000000000abcd"), "and no identifier");
+});
+
+/* ------------------------------------------------------------------ *
+ * Hardcoded text scan -- the shapes a review found, and the invariants
+ * that were asserted by tests which could not fail.
+ * ------------------------------------------------------------------ */
+
+test("a literal inside a nested call belongs to that call, not to this one", async () => {
+  /* g_form.getLabelOf('assignment_group') names a field. Reporting it as
+   * hardcoded English sends a reader to a script that is not wrong. */
+  assert.deepStrictEqual(
+    textsOf(await scan("var label = g_form.getLabelOf('assignment_group');\n" +
+      "g_form.showFieldMsg('a_field', label, 'info');")),
+    [],
+    "a trace through a call returns no text the script owns"
+  );
+  assert.deepStrictEqual(
+    textsOf(await scan("var msg = data.messages['saved_message'];\ng_form.addInfoMessage(msg);")),
+    [],
+    "nor does a trace through a lookup"
+  );
+  const mixed = await scan(
+    "g_form.showFieldMsg('a_field', g_form.getLabelOf('other_field') + ' is required', 'error');"
+  );
+  assert.deepStrictEqual(own(mixed.findings[0].texts), [" is required"],
+    "the words are the finding; the field name beside them is not");
+});
+
+test("text in any script is found, not only text in the Latin alphabet", async () => {
+  /* An instance whose base language is not English hardcodes its own
+   * language, and that is the same defect. */
+  const cyrillic = "Заявка сохранена";
+  const japanese = "保存しました";
+  const arabic = "تم الحفظ";
+  assert.deepStrictEqual(
+    textsOf(await scan([
+      "g_form.addInfoMessage('" + cyrillic + "');",
+      "g_form.addInfoMessage('" + japanese + "');",
+      "g_form.addInfoMessage('" + arabic + "');",
+    ].join("\n"))),
+    [cyrillic, japanese, arabic]
+  );
+  assert.deepStrictEqual(
+    textsOf(await scan("g_form.showFieldMsg('a_field', ': ' + value, 'info');")), [],
+    "and a separator is still not text, whatever the alphabet"
+  );
+});
+
+test("a regex literal cannot silently delete the findings after it", async () => {
+  /* Left unlexed, `/\\/*$/` opens a block comment that masks the rest of the
+   * file and a regex holding a backtick opens a template literal that
+   * swallows it. Either one turns a real finding into silence. */
+  assert.deepStrictEqual(
+    textsOf(await scan("var p = path.replace(/\\/*$/, '');\ng_form.setLabelOf('a_field', 'Still found');")),
+    ["Still found"]
+  );
+  assert.deepStrictEqual(
+    textsOf(await scan("var p = s.replace(/`/, '');\ng_form.setLabelOf('a_field', 'Found too');")),
+    ["Found too"]
+  );
+  assert.deepStrictEqual(
+    textsOf(await scan("var re = /'/; g_form.setLabelOf('a_field', 'Same line');")),
+    ["Same line"]
+  );
+  assert.deepStrictEqual(
+    textsOf(await scan("var p = path.split(/\\//);\ng_form.addInfoMessage('After a slash class');")),
+    ["After a slash class"]
+  );
+});
+
+test("division is not mistaken for a regex", async () => {
+  assert.deepStrictEqual(
+    textsOf(await scan("var half = total / 2;\nvar rest = count / 4;\n" +
+      "g_form.setLabelOf('a_field', 'After division');")),
+    ["After division"],
+    "two divisions on separate lines must not open a literal that eats the third"
+  );
+});
+
+test("an identifier holding a dollar sign is traced like any other", async () => {
+  assert.deepStrictEqual(
+    textsOf(await scan("var $msg = 'Dollar message';\ng_form.addInfoMessage($msg);")),
+    ["Dollar message"],
+    "$ is a legal identifier character and must not be read as a pattern anchor"
+  );
+});
+
+test("getMessage counts as asking whatever the receiver is called", async () => {
+  /* Extraction must be strict, because a key it invents gets queried.
+   * Exclusion must be generous, because every call it fails to recognise
+   * becomes a false claim that text was never translated. The two scans
+   * disagree on purpose. */
+  assert.deepStrictEqual(textsOf(await scan([
+    "g_form.setLabelOf('a_field', getMessage('Approver'));",
+    "g_form.setLabelOf('b_field', gs.getMessage('Approver'));",
+    "g_form.setLabelOf('c_field', i18n.getMessage('Approver'));",
+  ].join("\n"))), []);
+});
+
+test("a property name matches as a whole word or a camelCase tail, never a substring", async () => {
+  assert.deepStrictEqual(
+    textsOf(await scan("var cfg = { context: 'sc_request', msgType: 'error', " +
+      "textField: 'u_name', headers: 'Content-Type' };")),
+    [],
+    "context holds 'text', headers holds 'header', msgType holds 'msg', and none is text"
+  );
+  assert.deepStrictEqual(
+    textsOf(await scan("var cfg = { label: 'Registration number', helpText: 'Enter it here' };")),
+    ["Registration number", "Enter it here"]
+  );
+});
+
+test("a table pasted in as JSON has its keys read too", async () => {
+  assert.deepStrictEqual(
+    textsOf(await scan("var T = { 'label': 'From a quoted key' };")),
+    ["From a quoted key"],
+    "quoting every key is what pasting JSON does, and the words are still hardcoded"
+  );
+});
+
+test("a literal is reported once, under the shape it is actually written in", async () => {
+  /* The words sit inside an object literal that happens to be written at the
+   * call. The depth rule keeps the call from claiming them -- a nested
+   * structure is its own place -- so the property reports them, once. */
+  const result = await scan("spUtil.addInfoMessage({ message: 'Hello there' }.message);");
+  assert.deepStrictEqual(textsOf(result), ["Hello there"]);
+  assert.strictEqual(result.findings[0].kind, "property");
+  assert.strictEqual(result.findings[0].property, "message");
+});
+
+test("findings sort by script, then by which body of it, then by line", async () => {
+  const made = (over) => Object.assign({
+    table: "sys_ui_policy", sysId: "0000000000000000000000000000beef",
+    name: "One policy", field: "script_true",
+    source: "g_form.addInfoMessage('Policy text');",
+  }, over || {});
+  const result = await TL.scanHardcodedText([
+    made({ field: "script_false" }),
+    made({ field: "script_true" }),
+  ], ORIGIN);
+  assert.deepStrictEqual(
+    own(result.findings).map((finding) => finding.field),
+    ["script_false", "script_true"],
+    "a policy's two bodies share a name and a sys_id, so they must not interleave"
+  );
+});
+
+test("the scan holds up on a script far larger than any real one", async () => {
+  /* A hand-rolled translation table is exactly the shape this scan is built
+   * for, and it is the shape that grows. The scan runs synchronously on the
+   * page's own thread, so a per-finding walk from the top of the file is a
+   * frozen tab rather than a slow report. */
+  const entries = [];
+  for (let index = 0; index < 4000; index++) {
+    entries.push("  key" + index + ": { label: 'Entry number " + index + "' },");
+  }
+  const source = "var TABLE = {\n" + entries.join("\n") + "\n};";
+  const started = Date.now();
+  const result = await TL.scanHardcodedText([script(source)], ORIGIN);
+  const elapsed = Date.now() - started;
+  assert.strictEqual(result.findings.length + result.omittedCount, 4000);
+  assert.ok(elapsed < 3000, "scanning a 160 KB table took " + elapsed + "ms");
+  assert.strictEqual(
+    result.findings[0].line, 2,
+    "and the line numbers are still right, which is what the fast path must not cost"
+  );
+});
+
+test("the hardcoded section is kept out of the score by name, not by being empty", async () => {
+  /* The earlier version of this test put no rows in the section, so it passed
+   * whether or not summarizeResult excluded it. A row is planted here for the
+   * exclusion to have something to exclude. */
+  const languageContext = languages();
+  const countable = TL.analyzeStringRows({
+    element: "title", source: "Base", effectiveTable: "example_record",
+    rows: [], languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  assert.ok(countable.coverage.counted > 0, "the planted row would count if it were let in");
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [countable] },
+      {
+        id: "hardcoded", label: "Hardcoded text", advisory: true,
+        rows: [countable],
+        findings: await TL.scanHardcodedText([script("g_form.setLabelOf('a', 'Never asked');")], ORIGIN),
+      },
+    ],
+    languages: languageContext,
+  });
+  assert.strictEqual(
+    result.summary.counted, countable.coverage.counted,
+    "the denominator is the labels section's alone, even though both sections hold a row"
+  );
+});
+
+test("a catalog run merges the form half's findings without double-counting or overflowing", async () => {
+  const left = await TL.scanHardcodedText([script("g_form.setLabelOf('a', 'From the item');")], ORIGIN);
+  const right = await TL.scanHardcodedText([script("g_form.setLabelOf('a', 'From the item');", {
+    table: "sys_script_client", sysId: "0000000000000000000000000000beef", name: "Form script",
+  })], ORIGIN);
+  const shared = own(left.findings).concat(own(right.findings));
+  const ids = new Set(shared.map((finding) => finding.id));
+  assert.strictEqual(ids.size, 2,
+    "the same text in two records is two findings, because they are two records to fix");
+  const repeat = await TL.scanHardcodedText([script("g_form.setLabelOf('a', 'From the item');")], ORIGIN);
+  assert.strictEqual(
+    repeat.findings[0].id, left.findings[0].id,
+    "and a finding's id is stable, which is what makes the merge's de-duplication work"
+  );
+});
+
+test("the copied report's silence about the text is not an accident of the fixture", async () => {
+  /* The earlier assertion that the report holds no "label" passed only
+   * because the fixture had no Field Labels section. Both are present here,
+   * so the assertion has to be about the findings themselves. */
+  const languageContext = languages();
+  const labelRow = TL.analyzeStringRows({
+    element: "title", source: "Base", effectiveTable: "example_record",
+    rows: [], languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const report = TL.formatResultsAsText({
+    context: { mode: "catalog" },
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [labelRow] },
+      {
+        id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+        findings: await TL.scanHardcodedText([script([
+          "var T = { helpText: 'Wording from an object' };",
+          "var carried = 'Wording from a variable';",
+          "g_form.addInfoMessage(carried);",
+        ].join("\n"), { name: "Identifying script name" })], ORIGIN),
+      },
+    ],
+  });
+  assert.ok(report.includes("Field Labels"), "the ordinary section still reports normally");
+  assert.ok(report.includes("2 findings in 1 scanned script"));
+  assert.ok(report.includes("addInfoMessage (via a variable): 1"));
+  assert.ok(report.includes("text-shaped property: 1"));
+  assert.ok(!report.includes("Wording from"), "no source text travels");
+  assert.ok(!report.includes("helpText"), "nor a property name read from the instance");
+  assert.ok(!report.includes("carried"), "nor the identifier a trace followed");
+  assert.ok(!report.includes("Identifying script name"), "nor the record's name");
+  assert.ok(!report.includes("0000000000000000000000000000abcd"), "nor its identifier");
+  assert.ok(!report.includes("example.service-now.com"), "nor any host or link");
+});
+
+test("an end-to-end catalog run reports hardcoded text from the scripts it read", async () => {
+  const itemId = "00000000000000000000000000000010";
+  const scriptId = "00000000000000000000000000000013";
+  const transport = async (request) => {
+    if (request.table === "sys_language") return [
+      { sys_id: "00000000000000000000000000000001", id: "en", active: "true" },
+      { sys_id: "00000000000000000000000000000002", id: "fr", active: "true" },
+    ];
+    if (request.table === "sys_properties") return [{ name: "glide.sys.language", value: "en" }];
+    if (request.table === "sc_cat_item") return [{
+      sys_id: itemId, sys_class_name: "sc_cat_item", name: "Example item",
+      short_description: "", description: "",
+    }];
+    if (request.table === "sys_db_object") return [{ name: "sc_cat_item", "super_class.name": "" }];
+    if (request.table === "catalog_script_client") return [{
+      sys_id: scriptId, name: "Example client script",
+      script: "g_form.setLabelOf('a_field', 'Written in by hand');\n" +
+        "g_form.addInfoMessage(getMessage('demo.asked'));",
+    }];
+    return [];
+  };
+
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: itemId, sysId: itemId,
+    origin: ORIGIN,
+  }, transport);
+
+  const section = result.sections.find((entry) => entry.id === "hardcoded");
+  assert.ok(section, "the section is emitted by the real run path");
+  assert.strictEqual(section.advisory, true);
+  assert.deepStrictEqual(own(section.rows), [], "it carries findings, never coverage rows");
+  assert.deepStrictEqual(
+    own(section.findings.findings).map((finding) => own(finding.texts).join("")),
+    ["Written in by hand"],
+    "the literal is found and the key passed to getMessage is left alone"
+  );
+  assert.strictEqual(
+    section.findings.findings[0].link,
+    ORIGIN + "/catalog_script_client.do?sys_id=" + scriptId,
+    "and it links to the script the run already read"
+  );
+  assert.strictEqual(result.hardcodedSummary.count, 1);
+  assert.strictEqual(result.hardcodedSummary.scriptCount, 1);
+});
+
+test("the scan gives the page's thread back instead of running to completion", async () => {
+  /* The engine is injected into the tab, not the worker, so every
+   * millisecond it spends is a millisecond the page is frozen. This asserts
+   * the slicing happens at all: with a 0ms slice the scan must hand back
+   * between scripts, which is observable as a timer callback running in the
+   * middle of it. */
+  const bodies = [];
+  for (let index = 0; index < 12; index++) {
+    bodies.push(script("g_form.setLabelOf('f" + index + "', 'Wording " + index + "');", {
+      name: "Script " + index,
+    }));
+  }
+  /* A timer queued just before the scan starts. If the scan yields, this
+   * callback runs during it; if the scan runs straight through, the awaited
+   * result resolves on a microtask and this has not fired yet. */
+  let ranDuringScan = false;
+  setTimeout(() => { ranDuringScan = true; }, 0);
+  const result = await TL.scanHardcodedText(bodies, ORIGIN, null, { sliceMs: 0 });
+  assert.strictEqual(result.findings.length, 12, "and it still finds everything");
+  assert.ok(ranDuringScan,
+    "another task must have been able to run before the scan finished");
+});
+
+test("a scan that runs out of time says so rather than reporting a clean surface", async () => {
+  /* Silence has to mean "nothing found", never "gave up". A surface whose
+   * scripts could not all be read is the same situation as an unavailable
+   * row, and it is named the same way. */
+  const bodies = [];
+  for (let index = 0; index < 40; index++) {
+    bodies.push(script(
+      "g_form.setLabelOf('f" + index + "', 'Wording " + index + "');".repeat(40),
+      { name: "Script " + index }
+    ));
+  }
+  const result = await TL.scanHardcodedText(bodies, ORIGIN, null, { budgetMs: 1, sliceMs: 0 });
+  assert.strictEqual(result.timedOut, true);
+  assert.ok(result.skippedCount > 0, "and it counts what it did not reach");
+  assert.ok(
+    result.scriptCount + result.skippedCount === 40,
+    "every script is either scanned or counted as skipped, never quietly dropped"
+  );
+  const report = TL.formatResultsAsText({
+    context: { mode: "catalog" },
+    sections: [{ id: "hardcoded", label: "Hardcoded text", rows: [], findings: result }],
+  });
+  assert.ok(report.includes("stopped at its time limit"),
+    "and the copied report carries the caveat with the counts");
+});
+
+test("a whole surface's worth of scripts is scanned well inside the budget", async () => {
+  /* The shape a real run actually sees: many small scripts rather than one
+   * enormous one. If this ever needs the budget, something has regressed. */
+  const bodies = [];
+  for (let index = 0; index < 120; index++) {
+    const lines = [];
+    for (let line = 0; line < 25; line++) {
+      lines.push("g_form.showFieldMsg('f" + line + "', 'Please enter a value', 'error');");
+    }
+    bodies.push(script(lines.join("\n"), { name: "Script " + index }));
+  }
+  const started = Date.now();
+  const result = await TL.scanHardcodedText(bodies, ORIGIN);
+  const elapsed = Date.now() - started;
+  assert.strictEqual(result.timedOut, false, "no surface this size may hit the limit");
+  assert.strictEqual(result.scriptCount, 120);
+  assert.ok(elapsed < 2000, "120 scripts took " + elapsed + "ms");
+});
+
+test("the cap is high enough that a real surface is never silently truncated", () => {
+  /* The largest sample measured produced 145 findings across 249 scripts.
+   * A cap below that would have hidden a third of them with no way to ask
+   * for the rest. */
+  assert.ok(TL.MAX_HARDCODED_FINDINGS >= 500,
+    "the cap is a safety ceiling, not an editorial decision");
+});
+
+test("a commented-out script is scanned in milliseconds, not minutes", async () => {
+  /* REGRESSION. Comments are masked to spaces, so a script that has been
+   * commented out is one long run of them. An earlier version of the call
+   * pattern put two unbounded whitespace runs next to each other with only
+   * an optional dot between, and the engine tried every way of splitting the
+   * run between them: one real 2 KB script that was almost entirely
+   * commented out took 44 SECONDS, on the page's own thread, which is a
+   * frozen tab rather than a slow report.
+   *
+   * Commenting a script out is the most ordinary thing a developer does, so
+   * this shape is not exotic and the guard is not theoretical. */
+  const body = [];
+  for (let index = 0; index < 60; index++) {
+    body.push("    //     g_form.removeOption(\"a_field\", \"value_" + index + "\");");
+  }
+  const source = "function onLoad() {\n" + body.join("\n") + "\n}";
+  const started = Date.now();
+  const result = await TL.scanHardcodedText([script(source)], ORIGIN, null, { budgetMs: 60000 });
+  const elapsed = Date.now() - started;
+  assert.deepStrictEqual(own(result.findings), [], "a comment holds no findings");
+  assert.ok(elapsed < 500, "a commented-out script took " + elapsed + "ms to scan");
+});
+
+test("the scan's patterns have no two unbounded quantifiers in a row", () => {
+  /* The blowup above was a property of one regex, and the cheapest way to
+   * keep it gone is to say so at the source: a run of whitespace must never
+   * be splittable between two quantifiers. */
+  const source = fs.readFileSync(
+    path.join(__dirname, "..", "translation_lens.js"), "utf8"
+  );
+  /* Comments are stripped first: the fix's own comment quotes the pattern it
+   * replaced, and an assertion that cannot tell code from prose would fire
+   * on the explanation of the bug rather than on the bug. */
+  const block = source
+    .slice(source.indexOf("HARDCODED TEXT SCAN"), source.indexOf("function safeOrigin"))
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ");
+  assert.ok(block.length > 1000, "the scan block was found");
+  assert.ok(
+    !/\\s\*\\\.\?\\s\*/.test(block),
+    "an optional dot between two whitespace runs is the exact shape that blew up"
+  );
+});
+
+/* ------------------------------------------------------------------ *
+ * Tying a finding to the field it writes over
+ * ------------------------------------------------------------------ */
+
+test("a finding names the field it acts on when the call names it plainly", async () => {
+  const result = await scan("g_form.setLabelOf('supplier_id', 'Supplier reference');");
+  assert.strictEqual(result.findings[0].target, "supplier_id");
+  assert.strictEqual(result.findings[0].targetKey, "supplier_id");
+});
+
+test("a field addressed through the variables namespace is the same field", async () => {
+  const result = await scan("g_form.setLabelOf('variables.supplier_id', 'Supplier reference');");
+  assert.strictEqual(result.findings[0].target, "variables.supplier_id",
+    "the spelling the script used is kept");
+  assert.strictEqual(result.findings[0].targetKey, "supplier_id",
+    "and the field it means is what rows are matched on");
+});
+
+test("a field the call does not name plainly is left unnamed rather than guessed", async () => {
+  const fromVariable = await scan("g_form.setLabelOf(field, 'Supplier reference');");
+  assert.strictEqual(fromVariable.findings[0].targetKey, "",
+    "a variable holding the field name is not a field name");
+  const built = await scan("g_form.setLabelOf('prefix_' + code, 'Supplier reference');");
+  assert.strictEqual(built.findings[0].targetKey, "",
+    "nor is half of one");
+  const message = await scan("g_form.addInfoMessage('Your request was saved');");
+  assert.strictEqual(message.findings[0].targetKey, "",
+    "and a message belongs to the form, not to a field");
+});
+
+test("a field whose translation is perfect is still flagged when a script writes over it", async () => {
+  /* The case the coverage number cannot see. The row is complete in every
+   * language and the form still shows the script's fixed string. */
+  const languageContext = languages();
+  const perfect = TL.analyzeStringRows({
+    element: "supplier_id", source: "Supplier", effectiveTable: "example_record",
+    rows: [
+      { name: "example_record", element: "supplier_id", language: "fr", label: "Fournisseur" },
+      { name: "example_record", element: "supplier_id", language: "fr-CA", label: "Fournisseur" },
+      { name: "example_record", element: "supplier_id", language: "de", label: "Lieferant" },
+    ],
+    languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const before = perfect.coverage.covered + "/" + perfect.coverage.counted;
+
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [perfect] },
+      {
+        id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+        findings: await TL.scanHardcodedText(
+          [script("g_form.setLabelOf('supplier_id', 'Supplier reference');")], ORIGIN
+        ),
+      },
+    ],
+    languages: languageContext,
+  });
+
+  const row = result.sections[0].rows[0];
+  const flagged = row.evidence.scriptOverrides;
+  assert.ok(flagged, "the field carries the flag, not just the findings list");
+  assert.strictEqual(flagged.rowCount, 1);
+  assert.deepStrictEqual(own(flagged.findings[0].texts), ["Supplier reference"]);
+  assert.strictEqual(flagged.findings[0].api, "setLabelOf");
+  assert.ok(Number(flagged.findings[0].line) > 0, "and says where to look");
+
+  assert.strictEqual(row.coverage.covered + "/" + row.coverage.counted, before,
+    "it is evidence, never a state: the row's own coverage is untouched");
+  assert.strictEqual(result.summary.counted, perfect.coverage.counted,
+    "and the headline denominator is untouched too");
+  assert.ok(
+    own(TL.formatResultsAsText(result).split("\n"))
+      .some((line) => line.includes("script-sets-text")),
+    "the copied report names the warning, which is this file's own fixed word"
+  );
+});
+
+test("a finding is attached to every row for that field, and to no other field", async () => {
+  const languageContext = languages();
+  const rowFor = (element) => TL.analyzeStringRows({
+    element, source: "Base", effectiveTable: "example_record", rows: [],
+    languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [rowFor("supplier_id"), rowFor("other_field")] },
+      { id: "choices", label: "Choices", rows: [rowFor("supplier_id")] },
+      {
+        id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+        findings: await TL.scanHardcodedText(
+          [script("g_form.addOption('supplier_id', 'a', 'A written-in option');")], ORIGIN
+        ),
+      },
+    ],
+    languages: languageContext,
+  });
+  assert.ok(result.sections[0].rows[0].evidence.scriptOverrides, "the label row is flagged");
+  assert.ok(result.sections[1].rows[0].evidence.scriptOverrides,
+    "and so is the choices row, because addOption is what builds that list");
+  assert.ok(!result.sections[0].rows[1].evidence.scriptOverrides,
+    "a field the script never named is left alone");
+});
+
+/* ------------------------------------------------------------------ *
+ * What a review found after the flag was built
+ * ------------------------------------------------------------------ */
+
+test("a getMessage key that reads like a field name is not flagged as a field", async () => {
+  /* A message row's element is the key itself. A key spelled like a field is
+   * still a key, and a sys_ui_message row is not something a setLabelOf call
+   * writes over. */
+  const languageContext = languages();
+  const messageRow = TL.analyzeMessages(["supplier_id"], [], languageContext)[0];
+  const fieldRow = TL.analyzeStringRows({
+    element: "supplier_id", source: "Supplier", effectiveTable: "example_record",
+    rows: [], languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [fieldRow], origin: "catalog" },
+      { id: "messages", label: "Messages", rows: [messageRow], origin: "catalog" },
+      {
+        id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+        findings: await TL.scanHardcodedText(
+          [script("g_form.showFieldMsg('supplier_id', 'Please enter a value', 'error');")],
+          ORIGIN
+        ),
+      },
+    ],
+    languages: languageContext,
+  });
+  assert.ok(result.sections[0].rows[0].evidence.scriptOverrides, "the field is flagged");
+  assert.ok(!result.sections[1].rows[0].evidence.scriptOverrides,
+    "the message key that merely shares its spelling is not");
+});
+
+test("a catalog script's finding stays on the catalog half, and a form script's on the form", async () => {
+  /* `description`, `short_description` and `category` are all both common
+   * variable names and sc_cat_item columns, so the halves collide by name
+   * constantly. The table the script came from is what separates them. */
+  const languageContext = languages();
+  const rowFor = () => TL.analyzeStringRows({
+    element: "description", source: "Base", effectiveTable: "example_record", rows: [],
+    languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const catalogRow = rowFor();
+  const formRow = rowFor();
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "values", label: "Catalog Text", rows: [catalogRow], origin: "catalog" },
+      {
+        id: "form-fields", label: "Form fields", rows: [], origin: "form",
+        subsections: [{ id: "labels", label: "Field Labels", rows: [formRow] }],
+      },
+      {
+        id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+        findings: await TL.scanHardcodedText(
+          [script("g_form.setLabelOf('description', 'Describe the request');")], ORIGIN
+        ),
+      },
+    ],
+    languages: languageContext,
+  });
+  assert.ok(catalogRow.evidence.scriptOverrides,
+    "the catalog variable is flagged by the catalog script");
+  assert.ok(!formRow.evidence.scriptOverrides,
+    "the form field that shares its name is not");
+});
+
+test("only the calls that replace stored text claim to replace it", async () => {
+  const languageContext = languages();
+  const labelRow = TL.analyzeStringRows({
+    element: "supplier_id", source: "Supplier", effectiveTable: "example_record", rows: [],
+    languages: languageContext, aspect: "label", store: "sys_documentation",
+  });
+  const result = TL.summarizeResult({
+    sections: [
+      { id: "labels", label: "Field Labels", rows: [labelRow], origin: "catalog" },
+      {
+        id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+        findings: await TL.scanHardcodedText([script([
+          "g_form.setLabelOf('supplier_id', 'Supplier reference');",
+          "g_form.showFieldMsg('supplier_id', 'Please enter a value', 'error');",
+        ].join("\n"))], ORIGIN),
+      },
+    ],
+    languages: languageContext,
+  });
+  const attached = own(labelRow.evidence.scriptOverrides.findings);
+  const byApi = {};
+  attached.forEach((finding) => { byApi[finding.api] = finding.overrides; });
+  assert.strictEqual(byApi.setLabelOf, true, "setLabelOf replaces the label");
+  assert.strictEqual(byApi.showFieldMsg, false,
+    "showFieldMsg puts a message under the field; the stored label is untouched");
+});
+
+test("a catalog run that merges two halves keeps both verdicts about giving up", async () => {
+  /* Each half scans against its own budget. Dropping the form half's verdict
+   * let a surface whose definition form was never fully scanned report as
+   * cleanly scanned -- the exact silence this feature exists to prevent. */
+  const itemId = "00000000000000000000000000000010";
+  const many = [];
+  for (let index = 0; index < 30; index++) {
+    many.push({
+      sys_id: "000000000000000000000000000000" + String(index + 20).slice(-2),
+      name: "Form script " + index,
+      script: "g_form.setLabelOf('f" + index + "', 'Wording " + index + "');".repeat(30),
+    });
+  }
+  const transport = async (request) => {
+    if (request.table === "sys_language") return [
+      { sys_id: "00000000000000000000000000000001", id: "en", active: "true" },
+      { sys_id: "00000000000000000000000000000002", id: "fr", active: "true" },
+    ];
+    if (request.table === "sys_properties") return [{ name: "glide.sys.language", value: "en" }];
+    if (request.table === "sc_cat_item") return [{
+      sys_id: itemId, sys_class_name: "sc_cat_item", name: "Example item",
+      short_description: "", description: "",
+    }];
+    if (request.table === "sys_db_object") {
+      const name = request.query.slice("name=".length);
+      return [{ name, "super_class.name": "" }];
+    }
+    if (request.table === "catalog_script_client") return [{
+      sys_id: "00000000000000000000000000000013", name: "Item script",
+      script: "g_form.setLabelOf('a_field', 'From the item');",
+    }];
+    if (request.table === "sys_script_client") return many;
+    return [];
+  };
+
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: itemId, sysId: itemId,
+    origin: ORIGIN,
+    formContext: { mode: "form", table: "sc_cat_item", sysId: itemId },
+  }, transport);
+
+  const section = result.sections.find((entry) => entry.id === "hardcoded");
+  assert.ok(section, "the merged run still has one hardcoded section");
+  assert.strictEqual(
+    result.sections.filter((entry) => entry.id === "hardcoded").length, 1,
+    "and exactly one — the form half's is merged in, never appended beside it"
+  );
+  const texts = own(section.findings.findings).map((finding) => own(finding.texts).join(""));
+  assert.ok(texts.indexOf("From the item") !== -1, "the item's own script is in the list");
+  assert.ok(texts.length > 1, "and so is the form half's");
+  assert.strictEqual(
+    section.findings.scriptCount, 31,
+    "both halves' scanned counts are carried"
+  );
+  assert.strictEqual(
+    result.hardcodedSummary.timedOut, Boolean(section.findings.timedOut),
+    "and the summary agrees with the section about whether the scan finished"
+  );
+});
+
+test("a run that gives up in one half reports it from the merged section", async () => {
+  /* Driven directly, because making a real run exceed its budget would mean
+   * a slow test. The merge is the unit under test. */
+  const merged = { findings: [], scriptCount: 2, capped: false, omittedCount: 0,
+    timedOut: false, skippedCount: 0 };
+  const fromForm = { findings: [], scriptCount: 40, capped: false, omittedCount: 0,
+    timedOut: true, skippedCount: 37 };
+  /* The merge is inline in run(), so this pins the property that matters:
+   * a summary built from a section that gave up must say so. */
+  const result = TL.summarizeResult({
+    sections: [{
+      id: "hardcoded", label: "Hardcoded text", rows: [], advisory: true,
+      findings: Object.assign({}, merged, {
+        timedOut: merged.timedOut || fromForm.timedOut,
+        skippedCount: merged.skippedCount + fromForm.skippedCount,
+        scriptCount: merged.scriptCount + fromForm.scriptCount,
+      }),
+    }],
+  });
+  assert.strictEqual(result.hardcodedSummary.timedOut, true);
+  assert.strictEqual(result.hardcodedSummary.skippedCount, 37);
+  const report = TL.formatResultsAsText(result);
+  assert.ok(report.includes("stopped at its time limit"));
+  assert.ok(report.includes("37 scripts were not scanned"));
+});
+
+test("many calls resolving to one assignment walk it once", async () => {
+  /* Without a memo on the assignment reached, a large right-hand side is
+   * re-walked per call and one script can blow past the whole budget before
+   * the between-scripts check ever runs. */
+  /* A long right-hand side with the text at its top level, so the trace has
+   * a real range to walk and something to find at the end of it. */
+  const parts = [];
+  for (let index = 0; index < 4000; index++) parts.push("part" + index);
+  const source = "var MESSAGE = 'Please enter a value here' + " + parts.join(" + ") + ";\n" +
+    Array.from({ length: 800 }, () => "g_form.addInfoMessage(MESSAGE);").join("\n");
+  const started = Date.now();
+  const result = await TL.scanHardcodedText([script(source)], ORIGIN, null, { budgetMs: 60000 });
+  const elapsed = Date.now() - started;
+  assert.ok(result.findings.length > 0, "it still finds the text");
+  assert.ok(elapsed < 4000, "800 calls on one large assignment took " + elapsed + "ms");
 });

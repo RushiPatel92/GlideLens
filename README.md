@@ -23,7 +23,8 @@ walkthrough.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
 - **Translation Lens**: a read-only report of which translations a form or
-  catalog item is missing, and where each one would go.
+  catalog item is missing, and where each one would go — plus the text in its
+  client scripts that never asked to be translated at all.
 - **Translation Assistant**: hands a catalog item's untranslated text to your
   own AI tool as one JSON file, then fills the reply back into ServiceNow's
   Localization Framework comparison page for you to review and publish.
@@ -194,7 +195,7 @@ line is the description shown beside it.
 
 | Command | Description |
 | --- | --- |
-| Translation Lens | *Audit translations on this form.* A read-only report of which labels, choices, catalog text and messages have a translation in each active language, with every gap linking to the record that would hold it. Works on a classic form, a catalog item's definition form and a Service Portal catalog item; on a Workspace record it offers a link to the record's classic form to run there. |
+| Translation Lens | *Audit translations on this form.* A read-only report of which labels, choices, catalog text and messages have a translation in each active language, with every gap linking to the record that would hold it. A separate **Hardcoded text** group lists wording written straight into the surface's client scripts and UI policies instead of being requested with `getMessage`, naming the script and line; it has no translation record to be missing, so it is a review list and is counted apart from every score — but the score is flagged while any exists, and a finding that names its field is shown on that field's own row, so a label translated in every language that a script overwrites at runtime is no longer reported as complete. Works on a classic form, a catalog item's definition form and a Service Portal catalog item; on a Workspace record it offers a link to the record's classic form to run there. |
 | Debug Timeline | *Start recording form activity, GlideAjax calls, and errors* — and, while it is recording, *Stop recording and view captured activity.* Records a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then opens a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
 | Code Search | *Search verified code and configuration…* Searches all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
 | Search Sources | *Refresh available Code Search sources.* Re-reads this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
