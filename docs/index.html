@@ -650,6 +650,38 @@ a { color: var(--teal); }
 .dm-grp-head .dm-st { margin-left: auto; font-weight: 500; font-size: 11px; color: #9d9dba; }
 .dm-grp-head .dm-st.warn { color: #e0c187; }
 
+/* --- Translation Assistant: the two steps, drawn as the panel draws them --- */
+.dm-ta-body { padding: 13px 15px 15px; font-size: 12.5px; line-height: 1.5; color: #c9c9dc; }
+.dm-ta-body[hidden] { display: none; }
+.dm-ta-tally { list-style: none; margin: 0 0 4px; padding: 0; }
+.dm-ta-tally li { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; }
+.dm-ta-tally .n { min-width: 2.6em; text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; color: #f0f0fa; }
+.dm-ta-tally .why { color: #85859f; font-size: 12px; }
+.dm-ta-tally li.total { border-top: 1px solid #2e2e4e; margin-top: 6px; padding-top: 9px; }
+.dm-ta-primary { display: inline-block; margin: 14px 0 10px; padding: 8px 16px; border-radius: 7px; font-size: 13px; font-weight: 650; color: #fff; background: color-mix(in srgb, var(--pink) 82%, #3a2740); border: 1px solid color-mix(in srgb, var(--pink) 70%, #5a3a4c); }
+.dm-ta-hint { margin: 0 0 6px; }
+.dm-ta-privacy { margin: 0 0 12px; font-size: 12px; color: #85859f; }
+.dm-ta-link { color: color-mix(in srgb, var(--teal) 84%, white); text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
+.dm-ta-note { margin: 14px 0 0; padding: 9px 12px; border-radius: 7px; font-size: 12px; line-height: 1.5; color: #f3d9a4; background: rgba(231, 177, 85, 0.10); border: 1px solid rgba(231, 177, 85, 0.35); }
+.dm-ta-note.info { color: #bfe9e4; background: rgba(49, 212, 196, 0.08); border-color: rgba(49, 212, 196, 0.30); }
+.dm-ta-note b { display: block; margin-bottom: 4px; color: #ffe6b8; font-weight: 650; }
+.dm-ta-head { margin: 0 0 6px; color: #f5f5ff; font-size: 14px; font-weight: 650; }
+.dm-ta-h3 { font-size: 14px; margin: 14px 0 5px; color: #f0f0fa; font-weight: 650; }
+.dm-ta-sub { margin: 0 0 10px; color: #aaaac1; font-size: 12px; }
+.dm-ta-list { list-style: none; margin: 6px 0 4px; padding: 0 0 0 12px; border-left: 2px solid #2e2e4e; }
+.dm-ta-list li { padding: 10px 0; border-top: 1px solid #29293f; }
+.dm-ta-list li:first-child { border-top: 0; padding-top: 2px; }
+.dm-ta-list .field { display: block; font-size: 11px; color: #85859f; }
+.dm-ta-list .src { display: block; color: #ececf8; font-weight: 650; }
+.dm-ta-list .pair { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 10px; row-gap: 2px; margin: 4px 0 0; font-size: 12px; }
+.dm-ta-list .pair dt { color: #85859f; white-space: nowrap; }
+.dm-ta-list .pair dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-ta-list .pair dd.tgt { color: color-mix(in srgb, var(--teal) 70%, #cfeee9); }
+.dm-ta-list .pair dd.was { color: #c9c9dc; }
+.dm-ta-list .verdict { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.dm-ta-list .reason { flex: 1; min-width: 0; color: #f3d9a4; font-size: 12px; }
+.dm-ta-list .choice { flex: none; border: 1px solid #4a4a70; background: #2c2c48; color: #f0f0fa; border-radius: 6px; padding: 4px 10px; font-size: 12px; }
+
 /* --- Translation Lens rows --- */
 .dm-tl-row {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -1336,6 +1368,120 @@ a { color: var(--teal); }
         </div>
       </article>
 
+      <!-- 1b -->
+      <article class="feature" id="translation-assistant">
+        <div class="feature-rail">
+          <p class="eyebrow">Forms</p>
+          <dl>
+            <dt>Exports</dt>
+            <dd class="plain">one JSON file</dd>
+            <dt>Fills</dt>
+            <dd class="plain">the page's own boxes</dd>
+            <dt>Publishes</dt>
+            <dd class="plain">never &mdash; you do</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Translate a catalog item with the AI tool you already use</h2>
+          <p>
+            On a catalog item's <strong>Edit Translations</strong> page, one
+            command hands every untranslated, unlocked text &mdash; its fields and
+            the messages its scripts show &mdash; to your own AI tool as a single
+            JSON file that carries its own instructions. Paste the
+            reply back and it fills the page's boxes for you to read over; the
+            page's own <strong>Publish</strong> button stays yours. Nothing is
+            saved until you press it, and a reload discards every fill.
+          </p>
+          <p>
+            Before writing, every row is checked again against the live page: a
+            source text that changed, a field locked since the draft, a
+            translation too long for its column, or one that shares a stored
+            translation with a field outside the draft is left alone and named.
+            A placeholder mismatch waits for <em>Fill anyway</em>; a box you
+            typed into since the draft waits for <em>Overwrite</em>, shown
+            beside both values. GlideLens never contacts an AI service &mdash;
+            the file leaves your browser only when you upload it.
+          </p>
+          <div class="tags">
+            <span class="tag">bring your own model</span>
+            <span class="tag">checked before it writes</span>
+            <span class="tag">old text kept</span>
+            <span class="tag is-warn">⚠ shared translations named</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Demo</b> &mdash; fictional catalog item, English to French. Switch between the two steps of the panel.</p>
+            <div class="dm" id="dmTa">
+              <div class="dm-head">
+                <h3 class="dm-title">Translation Assistant</h3>
+                <p class="dm-sub">Hands this item's untranslated fields to your own AI tool &middot; <span>English &rarr; French</span></p>
+              </div>
+              <div class="dm-ctl">
+                <button class="dm-btn on" type="button" data-tastep="draft" aria-pressed="true">Step 1 &middot; the export</button>
+                <button class="dm-btn" type="button" data-tastep="report" aria-pressed="false">Step 2 &middot; after Fill</button>
+              </div>
+              <div class="dm-ta-body" data-tapane="draft">
+                <ul class="dm-ta-tally">
+                  <li><span class="n">12</span><span class="what">to translate</span></li>
+                  <li><span class="n">3</span><span class="what">already translated</span><span class="why">unlock one on this page to redo it</span></li>
+                  <li class="total"><span class="n">15</span><span class="what">fields on this item</span></li>
+                </ul>
+                <span class="dm-ta-primary">Download JSON</span>
+                <p class="dm-ta-hint">Upload the file to your AI tool and say: &ldquo;Follow the instructions in this file.&rdquo;</p>
+                <p class="dm-ta-privacy">The file holds this item's field text. It leaves your browser when you upload it somewhere.</p>
+                <span class="dm-ta-link">Copy prompt + JSON instead</span>
+                <p class="dm-ta-note"><b>Before you publish</b>4 of these translations are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text. 2 of these translations are script messages: publishing them changes those messages for every script on this instance that uses the same message key.</p>
+              </div>
+              <div class="dm-ta-body" data-tapane="report" hidden>
+                <p class="dm-ta-head">Filled 10 fields.</p>
+                <p class="dm-ta-hint">Review them on the page, then press Publish. To leave one out, correct or clear its box before publishing; reloading the page discards every fill.</p>
+                <h4 class="dm-ta-h3">Replaced 1 existing translation</h4>
+                <p class="dm-ta-sub">To keep an old one, type it back into its box before you publish &mdash; clearing the box deletes it.</p>
+                <ul class="dm-ta-list">
+                  <li>
+                    <span class="field">Question &middot; Variable: Delivery address</span>
+                    <span class="src">&ldquo;Delivery address&rdquo;</span>
+                    <dl class="pair"><dt>Filled</dt><dd class="tgt">&ldquo;Adresse de livraison&rdquo;</dd><dt>Was</dt><dd class="was">&ldquo;Adresse de livraision&rdquo;</dd></dl>
+                  </li>
+                </ul>
+                <h4 class="dm-ta-h3">Not filled (1)</h4>
+                <ul class="dm-ta-list">
+                  <li>
+                    <span class="field">Short description &middot; Basic Info</span>
+                    <span class="src">&ldquo;A laptop for staff who travel&rdquo;</span>
+                    <dl class="pair"><dt>Reply</dt><dd class="tgt">&ldquo;Un ordinateur portable pour le personnel itin&eacute;rant&rdquo;</dd><dt>On the page</dt><dd class="was">&ldquo;Un portable pour ceux qui voyagent&rdquo;</dd></dl>
+                    <div class="verdict"><span class="reason">changed on the page since the draft</span><span class="choice">Overwrite</span></div>
+                  </li>
+                </ul>
+                <p class="dm-ta-note">3 translations filled on this page are shared: publishing them changes those translations for every catalog item on this instance whose fields use the same source text. 2 script messages filled on this page are shared: publishing them changes those messages for every script on this instance that uses the same message key.</p>
+              </div>
+              <p class="dm-foot">Never saves or publishes &mdash; Translation Assistant leaves Publish to you.</p>
+            </div>
+          </div>
+        </div>
+      </article>
+      <script>
+        /* Translation Assistant demo: two static panes, one switch. */
+        (function () {
+          var root = document.getElementById("dmTa");
+          if (!root) return;
+          var buttons = root.querySelectorAll("[data-tastep]");
+          var panes = root.querySelectorAll("[data-tapane]");
+          Array.prototype.forEach.call(buttons, function (button) {
+            button.addEventListener("click", function () {
+              var step = button.getAttribute("data-tastep");
+              Array.prototype.forEach.call(buttons, function (other) {
+                var on = other === button;
+                other.classList.toggle("on", on);
+                other.setAttribute("aria-pressed", on ? "true" : "false");
+              });
+              Array.prototype.forEach.call(panes, function (pane) {
+                pane.hidden = pane.getAttribute("data-tapane") !== step;
+              });
+            });
+          });
+        })();
+      </script>
+
       <!-- 2 -->
       <article class="feature" id="variable-values">
         <div class="feature-rail">
@@ -1786,8 +1932,10 @@ a { color: var(--teal); }
         Everything it reads goes through the Table API on your own session, with
         your own permissions — there is no server, no account and no telemetry.
         It never writes directly to your records and never submits a form; the
-        one thing that changes anything is Prefill, which fills unsaved fields on
-        the catalog form in front of you for you to review. Code search shows the
+        two things that change anything are Prefill, which fills unsaved fields
+        on the catalog form in front of you for you to review, and Translation
+        Assistant, which fills unsaved translations on the comparison page in
+        front of you and leaves Publish to you. Code search shows the
         matching lines and one line either side, and redacts hits whose field
         names read like secrets. The
         <a href="privacy.html">privacy policy</a> spells all of this out.
@@ -1837,6 +1985,7 @@ a { color: var(--teal); }
 
   var COMMANDS = [
     { group: "Tools",    name: "Translation Lens", desc: "Audit translations on this form",                            key: "",        go: "#translations" },
+    { group: "Record",   name: "Translation Assistant", desc: "Prepare and fill translations",                        key: "",        go: "#translation-assistant" },
     { group: "Tools",    name: "Debug Timeline",   desc: "Start recording form activity, GlideAjax calls, and errors", key: "",        go: "#debug-timeline" },
     { group: "Tools",    name: "Code Search",      desc: "Search verified code and configuration…",                    key: "",        go: "#code-search" },
     { group: "Tools",    name: "Search Sources",   desc: "Refresh available Code Search sources",                      key: "",        go: "#code-search" },

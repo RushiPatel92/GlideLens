@@ -5178,6 +5178,13 @@ function buildCommands() {
   const isPlaybookDefinitionPage = decodedVariants(location.href).some(
     (url) => url.includes("sys_pd_process_definition")
   );
+  /* Listed only where the Localization Framework comparison page is in play.
+   * The URL decides the listing because buildCommands is synchronous and
+   * cross-frame probing is not; the page's own scope decides whether the
+   * command can do anything, when it runs. */
+  const isLfComparisonPage = decodedVariants(location.href).some(
+    (url) => url.includes(LF_COMPARISON_PAGE_MARKER)
+  );
   /* On a Workspace record route, saved or new, the command keeps its label,
    * keywords and favourite key but shows a notice instead of reading the
    * Workspace form, which the probe cannot read. The notice links to the
@@ -5285,6 +5292,19 @@ function buildCommands() {
       keepOpen: true,
       run: openCurrentRecordPlaybookExecutions,
     },
+    ...(isLfComparisonPage
+      ? [{
+          id: "translation-assistant",
+          label: "Translation Assistant",
+          description: "Prepare and fill translations",
+          keywords: [
+            "translation generator", "translate", "translation", "export",
+            "import", "json", "localization", "i18n", "l10n",
+          ],
+          group: "Record",
+          run: runTranslationAssistant,
+        }]
+      : []),
     ...(isPlaybookDefinitionPage
       ? [{
           id: "open-current-playbook-customer-updates",
@@ -5469,6 +5489,262 @@ function translationLensWithTimeout(promise) {
       }, TRANSLATION_LENS_PANEL_TIMEOUT_MS);
     }),
   ]);
+}
+
+/* ---------------------------------------------------------------------------
+   Translation Assistant (phase 2: the read path).
+
+   Hands the untranslated, unlocked strings of a catalog item or record producer
+   to the user's own AI tool, as JSON that carries its own instructions. Nothing
+   here writes to the page, creates a record, or publishes: filling the page
+   model and pressing Publish are the user's own later steps.
+   --------------------------------------------------------------------------- */
+const TRANSLATION_ASSISTANT_UI_METHODS = ["open", "showDraft", "showError", "close"];
+/* The comparison page's UI page name. Matched against the decoded URL rather
+ * than location.pathname because the page usually runs inside gsft_main, where
+ * the palette's own frame only sees it as a nav_to parameter. A URL match is
+ * what decides whether the command is LISTED; whether the page is really there
+ * and really in ad-hoc mode is settled by a probe when it RUNS, because a URL
+ * is a claim and a scope is evidence. */
+const LF_COMPARISON_PAGE_MARKER = "sn_lf_comparison_ui";
+let translationAssistantRunSequence = 0;
+/* The run whose save may still be in flight. Held so a replacement run can
+ * recall it: the panel unmounts the old one without firing onClose, so being
+ * superseded is silent everywhere except the queue that can still write. */
+let translationAssistantActiveToken = "";
+
+/* Tell the worker to drop a queued save. Fire and forget: the run it belongs
+ * to is over either way, and there is nothing useful to do with a failure. */
+function recallTranslationAssistantDraft(runToken) {
+  if (!runToken) return;
+  chrome.runtime
+    .sendMessage({ type: "CANCEL_LF_ASSISTANT_DRAFT", runToken })
+    .catch(() => {});
+}
+
+function translationAssistantUi() {
+  const ui = globalThis.SNTranslationAssistantUI;
+  const missing = TRANSLATION_ASSISTANT_UI_METHODS.filter(
+    (method) => !ui || typeof ui[method] !== "function"
+  );
+  if (missing.length) {
+    throw new Error(
+      "Translation Assistant panel is awaiting its visual module (missing " +
+      missing.join(", ") + ")."
+    );
+  }
+  return ui;
+}
+
+async function ensureTranslationAssistantLoaded() {
+  if (globalThis.SNTranslationAssistant && globalThis.SNTranslationAssistantUI) {
+    translationAssistantUi();
+    return true;
+  }
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_TRANSLATION_ASSISTANT" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load Translation Assistant.");
+  }
+  if (!globalThis.SNTranslationAssistant) {
+    throw new Error("Translation Assistant engine did not load.");
+  }
+  translationAssistantUi();
+  return true;
+}
+
+/* "French" rather than "fr" in the subtitle, the prompt and every line naming
+ * the target language. The page scope carries only the codes; the engine builds
+ * the sys_language query from them, and only from codes shaped like an id.
+ * Best effort: a read that is refused, fails or finds nothing leaves the codes,
+ * which is all the page had, and never stops the draft. */
+async function translationAssistantLanguageNames(engine, context) {
+  const query = engine.languageNameQuery(context);
+  if (!query) return {};
+  try {
+    const rows = await snGetMany("sys_language", query, "id,name", 10);
+    return engine.languageNames(rows, context);
+  } catch (error) {
+    return {};
+  }
+}
+
+/* The panel's Fill. The worker does all of it -- parses the reply, finds its
+ * draft, re-reads the page, re-checks every rule and fills what still passes --
+ * because it holds the lock a fill needs. This side carries the request and
+ * turns "that is not the comparison page" into the sentence the draft uses.
+ * Nothing here gates on the run: a fill already handed to the worker cannot be
+ * recalled, and the panel discards an answer for a run it no longer shows. */
+async function fillTranslationAssistantReply(request) {
+  const req = request || {};
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "APPLY_LF_ASSISTANT",
+      replyText: typeof req.text === "string" ? req.text : "",
+      include: Array.isArray(req.include) ? req.include : [],
+      overrides: Array.isArray(req.overrides) ? req.overrides : [],
+    });
+  } catch (error) {
+    /* The worker went away mid-request, so the fill may or may not have run. */
+    return {
+      ok: false,
+      indeterminate: true,
+      message: "Translation Assistant stopped answering while filling. Check the page before filling again.",
+    };
+  }
+  if (!response) {
+    return { ok: false, message: "Translation Assistant did not answer. Reload the page and try again." };
+  }
+  if (response.code === "no_page") {
+    return Object.assign({}, response, { message: translationAssistantRefusal(response.rejected) });
+  }
+  return response;
+}
+
+/* Why the draft could not be made, in the user's terms. The worker reports each
+ * frame it asked, so "the page is open but not in ad-hoc mode" and "this is not
+ * the comparison page at all" get different sentences. */
+function translationAssistantRefusal(rejected) {
+  const frames = Array.isArray(rejected) ? rejected : [];
+  const lfFrame = frames.find((frame) => frame.isLfPage);
+  if (lfFrame && lfFrame.isAdhoc === false) {
+    return "This comparison page is not in ad-hoc mode. Translation Assistant only " +
+      "handles the ad-hoc view reached from a catalog item's Edit Translations button.";
+  }
+  if (lfFrame) {
+    return "The comparison page is open but Translation Assistant could not read it" +
+      (lfFrame.why ? " (" + lfFrame.why + ")." : ".");
+  }
+  /* A negative answer from one frame says nothing about a frame that never
+   * answered (ARCHITECTURE.md). When the frame that would hold the page timed
+   * out or threw, "this is not the comparison page" is a conclusion nothing
+   * supports -- and telling a user who is already looking at that page to go
+   * and find it is the worst answer available. */
+  const silent = frames.filter((frame) => frame.answered === false);
+  if (silent.length || !frames.length) {
+    const why = silent.length ? String(silent[0].why || "") : "";
+    return "Translation Assistant could not read this page's frames" +
+      (why ? " (" + why + ")" : "") +
+      ". Reload the page and run it again.";
+  }
+  return "Open a catalog item or record producer and press Edit Translations, then " +
+    "run Translation Assistant on that page.";
+}
+
+async function runTranslationAssistant() {
+  const runId = ++translationAssistantRunSequence;
+  const fingerprint = "ta-" + runId + "-" + Date.now();
+  /* The panel discards a late call by fingerprint, but it can only do that once
+   * it has been opened and only for what it renders. Two things sit outside
+   * that: the decision to open at all, and the write to a draft store that
+   * outlives the panel. Both are gated here instead. A run stops being current
+   * when the user dismisses it (onClose below) or when a later run starts. */
+  const current = () => translationAssistantRunSequence === runId;
+  /* This run supersedes whatever was on screen, which is the same thing a
+   * dismissal does and needs the same recall. Sent before anything else
+   * because a run that fails to load still supersedes its predecessor. */
+  recallTranslationAssistantDraft(translationAssistantActiveToken);
+  translationAssistantActiveToken = fingerprint;
+  let ui;
+  try {
+    await ensureTranslationAssistantLoaded();
+    ui = translationAssistantUi();
+  } catch (error) {
+    if (current()) showToast(error && error.message ? error.message : String(error), true, 7000);
+    return;
+  }
+  /* Loading is slow the first time, and a second invocation while it is in
+   * flight is ordinary. Opening here would replace the panel the user is
+   * already reading with an older run's. */
+  if (!current()) return;
+
+  ui.open({
+    fingerprint,
+    context: {},
+    callbacks: {
+      /* The shared-translation list links to where each text is used. Same
+       * route as Translation Lens: same-origin here, re-checked by the worker. */
+      onOpenUrl: (url) => openTranslationUrl(url),
+      onClose: () => {
+        translationAssistantRunSequence++;
+        /* The run gate stops this run doing anything further, but it cannot
+         * reach a save already handed to the worker, which serialises its
+         * writes and may still be holding this one in a queue. Recall it by
+         * token: a draft nobody saw must not evict one they downloaded. */
+        /* Only while this run's save may still be in flight. Once it has
+         * landed the token is cleared, and recalling a write that already
+         * happened would just crowd the worker's short early-recall history. */
+        if (translationAssistantActiveToken === fingerprint) {
+          translationAssistantActiveToken = "";
+          recallTranslationAssistantDraft(fingerprint);
+        }
+      },
+      onNotify: (message, isError) => showToast(message, !!isError, isError ? 7000 : 4000),
+      onFill: (request) => fillTranslationAssistantReply(request),
+    },
+  });
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "GET_LF_ASSISTANT_CONTEXT" });
+    /* Dismissed while the page was being read. Nothing is shown and, more to
+     * the point, nothing is saved: a draft the user never saw would still take
+     * a slot in the capped store and could evict one they had downloaded. */
+    if (!current()) return;
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "The page context could not be read.");
+    }
+    if (!response.selected) {
+      ui.showError({ fingerprint, message: translationAssistantRefusal(response.rejected) });
+      return;
+    }
+    const context = response.selected.context || {};
+    const engine = globalThis.SNTranslationAssistant;
+    const names = await translationAssistantLanguageNames(engine, context);
+    /* Dismissed during the name read: the same rule as the page read above. */
+    if (!current()) return;
+    /* The frame id is deliberately not kept. It is a browser handle a reload
+     * invalidates, the apply route resolves its own frame again, and caching it
+     * would refuse a returning draft for no reason. */
+    const draft = engine.buildDraft({
+      content: context.content,
+      /* Which rich-text fields have a ready editor to be filled through. */
+      richEditors: context.richEditors,
+      artifactInternalName: context.artifactInternalName,
+      artifactSysId: context.artifactSysId,
+      sourceLanguage: context.sourceLanguage,
+      targetLanguage: context.targetLanguage,
+      sourceLanguageName: names.sourceLanguageName,
+      targetLanguageName: names.targetLanguageName,
+    });
+
+    /* Persisted before it is shown, so a file the user downloads is always
+     * addressable by a reply -- the failure that made the file route's one
+     * advantage over the clipboard imaginary. */
+    const saved = await chrome.runtime.sendMessage({
+      type: "SAVE_LF_ASSISTANT_DRAFT",
+      draft: engine.storedDraft(draft),
+      /* The worker serialises its writes, so this can sit in a queue for as
+       * long as another save takes. The token is what lets a dismissal in that
+       * window recall it -- see onClose above. */
+      runToken: fingerprint,
+    });
+    if (!current()) return;
+    if (!saved || !saved.ok) {
+      throw new Error((saved && saved.error) || "The draft could not be held for your reply.");
+    }
+
+    /* The save has landed, so there is nothing left to recall: a later run
+     * that superseded this one would be cancelling a write that already
+     * happened. */
+    if (translationAssistantActiveToken === fingerprint) translationAssistantActiveToken = "";
+    ui.showDraft({ fingerprint, draft });
+  } catch (error) {
+    /* An abandoned run has nobody to report to, and a toast would appear over
+     * whatever the user moved on to. */
+    if (!current()) return;
+    const message = error && error.message ? error.message : String(error);
+    if (!ui.showError({ fingerprint, message })) showToast(message, true, 7000);
+  }
 }
 
 function translationLensUi() {

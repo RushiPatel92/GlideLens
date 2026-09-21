@@ -1501,3 +1501,535 @@ test("a manual lookup is listed apart from the scanned keys and moves no denomin
     "the engine's own result object is never written into"
   );
 });
+
+/* ------------------------------------------------------------------ *
+ * The hardcoded text group
+ * ------------------------------------------------------------------ */
+
+function makeHardcodedSection(findings, over) {
+  /* An over.findings key overrides the SCAN object's own fields; it is pulled
+   * out first so the outer merge cannot put it back and lose the list. */
+  const extra = Object.assign({}, over || {});
+  const scanOver = extra.findings || {};
+  delete extra.findings;
+  return makeSection("hardcoded", "Hardcoded text", [], Object.assign({
+    advisory: true,
+    collapsed: true,
+    findings: Object.assign({
+      findings: findings || [],
+      scriptCount: 3,
+      scriptsWithFindings: findings && findings.length ? 1 : 0,
+      capped: false,
+      omittedCount: 0,
+    }, scanOver),
+  }, extra));
+}
+
+function makeFinding(over) {
+  return Object.assign({
+    id: "hardcoded:catalog_script_client:demo:script:100",
+    aspect: "hardcoded",
+    kind: "call",
+    api: "setLabelOf",
+    property: "",
+    via: "",
+    table: "catalog_script_client",
+    sysId: "0000000000000000000000000000abcd",
+    scriptName: "Demo script",
+    field: "script",
+    line: 12,
+    texts: ["Demo wording"],
+    link: ORIGIN + "/catalog_script_client.do?sys_id=0000000000000000000000000000abcd",
+  }, over || {});
+}
+
+test("the hardcoded group opens on demand and never joins the score above", () => {
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeHardcodedSection([makeFinding()]),
+    ],
+  });
+  harness.ui.showResults({ fingerprint: "run-1", result });
+
+  let text = harness.shadow().textContent;
+  assert.ok(text.includes("Hardcoded text"), "the group is listed");
+  assert.ok(!text.includes("Demo wording"), "but it starts closed, because it can be long");
+
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  text = harness.shadow().textContent;
+  assert.ok(text.includes("Demo wording"), "opening it shows the text that was found");
+  assert.ok(text.includes("Demo script"), "and the script it is in");
+  assert.ok(text.includes("line 12"));
+  assert.ok(text.includes("setLabelOf"), "and what triggered it");
+  assert.ok(
+    text.includes("outside every score"),
+    "the note says plainly that these are not gaps"
+  );
+});
+
+test("a hardcoded finding opens its own script only through onOpenUrl", () => {
+  const harness = load();
+  const calls = openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeHardcodedSection([makeFinding()])] }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  click(buttonWithText(harness.shadow(), "Demo script"));
+  assert.deepStrictEqual(calls.open, [
+    ORIGIN + "/catalog_script_client.do?sys_id=0000000000000000000000000000abcd",
+  ]);
+});
+
+test("a finding with no link is still listed, just not clickable", () => {
+  const harness = load();
+  const calls = openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection([makeFinding({ link: "", scriptName: "" })])],
+    }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("Demo wording"));
+  assert.ok(text.includes("Unnamed script"));
+  assert.deepStrictEqual(calls.open, []);
+});
+
+test("a scan that found nothing says so rather than disappearing", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeSection("labels", "Field Labels", [makeRow()]), makeHardcodedSection([])],
+    }),
+  });
+  const text = harness.shadow().textContent;
+  assert.ok(
+    text.includes("None found in 3 scanned scripts"),
+    "a clean result is evidence the scan ran, which silence would not be"
+  );
+});
+
+test("a reused getMessage key is called out on the finding that bypasses it", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection([makeFinding({ alsoAKey: true })])],
+    }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  assert.ok(harness.shadow().textContent.includes("also passed to getMessage in the same script"));
+});
+
+test("a property finding names the property, and a traced one names the variable", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection([
+        makeFinding({ kind: "property", api: "", property: "label", texts: ["From an object"] }),
+        makeFinding({
+          id: "hardcoded:demo:2", kind: "traced", api: "addErrorMessage", via: "err_message",
+          texts: ["From a variable"],
+        }),
+      ])],
+    }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("label:"), "a property is shown as the property it was written under");
+  assert.ok(
+    text.includes("addErrorMessage via err_message"),
+    "a trace says which identifier it followed, so a reader can check it"
+  );
+});
+
+test("a row planted in the hardcoded section still cannot reach the headline score", () => {
+  /* The other exclusion test gives the section no rows, so it passes whether
+   * or not mainSectionRows names the section. This one plants a fully
+   * countable row there: if the exclusion were by emptiness rather than by
+   * name, the headline would move from 50% to 100%. */
+  const harness = load();
+  openPanel(harness);
+  const covered = makeRow({
+    id: "label:planted",
+    element: "planted",
+    states: {
+      fr: { state: "direct", direct: true, duplicateCount: 0 },
+      de: { state: "direct", direct: true, duplicateCount: 0 },
+    },
+    coverage: { covered: 2, counted: 2, percent: 100, missing: [], unavailable: [] },
+  });
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeHardcodedSection([makeFinding()], { rows: [covered] }),
+    ],
+  });
+  result.summary = {
+    covered: 1, counted: 2, percent: 50, complete: 0, partial: 1, none: 0, rowCount: 1,
+  };
+  harness.ui.showResults({ fingerprint: "run-1", result });
+  assert.strictEqual(
+    scoreText(harness.shadow()), "50%",
+    "the planted row is excluded by name, not by the section happening to be empty"
+  );
+});
+
+test("a capped finding list says how many it is showing of how many there are", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection([makeFinding()], {
+        findings: { capped: true, omittedCount: 4 },
+      })],
+    }),
+  });
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("1 of 5"), "a capped list must not read as the whole answer: " + text);
+});
+
+test("a very long hardcoded string is shown to a readable length, not in full", () => {
+  const harness = load();
+  openPanel(harness);
+  const long = "Some wording that repeats. ".repeat(60);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection([makeFinding({ texts: [long] })])],
+    }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("Some wording that repeats."), "enough of it to recognise");
+  assert.ok(!text.includes(long), "but a whole HTML block does not get pasted into the panel");
+  assert.ok(text.includes("…"), "and the panel says it was shortened");
+});
+
+function manyFindings(count) {
+  const list = [];
+  for (let index = 0; index < count; index++) {
+    list.push(makeFinding({
+      id: "hardcoded:demo:" + index,
+      line: index + 1,
+      texts: ["Wording number " + index],
+    }));
+  }
+  return list;
+}
+
+test("a long finding list is drawn a page at a time and can be opened in full", () => {
+  /* Every finding is in hand; this is about how many nodes each paint
+   * builds, not about withholding anything. Capping the list with no way to
+   * ask for the rest was the complaint that produced this. */
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeHardcodedSection(manyFindings(60))] }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+
+  let text = harness.shadow().textContent;
+  assert.ok(text.includes("Wording number 0"), "the first page is drawn");
+  assert.ok(!text.includes("Wording number 30"), "the rest is not, yet");
+  assert.ok(text.includes("Show all 60"), "and the whole list is one click away");
+
+  click(buttonContaining(harness.shadow(), "Show all 60"));
+  text = harness.shadow().textContent;
+  assert.ok(text.includes("Wording number 0"));
+  assert.ok(text.includes("Wording number 59"), "every finding is reachable");
+  assert.ok(!text.includes("Show all"), "and the button is gone once there is no more");
+});
+
+test("the page button reveals the next page without jumping to the end", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeHardcodedSection(manyFindings(60))] }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  click(buttonContaining(harness.shadow(), "Show 25 more"));
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("Wording number 49"), "the second page is drawn");
+  assert.ok(!text.includes("Wording number 50"), "and no more than that");
+});
+
+test("a scan that ran out of time says so instead of reading as a clean surface", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection(manyFindings(2), {
+        findings: { timedOut: true, skippedCount: 7 },
+      })],
+    }),
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("stopped at its time limit"));
+  assert.ok(text.includes("7 scripts were not scanned"));
+  assert.ok(
+    text.includes("not a clean result"),
+    "absence of a finding for an unscanned script must never read as a pass"
+  );
+});
+
+test("a high score cannot read as a clean surface while hardcoded text exists", () => {
+  /* The complaint this answers: 99% for Polish, on a form whose labels are
+   * written into a script and will show English whatever is stored. */
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeHardcodedSection(manyFindings(36)),
+    ],
+  });
+  result.summary = {
+    covered: 99, counted: 100, percent: 99, complete: 1, partial: 0, none: 0, rowCount: 1,
+  };
+  harness.ui.showResults({ fingerprint: "run-1", result });
+
+  const shadow = harness.shadow();
+  assert.strictEqual(scoreText(shadow), "99%", "the number still tells the truth about the store");
+  const score = findAll(shadow, (node) => String(node.className).indexOf("score") === 0)[0];
+  assert.ok(
+    String(score.className).includes("flagged"),
+    "but it is not drawn in its settled form: " + score.className
+  );
+  assert.ok(
+    !String(score.className).includes("pending"),
+    "and not as an unfinished run either, which it would look like forever"
+  );
+  assert.ok(
+    String(score.attributes["aria-label"]).includes("stored translations only"),
+    "a reader who cannot see the colour is told why: " + score.attributes["aria-label"]
+  );
+  const text = shadow.textContent;
+  assert.ok(text.includes("36 hardcoded strings"), "and the size of the problem is beside it");
+  assert.ok(text.includes("never translated in any language"));
+});
+
+test("the hardcoded warning is not dressed as one more amber advisory", () => {
+  /* Three amber chips saying a row or two needs a look, and a fourth saying
+   * the headline number is not the truth about the surface, all in the same
+   * colour at the end of the same row, is how a 99% gets believed. The one
+   * that contradicts the number is styled apart from the advisories, stands
+   * next to the number, and opens the list it is talking about. */
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeHardcodedSection(manyFindings(36)),
+    ],
+  });
+  result.summary = {
+    covered: 99, counted: 100, percent: 99, complete: 1, partial: 0, none: 0, rowCount: 1,
+  };
+  harness.ui.showResults({ fingerprint: "run-1", result });
+
+  const shadow = harness.shadow();
+  const chip = find(shadow, (node) => String(node.className) === "chip-alert");
+  assert.ok(chip, "it carries a class of its own rather than chip-warn");
+  assert.ok(
+    chip.textContent.includes("Not in any score"),
+    "and says why it is not in the number: " + chip.textContent
+  );
+  assert.ok(chip.textContent.includes("36 hardcoded strings"));
+
+  const summary = chip.parentNode;
+  const score = find(summary, (node) => String(node.className).indexOf("score") === 0);
+  assert.strictEqual(
+    summary.children.indexOf(chip),
+    summary.children.indexOf(score) + 1,
+    "it stands immediately after the score, not at the end of the advisories"
+  );
+
+  assert.ok(
+    !shadow.textContent.includes("Wording number 0"),
+    "the group is still closed, so the chip has somewhere to lead"
+  );
+  click(chip);
+  assert.ok(
+    shadow.textContent.includes("Wording number 0"),
+    "clicking it opens the findings rather than only stating a number"
+  );
+  assert.ok(
+    shadow.activeElement && shadow.activeElement.textContent.includes("Hardcoded text"),
+    "and leaves the keyboard on the group it opened"
+  );
+});
+
+test("the headline counts hardcoded findings the list itself had to omit", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      sections: [makeHardcodedSection(manyFindings(4), {
+        findings: { capped: true, omittedCount: 20 },
+      })],
+    }),
+  });
+  assert.ok(
+    harness.shadow().textContent.includes("24 hardcoded strings"),
+    "the headline reports the problem's size, not the page's size"
+  );
+});
+
+test("a clean scan leaves the score in its settled form", () => {
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [makeSection("labels", "Field Labels", [makeRow()]), makeHardcodedSection([])],
+  });
+  harness.ui.showResults({ fingerprint: "run-1", result });
+  const score = findAll(harness.shadow(),
+    (node) => String(node.className).indexOf("score") === 0)[0];
+  assert.ok(!String(score.className).includes("pending"),
+    "nothing found means nothing to warn about");
+  assert.ok(!harness.shadow().textContent.includes("hardcoded string"));
+});
+
+test("a field a script writes over is flagged on its own row, with the line and a way in", () => {
+  const harness = load();
+  const calls = openPanel(harness);
+  const overwritten = makeRow({
+    id: "label:supplier_id",
+    element: "supplier_id",
+    label: "supplier_id",
+    states: {
+      fr: { state: "direct", direct: true, duplicateCount: 0 },
+      de: { state: "direct", direct: true, duplicateCount: 0 },
+    },
+    coverage: { covered: 2, counted: 2, percent: 100, missing: [], unavailable: [] },
+    evidence: {
+      scriptOverrides: {
+        rowCount: 1,
+        findings: [{
+          api: "setLabelOf",
+          scriptName: "Demo script",
+          line: 41,
+          texts: ["Supplier reference"],
+          link: ORIGIN + "/catalog_script_client.do?sys_id=0000000000000000000000000000abcd",
+        }],
+      },
+    },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [overwritten])] }),
+  });
+
+  let text = harness.shadow().textContent;
+  assert.ok(text.includes("script sets this text"),
+    "the flag is visible without opening the row");
+  assert.ok(text.includes("a script writes over"), "and counted in the header");
+
+  click(buttonContaining(harness.shadow(), "supplier_id"));
+  text = harness.shadow().textContent;
+  assert.ok(text.includes("Demo script line 41"), "opening it says exactly where");
+  assert.ok(text.includes("Supplier reference"), "and what the form will show instead");
+  assert.ok(
+    text.includes("the states above cannot see it"),
+    "and why a row at 100% is still wrong"
+  );
+  click(buttonWithText(harness.shadow(), "Open the script"));
+  assert.deepStrictEqual(calls.open, [
+    ORIGIN + "/catalog_script_client.do?sys_id=0000000000000000000000000000abcd",
+  ]);
+});
+
+test("a scan that gave up says so even when it had found nothing yet", () => {
+  /* The worst shape: the budget runs out after a handful of clean scripts.
+   * The group read "None found in 3 scanned scripts", the badge read 0, the
+   * score settled, and 37 unscanned scripts went unmentioned. */
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeHardcodedSection([], { findings: { scriptCount: 3, timedOut: true, skippedCount: 37 } }),
+    ],
+  });
+  harness.ui.showResults({ fingerprint: "run-1", result });
+
+  let text = harness.shadow().textContent;
+  assert.ok(!text.includes("None found"), "it must not claim a clean surface");
+  assert.ok(text.includes("37 scripts were not scanned"), "the head says what happened");
+  assert.ok(text.includes("hardcoded scan stopped early"), "and so does the header");
+  const score = findAll(harness.shadow(),
+    (node) => String(node.className).indexOf("score") === 0)[0];
+  assert.ok(String(score.className).includes("flagged"),
+    "and the score cannot settle on the strength of a scan that stopped");
+
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  text = harness.shadow().textContent;
+  assert.ok(text.includes("stopped at its time limit"), "opening it explains");
+  assert.ok(text.includes("not a clean result"));
+});
+
+test("a call that does not replace stored text does not claim to", () => {
+  const harness = load();
+  openPanel(harness);
+  const row = makeRow({
+    id: "label:supplier_id", element: "supplier_id", label: "supplier_id",
+    evidence: {
+      scriptOverrides: {
+        rowCount: 1,
+        findings: [{
+          api: "showFieldMsg", scriptName: "Demo script", line: 8,
+          texts: ["Please enter a value"], link: "", overrides: false,
+        }],
+      },
+    },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [row])] }),
+  });
+  click(buttonContaining(harness.shadow(), "supplier_id"));
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("rather than replacing what is stored here"),
+    "showFieldMsg adds a message; it does not overwrite the label");
+  assert.ok(!text.includes("that is what the form shows when that line runs"));
+  assert.ok(text.includes("no translation of it exists in any language"),
+    "but it is still text nobody can translate");
+});
+
+test("Show all survives a repaint that brings more findings", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeHardcodedSection(manyFindings(30))] }),
+    partial: true,
+  });
+  click(buttonContaining(harness.shadow(), "Hardcoded text"));
+  click(buttonContaining(harness.shadow(), "Show all 30"));
+  assert.ok(harness.shadow().textContent.includes("Wording number 29"));
+
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeHardcodedSection(manyFindings(45))] }),
+  });
+  const text = harness.shadow().textContent;
+  assert.ok(text.includes("Wording number 44"),
+    "asking for all of them is a decision, not a number that a longer list undoes");
+  assert.ok(!text.includes("Show all"), "and there is nothing left to ask for");
+});

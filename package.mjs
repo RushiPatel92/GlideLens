@@ -77,6 +77,8 @@ const SHIP = [
   "record_search_ui.js",
   "translation_lens.js",
   "translation_lens_ui.js",
+  "translation_assistant.js",
+  "translation_assistant_ui.js",
   "popup.html",
   "popup.js",
   "popup.css",
@@ -224,6 +226,22 @@ for (const [origin, referenced] of checks) {
           `             Add it to SHIP in package.mjs.`
       );
     }
+  }
+}
+
+/* A stray NUL byte in a source file is legal JavaScript and breaks nothing at
+ * runtime, so no test catches it -- but git stops treating the file as text,
+ * which silently ends line-ending normalisation and turns the next diff of a
+ * three-line change into the whole file. That happened once, from a string
+ * literal that was meant to hold a space. Cheap to check, invisible otherwise. */
+for (const file of files) {
+  if (/\.(png|zip|ico)$/i.test(file)) continue;
+  const index = read(file).indexOf("\u0000");
+  if (index >= 0) {
+    fail(
+      `'${file}' contains a NUL character at position ${index}.\n` +
+        `             Git will treat it as binary. Write it as \\u0000 if it is meant.`
+    );
   }
 }
 

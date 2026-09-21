@@ -284,7 +284,94 @@ set titles are string-keyed in `sys_translated` under their defining table.
 `getMessage` keys are scanned from the surface's client scripts and UI
 policies and checked in `sys_ui_message`. For every string-keyed text, a row
 found in the record-keyed store instead is reported as stranded, never
-counted. The reverse check is not made for `translated_text` and
+counted.
+
+The **Hardcoded text** group is the complement of that scan, over the same
+script bodies and so at no extra read: the message scan asks whether a
+requested key is translated, this one asks whether a translation was ever
+requested. A finding is not a coverage row and carries no per-language
+states — hardcoded text has no store row, so there is no language in which it
+is Missing and none in which it could be created — and the section is
+excluded from the headline denominator by name in both `summarizeResult` and
+the panel, not by happening to hold no rows. Three shapes are reported: a
+string literal in an argument that carries user-visible text, a literal
+reached by following one local assignment when the whole argument is a bare
+identifier, and a literal under a text-shaped property name (`label`,
+`title`, `helpText` and the like, matched as a whole word or a camelCase tail
+so `context` and `headers` are not text, and read whether the key is bare or
+quoted). The third exists because a hand-rolled translation table reaches its
+call site through dynamic hops no text scan can follow, while the object
+literal holding the words sits in the same script.
+
+The filters are what keep it honest, and each answers a measured false
+positive. Argument indexes are exact rather than at-or-after, since
+`showFieldMsg`'s third argument is the message type. Only literals at the
+argument's own bracket depth count, so a nested call's arguments stay that
+call's business and a field name read by `getLabelOf` is not reported as
+English. A literal with no two letters is concatenation glue rather than
+text, measured in any script and not only in Latin, because an instance whose
+base language is not English hardcodes its own language and that is the same
+defect. Text arriving from a server response is deliberately not attributed
+to the script, which holds no text to fix. The `getMessage` exclusion is
+deliberately broader than `extractMessageKeys`' own pattern and accepts any
+receiver: extraction must be strict because a key it invents gets queried,
+while exclusion must be generous because every call it fails to recognise
+becomes a false claim that text was never translated.
+
+All of it is a text scan over a masked copy of the source — comments, regex
+literals and string bodies blanked, offsets preserved — never an evaluation,
+so a traced finding names the identifier it followed. Regex literals are
+lexed rather than ignored because one ordinary regex silently deletes every
+later finding in its script: `/\/*$/` opens a block comment that masks the
+rest of the file, and a regex holding a backtick opens a template literal
+that swallows it. Line numbers come from a binary search over a newline index
+built once per script, and literals are indexed by offset, because the
+obvious per-finding walk turns a large hand-rolled table — the very shape
+this scan is built for — into a frozen tab.
+
+Cost is a correctness concern here, not a nicety, because the engine is
+injected into the page and not into the worker: every millisecond the scan
+spends is a millisecond that tab is frozen. So the scan is `async` and
+sliced — it hands the thread back every few milliseconds — and it stops at a
+budget, reporting how many scripts it did not reach rather than letting
+silence read as a clean surface. Its patterns are written so that no two
+unbounded quantifiers sit next to each other. That is not hypothetical: the
+receiver and its dot were once `\s*\.?\s*`, comments are masked to spaces,
+and a real 2 KB script that had been commented out took **44 seconds** on one
+regex because the engine tried every way to split the run of spaces.
+Commenting a script out is ordinary, so that shape has a regression test with
+a time assertion and a second test that pins the pattern rule at the source.
+The panel draws the list a page at a time with the whole list in hand, so a
+long report costs nodes only as a reader asks for them, and "show all" is
+remembered as a decision rather than as a count.
+
+A finding whose call names its field plainly is attached to that field's own
+row as `evidence.scriptOverrides`, by `attachScriptOverrides` at the end of
+`summarizeResult`. This exists for the one case the score cannot see: a field
+translated correctly in every language which a script overwrites with a fixed
+string at runtime, so the row reads 100% and the form is still English. It is
+evidence and never a state — whether the line runs depends on a condition
+nothing here evaluates — so it moves no count, and the headline instead
+refuses to settle: while findings exist the score renders flagged rather than
+plain, with the count beside it and the reason in its `aria-label`. That
+count is a `chip-alert`, not one of the `chip-warn` advisories, and it is
+appended directly after the score rather than with them. The distinction is
+the point rather than decoration: the advisories qualify a row or two, this
+one says the number itself is not the whole truth about the surface, and in
+the amber family at the end of the same row it read as the smallest of the
+four. It is a button, so the claim leads somewhere — it expands the
+**Hardcoded text** group and moves focus to its head. Three
+rules keep the attachment honest. A finding only lands on the half it came
+from, because a catalog variable and an `sc_cat_item` column routinely share
+a name and the script's table is what tells them apart. A message row is
+never a target, because its element is a `getMessage` key and a key spelled
+like a field is still a key. And only `setLabelOf` and `addOption` claim to
+replace what a row measures; `showFieldMsg`, `setValue` and `addDecoration`
+put their own text on a field without touching what is stored, and are worded
+that way. A literal that is also a
+`getMessage` key in the same script is flagged. The copied report carries
+counts and this file's own fixed API names; the source text, the property
+name, the record name and the sys_id stay on screen. The reverse check is not made for `translated_text` and
 `translated_html`: their values are long text that is rarely expressible as
 a query key.
 
@@ -328,6 +415,183 @@ persistence observer they needed; snUtils covers field names. One line of
 orphan cleanup at content-script init removes icon elements left in tabs that
 were open across the update; delete it in the release after the one that
 removed the icons. Do not relist either feature without an explicit request.
+
+## Translation Assistant
+
+Translation Assistant hands a catalog item's untranslated text to the user's
+own AI tool and fills the reply back into ServiceNow's Localization Framework
+comparison page. `translation_assistant.js` (a DOM-free engine exporting
+`globalThis.SNTranslationAssistant`) and `translation_assistant_ui.js` (the
+panel) are injected on first use through `INJECT_TRANSLATION_ASSISTANT` and
+are not in `manifest.json`; the worker loads the same engine for the write.
+The command is listed when the decoded tab URL names the
+`sn_lf_comparison_ui` page, which is a claim; whether the page is really
+there and really in ad-hoc mode is settled by a MAIN-world probe when the
+command runs, because the page usually lives inside `gsft_main` and the
+palette's frame only sees it as a `nav_to` parameter.
+
+**Read.** `GET_LF_ASSISTANT_CONTEXT` probes every concrete frame and accepts
+the one whose page-owned Angular scope reports the comparison UI in ad-hoc
+mode, reading three editability states rather than inferring them:
+read-only mode, a translation request in progress, and the lock on each
+field. The context is a flattened copy of the page's own content array,
+which the engine turns into a draft. A row's identity is its
+`additionalParameters` (type, table, sysId, name); the platform's element id
+is `groupName: label` with an ordinal suffix on collision, so it moves when
+variables are renamed and is only ever an address. A row's *destination* is
+not its identity: `translated_field` values are stored in `sys_translated`
+keyed by source string, so two records sharing one source text share one
+stored translation, and destination groups are the unit of every decision —
+all or nothing. Exclusions are named, never silent: a script message that
+looks like a key, a message key too long to store, a field with no record id,
+an unsupported type, an empty source (for rich text, markup with no words),
+rich text whose markup is left to a person, a locked field, rich text whose
+editor is not ready, a text shared with a locked field, and an uncertain
+destination. Locked means only that a translation exists, and the panel never
+repeats the platform's "verified".
+The draft is held in `storage.session`, capped at five, before it is offered,
+because the MV3 worker can be torn down between the download and the reply.
+Language names are read from `sys_language` through a query built only from
+id-shaped codes, and used only when the rows give exactly one; otherwise the
+codes stay.
+
+**Script messages** are the `getMessage` keys the page scans from the item's
+client scripts, UI policies and producer script. The platform's save routes
+any field whose `additionalParameters` has no `type` property to
+`sys_ui_message`, written on the key and language alone — the key is
+`additionalParameters.key` when the page set one, which it does only when the
+source language gives the key different text, and the source text
+otherwise. A message has no record, so its identity is its exact key plus
+which appearance of that key it is on the page; every appearance of a key is
+one destination, and it is always instance-wide. The destination folds
+capitalisation, which is measured on that column; a key differing only by an
+accent or a trailing space, which fold on `sys_translated` but are unmeasured
+here, is refused together with its twin rather than merged. When the source
+language has no row for a key, the page offers the key itself as the text,
+so a source with no spaces and a dot or underscore between two letters or
+digits is excluded as looking like a key rather than sent to a model; that
+is a shape test, and the panel says "looks like". Only a parameters object
+without its own `type` is a message: the platform would also save a field
+with no parameters object at all as one, but no page builds that shape, so
+it is refused with the fields that have no record id. `sys_ui_message.key`
+holds 255 and `message` 8000, read from the configured instance's
+dictionary. The save updates the first row matching key and language
+whatever its application scope, so a key stored twice in one language is a
+limitation this feature does not yet detect.
+
+**Export.** One JSON file carrying its own instruction block, a schema
+version, an export id, the language pair as codes, and one row per
+destination group with the source text and the placeholders it holds. The
+copy route emits the identical string. The panel says plainly that the file
+holds the item's text and leaves the browser when uploaded; GlideLens itself
+never contacts an AI service. Both steps are one view, in this order: the
+tally, the export controls, the reply box, then the notes. Every list in the
+panel is closed until asked for and bounded when open — a real item put 157
+rows in the instance-wide list alone, and a note placed between the two steps
+is a note the user scrolls past to reach the second one.
+
+**Fill.** There is no preview step: the comparison page is the preview,
+since nothing is saved until Publish and a reload discards every fill. The
+panel sends the reply text with the user's choices to `APPLY_LF_ASSISTANT`,
+and the worker does everything under a per-tab lock: parse the reply
+(through fences and prose, refused past 5 MB or 2000 rows), find the draft
+by export id, read the page again, refuse unless it is editable, re-evaluate
+every row against the live page, and merge. A row is filled only when its
+source text still hashes the same, its field is unlocked, its translation
+fits the destination column (255 for `translated_field`, 8000 for a script
+message), every member of its destination group is in the draft, and the
+field still holds what the draft saw — or the user chose Overwrite against
+the exact values shown. A placeholder mismatch waits for Fill anyway; a
+blank, or a reply of only white space, never clears or fills an existing
+translation. When a field that was not in the draft has joined a group, the
+row is refused, and named for the lock if any member of the group is locked.
+The merge writes `translatedValue` and no other key, because the platform's
+deserialiser moves unknown keys into `additionalParameters` and posts them
+on Publish. The write is one
+`executeScript` into the frame this fill's own read selected, running
+`writeLfAssistantContent` in the MAIN world: it re-checks the page states,
+refuses unless it is on the document the read came from (the reader records
+`performance.timeOrigin`, which a reload changes, plus the artifact and
+language pair it saw, so a replacement page holding identical content — the
+item reopened for another language — is refused rather than filled),
+compares the live model with the base the merge was built from as content
+(Chrome returns injection values with keys sorted, and Angular leaves
+`$$hashKey` on the model, so a text compare refused an untouched page),
+fires the page's own `updateDocumentContent` event only if they match, then
+reads each filled field back by position and record identity — for a script
+message, which has no record, by position and the key it is stored under.
+What comes back is a count of fields that hold their value, the rows and
+fields that did not, or "unconfirmed" when the read-back itself failed after
+the event fired — never a count of what was attempted. The lock is released
+when the injection settles, on navigation, or on tab close; a fill still
+awaiting a read when a navigation releases the lock refuses rather than
+injecting into the new page. A fill that does not settle in 10 s is reported as
+indeterminate and keeps its lock. The panel reports what was not filled and
+why, and keeps a per-run history of every field its fills wrote — by record
+identity, grouped by destination for display, with the old text and whether
+the page confirmed the write — through later clicks and refusals, since
+clearing a box would publish a deletion. An unconfirmed write is shown as
+attempted, never as a replacement that happened.
+
+**Rich text** (`translated_html`, drawn by the page as a TinyMCE editor: an
+item's description and a variable's rich text or instructions) is never
+written through `updateDocumentContent`. The page copies model text into an
+editor only when that editor starts, and the event reuses every row — the
+page's rows are `ng-repeat` lists tracked by `$$hashKey`, which the merged
+array keeps — so a model write leaves the visible editor on the old text
+while Publish sends the new. The writer calls `editor.setContent` instead,
+after the event: the page's own `SetContent` handler moves the model and the
+hidden textarea to `editor.getContent()`, so the editor, the textarea and
+what Publish sends agree (measured on the configured instance with TinyMCE
+6.8.4, including that a write after the event lands in the model object the
+event installed). An editor is found by reference — the one whose textarea's
+row scope holds that very field object — never by its ordinal DOM id; the
+reader reports each rich field's editor as ready only when exactly one is
+bound, started and editable, and the writer re-finds it after the event and
+requires a field object the event replaced, the same editor, an unlocked
+field, and an editor showing exactly what the model holds (the page syncs on
+key-up, toolbar commands and `setContent`, so a difference is an edit it has
+not recorded). The replacement check is what keeps the two halves from
+diverging: finding the planned-against object still in place means the page
+has not run its digest, so a write would land in an object about to be thrown
+away and then be swapped out behind an editor still showing the translation.
+It applies only when the event fired. A fill with no plain rows fires nothing,
+replaces no object and demands no replacement, which is also the way out of a
+refusal: a mixed fill stopped by this check reports those fields as not ready,
+and filling again finds the plain rows already unchanged, so the second fill
+is rich-only and writes straight into the object each editor is bound to.
+After writing, the words must match what was written, the editor's
+serialisation must fit 65000 characters, and the model, the textarea and the
+editor must agree; otherwise the writer puts back what the editor showed,
+which re-sets exactly, and reports which of those three failed — each asks
+something different of the user — or reports the field as uncertain, with a
+reload advised, if the put-back cannot be confirmed.
+
+A reply is untrusted HTML, and `setContent` parses it in a same-origin frame.
+So the draft names rich rows `format: "html"` and tells the model to change
+only the words between tags, and the fill never writes a reply's markup: one
+strict scanner cuts source and reply into tags and text, the reply's tags
+must match the source's one for one (name, then attribute names and values
+in order, quoting and case aside), and what is written is the source's own
+tag bytes with the reply's text between them. Text holds no `<`, and HTML
+opens a tag only at `<`, so a model cannot add or change an element, an
+attribute or a link. The scanner refuses what it does not fully read —
+comments, declarations, a stray `<`, attributes not parted by white space, a
+quoted value holding `<` or `>` — so it and a browser agree on every tag
+boundary; a reply that fails is blocked with no override, naming the first
+tag that differs. A source holding a script, style, form, embedded frame,
+event handler or non-web URL is left to a person. The panel shows rich values
+as words through that same scanner rather than a pattern over angle brackets,
+which would read a `>` inside a quoted value as the end of a tag and put the
+rest of it on screen dressed as words; a source the scanner refuses is shown
+as written instead. TinyMCE rewrites markup (`<b>` to `<strong>`, a non-breaking space
+raw, line breaks between blocks), so rich text is compared by its words: a
+reply that reads the same as the page is unchanged, and one with tags but no
+words is blank, because `<p></p>` would publish as an empty-looking
+translation rather than a deletion. The drafted baseline and the live value
+are both the editor's serialisation, so "changed since the draft" stays an
+exact compare. A field whose kind changed between plain and rich since the
+draft is refused.
 
 ## Catalog and Service Portal behavior
 

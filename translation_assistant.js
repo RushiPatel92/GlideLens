@@ -1,0 +1,1875 @@
+/*
+ * Translation Assistant - DOM-free draft/apply engine.
+ *
+ * The engine owns the payload contract, the exclusion rules, the destination
+ * grouping, reply parsing, the per-row verdicts and the merge construction. It
+ * knows nothing about the page DOM, the panel, or chrome.* - the panel injects
+ * it and hands it a flattened copy of the Localization Framework comparison
+ * page's own content array, so the same code runs in Node fixtures.
+ *
+ * Two platform facts shape everything here and are recorded so a later reader
+ * does not have to rediscover them:
+ *
+ * - A row's identity for matching is `additionalParameters` (type, table,
+ *   sysId, name). The platform's own element id is `groupName + ": " + label`
+ *   with an ordinal `_2` suffix on collision, so it moves when variables are
+ *   added, removed or renamed. It is an address, never a key.
+ * - A row's *destination* is not its identity. `translated_field` values are
+ *   stored in sys_translated keyed by (table, column, source string), so two
+ *   different records sharing one source string share one stored translation.
+ *   Destination groups are therefore the unit of protection: all-or-nothing.
+ * - A row with no `type` at all is a script message. The platform saves it to
+ *   sys_ui_message keyed by (message key, language) and nothing else, so it has
+ *   no record to be identified by and is shared by every script on the
+ *   instance that asks for the same key.
+ *
+ * The engine never writes a record and never publishes. It produces a merged
+ * content array for the page's own `updateDocumentContent` channel, plus a list
+ * of rich-text fields the page-side writer fills through their own editors,
+ * and the user presses Publish.
+ */
+(function () {
+  if (globalThis.SNTranslationAssistant) return;
+
+  const SCHEMA_VERSION = 1;
+  const EXPORT_ID_BYTES = 16;
+  const DRAFT_LIMIT = 5;
+
+  /* Refusal thresholds, not truncation thresholds. Everything past one of
+   * these is refused whole, with the number shown. */
+  const MAX_REPLY_CHARS = 5 * 1024 * 1024;
+  const MAX_REPLY_ROWS = 2000;
+  const MAX_TARGET_CHARS = 65000;
+
+  /* R1 covers catalog items and record producers, which the framework registers
+   * under one internal name (sc_cat_item_producer extends sc_cat_item). */
+  const SUPPORTED_ARTIFACT_TYPES = new Set(["catalog_item"]);
+
+  /* The hard limit is the *destination* column the translation is saved into,
+   * derived from additionalParameters.type - never the source column, which is
+   * advisory context and must not be enforced as a cap. The platform truncates
+   * silently at these, so an over-limit row is blocked rather than warned.
+   *
+   * Only the three types observed on a catalog item are listed. sys_choice and
+   * sys_documentation rows land in a column this engine has not verified
+   * (sys_documentation splits across label/hint/plural), so both are excluded
+   * with a stated reason rather than given a guessed limit. A script message
+   * has no type and its own limits, below. */
+  const DESTINATION_LIMITS = Object.freeze({
+    translated_field: 255,
+    translated_text: 65000,
+    translated_html: 65000,
+  });
+
+  /* Stored per record: (table, column, sysId). Safe to fill independently. */
+  const RECORD_SCOPED_TYPES = new Set(["translated_text", "translated_html"]);
+  /* Stored per source string: (table, column, value). Shared instance-wide. */
+  const STRING_SCOPED_TYPES = new Set(["translated_field"]);
+
+  /*
+   * Script messages: the getMessage keys the page scans out of the item's
+   * client scripts, UI policies and producer script. The platform's save
+   * routes a field to sys_ui_message when its additionalParameters has no
+   * `type` property at all, and writes it on (key, language) only, where the
+   * key is additionalParameters.key when the page set one and the source text
+   * otherwise. No scope, no record: one key is one stored translation for
+   * every script on the instance.
+   *
+   * Both limits were read from sys_dictionary on the configured customer
+   * instance: `message` holds 8000 and `key` holds 255. A longer key could not
+   * be stored whole, so a translation published under it would never be found
+   * again.
+   */
+  const MESSAGE_STORE = "sys_ui_message";
+  const MESSAGE_LIMIT = 8000;
+  const MESSAGE_KEY_LIMIT = 255;
+  /* The row kind a model reads. The page labels these rows "Script", which
+   * describes where the key was found rather than what is being translated. */
+  const MESSAGE_KIND = "Script message";
+  /* When the source language has no row for a key, the page offers the key
+   * itself as the text to translate - measured live, where a dotted code key
+   * with a row in one other language only came through as its own source.
+   * Words have spaces; a key standing in for them usually has none, and a dot
+   * or an underscore BETWEEN two letters or digits. Between, because trailing
+   * punctuation is how one-word messages end ("Loading...", "Done.") and those
+   * are text (review finding). This is a heuristic both ways -- "e.g." is left
+   * out, a camelCase key goes through -- so the exclusion is named, and the
+   * panel says the text looks like a key rather than that it is one. */
+  const KEY_LIKE = /^[^\s]*[\p{L}\p{N}][._][\p{L}\p{N}][^\s]*$/u;
+
+  /* Keys the platform's deserialiser handles by name. Anything else on a
+   * fieldInfo object is moved into additionalParameters and posted to the
+   * server on Publish, so the merge introduces none of its own. */
+  const FIELD_KEYS = Object.freeze([
+    "originalValue", "translatedValue", "primaryTranslatedValue", "textType",
+    "isFieldLocked", "escapeDetails", "additionalParameters", "$$hashKey",
+  ]);
+
+  const PLACEHOLDER_PATTERN = /\$\{[^{}]*\}|\{\{[^{}]*\}\}|\{\d+\}/g;
+  const UNIT = "\u0000";
+
+  /* Exclusion reasons, in the order they are tested. A row carries exactly
+   * one, and every excluded row is reported - a silent drop is a bug. */
+  const REASON = Object.freeze({
+    MESSAGE_KEY_ONLY: "message_key_only",
+    MESSAGE_KEY_TOO_LONG: "message_key_too_long",
+    NO_RECORD: "no_record",
+    UNSUPPORTED_TYPE: "unsupported_type",
+    EMPTY_SOURCE: "empty_source",
+    RICH_TEXT_MARKUP: "rich_text_markup",
+    LOCKED: "locked",
+    RICH_TEXT_EDITOR: "rich_text_editor",
+    SHARED_WITH_INELIGIBLE: "shared_with_ineligible",
+    UNCERTAIN_DESTINATION: "uncertain_destination",
+  });
+
+  /* --------------------------------------------------------------- rich text */
+
+  /*
+   * Rich text (translated_html) is filled through the page's own TinyMCE
+   * editor, never through the model. The page copies model text into an
+   * editor only when that editor starts, so a model write leaves the visible
+   * editor showing the old text while Publish sends the new. editor.setContent
+   * moves the model and the hidden textarea through the page's own SetContent
+   * handler, so the three agree (measured on the configured instance,
+   * 2026-09-17). This engine decides what may be written; the page-side writer
+   * does the writing.
+   *
+   * A reply is untrusted HTML, and setContent parses it in a same-origin frame
+   * before anyone has read it. So a reply never supplies markup. Source and
+   * reply are cut into tags and text by one strict scanner, the reply's tags
+   * must match the source's one for one - name, then attribute names and
+   * values, in order - and what is written is the SOURCE's own tag bytes with
+   * the reply's text between them. A text piece holds no "<", and HTML opens a
+   * tag only at "<", so a model cannot add an element, an attribute or a link,
+   * or change one. The scanner refuses whatever it does not fully read -
+   * comments, declarations, a stray "<", attributes not parted by white space,
+   * a quoted value holding "<" or ">" - so it and a browser always agree on
+   * where each tag ends.
+   */
+  const HTML_SPACE = " \t\n\r\f";
+  const TAG_NAME_START = /[A-Za-z]/;
+  const TAG_NAME_CHAR = /[A-Za-z0-9:_.-]/;
+  const ATTRIBUTE_NAME_START = /[A-Za-z_:]/;
+  const ATTRIBUTE_NAME_CHAR = /[-A-Za-z0-9_:.]/;
+  const UNQUOTED_FORBIDDEN = "\"'=<>`";
+  /* C0 controls other than tab, line feed, form feed and carriage return. */
+  const CONTROL_CHARACTER = /[\x00-\x08\x0b\x0e-\x1f\x7f]/;
+
+  function isHtmlSpace(character) {
+    return typeof character === "string" && character.length === 1 && HTML_SPACE.indexOf(character) !== -1;
+  }
+
+  /* One tag starting at html[start], which is "<", or null when it is not a
+   * tag this scanner reads completely. Linear in the tag's length, and a
+   * failure is never retried, so no input can make it slow. */
+  function scanTag(html, start) {
+    let i = start + 1;
+    const closing = html[i] === "/";
+    if (closing) i += 1;
+    if (!TAG_NAME_START.test(html[i] || "")) return null;
+    const nameStart = i;
+    while (i < html.length && TAG_NAME_CHAR.test(html[i])) i += 1;
+    const name = html.slice(nameStart, i).toLowerCase();
+    const attributes = [];
+    for (;;) {
+      const spaceStart = i;
+      while (isHtmlSpace(html[i])) i += 1;
+      if (html[i] === ">") return { end: i + 1, name, closing, attributes };
+      if (!closing && html[i] === "/" && html[i + 1] === ">") return { end: i + 2, name, closing, attributes };
+      /* A closing tag carries nothing, and an attribute needs white space
+       * before it: a browser reads "<p/onclick=...>" as an attribute. */
+      if (closing || i === spaceStart || !ATTRIBUTE_NAME_START.test(html[i] || "")) return null;
+      const attributeStart = i;
+      while (i < html.length && ATTRIBUTE_NAME_CHAR.test(html[i])) i += 1;
+      const attributeName = html.slice(attributeStart, i).toLowerCase();
+      let j = i;
+      while (isHtmlSpace(html[j])) j += 1;
+      if (html[j] !== "=") {
+        /* No value. The spaces after the name are left for the next pass,
+         * which needs them as the separator. */
+        attributes.push([attributeName, null]);
+        continue;
+      }
+      j += 1;
+      while (isHtmlSpace(html[j])) j += 1;
+      const quote = html[j];
+      if (quote === "\"" || quote === "'") {
+        const close = html.indexOf(quote, j + 1);
+        if (close === -1) return null;
+        const value = html.slice(j + 1, close);
+        if (value.indexOf("<") !== -1 || value.indexOf(">") !== -1) return null;
+        attributes.push([attributeName, value]);
+        i = close + 1;
+      } else {
+        const valueStart = j;
+        while (j < html.length && !isHtmlSpace(html[j]) && html[j] !== ">" &&
+          UNQUOTED_FORBIDDEN.indexOf(html[j]) === -1) j += 1;
+        if (j === valueStart || j >= html.length) return null;
+        if (!isHtmlSpace(html[j]) && html[j] !== ">") return null;
+        attributes.push([attributeName, html.slice(valueStart, j)]);
+        i = j;
+      }
+    }
+  }
+
+  /* { tags, texts } with texts.length === tags.length + 1, or null. */
+  function tokenizeHtml(value) {
+    const html = text(value);
+    if (CONTROL_CHARACTER.test(html)) return null;
+    const tags = [];
+    const texts = [];
+    let textStart = 0;
+    let at = html.indexOf("<");
+    while (at !== -1) {
+      const tag = scanTag(html, at);
+      if (!tag) return null;
+      texts.push(html.slice(textStart, at));
+      tags.push({ raw: html.slice(at, tag.end), name: tag.name, closing: tag.closing, attributes: tag.attributes });
+      textStart = tag.end;
+      at = html.indexOf("<", textStart);
+    }
+    texts.push(html.slice(textStart));
+    return { tags, texts };
+  }
+
+  /*
+   * Markup in a SOURCE that this feature leaves to a person. Belt and braces:
+   * the source is already on the record, and writing its own tags back adds
+   * nothing it did not already publish. But a field holding a script, a form,
+   * an embedded frame, an event handler or a script URL is not one to hand to
+   * an automatic fill. None of these appeared in over two thousand catalog
+   * descriptions and variable rich-text values scanned on a configured
+   * instance.
+   */
+  const UNSAFE_ELEMENTS = new Set([
+    "script", "style", "iframe", "frame", "frameset", "object", "embed", "applet", "svg", "math",
+    "template", "noscript", "noembed", "noframes", "xmp", "plaintext", "textarea", "title",
+    "link", "meta", "base", "form", "input", "button", "select", "option",
+  ]);
+  const URL_ATTRIBUTES = new Set([
+    "href", "src", "action", "formaction", "background", "poster", "cite", "longdesc",
+    "usemap", "lowsrc", "dynsrc", "data", "codebase", "xlink:href",
+  ]);
+  const SAFE_URL_SCHEMES = new Set(["http", "https", "mailto", "tel"]);
+
+  function urlScheme(value) {
+    const decoded = text(value)
+      .replace(/&#(?:[xX]([0-9A-Fa-f]{1,6})|([0-9]{1,7}));?/g, (whole, hex, dec) => {
+        const code = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
+      })
+      .replace(/&colon;/gi, ":")
+      .replace(/&(?:tab|newline);/gi, "")
+      .replace(/[\s\x00-\x1f\x7f]+/g, "")
+      .toLowerCase();
+    const scheme = /^([a-z][a-z0-9+.-]*):/.exec(decoded);
+    return scheme ? scheme[1] : "";
+  }
+
+  function unsafeMarkup(tokens) {
+    return tokens.tags.some((tag) => UNSAFE_ELEMENTS.has(tag.name) || tag.attributes.some((pair) => {
+      const name = pair[0];
+      if (name.indexOf("on") === 0 || name === "srcdoc") return true;
+      if (!URL_ATTRIBUTES.has(name) || pair[1] === null) return false;
+      const scheme = urlScheme(pair[1]);
+      return !!scheme && !SAFE_URL_SCHEMES.has(scheme);
+    }));
+  }
+
+  /* What two tags are compared on: the name, and each attribute's name and
+   * value in order. Quote style, case and a self-closing slash do not count,
+   * because what is written is always the source's own bytes. */
+  function tagKey(tag) {
+    if (tag.closing) return "</" + tag.name;
+    return "<" + tag.name + tag.attributes
+      .map((pair) => " " + pair[0] + (pair[1] === null ? "" : "=" + JSON.stringify(pair[1])))
+      .join("");
+  }
+
+  const NAMED_TEXT_ENTITIES = Object.freeze({
+    amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: String.fromCharCode(160),
+  });
+
+  /* The references a model or TinyMCE commonly writes. Any other named one
+   * stays as written, which can only make two texts compare as different. */
+  function decodeText(value) {
+    return text(value).replace(/&(?:#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6})|([A-Za-z][A-Za-z0-9]{1,31}));/g,
+      (whole, dec, hex, named) => {
+        if (named) {
+          return Object.prototype.hasOwnProperty.call(NAMED_TEXT_ENTITIES, named) ? NAMED_TEXT_ENTITIES[named] : whole;
+        }
+        const code = dec ? parseInt(dec, 10) : parseInt(hex, 16);
+        return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : whole;
+      });
+  }
+
+  /* The words a person reads, one space between runs: TinyMCE collapses white
+   * space, turns an empty paragraph into a non-breaking space and puts line
+   * breaks between blocks, none of which is a change of translation. */
+  function richWords(tokens) {
+    return tokens.texts
+      .map((piece) => decodeText(piece).replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function sameRichWords(a, b) {
+    const left = tokenizeHtml(a);
+    const right = tokenizeHtml(b);
+    return !!left && !!right && richWords(left) === richWords(right);
+  }
+
+  /*
+   * What a rich-text row writes for this reply: the source's own tags with the
+   * reply's text between them, or ok:false when the reply's tags are not the
+   * source's. blank is a reply with no words in it, which the platform would
+   * publish as an empty-looking translation.
+   */
+  function richFill(source, reply) {
+    const from = tokenizeHtml(source);
+    const back = tokenizeHtml(reply);
+    if (!from || !back) return { ok: false };
+    /* Which tag first differs, so the panel can name it: two texts that read
+     * alike under a reason that says their tags differ leave nothing to act on
+     * (review finding). The shared run is compared before the counts, because
+     * a differing tag says more than "one too many". */
+    const shared = Math.min(from.tags.length, back.tags.length);
+    for (let i = 0; i < shared; i += 1) {
+      if (tagKey(from.tags[i]) !== tagKey(back.tags[i])) {
+        return { ok: false, from: from.tags[i].raw, to: back.tags[i].raw };
+      }
+    }
+    if (from.tags.length !== back.tags.length) {
+      const extra = from.tags.length > shared ? from.tags[shared] : back.tags[shared];
+      return {
+        ok: false,
+        from: from.tags.length > shared ? extra.raw : "",
+        to: back.tags.length > shared ? extra.raw : "",
+      };
+    }
+    let value = back.texts[0];
+    for (let i = 0; i < from.tags.length; i += 1) value += from.tags[i].raw + back.texts[i + 1];
+    return { ok: true, value, blank: !richWords(back) };
+  }
+
+  /* The fields whose editor the page reader found ready: bound to exactly that
+   * field, started, and editable. The reader reports it; this engine cannot
+   * see a page. Anything not reported ready is not. */
+  function readyEditorSet(list) {
+    const ready = new Set();
+    (Array.isArray(list) ? list : []).forEach((entry) => {
+      if (entry && entry.ready === true && Number.isInteger(entry.elementIndex) && Number.isInteger(entry.fieldIndex)) {
+        ready.add(entry.elementIndex + ":" + entry.fieldIndex);
+      }
+    });
+    return ready;
+  }
+
+  function createError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  function isObject(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function text(value) {
+    return typeof value === "string" ? value : "";
+  }
+
+  /* A field's translatedValue key is ABSENT on an untranslated row rather than
+   * empty, so every read goes through here and the two cases stay identical. */
+  function translatedText(field) {
+    return text(field && field.translatedValue);
+  }
+
+  /*
+   * Two 32-bit rolling hashes over the same string - one is FNV-1a, the second
+   * mixes the index in with a different multiplier - concatenated with the
+   * length. It is not standard 64-bit FNV-1a and it is not cryptographic: it
+   * exists only to detect that a source string moved between draft and apply.
+   */
+  function hashText(value) {
+    const input = text(value);
+    let a = 0x811c9dc5;
+    let b = 0x01000193;
+    for (let i = 0; i < input.length; i += 1) {
+      const code = input.charCodeAt(i);
+      a ^= code;
+      a = Math.imul(a, 0x01000193) >>> 0;
+      b ^= code + i;
+      b = Math.imul(b, 0x85ebca6b) >>> 0;
+    }
+    const hex = (n) => (n >>> 0).toString(16).padStart(8, "0");
+    return hex(a) + hex(b) + ":" + input.length;
+  }
+
+  function randomExportId(source) {
+    const rng = source || globalThis.crypto;
+    if (!rng || typeof rng.getRandomValues !== "function") {
+      throw createError("no_random_source", "A cryptographic random source is required for exportId.");
+    }
+    const bytes = new Uint8Array(EXPORT_ID_BYTES);
+    rng.getRandomValues(bytes);
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 1) out += bytes[i].toString(16).padStart(2, "0");
+    return out;
+  }
+
+  /*
+   * How the platform decides that two source strings are one stored
+   * translation. `sys_translated.value` holds the source key lower-cased, and
+   * the column's collation folds a good deal more than case on top of that, so
+   * a fold that stops at toLowerCase() leaves rows the server unifies looking
+   * like separate destinations - which is a lock bypass, since filling one
+   * would rewrite the stored row a locked one shares.
+   *
+   * Measured 2026-09-09 on both the PDI and the configured customer
+   * development instance, by querying real rows with variants of their own key
+   * (`tooling/probe-sys-translated-fold-battery.*`). Identical on both: of 76
+   * variants across 15 base letters, the server folds 68 - every precomposed
+   * Latin accent tested, plus the Turkish dotless i, plus the eszett, which
+   * folds to a single "s" and NOT to "ss" as Unicode case folding would have
+   * it. It does not fold a decomposed accent, o/d/l/t with stroke, eng, eth,
+   * ae or oe.
+   *
+   * This fold matches those 68 and is deliberately wider on six of the
+   * remaining eight. Wider is the safe direction: it can only put more rows in
+   * a group, and a group is all-or-nothing, so it blocks more and can never
+   * let a locked member be rewritten through an unlocked one. Narrower is the
+   * bypass. Anything added here must keep that direction.
+   */
+  const COMBINING_MARK = /\p{Mn}/u;
+  /* Measured to fold, and not reachable by decomposing the character. */
+  const FOLD_NON_DECOMPOSING = new Map([
+    [0x0131, "i"],  // dotless i - the server folds it, NFD does not reach it
+    [0x00df, "s"],  // eszett - to one s, measured, not the Unicode "ss"
+  ]);
+  /* Measured: a key stored with trailing spaces is returned by a query for the
+   * trimmed form, on the same row. Leading spaces, doubled internal spaces,
+   * newlines and a non-breaking space are all measured NOT to fold. */
+  const TRAILING_SPACES = / +$/;
+
+  function foldSourceKey(value) {
+    const lowered = text(value).toLowerCase();
+    let folded = "";
+    for (const character of lowered) {
+      const code = character.codePointAt(0);
+      if (FOLD_NON_DECOMPOSING.has(code)) {
+        folded += FOLD_NON_DECOMPOSING.get(code);
+        continue;
+      }
+      /* Decompose one character at a time and keep its base letter. A
+       * precomposed accent folds; a combining mark that was already standing on
+       * its own in the source does not, because the server keeps those apart. */
+      const decomposed = character.normalize("NFD");
+      const base = decomposed[0];
+      folded += (decomposed.length > 1 && COMBINING_MARK.test(decomposed[1])) ? base : character;
+    }
+    return folded.replace(TRAILING_SPACES, "");
+  }
+
+  /*
+   * The other key, and the reason there are two.
+   *
+   * foldSourceKey answers "does the platform store one translation for these
+   * two strings?", and it is used to DEDUPLICATE - to export two rows as one
+   * and write one answer to both. A false equivalence there hides a source
+   * string from the model and overwrites a different one, so it may only carry
+   * equivalences that were measured.
+   *
+   * But the same question also decides what to BLOCK, and there the error runs
+   * the other way: an equivalence the engine misses is a lock bypass, because
+   * filling one row rewrites the stored row another one shares. Measurement
+   * cannot cover every script and every whitespace form, so what is left over
+   * needs a third answer besides "same" and "different": *unproven*.
+   *
+   * suspectSourceKey is that answer. Two rows whose folded keys differ but
+   * whose suspect keys match might share a destination, so the engine refuses
+   * to fill either of them and says why - rather than silently deduplicating
+   * them, which would be the content error, or silently treating them as
+   * independent, which would be the lock bypass.
+   *
+   * It carries only the whitespace forms no stored key on either instance was
+   * available to test: a trailing tab, and an internal tab. Everything the
+   * probe did settle stays out, so a measured-distinct pair is never blocked.
+   */
+  const TRAILING_WHITESPACE = /\s+$/;
+  const INTERNAL_TABS = /\t+/g;
+
+  function suspectSourceKey(value) {
+    return foldSourceKey(text(value).replace(INTERNAL_TABS, " "))
+      .replace(TRAILING_WHITESPACE, "");
+  }
+
+  function placeholders(value) {
+    const found = text(value).match(PLACEHOLDER_PATTERN) || [];
+    return found.slice().sort();
+  }
+
+  function placeholdersDiffer(source, target) {
+    const a = placeholders(source);
+    const b = placeholders(target);
+    if (a.length !== b.length) return true;
+    return a.some((token, index) => token !== b[index]);
+  }
+
+  /* ---------------------------------------------------------------- reading */
+
+  function contentArray(input) {
+    if (Array.isArray(input)) return input;
+    if (isObject(input) && Array.isArray(input.content)) return input.content;
+    throw createError("no_content", "The comparison page returned no content array.");
+  }
+
+  function fieldType(params) {
+    return text(params && params.type);
+  }
+
+  /* The platform's own test, `hasOwnProperty('type')`, and not a blank type:
+   * a row whose type is present but empty is routed nowhere by the save, so it
+   * is an unsupported field rather than a message.
+   *
+   * Narrower than the platform on purpose in one place. Its save reads
+   * `getAdditionalParameters() || {}`, so a field with no parameters object at
+   * all would also be saved as a message under its own text. No page has been
+   * seen to build one, and a field shape nobody has seen should be refused by
+   * name rather than quietly translated into sys_ui_message (review finding),
+   * so only an object without its own `type` is a message. */
+  function isMessageParams(params) {
+    return isObject(params) && !Object.prototype.hasOwnProperty.call(params, "type");
+  }
+
+  /* The key a message is stored under, as the platform's save derives it. */
+  function messageKeyOf(params, source) {
+    return text(params && params.key) || text(source);
+  }
+
+  function storeFor(params) {
+    if (isMessageParams(params)) return MESSAGE_STORE;
+    const type = fieldType(params);
+    if (STRING_SCOPED_TYPES.has(type)) return "sys_translated";
+    if (RECORD_SCOPED_TYPES.has(type)) return "sys_translated_text";
+    return "";
+  }
+
+  /* Stores keyed by text rather than by record, where publishing one row
+   * changes that translation for everything on the instance sharing the text. */
+  function isInstanceWide(params) {
+    const store = storeFor(params);
+    return store === "sys_translated" || store === MESSAGE_STORE;
+  }
+
+  function identityKey(params) {
+    const p = params || {};
+    return [fieldType(p), text(p.table), text(p.name), text(p.sysId)].join(UNIT);
+  }
+
+  /*
+   * A message row has no record, so (type, table, name, sysId) is blank on
+   * every one of them and would make them all one field. Its identity is its
+   * exact key and which appearance of that key on the page it is. That ordinal
+   * is only an address inside a group, never a way to tell two destinations
+   * apart: every appearance of a key has the same source text and the same
+   * stored translation, and the key's group is filled or refused as a whole.
+   */
+  function messageIdentityKey(key, ordinal) {
+    return [MESSAGE_STORE, "", text(key), String(ordinal)].join(UNIT);
+  }
+
+  /*
+   * Where the platform will store this translation. Two rows with the same
+   * destination share one stored row, whatever their record identity says.
+   */
+  function destinationKey(field) {
+    const p = field.params || {};
+    if (field.message) {
+      /* Capitalisation only, because that is all that has been measured to
+       * fold on sys_ui_message.key (a getMessage render on the PDI, and case
+       * variants returned by a key query on the configured instance). Anything
+       * wider is left to the suspect key, which refuses rather than merges. */
+      return ["message", MESSAGE_STORE, text(field.messageKey).toLowerCase()].join(UNIT);
+    }
+    const type = fieldType(p);
+    if (STRING_SCOPED_TYPES.has(type)) {
+      return ["string", type, text(p.table), text(p.name), foldSourceKey(field.source)].join(UNIT);
+    }
+    if (RECORD_SCOPED_TYPES.has(type)) {
+      return ["record", type, text(p.table), text(p.name), text(p.sysId)].join(UNIT);
+    }
+    /* Unsupported rows never group: they are excluded anyway, and an invented
+     * group would drag eligible rows down with them. */
+    return ["row", String(field.elementIndex), String(field.fieldIndex)].join(UNIT);
+  }
+
+  /* The same address under the looser key. Only text-keyed rows can collide
+   * this way; a record-scoped destination is a sys_id and needs no guessing.
+   * For a message this is where accents and trailing spaces go: they fold on
+   * sys_translated, have not been measured on sys_ui_message.key, and so two
+   * keys differing only by them are refused together rather than merged. */
+  function suspectDestinationKey(field) {
+    const p = field.params || {};
+    if (field.message) {
+      return ["message", MESSAGE_STORE, suspectSourceKey(field.messageKey)].join(UNIT);
+    }
+    const type = fieldType(p);
+    if (!STRING_SCOPED_TYPES.has(type)) return null;
+    return ["string", type, text(p.table), text(p.name), suspectSourceKey(field.source)].join(UNIT);
+  }
+
+  function limitFor(params) {
+    if (isMessageParams(params)) return MESSAGE_LIMIT;
+    const limit = DESTINATION_LIMITS[fieldType(params)];
+    return typeof limit === "number" ? limit : 0;
+  }
+
+  function exclusionFor(field) {
+    const type = fieldType(field.params);
+    /* The page draws an editor for either signal. A rich row that is a script
+     * message, or is not stored per record, has never been seen, and filling
+     * one through the model would leave its editor stale. */
+    if (field.rich && (field.message || !RECORD_SCOPED_TYPES.has(type))) return REASON.UNSUPPORTED_TYPE;
+    if (field.message) {
+      if (!field.source) return REASON.EMPTY_SOURCE;
+      if (field.messageKey.length > MESSAGE_KEY_LIMIT) return REASON.MESSAGE_KEY_TOO_LONG;
+      /* Only when the page set no separate key: then the text shown IS the key,
+       * and a key standing in for words is not something to translate. */
+      if (!text(field.params && field.params.key) && KEY_LIKE.test(field.source)) {
+        return REASON.MESSAGE_KEY_ONLY;
+      }
+      if (field.locked) return REASON.LOCKED;
+      return null;
+    }
+    if (!text(field.params && field.params.sysId)) return REASON.NO_RECORD;
+    if (!DESTINATION_LIMITS[type]) return REASON.UNSUPPORTED_TYPE;
+    if (!field.source) return REASON.EMPTY_SOURCE;
+    if (field.rich) {
+      const tokens = tokenizeHtml(field.source);
+      /* Markup with no words in it, "<p>&nbsp;</p>" say, has nothing to
+       * translate, and about one catalog description in a hundred scanned
+       * was like that. */
+      if (tokens && !richWords(tokens)) return REASON.EMPTY_SOURCE;
+      if (!tokens || unsafeMarkup(tokens)) return REASON.RICH_TEXT_MARKUP;
+      if (field.locked) return REASON.LOCKED;
+      /* Checked last: a locked field's editor is read-only by design, and
+       * that is the lock's reason, not the editor's. */
+      if (!field.editorReady) return REASON.RICH_TEXT_EDITOR;
+      return null;
+    }
+    if (field.locked) return REASON.LOCKED;
+    return null;
+  }
+
+  /*
+   * Flatten the page's content array into addressable field records. Position
+   * is kept for writing back; identity is what matching uses, because the
+   * element id carries an ordinal suffix that moves when variables move.
+   */
+  function readFields(input, options) {
+    const elements = contentArray(input);
+    const editorsReady = readyEditorSet(options && options.richEditors);
+    const fields = [];
+    /* Appearances so far of each exact message key, in page order. */
+    const messageSeen = new Map();
+    elements.forEach((element, elementIndex) => {
+      const infos = (element && Array.isArray(element.fieldInfo)) ? element.fieldInfo : [];
+      infos.forEach((info, fieldIndex) => {
+        /* The raw value decides what the row is; the object stands in for it
+         * everywhere else, so a missing one reads as blank rather than throws. */
+        const raw = info && info.additionalParameters;
+        const params = isObject(raw) ? raw : {};
+        const field = {
+          elementIndex,
+          fieldIndex,
+          elementId: text(element && element.id),
+          groupName: text(element && element.groupName),
+          label: text(element && element.label),
+          source: text(info && info.originalValue),
+          target: translatedText(info),
+          textType: text(info && info.textType) || "plain",
+          locked: !!(info && info.isFieldLocked),
+          params,
+          type: fieldType(params),
+          message: isMessageParams(raw),
+          store: storeFor(raw),
+        };
+        field.rich = field.textType === "html" || field.type === "translated_html";
+        field.editorReady = field.rich && editorsReady.has(elementIndex + ":" + fieldIndex);
+        field.messageKey = field.message ? messageKeyOf(params, field.source) : "";
+        if (field.message) {
+          const ordinal = (messageSeen.get(field.messageKey) || 0) + 1;
+          messageSeen.set(field.messageKey, ordinal);
+          field.identityKey = messageIdentityKey(field.messageKey, ordinal);
+        } else {
+          field.identityKey = identityKey(params);
+        }
+        field.destinationKey = destinationKey(field);
+        field.limit = limitFor(raw);
+        field.exclusion = exclusionFor(field);
+        fields.push(field);
+      });
+    });
+    return { elements, fields, elementCount: elements.length, fieldCount: fields.length };
+  }
+
+  /*
+   * Group by destination, preserving first-seen order. A group is exportable
+   * only when EVERY member is eligible: filling one member of a group whose
+   * other member is locked would rewrite the shared stored row and defeat that
+   * lock without ever touching the locked row.
+   */
+  function groupByDestination(fields) {
+    const order = [];
+    const byKey = new Map();
+    fields.forEach((field) => {
+      let group = byKey.get(field.destinationKey);
+      if (!group) {
+        group = { destinationKey: field.destinationKey, members: [], blockedBy: null };
+        byKey.set(field.destinationKey, group);
+        order.push(group);
+      }
+      group.members.push(field);
+    });
+    /*
+     * Destinations that are only PROBABLY distinct. Two groups whose folded
+     * keys differ but whose suspect keys match may be one stored row, and the
+     * engine cannot tell. Deduplicating them would write one answer over two
+     * different source strings; treating them as independent would let filling
+     * one rewrite the other's lock. Neither is acceptable on a guess, so both
+     * groups are refused and the panel says which field it could not separate.
+     */
+    const bySuspect = new Map();
+    order.forEach((group) => {
+      const suspect = suspectDestinationKey(group.members[0]);
+      if (!suspect) return;
+      const seen = bySuspect.get(suspect) || [];
+      seen.push(group);
+      bySuspect.set(suspect, seen);
+    });
+    bySuspect.forEach((groups) => {
+      if (groups.length < 2) return;
+      groups.forEach((group) => {
+        group.uncertainWith = groups
+          .filter((other) => other !== group)
+          .map((other) => other.members[0].elementId);
+        group.members.forEach((member) => { member.exclusion = REASON.UNCERTAIN_DESTINATION; });
+      });
+    });
+
+    order.forEach((group) => {
+      const ineligible = group.members.filter((member) => member.exclusion);
+      if (!ineligible.length) return;
+      group.blockedBy = ineligible[0];
+      group.members.forEach((member) => {
+        if (!member.exclusion) member.exclusion = REASON.SHARED_WITH_INELIGIBLE;
+      });
+    });
+    return { groups: order, byKey };
+  }
+
+  /* ------------------------------------------------------------------ draft */
+
+  function requireContext(options) {
+    const artifactType = text(options.artifactInternalName);
+    const identity = {
+      artifactInternalName: artifactType,
+      artifactSysId: text(options.artifactSysId),
+      sourceLanguage: text(options.sourceLanguage),
+      targetLanguage: text(options.targetLanguage),
+    };
+    if (!identity.artifactInternalName || !identity.artifactSysId) {
+      throw createError("no_artifact", "The comparison page did not identify its artifact.");
+    }
+    if (!identity.sourceLanguage || !identity.targetLanguage) {
+      throw createError("no_languages", "The comparison page did not report a language pair.");
+    }
+    if (!SUPPORTED_ARTIFACT_TYPES.has(identity.artifactInternalName)) {
+      throw createError("unsupported_artifact", "Translation Assistant covers catalog items and record producers.");
+    }
+    return identity;
+  }
+
+  /*
+   * The page reports its language pair as sys_language ids ("fr") and a person
+   * reads names ("French"). sys_language holds both, in the id and name columns
+   * Translation Lens already reads, so the runner asks it for the pair.
+   *
+   * An id goes into that query only when it is shaped like one - a letter, then
+   * letters, digits, _ or -, as Translation Lens accepts it. The ids are page
+   * text, and that shape admits no caret, comma or colon, so a filter cannot be
+   * appended and a javascript: value, which the server would run rather than
+   * match, cannot be sent.
+   */
+  const LANGUAGE_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+
+  function languageNameQuery(identity) {
+    const ids = [text(identity && identity.sourceLanguage), text(identity && identity.targetLanguage)]
+      .filter((id) => LANGUAGE_ID_PATTERN.test(id));
+    return ids.length ? "idIN" + Array.from(new Set(ids)).join(",") : "";
+  }
+
+  /* A name only when the rows give exactly one for the id. No row, a blank name,
+   * or two rows that disagree leave it empty, and buildDraft then shows the
+   * code - which is all the page gave, and what the draft showed before. */
+  function languageNames(rows, identity) {
+    const found = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const id = text(row && row.id).toLowerCase();
+      const name = text(row && row.name).trim();
+      if (!id || !name) return;
+      if (!found.has(id)) found.set(id, new Set());
+      found.get(id).add(name);
+    });
+    const nameFor = (value) => {
+      const id = text(value);
+      if (!LANGUAGE_ID_PATTERN.test(id)) return "";
+      const names = found.get(id.toLowerCase());
+      return names && names.size === 1 ? Array.from(names)[0] : "";
+    };
+    return {
+      sourceLanguageName: nameFor(identity && identity.sourceLanguage),
+      targetLanguageName: nameFor(identity && identity.targetLanguage),
+    };
+  }
+
+  /*
+   * The instruction block. It is the first key of the envelope so a model
+   * reading a truncated or partially quoted file meets it before the rows, it
+   * is generated from this template and never edited by a user, and it is
+   * ignored entirely on the way back in.
+   */
+  function buildPrompt(sourceName, targetName, hasRichText) {
+    const richText = !hasRichText ? "" :
+      /* Said once, and only when a rich-text row is in the file. The fill
+       * refuses a reply whose tags differ from the source's, so the model is
+       * told the rule rather than left to discover it by refusal. */
+      " A row whose `format` is \"html\" holds HTML: translate only the text between its tags," +
+      " and copy every tag and attribute exactly as it stands, in the same order. Do not add," +
+      " remove, move or change a tag, an attribute or a link, and do not translate attribute" +
+      " values such as title or alt. Keep those rows close to the tone and length of their source.";
+    return "Translate each row's `source` from " + sourceName + " into " + targetName +
+      ". Reply with this same JSON object, with a `target` added to every row." +
+      " Preserve `exportId`, `schemaVersion` and every `k` exactly as given." +
+      " Do not translate anything inside ${...}, {0} or {{...}}, and do not translate" +
+      " the terms listed in `doNotTranslate`. Keep each `target` within its row's" +
+      " `maxLength` and use wording appropriate for a short user-interface label." +
+      /* A script message is often joined to a value at run time, so a trailing
+       * space in "no record for id: " is part of the sentence. */
+      " Keep any space at the start or end of a `source` in its `target`." +
+      richText +
+      " Reply with the JSON only.";
+  }
+
+  function serializePayload(payload) {
+    return JSON.stringify(payload, null, 2);
+  }
+
+  /* What a row is called where a person or a model reads it. */
+  function kindOf(field) {
+    return field.message ? MESSAGE_KIND : field.label;
+  }
+
+  function excludedEntry(field) {
+    const params = field.params || {};
+    return {
+      elementId: field.elementId,
+      groupName: field.groupName,
+      label: kindOf(field),
+      fieldIndex: field.fieldIndex,
+      reason: field.exclusion,
+      type: field.type,
+      /* Enough for the panel to show an excluded field and link to where its
+       * translation is kept, without the panel knowing which store a type
+       * lives in: that mapping stays here, beside the type sets themselves. */
+      source: field.source,
+      target: field.target,
+      table: text(params.table),
+      column: text(params.name),
+      sysId: text(params.sysId),
+      key: field.messageKey,
+      store: field.store,
+      /* Markup, so the panel shows it as words whatever bucket it is in. */
+      rich: !!field.rich,
+    };
+  }
+
+  function buildDraft(options) {
+    const opts = options || {};
+    const identity = requireContext(opts);
+    const read = readFields(opts.content, { richEditors: opts.richEditors });
+    const grouped = groupByDestination(read.fields);
+    const sourceName = text(opts.sourceLanguageName) || identity.sourceLanguage;
+    const targetName = text(opts.targetLanguageName) || identity.targetLanguage;
+
+    const map = {};
+    const rows = [];
+    const excluded = [];
+    let k = 0;
+    /* Fields covered by an exported row, which is not the number of rows: two
+     * fields sharing one destination are one row and two fields. The panel
+     * presents its tally as arithmetic against fieldCount, so it needs the
+     * field number; the payload and the preview are addressed by row. */
+    let eligibleFields = 0;
+    /* Exported rows the platform stores by source string rather than by
+     * record. Publishing one of these changes that translation for every
+     * artifact on the instance whose field carries the same source string,
+     * whether or not anything on THIS item shares it. */
+    /* Listed rather than counted, so the panel can name each one and link to
+     * every field that shares its text -- a claim the user can check. */
+    const instanceWide = [];
+
+    grouped.groups.forEach((group) => {
+      const eligible = group.members.every((member) => !member.exclusion);
+      if (!eligible) {
+        group.members.forEach((member) => excluded.push(excludedEntry(member)));
+        return;
+      }
+      k += 1;
+      const lead = group.members[0];
+      const kind = kindOf(lead);
+      eligibleFields += group.members.length;
+      if (isInstanceWide(lead.params)) {
+        instanceWide.push({
+          k,
+          kind,
+          context: lead.groupName,
+          source: lead.source,
+          store: lead.store,
+          /* The platform's own (table, column) for this field, straight from
+           * additionalParameters and never inferred, so a list built from them
+           * holds exactly the records the stored row is keyed against. A
+           * message has neither, and is found by its key instead. */
+          table: text(lead.params && lead.params.table),
+          column: text(lead.params && lead.params.name),
+          key: lead.messageKey,
+        });
+      }
+      const maxLength = group.members.reduce(
+        (limit, member) => Math.min(limit, member.limit), Number.MAX_SAFE_INTEGER
+      );
+      const row = { k, kind, context: lead.groupName };
+      /* Named for the model before it reads the source, and only on rich
+       * text, so a file with none is byte for byte what it was. */
+      if (lead.rich) row.format = "html";
+      row.source = lead.source;
+      row.maxLength = maxLength;
+      rows.push(row);
+      map[String(k)] = {
+        elementId: lead.elementId,
+        fieldIndex: lead.fieldIndex,
+        additionalParameters: lead.params,
+        destinationKey: group.destinationKey,
+        /* Carried so the preview can still describe a row that has since left
+         * the model. Display only - matching never reads them. */
+        kind,
+        context: lead.groupName,
+        source: lead.source,
+        sourceHash: hashText(lead.source),
+        targetBaseline: lead.target,
+        textType: lead.textType,
+        maxLength,
+        members: group.members.map((member) => ({
+          identityKey: member.identityKey,
+          elementId: member.elementId,
+          fieldIndex: member.fieldIndex,
+          sourceHash: hashText(member.source),
+          targetBaseline: member.target,
+        })),
+      };
+    });
+
+    const counts = {
+      fields: read.fieldCount,
+      elements: read.elementCount,
+      eligible: rows.length,
+      eligibleFields,
+    };
+    Object.keys(REASON).forEach((name) => {
+      counts[REASON[name]] = excluded.filter((entry) => entry.reason === REASON[name]).length;
+    });
+
+    const payload = {
+      prompt: buildPrompt(sourceName, targetName, rows.some((row) => row.format === "html")),
+      glidelens: "translation-assistant",
+      schemaVersion: SCHEMA_VERSION,
+      exportId: text(opts.exportId) || randomExportId(opts.random),
+      artifactType: identity.artifactInternalName,
+      sourceLanguage: identity.sourceLanguage,
+      targetLanguage: identity.targetLanguage,
+      doNotTranslate: [],
+      rows,
+    };
+
+    return {
+      exportId: payload.exportId,
+      identity,
+      /* Display names when the page supplied them, codes when it did not. Kept
+       * beside identity rather than inside it: identity is compared against a
+       * fresh read and a display name is not part of that comparison. */
+      languages: {
+        sourceLanguage: identity.sourceLanguage,
+        targetLanguage: identity.targetLanguage,
+        sourceLanguageName: sourceName,
+        targetLanguageName: targetName,
+      },
+      /* How many exported rows fill more than one field OF THIS ITEM. This is
+       * local multiplicity and nothing else: it explains why the tally's field
+       * count and row count differ. It is NOT the shared-translation warning,
+       * which is instanceWideRows -- a row with one local member is still
+       * shared instance-wide when the platform keys it by source string. */
+      sharedRows: Object.keys(map).filter((key) => (map[key].members || []).length > 1).length,
+      instanceWideRows: instanceWide.length,
+      instanceWide,
+      elementCount: read.elementCount,
+      fieldCount: read.fieldCount,
+      createdAt: typeof opts.now === "number" ? opts.now : Date.now(),
+      map,
+      counts,
+      excluded,
+      payload,
+      serialized: serializePayload(payload),
+    };
+  }
+
+  /* What the worker persists in storage.session: the map, the identity half of
+   * the fingerprint, and the element count the liveness check compares. No
+   * frameId and no other browser handle - the frame is resolved fresh on every
+   * route, and a reload changes its id while the artifact stays the same. */
+  function storedDraft(draft) {
+    return {
+      exportId: draft.exportId,
+      identity: draft.identity,
+      elementCount: draft.elementCount,
+      createdAt: draft.createdAt,
+      map: draft.map,
+    };
+  }
+
+  /* --------------------------------------------------------- the draft store */
+
+  function createDraftStore() {
+    return { version: SCHEMA_VERSION, drafts: [] };
+  }
+
+  function normalizeStore(store) {
+    if (isObject(store) && Array.isArray(store.drafts)) return store;
+    return createDraftStore();
+  }
+
+  /* Oldest first, capped. Clearing on browser close plus a bounded list
+   * replaces a TTL sweep and the clock drift that comes with one. */
+  function putDraft(store, draft) {
+    const current = normalizeStore(store);
+    const entry = draft && draft.map && draft.identity ? storedDraft(draft) : null;
+    if (!entry || !entry.exportId) return current;
+    const kept = current.drafts.filter((held) => held && held.exportId !== entry.exportId);
+    kept.push(entry);
+    return {
+      version: SCHEMA_VERSION,
+      drafts: kept.slice(Math.max(0, kept.length - DRAFT_LIMIT)),
+    };
+  }
+
+  function getDraft(store, exportId) {
+    const current = normalizeStore(store);
+    const wanted = text(exportId);
+    if (!wanted) return null;
+    return current.drafts.find((held) => held && held.exportId === wanted) || null;
+  }
+
+  /* ----------------------------------------------------------------- parsing */
+
+  function refusal(code, message, extra) {
+    return Object.assign({ ok: false, code, message }, extra || {});
+  }
+
+  function excerptOf(value) {
+    return text(value).slice(0, 200);
+  }
+
+  /*
+   * Models wrap JSON in fences and explain themselves either side of it
+   * regardless of instruction, so a reply is tried raw, then unfenced, then
+   * sliced between the outermost braces.
+   */
+  function jsonCandidates(input) {
+    const trimmed = input.trim();
+    const candidates = [trimmed];
+    const fence = trimmed.match(/```(?:[A-Za-z0-9_-]+)?\s*\n([\s\S]*?)```/);
+    if (fence) candidates.push(fence[1].trim());
+    const first = trimmed.indexOf("{");
+    const last = trimmed.lastIndexOf("}");
+    if (first !== -1 && last > first) candidates.push(trimmed.slice(first, last + 1));
+    return candidates;
+  }
+
+  function parseReply(input) {
+    if (typeof input !== "string" || !input.trim()) {
+      return refusal("empty_reply", "There is nothing to read - paste the model's reply, or upload its file.");
+    }
+    if (input.length > MAX_REPLY_CHARS) {
+      return refusal("too_large",
+        "That reply is " + input.length + " characters; the limit is " + MAX_REPLY_CHARS + ".");
+    }
+    let lastError = null;
+    const candidates = jsonCandidates(input);
+    for (let i = 0; i < candidates.length; i += 1) {
+      try {
+        const parsed = JSON.parse(candidates[i]);
+        if (!isObject(parsed)) {
+          lastError = new Error("The reply parsed as " + (Array.isArray(parsed) ? "an array" : typeof parsed) + " rather than an object.");
+          continue;
+        }
+        return { ok: true, reply: parsed };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    return refusal("unparseable",
+      "That is not JSON: " + (lastError ? lastError.message : "unreadable"),
+      { excerpt: excerptOf(input) });
+  }
+
+  /* -------------------------------------------------------------- evaluation */
+
+  const VERDICT = Object.freeze({
+    FILL: "fill",
+    NOT_RETURNED: "not_returned",
+    UNKNOWN_ROW: "unknown_row",
+    BLANK: "blank",
+    UNCHANGED: "unchanged",
+    LOCKED: "locked",
+    SOURCE_CHANGED: "source_changed",
+    EDITED: "edited",
+    NOT_EXPORTED: "not_exported",
+    MISSING: "missing",
+    TOO_LONG: "too_long",
+    INELIGIBLE: "ineligible",
+    MARKUP_CHANGED: "markup_changed",
+  });
+
+  const BLOCKED_VERDICTS = new Set([VERDICT.LOCKED, VERDICT.TOO_LONG, VERDICT.MARKUP_CHANGED]);
+
+  /* A draft row's rich-ness, from what the page said when it was drafted. A
+   * field that has changed kind since is refused: the model was told what kind
+   * of text it was translating, and the two write paths are not the same. */
+  const FORMAT_CHANGED = "format_changed";
+  function isRichEntry(entry) {
+    return !!entry && (entry.textType === "html" || fieldType(entry.additionalParameters) === "translated_html");
+  }
+
+  /*
+   * An exclusion that applies to this field as the model reads right now. A
+   * draft can outlive a change in how the page represents a field - a plain
+   * row that comes back as rich text is the case that matters, because that is
+   * the one this feature must never fill - so eligibility is re-tested against
+   * the live read rather than trusted from draft time.
+   *
+   * A member marked only because a group-mate is ineligible is not itself the
+   * offender; the caller finds that one by scanning the rest of the group.
+   */
+  function ineligibilityOf(field) {
+    if (field.locked) return VERDICT.LOCKED;
+    if (field.exclusion &&
+        field.exclusion !== REASON.SHARED_WITH_INELIGIBLE &&
+        field.exclusion !== REASON.LOCKED) {
+      return VERDICT.INELIGIBLE;
+    }
+    return null;
+  }
+
+  /* Why a live field can no longer take the value it was reviewed for, or null
+   * when it still can. The order mirrors evaluateReply's deliberately: both
+   * refuse either way, but the two must not name different reasons for the same
+   * field or a report will contradict the preview the user just read. */
+  function memberFailure(field, member) {
+    const blocking = ineligibilityOf(field);
+    if (blocking === VERDICT.INELIGIBLE) return blocking;
+    if (hashText(field.source) !== member.expectedSourceHash) return VERDICT.SOURCE_CHANGED;
+    if (blocking) return blocking;
+    if (field.target !== text(member.expectedTarget)) return VERDICT.EDITED;
+    return null;
+  }
+
+  function overrideFor(overrides, k) {
+    if (!Array.isArray(overrides)) return null;
+    return overrides.find((entry) => entry && Number(entry.k) === Number(k)) || null;
+  }
+
+  /* An override is bound to the exact values the user was shown. If any member
+   * has moved since, the override is void for the whole group - a single tick
+   * must never overwrite a value nobody reviewed. */
+  function overrideHolds(override, members) {
+    if (!override || !Array.isArray(override.reviewed)) return false;
+    return members.every((member) => {
+      const seen = override.reviewed.find((row) => row && row.identityKey === member.identityKey);
+      return !!seen && text(seen.target) === member.liveTarget;
+    });
+  }
+
+  function replyRows(reply) {
+    return Array.isArray(reply && reply.rows) ? reply.rows : null;
+  }
+
+  /*
+   * A reply is JSON from a language model, so every value in it is a shape
+   * before it is a value. `{"toString": null}` is valid JSON and turns String()
+   * and Number() into a TypeError, which would leave the panel with a thrown
+   * exception instead of a refusal it can show. Nothing is coerced until it is
+   * known to be a primitive, and nothing non-primitive is interpolated into a
+   * message.
+   */
+  function isPrimitiveValue(value) {
+    const type = typeof value;
+    return type === "string" || type === "number" || type === "boolean";
+  }
+
+  function describeValue(value) {
+    if (value === null) return "null";
+    if (isPrimitiveValue(value)) return String(value);
+    if (Array.isArray(value)) return "a list";
+    return "an object";
+  }
+
+  const ENVELOPE_KEYS = new Set([
+    "prompt", "glidelens", "schemaVersion", "exportId", "artifactType",
+    "sourceLanguage", "targetLanguage", "doNotTranslate", "rows",
+  ]);
+  const ROW_KEYS = new Set(["k", "kind", "context", "format", "source", "maxLength", "target"]);
+
+  function countIgnoredKeys(reply) {
+    let count = Object.keys(reply).filter((key) => !ENVELOPE_KEYS.has(key)).length;
+    (replyRows(reply) || []).forEach((row) => {
+      count += Object.keys(row).filter((key) => !ROW_KEYS.has(key)).length;
+    });
+    return count;
+  }
+
+  /*
+   * The identity half of the fingerprint, compared against a fresh read of the
+   * page being applied to. This is what stops a file drafted on one item from
+   * being applied to another now that a draft outlives its page, so it is
+   * required rather than optional: a caller that forgets it loses the guard.
+   *
+   * frameId is deliberately absent. It is a browser handle a reload
+   * invalidates, both routes resolve their frame fresh, and caching it would
+   * refuse every persisted draft after a reload.
+   */
+  function checkPage(draft, identity, elementCount) {
+    if (!isObject(identity)) {
+      throw createError("no_identity", "The live page identity is required to validate a reply.");
+    }
+    const fields = ["artifactInternalName", "artifactSysId", "sourceLanguage", "targetLanguage"];
+    const moved = fields.find((field) => text(identity[field]) !== text(draft.identity[field]));
+    if (moved) {
+      return refusal("identity_moved",
+        "This page is no longer the one this draft came from. Draft again from here.",
+        { field: moved });
+    }
+    if (Number(elementCount) !== Number(draft.elementCount)) {
+      return refusal("element_count",
+        "This item had " + draft.elementCount + " sections when the draft was made and has " +
+        elementCount + " now. Draft again.");
+    }
+    return null;
+  }
+
+  function checkEnvelope(draft, reply) {
+    if (!draft || !draft.map || !draft.identity) {
+      return refusal("unknown_draft",
+        "This reply belongs to a draft this browser no longer has - draft again.");
+    }
+    if (text(reply.exportId) !== text(draft.exportId)) {
+      return refusal("unknown_draft",
+        "This reply belongs to a different draft. Draft this item again, or use the file that came from this one.");
+    }
+    if (!isPrimitiveValue(reply.schemaVersion) || Number(reply.schemaVersion) !== SCHEMA_VERSION) {
+      return refusal("schema_version",
+        "This reply's format version is " + describeValue(reply.schemaVersion) +
+        "; this build understands " + SCHEMA_VERSION + ".");
+    }
+    if (text(reply.artifactType) !== draft.identity.artifactInternalName) {
+      return refusal("artifact_mismatch", "This reply was drafted for a different kind of record.");
+    }
+    if (text(reply.sourceLanguage) !== draft.identity.sourceLanguage ||
+        text(reply.targetLanguage) !== draft.identity.targetLanguage) {
+      return refusal("language_mismatch",
+        "This reply is " + text(reply.sourceLanguage) + " to " + text(reply.targetLanguage) +
+        "; this page is " + draft.identity.sourceLanguage + " to " + draft.identity.targetLanguage + ".");
+    }
+    const rows = replyRows(reply);
+    if (!rows) return refusal("rows_missing", "The reply has no `rows` array.");
+    if (rows.length > MAX_REPLY_ROWS) {
+      return refusal("too_many_rows",
+        "That reply has " + rows.length + " rows; the limit is " + MAX_REPLY_ROWS + ".");
+    }
+    const seen = new Set();
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (!isObject(row)) return refusal("row_shape", "Row " + (i + 1) + " of the reply is not an object.");
+      if (!isPrimitiveValue(row.k)) {
+        return refusal("key_shape", "Row " + (i + 1) + " of the reply has no usable k.");
+      }
+      const key = String(row.k);
+      if (seen.has(key)) {
+        return refusal("duplicate_key", "Two rows in the reply both claim k " + key + ".");
+      }
+      seen.add(key);
+      if (row.target !== undefined && typeof row.target !== "string") {
+        return refusal("target_type",
+          "Row k " + key + " returned " + describeValue(row.target) + " rather than text.");
+      }
+      if (typeof row.target === "string" && row.target.length > MAX_TARGET_CHARS) {
+        return refusal("target_too_large",
+          "Row k " + key + " returned " + row.target.length + " characters; the limit is " + MAX_TARGET_CHARS + ".");
+      }
+    }
+    return null;
+  }
+
+  /*
+   * Re-derive every group from the live model rather than trusting the draft's
+   * membership: a variable renamed into a collision between draft and apply is
+   * exactly the case a remembered list would miss.
+   */
+  function evaluateReply(options) {
+    const opts = options || {};
+    const draft = opts.draft;
+    const reply = isObject(opts.reply) ? opts.reply : {};
+    const envelopeRefusal = checkEnvelope(draft, reply);
+    if (envelopeRefusal) return envelopeRefusal;
+
+    const read = readFields(opts.content, { richEditors: opts.richEditors });
+    const pageRefusal = checkPage(draft, opts.identity, read.elementCount);
+    if (pageRefusal) return pageRefusal;
+
+    const grouped = groupByDestination(read.fields);
+    const byIdentity = new Map();
+    read.fields.forEach((field) => {
+      const list = byIdentity.get(field.identityKey) || [];
+      list.push(field);
+      byIdentity.set(field.identityKey, list);
+    });
+
+    const returned = new Map();
+    replyRows(reply).forEach((row) => returned.set(String(row.k), row));
+
+    const rows = [];
+    const keys = Object.keys(draft.map).sort((a, b) => Number(a) - Number(b));
+
+    keys.forEach((key) => {
+      const entry = draft.map[key];
+      const row = returned.get(key);
+      const base = {
+        k: Number(key),
+        kind: text(entry.kind),
+        context: text(entry.context),
+        source: text(entry.source),
+        elementId: entry.elementId,
+        maxLength: entry.maxLength,
+        /* The stored translation this row writes to. Stable across drafts,
+         * which k is not, so a panel that remembers what it filled can tell
+         * the same destination from a renumbered one. */
+        destinationKey: text(entry.destinationKey),
+        shared: (entry.members || []).length > 1,
+        /* Stored by text, so publishing it changes the translation for
+         * everything on the instance with the same text or key - the report
+         * says so about what it filled, as the draft did about what it
+         * exported. */
+        instanceWide: isInstanceWide(entry.additionalParameters),
+        store: storeFor(entry.additionalParameters),
+        /* Markup: the panel shows its texts as words, never as written. */
+        rich: isRichEntry(entry),
+        members: [],
+        target: "",
+        warning: null,
+        overridable: false,
+        overrideApplied: false,
+        overrideVoid: false,
+      };
+      if (!row) {
+        rows.push(Object.assign(base, { verdict: VERDICT.NOT_RETURNED, status: "skip" }));
+        return;
+      }
+      const target = text(row.target);
+      base.target = target;
+
+      /*
+       * Resolve the drafted rows by record identity before anything else. A
+       * translated_field's destination key contains its own source string, so
+       * an edit to the English text moves the destination as well as the value
+       * - looking the group up by the drafted key first would report that as a
+       * vanished row rather than as the changed source it is.
+       */
+      const drafted = new Map((entry.members || []).map((member) => [member.identityKey, member]));
+      const resolved = [];
+      let missing = false;
+      drafted.forEach((member, key) => {
+        const live = byIdentity.get(key) || [];
+        if (!live.length) missing = true;
+        live.forEach((field) => resolved.push({ field, member }));
+      });
+      if (missing || !resolved.length) {
+        rows.push(Object.assign(base, { verdict: VERDICT.MISSING, status: "skip" }));
+        return;
+      }
+
+      const displayOf = (field) => ({
+        identityKey: field.identityKey,
+        elementId: field.elementId,
+        fieldIndex: field.fieldIndex,
+        liveTarget: field.target,
+        liveSource: field.source,
+        locked: field.locked,
+      });
+      base.members = resolved.map((entryPair) => displayOf(entryPair.field));
+
+      const reshaped = resolved.find((pair) => pair.field.rich !== base.rich);
+      if (reshaped) {
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.INELIGIBLE,
+          status: "skip",
+          detail: {
+            reason: FORMAT_CHANGED,
+            member: reshaped.field.identityKey,
+            elementId: reshaped.field.elementId,
+          },
+        }));
+        return;
+      }
+
+      /* Eligibility is re-tested against this read, not carried from the draft:
+       * a row the page now represents as rich text is one R1 must not fill,
+       * whatever it was when the draft was made. Locked has its own verdict
+       * below, so it is not folded in here. */
+      const ineligible = resolved.find((pair) => ineligibilityOf(pair.field) === VERDICT.INELIGIBLE);
+      if (ineligible) {
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.INELIGIBLE,
+          status: "skip",
+          detail: {
+            reason: ineligible.field.exclusion,
+            member: ineligible.field.identityKey,
+            elementId: ineligible.field.elementId,
+          },
+        }));
+        return;
+      }
+
+      const moved = resolved.find((pair) => hashText(pair.field.source) !== pair.member.sourceHash);
+      if (moved) {
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.SOURCE_CHANGED,
+          status: "skip",
+          detail: { member: moved.field.identityKey, elementId: moved.field.elementId },
+        }));
+        return;
+      }
+
+      /*
+       * Only now is the destination stable, so membership can be re-derived
+       * from the live model. A variable renamed into this collision after the
+       * draft appears here as a member the user never reviewed.
+       */
+      const liveGroup = grouped.byKey.get(resolved[0].field.destinationKey);
+      const liveMembers = liveGroup ? liveGroup.members : resolved.map((pair) => pair.field);
+      base.members = liveMembers.map(displayOf);
+      base.shared = liveMembers.length > 1;
+
+      /* Blocks, evaluated against every current member of the group: filling
+       * one member of a shared destination rewrites the stored row for all of
+       * them, so a locked member is not something to fill around. */
+      const locked = liveMembers.find((member) => member.locked);
+      const lockedRow = () => rows.push(Object.assign(base, {
+        verdict: VERDICT.LOCKED,
+        status: "block",
+        detail: { member: locked.identityKey, elementId: locked.elementId },
+      }));
+
+      const stranger = liveMembers.find((member) => !drafted.has(member.identityKey));
+      if (stranger) {
+        /* Refused either way. When the group now holds a locked field -- one
+         * that arrived since the draft, say, already translated -- that is the
+         * reason a person can act on, and "draft again" would only lead to the
+         * same lock (review finding). */
+        if (locked) {
+          lockedRow();
+          return;
+        }
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.NOT_EXPORTED,
+          status: "skip",
+          detail: { member: stranger.identityKey, elementId: stranger.elementId },
+        }));
+        return;
+      }
+
+      if (!target.trim()) {
+        /* Never an instruction to erase: an empty translated value reaching the
+         * platform's save deletes the stored row, and for a translated_field
+         * that row is shared by every item using the same source string. A
+         * reply of spaces is no translation either, and filling it would put
+         * blanks in place of text (review finding), so it counts as blank. */
+        rows.push(Object.assign(base, { verdict: VERDICT.BLANK, status: "skip" }));
+        return;
+      }
+
+      /* Rich text writes the source's tags with the reply's words, so what is
+       * measured, compared and written from here on is that value. Every
+       * member must give the same one; a record-scoped destination has one. */
+      let value = target;
+      let rich = null;
+      let built = null;
+      if (base.rich) {
+        built = liveMembers.map((member) => richFill(member.source, target));
+        if (built.every((one) => one.ok && one.value === built[0].value)) rich = built[0];
+        /* Tags with no words between them publish as an empty-looking
+         * translation - the platform only deletes on an empty string. */
+        if (rich && rich.blank) {
+          rows.push(Object.assign(base, { verdict: VERDICT.BLANK, status: "skip" }));
+          return;
+        }
+      }
+
+      if (locked) {
+        lockedRow();
+        return;
+      }
+
+      if (base.rich && !rich) {
+        /* The first member whose tags the reply did not match, so the panel can
+         * say which one. A reply the scanner cannot read at all, and members
+         * that read cleanly but disagree on the value, name no tag. */
+        const differed = (built || []).find((one) => one && !one.ok && (one.from || one.to));
+        const row = { verdict: VERDICT.MARKUP_CHANGED, status: "block" };
+        if (differed) row.detail = { from: text(differed.from), to: text(differed.to) };
+        rows.push(Object.assign(base, row));
+        return;
+      }
+      if (rich) value = rich.value;
+
+      const limit = liveMembers.reduce((low, member) => Math.min(low, member.limit), entry.maxLength);
+      if (value.length > limit) {
+        rows.push(Object.assign(base, {
+          verdict: VERDICT.TOO_LONG,
+          status: "block",
+          detail: { length: value.length, maxLength: limit },
+        }));
+        return;
+      }
+
+      /* The page holds rich text as its editor wrote it, which is never the
+       * reply's bytes, so rich text is unchanged when it reads the same. */
+      if (liveMembers.every((member) => (base.rich ? sameRichWords(member.target, target) : member.target === target))) {
+        rows.push(Object.assign(base, { verdict: VERDICT.UNCHANGED, status: "skip" }));
+        return;
+      }
+
+      const edited = liveMembers.find(
+        (member) => member.target !== drafted.get(member.identityKey).targetBaseline
+      );
+      if (edited) {
+        const override = overrideFor(opts.overrides, base.k);
+        const holds = overrideHolds(override, base.members);
+        if (!holds) {
+          rows.push(Object.assign(base, {
+            verdict: VERDICT.EDITED,
+            status: "skip",
+            overridable: true,
+            overrideVoid: !!override,
+            detail: { member: edited.identityKey, elementId: edited.elementId },
+          }));
+          return;
+        }
+        base.overridable = true;
+        base.overrideApplied = true;
+      }
+
+      /*
+       * Against every member, not just the first. One translation covers the
+       * whole destination group, and grouping folds capitalisation, so members
+       * can carry placeholders this target matches and placeholders it does
+       * not. Warning on the first member alone lets a real substitution loss
+       * through as a clean fill.
+       */
+      const lost = liveMembers.find((member) => placeholdersDiffer(member.source, value));
+      const warning = lost ? "placeholder" : null;
+      rows.push(Object.assign(base, {
+        verdict: VERDICT.FILL,
+        status: "fill",
+        warning,
+        /* What the fill writes. The reply's own text for plain rows; for rich
+         * text, the source's tags around the reply's words. */
+        value,
+        detail: warning
+          ? {
+            source: placeholders(lost.source),
+            target: placeholders(value),
+            member: lost.identityKey,
+            elementId: lost.elementId,
+          }
+          : undefined,
+      }));
+    });
+
+    const unknown = [];
+    returned.forEach((row, key) => {
+      if (!Object.prototype.hasOwnProperty.call(draft.map, key)) {
+        unknown.push({ k: row.k, verdict: VERDICT.UNKNOWN_ROW, status: "skip", target: text(row.target) });
+      }
+    });
+
+    rows.forEach((row) => {
+      /* A placeholder warning is advisory, so the row stays fillable but is not
+       * ticked for the user; a block or a skip is never selected. */
+      row.defaultSelected = row.status === "fill" && !row.warning;
+      row.selectable = row.status === "fill";
+    });
+
+    const counts = {
+      fill: rows.filter((row) => row.status === "fill").length,
+      warned: rows.filter((row) => row.status === "fill" && row.warning).length,
+      blocked: rows.filter((row) => row.status === "block").length,
+      skipped: rows.filter((row) => row.status === "skip").length,
+      notReturned: rows.filter((row) => row.verdict === VERDICT.NOT_RETURNED).length,
+      unknown: unknown.length,
+      ignoredKeys: countIgnoredKeys(reply),
+    };
+
+    return {
+      ok: true,
+      rows,
+      unknown,
+      counts,
+      liveElementCount: read.elementCount,
+      liveFieldCount: read.fieldCount,
+    };
+  }
+
+  /* -------------------------------------------------------------- the apply */
+
+  /*
+   * The instruction set handed to the MAIN-world writer. Every member carries
+   * the value it was reviewed against, so the writer verifies against the model
+   * it is about to mutate rather than trusting this snapshot.
+   */
+  function buildApplyPlan(options) {
+    const opts = options || {};
+    const evaluation = opts.evaluation || {};
+    const rows = Array.isArray(evaluation.rows) ? evaluation.rows : [];
+    const chosen = Array.isArray(opts.selection)
+      ? new Set(opts.selection.map(Number))
+      : null;
+    const fills = [];
+    const refused = [];
+    rows.forEach((row) => {
+      const wanted = chosen ? chosen.has(row.k) : row.defaultSelected;
+      if (!wanted) return;
+      if (row.status !== "fill") {
+        refused.push({ k: row.k, verdict: row.verdict });
+        return;
+      }
+      fills.push({
+        k: row.k,
+        value: typeof row.value === "string" ? row.value : row.target,
+        rich: !!row.rich,
+        members: row.members.map((member) => ({
+          identityKey: member.identityKey,
+          elementId: member.elementId,
+          fieldIndex: member.fieldIndex,
+          expectedSourceHash: hashText(member.liveSource),
+          expectedTarget: member.liveTarget,
+        })),
+      });
+    });
+    return { fills, refused, fieldCount: fills.reduce((n, fill) => n + fill.members.length, 0) };
+  }
+
+  function indexByIdentity(fields) {
+    const index = new Map();
+    fields.forEach((field) => {
+      const list = index.get(field.identityKey) || [];
+      list.push(field);
+      index.set(field.identityKey, list);
+    });
+    return index;
+  }
+
+  /*
+   * Build the array the page's own updateDocumentContent event will carry. The
+   * merge writes translatedValue and nothing else: a key outside the platform's
+   * named set would be promoted into additionalParameters and posted to the
+   * server on Publish, so no correlation id, hash or marker is ever parked on
+   * the model.
+   *
+   * A rich-text field is never written into that array: its editor would keep
+   * showing the old text. It is carried through unchanged, and listed in `rich`
+   * for the page-side writer to fill through the editor after the event.
+   *
+   * The array keeps Angular's $$hashKey, and that is load-bearing: the page's
+   * rows are ng-repeat lists tracked by it, so an array that keeps it reuses
+   * every row and every editor (measured), and the editor writes that follow
+   * land in the model the event just installed.
+   */
+  function buildMergedContent(options) {
+    const opts = options || {};
+    const elements = contentArray(opts.content);
+    const clone = JSON.parse(JSON.stringify(elements));
+    const read = readFields(elements, { richEditors: opts.richEditors });
+    const grouped = groupByDestination(read.fields);
+    const index = indexByIdentity(read.fields);
+    const applied = [];
+    const rich = [];
+    const stale = [];
+
+    (opts.plan && opts.plan.fills ? opts.plan.fills : []).forEach((fill) => {
+      const planned = new Map((fill.members || []).map((member) => [member.identityKey, member]));
+      const targets = [];
+      let missing = false;
+      planned.forEach((member, key) => {
+        const matches = index.get(key) || [];
+        if (!matches.length) missing = true;
+        matches.forEach((field) => targets.push({ field, member }));
+      });
+      if (missing || !targets.length) {
+        stale.push({ k: fill.k, reason: VERDICT.MISSING });
+        return;
+      }
+
+      /* A plan made for one kind of field never writes the other kind. */
+      if (targets.some((pair) => pair.field.rich !== !!fill.rich)) {
+        stale.push({ k: fill.k, reason: VERDICT.INELIGIBLE });
+        return;
+      }
+
+      const failed = targets.find((pair) => memberFailure(pair.field, pair.member));
+      if (failed) {
+        stale.push({ k: fill.k, reason: memberFailure(failed.field, failed.member) });
+        return;
+      }
+
+      /*
+       * Rederive the destination group from the content about to be mutated,
+       * exactly as the preview did. A row renamed into this collision between
+       * preview and merge is a member the user never reviewed, and filling
+       * around it would rewrite its shared row on Publish - which is the same
+       * lock bypass the group rule exists to close, reached a step later.
+       */
+      const group = grouped.byKey.get(targets[0].field.destinationKey);
+      const members = group ? group.members : targets.map((pair) => pair.field);
+      if (members.some((field) => !planned.has(field.identityKey))) {
+        /* The same reason evaluateReply gives: a lock in the group outranks
+         * the unreviewed member, since it is what blocks the fill for good. */
+        stale.push({
+          k: fill.k,
+          reason: members.some((field) => field.locked) ? VERDICT.LOCKED : VERDICT.NOT_EXPORTED,
+        });
+        return;
+      }
+
+      targets.forEach((pair) => {
+        const field = pair.field;
+        /* Position and record identity both, so the page-side writer can read
+         * each field back after the event and count only the ones that hold
+         * this value on this record - never the number it attempted. */
+        const entry = {
+          k: fill.k,
+          identityKey: field.identityKey,
+          value: fill.value,
+          elementIndex: field.elementIndex,
+          fieldIndex: field.fieldIndex,
+          type: field.type,
+          table: text(field.params.table),
+          name: text(field.params.name),
+          sysId: text(field.params.sysId),
+          /* A message has none of the four above, so the read-back also needs
+           * the key the page will store it under. Empty for every other row. */
+          messageKey: field.messageKey,
+        };
+        if (field.rich) {
+          /* The editor's own serialisation is what lands, and it is longer
+           * than what was written, so the writer checks the limit again. */
+          rich.push(Object.assign(entry, { maxLength: field.limit }));
+          return;
+        }
+        clone[field.elementIndex].fieldInfo[field.fieldIndex].translatedValue = fill.value;
+        applied.push(entry);
+      });
+    });
+
+    return { content: clone, applied, rich, stale };
+  }
+
+  /*
+   * What the toast is allowed to report: fields read back out of the model that
+   * actually hold the value that was intended for them, never the number that
+   * was attempted.
+   */
+  function countApplied(content, plan) {
+    const read = readFields(content);
+    const index = indexByIdentity(read.fields);
+    let count = 0;
+    (plan && plan.fills ? plan.fills : []).forEach((fill) => {
+      fill.members.forEach((member) => {
+        (index.get(member.identityKey) || []).forEach((field) => {
+          if (field.target === fill.value) count += 1;
+        });
+      });
+    });
+    return count;
+  }
+
+  globalThis.SNTranslationAssistant = {
+    SCHEMA_VERSION,
+    DRAFT_LIMIT,
+    MAX_REPLY_CHARS,
+    MAX_REPLY_ROWS,
+    MAX_TARGET_CHARS,
+    DESTINATION_LIMITS,
+    MESSAGE_LIMIT,
+    MESSAGE_KEY_LIMIT,
+    MESSAGE_KIND,
+    SUPPORTED_ARTIFACT_TYPES,
+    FIELD_KEYS,
+    REASON,
+    VERDICT,
+    BLOCKED_VERDICTS,
+    hashText,
+    randomExportId,
+    foldSourceKey,
+    suspectSourceKey,
+    suspectDestinationKey,
+    placeholders,
+    placeholdersDiffer,
+    tokenizeHtml,
+    richWords,
+    richFill,
+    sameRichWords,
+    identityKey,
+    messageIdentityKey,
+    isMessageParams,
+    destinationKey,
+    limitFor,
+    exclusionFor,
+    readFields,
+    groupByDestination,
+    languageNameQuery,
+    languageNames,
+    buildPrompt,
+    serializePayload,
+    buildDraft,
+    storedDraft,
+    createDraftStore,
+    putDraft,
+    getDraft,
+    parseReply,
+    checkPage,
+    evaluateReply,
+    buildApplyPlan,
+    buildMergedContent,
+    countApplied,
+  };
+})();

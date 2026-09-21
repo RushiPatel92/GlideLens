@@ -12,6 +12,11 @@
  */
 
 importScripts("debug_timeline_main.js");
+/* The Translation Assistant engine, for its bounded draft store. The worker
+ * owns that store because it has to outlive the panel, and the engine is
+ * DOM-free and chrome-free, so importing it here and injecting the same file
+ * into the page keeps one implementation of the cap and the lookup. */
+importScripts("translation_assistant.js");
 
 function sendToTab(tabId, msg, options) {
   if (!tabId) return;
@@ -313,6 +318,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   /* The page an abandoned fill was typing into is gone, which is what the
    * "reload the form" message asks for, so the tab can accept a fill again. */
   releasePrefillLock(tabId, null);
+  /* Likewise a Translation Assistant fill: the page it was writing into is
+   * unloading, and the fresh page has none of that fill's content to revert. */
+  releaseLfAssistantApplyLock(tabId, null);
 });
 
 function runFrameDiscovery(tabId, purpose) {
@@ -771,6 +779,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   forgetFrameList(tabId);
   frameGenerationByTab.delete(tabId);
   releasePrefillLock(tabId, null);
+  releaseLfAssistantApplyLock(tabId, null);
 });
 
 async function fillPortalVariables(variables) {
@@ -3194,6 +3203,952 @@ async function readTranslationFormContext(tabId, requestedFields, expectedIdenti
   };
 }
 
+/* ---------------------------------------------------------------------------
+   Translation Assistant: the read path.
+
+   The Localization Framework comparison page is an AngularJS app, so its
+   content has to be read from the page's own scope in the MAIN world. The page
+   runs in `gsft_main` when it is reached by the "Edit Translations" UI action
+   and in the top frame when its link is opened directly, and both have to work,
+   so the frame is discovered fresh on every call. Nothing is cached: a reload
+   gives the same page a different frame id, and ARCHITECTURE.md already
+   requires context-sensitive reads be discovered rather than remembered.
+   --------------------------------------------------------------------------- */
+
+// Self-contained MAIN-world reader for the comparison page. Returns a reason
+// when this frame is not the page, because "not the comparison UI" and "the
+// frame never answered" are different answers and the caller must tell them
+// apart. Based on the read proven by tooling/probe-lf-fingerprint-reload.mjs.
+function inspectLfAssistantContext() {
+  const out = { isLfPage: false, why: "" };
+  try {
+    const root = document.querySelector(".main-content");
+    if (!root) { out.why = "no .main-content in this frame"; return out; }
+    if (typeof angular === "undefined") { out.why = "no page-owned angular"; return out; }
+    const scope = angular.element(root).scope();
+    if (!scope) { out.why = "scope() came back empty"; return out; }
+    if (typeof scope.isAdhocMode !== "function") { out.why = "not the comparison UI"; return out; }
+
+    out.isLfPage = true;
+    out.isAdhoc = !!scope.isAdhocMode();
+    out.frameName = window.name || "";
+    out.isTopFrame = window.top === window.self;
+
+    /* Read-only mode and an in-flight request each make every field
+     * un-editable independently of its lock. Both are read here so the caller
+     * never has to infer editability from a lock alone. The accessor for the
+     * second one can throw when additionalInfo is undefined, which is why it
+     * has its own guard rather than a shared one. */
+    out.readOnlyMode = typeof scope.isReadOnlyMode === "function" ? !!scope.isReadOnlyMode() : null;
+    out.requestInProgress = null;
+    try {
+      if (typeof scope.isLastRequestInProgress === "function") {
+        out.requestInProgress = !!scope.isLastRequestInProgress();
+      }
+    } catch (error) { out.requestInProgress = null; }
+
+    const params = new URLSearchParams(location.search);
+    const pick = (onScope, fromUrl) =>
+      String(scope[onScope] || params.get(fromUrl) || "");
+    out.artifactInternalName = pick("artifactInternalName", "sysparm_artifact_internal_name");
+    out.artifactSysId = pick("artifactSysId", "sysparm_artifact_sys_id");
+    out.sourceLanguage = pick("sourceLanguage", "sysparm_source_language");
+    out.targetLanguage = pick("targetLanguage", "sysparm_target_language");
+    /* Which DOCUMENT answered, read rather than stamped: a document's time
+     * origin is fixed when it is created and a reload creates a new one, so
+     * a writer that finds a different value is on a page this read never saw,
+     * however alike its content. */
+    out.documentStamp = typeof performance !== "undefined" && performance ? Number(performance.timeOrigin) || 0 : 0;
+
+    const adhoc = scope.itemsToTranslate && scope.itemsToTranslate.adhoc;
+    const original = adhoc && adhoc.documentContent && adhoc.documentContent.content;
+    if (!Array.isArray(original)) { out.why = "documentContent.content is not an array"; return out; }
+
+    /* retrieveCurrentContent flattens the BOUND copy back over the original, so
+     * what comes out includes edits the user has typed but not published --
+     * including unblurred rich text, which syncs to the model on input. Reading
+     * the original array instead would silently lose them. */
+    let content = original;
+    const grouped = scope.groupedItemsToTranslate &&
+      scope.groupedItemsToTranslate.adhoc &&
+      scope.groupedItemsToTranslate.adhoc.documentContent;
+    if (grouped && typeof scope.retrieveCurrentContent === "function") {
+      const live = scope.retrieveCurrentContent(grouped, original);
+      if (Array.isArray(live)) content = live;
+    }
+
+    /* Structured-cloned out of the page. The caller gets a copy it cannot use
+     * to reach back into page objects. */
+    out.content = JSON.parse(JSON.stringify(content));
+    out.elementCount = out.content.length;
+
+    /* Rich text is filled through its TinyMCE editor, so each rich field's
+     * editor is found here, by reference: the one editor whose textarea's
+     * scope holds this very field object, the object Publish reads. Its DOM id
+     * is ordinal and is never used to find it. Ready means found once, started
+     * and editable; whether it agrees with the model is the writer's check, at
+     * the moment it writes. Kept beside the content, never on it. */
+    out.richEditors = [];
+    const editors = typeof tinymce !== "undefined" && tinymce && typeof tinymce.get === "function"
+      ? tinymce.get() : [];
+    content.forEach((element, elementIndex) => {
+      const infos = element && Array.isArray(element.fieldInfo) ? element.fieldInfo : [];
+      infos.forEach((info, fieldIndex) => {
+        const params = (info && info.additionalParameters) || {};
+        if (!info || !(info.textType === "html" || params.type === "translated_html")) return;
+        const bound = (Array.isArray(editors) ? editors : []).filter((editor) => {
+          try {
+            const node = editor && typeof editor.getElement === "function" ? editor.getElement() : null;
+            if (!node || !node.isConnected) return false;
+            const handle = angular.element(node);
+            const fieldScope = handle.scope();
+            return !!fieldScope && fieldScope.fieldInfoElement === info && !!handle.controller("ngModel");
+          } catch (error) { return false; }
+        });
+        let ready = false;
+        if (bound.length === 1) {
+          try {
+            const editor = bound[0];
+            const mode = editor.mode && typeof editor.mode.get === "function" ? editor.mode.get() : "";
+            ready = !!editor.initialized && mode === "design" && !editor.getElement().readOnly;
+          } catch (error) { ready = false; }
+        }
+        out.richEditors.push({ elementIndex, fieldIndex, editors: bound.length, ready });
+      });
+    });
+    return out;
+  } catch (error) {
+    out.why = String(error && error.message ? error.message : error);
+    return out;
+  }
+}
+
+function selectLfAssistantFrame(outcomes) {
+  return outcomes.find((item) => {
+    const value = item && item.ok && item.value;
+    return !!value && value.isLfPage && value.isAdhoc && Array.isArray(value.content);
+  }) || null;
+}
+
+async function readLfAssistantContext(tabId) {
+  const outcomes = await injectInDiscoveredFrames(
+    tabId,
+    { world: "MAIN", func: inspectLfAssistantContext },
+    "read the Translation Assistant context"
+  );
+  const answers = outcomes.map((item) => ({
+    frameId: item.frameId,
+    ok: item.ok,
+    error: item.error,
+    value: item.ok
+      ? (item.results || []).map((entry) => entry && entry.result).find((entry) => entry)
+      : null,
+  }));
+  const selected = selectLfAssistantFrame(answers);
+  return {
+    selected: selected ? { frameId: selected.frameId, context: selected.value } : null,
+    /* Why nothing was selected, kept per frame so the panel can say "the page
+     * is there but not in ad-hoc mode" rather than "something went wrong". */
+    rejected: answers
+      .filter((item) => item !== selected)
+      .map((item) => ({
+        frameId: item.frameId,
+        /* Whether this frame answered at all. A frame that timed out, threw, or
+         * ran and returned nothing has said nothing about what the page is, and
+         * the panel must not turn that silence into navigation advice. */
+        answered: !!(item.ok && item.value),
+        isLfPage: !!(item.value && item.value.isLfPage),
+        isAdhoc: item.value ? item.value.isAdhoc : null,
+        why: item.ok ? String((item.value && item.value.why) || "") : errorText(item.error),
+      })),
+  };
+}
+
+/* ---------------------------------------------------------------------------
+   Translation Assistant: the write path.
+
+   Filling hands the page's own updateDocumentContent event a content array with
+   translatedValue set on the rows that pass every rule. That event REPLACES the
+   whole array, so the array has to match what is on the page at the moment it
+   is fired: a copy taken earlier would silently revert whatever the user typed
+   in between. So the worker reads fresh, re-checks every rule and merges with
+   the engine, and the page-side writer fires only if the page still holds
+   exactly the content that merge was built from. The compare and the fire run
+   in one synchronous stretch of page script, so nothing can land between them.
+
+   One fill per tab, held until the injection SETTLES rather than until the
+   worker stops waiting. Promise.race does not cancel executeScript, so a fill
+   the worker gave up on can still land, and a second one built from an older
+   read would then revert it. Nothing here saves or publishes: filling the model
+   is not saving, and Publish stays the user's.
+   --------------------------------------------------------------------------- */
+
+// Self-contained MAIN-world writer. Re-checks the page states a fill depends
+// on, refuses unless the page still holds `base`, fires the page's own event
+// with `merged`, fills each rich-text field through its own editor, then reads
+// every filled field back and reports what landed.
+async function writeLfAssistantContent(request) {
+  const out = { written: false, confirmed: false, why: "", landed: 0, missed: [], missedFields: [] };
+  let scope = null;
+  let current = null;
+  const expected = Array.isArray(request && request.expected) ? request.expected : [];
+  const rich = Array.isArray(request && request.rich) ? request.rich : [];
+  /* What became of each rich-text field, settled before the event's read-back
+   * begins: { entry } landed, { entry, why } did not. */
+  const richLanded = [];
+  const richMissed = [];
+  try {
+    const root = document.querySelector(".main-content");
+    if (!root || typeof angular === "undefined") { out.why = "not_page"; return out; }
+    scope = angular.element(root).scope();
+    if (!scope || typeof scope.isAdhocMode !== "function" || !scope.isAdhocMode()) {
+      out.why = "not_page";
+      return out;
+    }
+    /* Each refuses unless the page answers "no" outright. The in-progress
+     * accessor throws when additionalInfo is undefined, and a page that cannot
+     * say whether a translation job is running is not one to write into. */
+    if (typeof scope.isReadOnlyMode !== "function" || scope.isReadOnlyMode()) {
+      out.why = "read_only";
+      return out;
+    }
+    let busy = true;
+    try {
+      busy = typeof scope.isLastRequestInProgress !== "function" || !!scope.isLastRequestInProgress();
+    } catch (error) { busy = true; }
+    if (busy) { out.why = "request_in_progress"; return out; }
+    if (typeof CustomEvent === "undefined" || !CustomEvent || typeof CustomEvent.fire !== "function") {
+      out.why = "no_channel";
+      return out;
+    }
+
+    /* The same read the context reader takes, so the two agree on what the
+     * page holds: the bound copy flattened over the original. */
+    current = () => {
+      const adhoc = scope.itemsToTranslate && scope.itemsToTranslate.adhoc;
+      const original = adhoc && adhoc.documentContent && adhoc.documentContent.content;
+      if (!Array.isArray(original)) return null;
+      const grouped = scope.groupedItemsToTranslate &&
+        scope.groupedItemsToTranslate.adhoc &&
+        scope.groupedItemsToTranslate.adhoc.documentContent;
+      if (grouped && typeof scope.retrieveCurrentContent === "function") {
+        const live = scope.retrieveCurrentContent(grouped, original);
+        if (Array.isArray(live)) return live;
+      }
+      return original;
+    };
+
+    /*
+     * Compared as content, not as text. Chrome carries executeScript arguments
+     * and results as its own value type, and objects come back from that with
+     * their keys in sorted order -- so the read the merge was built from never
+     * serialises the way the live model does, and a string compare refused an
+     * untouched page (observed on the PDI). Angular's $$hashKey is bookkeeping,
+     * not content, and is left out. The path of the first difference comes back
+     * with a refusal: field names and indices only, never a value.
+     */
+    const differenceAt = (a, b, where) => {
+      const here = where || "(root)";
+      if (Array.isArray(a) || Array.isArray(b)) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return here;
+        for (let i = 0; i < a.length; i += 1) {
+          const found = differenceAt(a[i], b[i], where + "[" + i + "]");
+          if (found) return found;
+        }
+        return "";
+      }
+      if (a && b && typeof a === "object" && typeof b === "object") {
+        const keys = (value) => Object.keys(value)
+          .filter((key) => key !== "$$hashKey" && value[key] !== undefined && typeof value[key] !== "function")
+          .sort();
+        const left = keys(a);
+        const right = keys(b);
+        if (left.length !== right.length || left.some((key, i) => key !== right[i])) return here + "{keys}";
+        for (let i = 0; i < left.length; i += 1) {
+          const found = differenceAt(a[left[i]], b[left[i]], where + "." + left[i]);
+          if (found) return found;
+        }
+        return "";
+      }
+      return a === b ? "" : here;
+    };
+
+    /* The same page, not merely the same content. A replacement page -- the
+     * item reopened for another language, or reloaded with nothing yet typed
+     * -- can hold content identical to the read this merge was built from, so
+     * the content compare below cannot tell them apart. The document stamp
+     * and the identity the reader saw can. */
+    const identity = (request && request.identity) || {};
+    const params = new URLSearchParams(location.search);
+    const pick = (onScope, fromUrl) => String(scope[onScope] || params.get(fromUrl) || "");
+    const stamp = typeof performance !== "undefined" && performance ? Number(performance.timeOrigin) || 0 : 0;
+    if (stamp !== Number(identity.documentStamp) ||
+        pick("artifactInternalName", "sysparm_artifact_internal_name") !== String(identity.artifactInternalName || "") ||
+        pick("artifactSysId", "sysparm_artifact_sys_id") !== String(identity.artifactSysId || "") ||
+        pick("sourceLanguage", "sysparm_source_language") !== String(identity.sourceLanguage || "") ||
+        pick("targetLanguage", "sysparm_target_language") !== String(identity.targetLanguage || "")) {
+      out.why = "other_page";
+      return out;
+    }
+
+    const before = current();
+    if (!before) { out.why = "not_page"; return out; }
+    const changedAt = differenceAt(before, request.base, "");
+    if (changedAt) {
+      out.why = "changed";
+      out.changedAt = changedAt;
+      return out;
+    }
+
+    /*
+     * Rich text. The page copies model text into a TinyMCE editor only when
+     * the editor starts, so a rich field written through the event would keep
+     * showing its old text while Publish sent the new. It is written through
+     * the editor instead: the page's own SetContent handler moves the model
+     * and the hidden textarea to editor.getContent(), so all three agree
+     * (measured, 2026-09-17).
+     *
+     * An editor is found by reference -- the one whose textarea's scope holds
+     * this very field object -- never by its ordinal DOM id. It must be the
+     * only one, started, editable, on an unlocked field, and showing exactly
+     * what the model holds: a difference is an edit the page has not recorded
+     * (the page syncs on key-up, toolbar commands and setContent), and a write
+     * would silently replace it.
+     */
+    const modelText = (info) => (info.translatedValue == null ? "" : String(info.translatedValue));
+    const richFieldAt = (flat, entry) => {
+      const element = flat && flat[entry.elementIndex];
+      const info = element && Array.isArray(element.fieldInfo) ? element.fieldInfo[entry.fieldIndex] : null;
+      const params = (info && info.additionalParameters) || {};
+      if (!info || !(info.textType === "html" || params.type === "translated_html")) return null;
+      const same = String(params.type || "") === String(entry.type || "") &&
+        String(params.table || "") === String(entry.table || "") &&
+        String(params.name || "") === String(entry.name || "") &&
+        String(params.sysId || "") === String(entry.sysId || "");
+      return same ? info : null;
+    };
+    const richState = (info) => {
+      if (!info || info.isFieldLocked) return { why: "rich_editor" };
+      const list = typeof tinymce !== "undefined" && tinymce && typeof tinymce.get === "function" ? tinymce.get() : [];
+      const bound = (Array.isArray(list) ? list : []).filter((editor) => {
+        try {
+          const node = editor && typeof editor.getElement === "function" ? editor.getElement() : null;
+          if (!node || !node.isConnected) return false;
+          const handle = angular.element(node);
+          const fieldScope = handle.scope();
+          return !!fieldScope && fieldScope.fieldInfoElement === info && !!handle.controller("ngModel");
+        } catch (error) { return false; }
+      });
+      if (bound.length !== 1) return { why: "rich_editor" };
+      const editor = bound[0];
+      const mode = editor.mode && typeof editor.mode.get === "function" ? editor.mode.get() : "";
+      if (!editor.initialized || mode !== "design" || editor.getElement().readOnly) return { why: "rich_editor" };
+      const shown = editor.getContent();
+      if (shown !== modelText(info) || editor.getElement().value !== shown) return { why: "rich_unrecorded" };
+      return { editor };
+    };
+    /* The words of some HTML, with no white space at all: TinyMCE collapses
+     * spaces and breaks lines between blocks, and neither changes what a
+     * person reads. DOMParser builds an inert document; nothing in it runs. */
+    const wordsOf = (html) => {
+      const parsed = new DOMParser().parseFromString(String(html), "text/html");
+      return String((parsed && parsed.body && parsed.body.textContent) || "").replace(/\s+/g, "");
+    };
+
+    /* Checked before anything is written, against the content just compared.
+     * The field object seen here is kept: once the event has fired, the object
+     * standing in that position must not be this one. */
+    const planned = [];
+    rich.forEach((entry) => {
+      try {
+        const was = richFieldAt(before, entry);
+        const state = richState(was);
+        if (state.editor) planned.push({ entry, editor: state.editor, was });
+        else richMissed.push({ entry, why: state.why });
+      } catch (error) {
+        richMissed.push({ entry, why: "rich_editor" });
+      }
+    });
+
+    const fired = expected.length > 0;
+    if (fired) {
+      CustomEvent.fire("updateDocumentContent", { detail: request.merged });
+      out.written = true;
+    }
+
+    /* After the event, which replaced every model object: the array kept
+     * $$hashKey, so the page reused its rows and editors, and each editor must
+     * now be bound to the NEW object for its field. The same editor, found the
+     * same way, or nothing is written. Everything from the compare above to
+     * the last read-back here runs without yielding, so no typing lands in
+     * between. */
+    planned.forEach(({ entry, editor, was }) => {
+      let info = null;
+      let previous = "";
+      let touched = false;
+      /* Which check the write failed. Left as the plain "put back" reason for
+       * a failure an error interrupted before any check could attribute it. */
+      let failed = "rich_reverted";
+      try {
+        info = richFieldAt(current(), entry);
+        /* The event replaced every model object, so the object standing here
+         * must not be the one planned against. If it still is, the page's
+         * handler has not run its digest: this editor is bound to an object
+         * about to be thrown away, so the write would land in it and then be
+         * swapped out behind an editor still showing the translation -- the
+         * one divergent state this design must never reach. The handler is
+         * synchronous as measured; this refuses rather than rest on it. */
+        if (fired && info === was) {
+          richMissed.push({ entry, why: "rich_editor" });
+          return;
+        }
+        const state = richState(info);
+        if (state.editor !== editor) {
+          richMissed.push({ entry, why: state.why || "rich_editor" });
+          return;
+        }
+        previous = editor.getContent();
+        touched = true;
+        out.written = true;
+        editor.setContent(String(entry.value));
+        const landed = editor.getContent();
+        /* The field's own limit, with no default behind it: exclusionFor
+         * refuses any type that has no destination limit, so every rich entry
+         * arrives carrying one. An entry without it is a malformed request,
+         * not an unlimited field, and one is put back rather than kept. */
+        const limit = Number(entry.maxLength);
+        if (wordsOf(landed) !== wordsOf(entry.value)) failed = "rich_rewritten";
+        /* Written as "not within the limit", not as "over" it: an absent limit
+         * is NaN, and NaN fails every comparison, so "over" would wave it
+         * through while this puts it back. */
+        else if (!(landed.length <= limit)) failed = "rich_too_long";
+        else if (richFieldAt(current(), entry) !== info || modelText(info) !== landed ||
+            editor.getElement().value !== landed) failed = "rich_unsynced";
+        else {
+          richLanded.push({ entry });
+          return;
+        }
+      } catch (error) {
+        if (!touched) {
+          richMissed.push({ entry, why: "rich_editor" });
+          return;
+        }
+      }
+      /* It did not hold as written -- the editor changed its words, it came
+       * out over the limit, or the model did not follow. Put back what the
+       * editor showed, which is its own serialisation and so re-sets exactly,
+       * and say which it was: each asks something different of the user. */
+      try {
+        editor.setContent(previous);
+        if (info && editor.getContent() === previous && modelText(info) === previous &&
+            editor.getElement().value === previous) {
+          richMissed.push({ entry, why: failed });
+          return;
+        }
+      } catch (error) { /* reported as unconfirmed below */ }
+      richMissed.push({ entry, why: "rich_unconfirmed" });
+    });
+    /* setContent syncs the model outside a digest, as typing does; one digest
+     * brings the page's own bindings up to date. */
+    if (planned.length && typeof scope.$applyAsync === "function") {
+      try { scope.$applyAsync(); } catch (error) { /* bindings catch up on the next digest */ }
+    }
+
+    if (!out.written) {
+      /* Every field was rich text, and none could be written. Nothing on the
+       * page moved, and each field says why. */
+      out.why = "rich_refused";
+      richMissed.forEach(({ entry, why }) => {
+        if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+        out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || ""), why });
+      });
+      return out;
+    }
+  } catch (error) {
+    out.why = String(error && error.message ? error.message : error);
+    return out;
+  }
+
+  /* The event has fired, so from here the page holds whatever it took from
+   * the merge, and nothing below can say otherwise. A throw while reading the
+   * model back is therefore not "nothing landed": it is a fill that could not
+   * be confirmed, which the worker reports as such rather than as a count. */
+  try {
+    /* Counted from the model after the event, by position AND record identity,
+     * so a field only counts if this record's field holds this value. Missed
+     * fields are named by record as well as by row: several fields can share
+     * one row, and the panel has to say which of them did not take. */
+    const holds = (entry, flat) => {
+      const element = flat && flat[entry.elementIndex];
+      const info = element && Array.isArray(element.fieldInfo) ? element.fieldInfo[entry.fieldIndex] : null;
+      const params = (info && info.additionalParameters) || {};
+      /* A script message has no type, table, name or sysId, so those four
+       * match any message at that position. It is pinned by the key the
+       * platform stores it under instead, derived the way the save derives it. */
+      const messageKey = String(entry.messageKey || "");
+      const keyHolds = messageKey
+        ? !Object.prototype.hasOwnProperty.call(params, "type") &&
+          String(params.key || (info && info.originalValue) || "") === messageKey
+        : true;
+      return !!info && keyHolds &&
+        String(params.type || "") === entry.type &&
+        String(params.table || "") === entry.table &&
+        String(params.name || "") === entry.name &&
+        String(params.sysId || "") === entry.sysId &&
+        info.translatedValue === entry.value;
+    };
+    const settleUntil = Date.now() + Math.max(0, Number(request.settleMs) || 0);
+    let flat = current();
+    while (expected.some((entry) => !holds(entry, flat)) && Date.now() < settleUntil) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      flat = current();
+    }
+    expected.forEach((entry) => {
+      if (holds(entry, flat)) {
+        out.landed += 1;
+        return;
+      }
+      if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+      out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || "") });
+    });
+    /* Rich text was read back the moment it was written, above. */
+    out.landed += richLanded.length;
+    richMissed.forEach(({ entry, why }) => {
+      if (!out.missed.includes(entry.k)) out.missed.push(entry.k);
+      out.missedFields.push({ k: entry.k, identityKey: String(entry.identityKey || ""), why });
+    });
+    out.confirmed = true;
+    return out;
+  } catch (error) {
+    out.confirmed = false;
+    out.landed = 0;
+    out.missed = [];
+    out.missedFields = [];
+    out.why = String(error && error.message ? error.message : error);
+    return out;
+  }
+}
+
+const LF_ASSISTANT_APPLY_TIMEOUT_MS = 10000;
+const LF_ASSISTANT_SETTLE_MS = 1500;
+/* Why the writer did not fill a rich-text field: no single ready editor, an
+ * edit in the editor the page had not recorded, a write that was put back --
+ * because the editor changed its words, because it came out over the limit,
+ * because the model did not follow, or for a reason an error interrupted --
+ * or one that could not be put back. */
+const LF_ASSISTANT_RICH_MISSES = new Set([
+  "rich_editor", "rich_unrecorded", "rich_rewritten", "rich_too_long",
+  "rich_unsynced", "rich_reverted", "rich_unconfirmed",
+]);
+/* A reply can carry 2000 rows, so no honest list of choices is longer. */
+const LF_ASSISTANT_CHOICE_LIMIT = 2000;
+const lfAssistantApplyByTab = new Map();
+
+function releaseLfAssistantApplyLock(tabId, op) {
+  if (!op || lfAssistantApplyByTab.get(tabId) === op) lfAssistantApplyByTab.delete(tabId);
+}
+
+/* The two choices a user can add to a fill: a placeholder row filled anyway,
+ * and an edited row overwritten against the values they were shown. The panel
+ * builds them, but the engine trusts the shape of what it is handed, so they
+ * are rebuilt here from primitives rather than passed straight through. */
+function lfAssistantFillChoices(msg) {
+  const positive = (value) => Number.isInteger(value) && value > 0;
+  const include = (Array.isArray(msg && msg.include) ? msg.include : [])
+    .filter(positive)
+    .slice(0, LF_ASSISTANT_CHOICE_LIMIT);
+  const overrides = (Array.isArray(msg && msg.overrides) ? msg.overrides : [])
+    .slice(0, LF_ASSISTANT_CHOICE_LIMIT)
+    .filter((entry) => entry && positive(entry.k) && Array.isArray(entry.reviewed))
+    .map((entry) => ({
+      k: entry.k,
+      reviewed: entry.reviewed
+        .slice(0, LF_ASSISTANT_CHOICE_LIMIT)
+        .filter((row) => row && typeof row.identityKey === "string" && typeof row.target === "string")
+        .map((row) => ({ identityKey: row.identityKey, target: row.target })),
+    }));
+  return { include, overrides };
+}
+
+function lfAssistantWriteRefusal(why) {
+  if (why === "changed") {
+    return "The page changed just as it was being filled, so nothing was filled. Press Fill again.";
+  }
+  if (why === "other_page") {
+    return "The page was replaced just as it was being filled — reloaded, or opened for another item or " +
+      "language — so nothing was filled. Run Translation Assistant again on the page that is open now.";
+  }
+  if (why === "read_only") return "This page is read-only, so nothing was filled.";
+  if (why === "request_in_progress") {
+    return "This page is busy with a translation request, so nothing was filled. " +
+      "Wait for it to finish, then try again.";
+  }
+  if (why === "not_page") {
+    return "The comparison page was gone by the time it came to filling, so nothing was filled. " +
+      "Reload it and try again.";
+  }
+  if (why === "no_channel") {
+    return "This page does not offer the update Translation Assistant fills through, so nothing was filled.";
+  }
+  return "Nothing was filled" + (why ? " (" + why + ")." : ".");
+}
+
+async function applyLfAssistantReply(tabId, msg) {
+  if (lfAssistantApplyByTab.has(tabId)) {
+    return {
+      ok: false,
+      code: "busy",
+      message: "A fill is still running on this page. Wait for it to finish and check the page " +
+        "before filling again. Reloading the page ends it, and discards every fill on the page.",
+    };
+  }
+  const op = { startedAt: Date.now() };
+  lfAssistantApplyByTab.set(tabId, op);
+  let handedOff = false;
+  /* A navigation releases the lock while this fill may still be awaiting a
+   * read. Deleting the lock alone would let a second fill start AND let this
+   * one carry on to inject a merge built from the page that just unloaded, so
+   * after every await the fill checks that it still owns the tab. */
+  const navigated = () => lfAssistantApplyByTab.get(tabId) !== op;
+  const navigatedRefusal = () => ({
+    ok: false,
+    code: "navigated",
+    message: "The page reloaded or moved while the fill was being prepared, so nothing was filled. " +
+      "Once it has loaded, press Fill again.",
+  });
+  try {
+    const engine = assistantEngine();
+    const parsed = engine.parseReply(typeof (msg && msg.replyText) === "string" ? msg.replyText : "");
+    if (!parsed.ok) {
+      return { ok: false, code: parsed.code, message: parsed.message, excerpt: parsed.excerpt || "" };
+    }
+    const choices = lfAssistantFillChoices(msg);
+
+    /* The draft first: a reply from a draft this browser no longer has says
+     * that, rather than whatever else might be wrong with it. */
+    const draft = await readLfAssistantDraft(parsed.reply.exportId);
+    if (navigated()) return navigatedRefusal();
+    if (!draft) {
+      const refused = engine.evaluateReply({ draft: null, reply: parsed.reply });
+      return { ok: false, code: refused.code, message: refused.message };
+    }
+
+    const read = await readLfAssistantContext(tabId);
+    if (navigated()) return navigatedRefusal();
+    if (!read.selected) return { ok: false, code: "no_page", rejected: read.rejected };
+    const context = read.selected.context || {};
+    /* Refused unless the page says "no" outright, as the writer refuses. */
+    if (context.readOnlyMode !== false) {
+      return { ok: false, code: "read_only", message: lfAssistantWriteRefusal("read_only") };
+    }
+    if (context.requestInProgress !== false) {
+      return { ok: false, code: "request_in_progress", message: lfAssistantWriteRefusal("request_in_progress") };
+    }
+
+    const evaluation = engine.evaluateReply({
+      draft,
+      reply: parsed.reply,
+      content: context.content,
+      identity: {
+        artifactInternalName: context.artifactInternalName,
+        artifactSysId: context.artifactSysId,
+        sourceLanguage: context.sourceLanguage,
+        targetLanguage: context.targetLanguage,
+      },
+      overrides: choices.overrides,
+      /* Whether each rich-text field's editor is ready, from this same read. */
+      richEditors: context.richEditors,
+    });
+    if (!evaluation.ok) return { ok: false, code: evaluation.code, message: evaluation.message };
+
+    /* Every row that passes, except a placeholder warning nobody has said yes
+     * to: that check is advisory, so the row waits for a deliberate choice. */
+    const include = new Set(choices.include);
+    const selection = evaluation.rows
+      .filter((row) => row.status === "fill" && (!row.warning || include.has(row.k)))
+      .map((row) => row.k);
+    const report = { rows: evaluation.rows, unknown: evaluation.unknown.length, filled: selection };
+    if (!selection.length) {
+      return { ok: true, written: false, landed: 0, attempted: 0, missed: [], report };
+    }
+
+    const plan = engine.buildApplyPlan({ evaluation, selection });
+    const merge = engine.buildMergedContent({ content: context.content, plan, richEditors: context.richEditors });
+    const richFills = Array.isArray(merge.rich) ? merge.rich : [];
+    if (merge.stale.length || !(merge.applied.length || richFills.length)) {
+      return {
+        ok: false,
+        code: "stale",
+        message: "The page changed while the reply was being checked, so nothing was filled. Press Fill again.",
+      };
+    }
+    const expected = merge.applied.map((entry) => ({
+      k: entry.k,
+      identityKey: entry.identityKey,
+      value: entry.value,
+      elementIndex: entry.elementIndex,
+      fieldIndex: entry.fieldIndex,
+      type: entry.type,
+      table: entry.table,
+      name: entry.name,
+      sysId: entry.sysId,
+      messageKey: entry.messageKey,
+    }));
+    /* Rich text is not in the merged array; the writer fills each of these
+     * through its editor, and reads it back there. */
+    const rich = richFills.map((entry) => ({
+      k: entry.k,
+      identityKey: entry.identityKey,
+      value: entry.value,
+      elementIndex: entry.elementIndex,
+      fieldIndex: entry.fieldIndex,
+      type: entry.type,
+      table: entry.table,
+      name: entry.name,
+      sysId: entry.sysId,
+      maxLength: entry.maxLength,
+    }));
+    const attempted = expected.length + rich.length;
+
+    /* Into the frame this fill's own read selected a moment ago, never a
+     * remembered one. A reload in between gives the writer different content,
+     * and it refuses. */
+    const write = chrome.scripting.executeScript({
+      target: { tabId, frameIds: [read.selected.frameId] },
+      world: "MAIN",
+      func: writeLfAssistantContent,
+      args: [{
+        base: context.content,
+        merged: merge.content,
+        expected,
+        rich,
+        settleMs: LF_ASSISTANT_SETTLE_MS,
+        /* Which page the read came from, so the writer can refuse a
+         * replacement page that happens to hold the same content. */
+        identity: {
+          artifactInternalName: String(context.artifactInternalName || ""),
+          artifactSysId: String(context.artifactSysId || ""),
+          sourceLanguage: String(context.sourceLanguage || ""),
+          targetLanguage: String(context.targetLanguage || ""),
+          documentStamp: Number(context.documentStamp) || 0,
+        },
+      }],
+    });
+    handedOff = true;
+    write.then(
+      () => releaseLfAssistantApplyLock(tabId, op),
+      () => releaseLfAssistantApplyLock(tabId, op)
+    );
+
+    let timer = null;
+    const outcome = await Promise.race([
+      write.then((results) => ({ results }), (error) => ({ error })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), LF_ASSISTANT_APPLY_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (!outcome) {
+      /* Not a failure and not a "no": the injection was never cancelled, and
+       * the lock stays held until it settles. */
+      return {
+        ok: false,
+        indeterminate: true,
+        code: "timeout",
+        message: "The page has not confirmed the fill after " + (LF_ASSISTANT_APPLY_TIMEOUT_MS / 1000) +
+          " seconds. It may still be filling. Wait, check the page, and do not fill again until it settles. " +
+          "Reloading the page ends it, and discards every fill on the page.",
+      };
+    }
+    if (outcome.error) {
+      return {
+        ok: false,
+        code: "write_failed",
+        message: "The page could not be filled (" + errorText(outcome.error) + "). Check the page before trying again.",
+      };
+    }
+    const answer = (outcome.results || []).map((entry) => entry && entry.result).find(Boolean) || {};
+    const positive = (value) => Number.isInteger(value) && value > 0;
+    /* By record as well as by row, so the panel can say which member of a
+     * shared row did not take when the others did -- and, for rich text, why:
+     * each of those reasons asks something different of the user. */
+    const missedFields = () => (Array.isArray(answer.missedFields) ? answer.missedFields : [])
+      .filter((entry) => entry && positive(entry.k) && typeof entry.identityKey === "string")
+      .map((entry) => (LF_ASSISTANT_RICH_MISSES.has(entry.why)
+        ? { k: entry.k, identityKey: entry.identityKey, why: entry.why }
+        : { k: entry.k, identityKey: entry.identityKey }));
+    if (!answer.written && answer.why === "rich_refused") {
+      /* Nothing on the page moved, and each rich-text field has its reason:
+       * a report, not an error. */
+      return {
+        ok: true,
+        written: false,
+        confirmed: true,
+        landed: 0,
+        attempted,
+        missed: (Array.isArray(answer.missed) ? answer.missed : []).filter(positive),
+        missedFields: missedFields(),
+        report,
+      };
+    }
+    if (!answer.written) {
+      return {
+        ok: false,
+        code: "not_written",
+        why: String(answer.why || ""),
+        changedAt: String(answer.changedAt || ""),
+        message: lfAssistantWriteRefusal(answer.why),
+      };
+    }
+    /* The event fired but the model could not be read back afterwards. The
+     * page holds whatever it took, so this is neither a count nor a "no": the
+     * attempted rows go back with the report, marked unconfirmed, so the panel
+     * keeps their old text and says to check each one before Publish. */
+    if (answer.confirmed === false) {
+      return {
+        ok: true,
+        written: true,
+        confirmed: false,
+        why: String(answer.why || ""),
+        landed: 0,
+        attempted,
+        missed: [],
+        missedFields: [],
+        report,
+      };
+    }
+    return {
+      ok: true,
+      written: true,
+      confirmed: true,
+      landed: Number(answer.landed) || 0,
+      attempted,
+      missed: (Array.isArray(answer.missed) ? answer.missed : []).filter(positive),
+      missedFields: missedFields(),
+      report,
+    };
+  } finally {
+    if (!handedOff) releaseLfAssistantApplyLock(tabId, op);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The draft store.
+
+   storage.session, not a module variable, for the same reason the Debug
+   Timeline frame list lives there: the MV3 worker can be torn down between the
+   user downloading a draft and coming back with the model's reply, and losing
+   the map is losing the only thing that can address the reply. Memory rather
+   than disk, because the map holds the item's own text; a browser restart
+   therefore loses it, which the panel's copy does not promise otherwise.
+
+   The cap and the lookup come from the engine rather than being written twice.
+   --------------------------------------------------------------------------- */
+const LF_ASSISTANT_DRAFTS_KEY = "translationAssistantDrafts";
+
+function assistantEngine() {
+  const engine = globalThis.SNTranslationAssistant;
+  if (!engine) throw new Error("The Translation Assistant engine did not load in the worker.");
+  return engine;
+}
+
+function readLfAssistantDraftStore() {
+  return chrome.storage.session
+    .get(LF_ASSISTANT_DRAFTS_KEY)
+    .then((bag) => (bag && bag[LF_ASSISTANT_DRAFTS_KEY]) || assistantEngine().createDraftStore())
+    .catch(() => assistantEngine().createDraftStore());
+}
+
+/* One writer at a time. storage.session has no atomic update, so two saves that
+ * read the map before either writes it will each append to their own copy and
+ * the second set() discards the first draft -- while both callers are told the
+ * draft is held. That is the failure that makes a downloaded file
+ * unaddressable later, which is the one thing persisting it was for. The chain
+ * is worker-wide because the store is. */
+let lfAssistantDraftWrites = Promise.resolve();
+
+/* Runs whose panel closed, or was replaced, while their save was still queued.
+ * Serialising the writes means a save can wait for as long as another one
+ * takes, and the content script's own run gate cannot reach a message it has
+ * already sent, so the recall has to be honoured on this side. Nothing here is
+ * persisted: if the worker dies the queue dies with it and the write never
+ * happens anyway.
+ *
+ * Two structures, because they answer different questions and only one of them
+ * can be bounded. A recall for a save that is still QUEUED lives on that save's
+ * own record and cannot expire -- a bounded list dropped it the moment twenty
+ * other panels closed, which un-cancelled work that had not run yet. A recall
+ * that arrives before its save does has nothing to attach to, so it waits in a
+ * short history, and that one is safe to bound: it only covers the window
+ * between two messages from the same frame. */
+const LF_ASSISTANT_EARLY_CANCEL_LIMIT = 20;
+const lfAssistantEarlyCancels = [];
+const lfAssistantPendingSaves = new Map();
+
+/* A run token is minted per frame as `ta-<n>-<Date.now()>`, so two tabs that
+ * start their first run in the same millisecond would mint the same one. The
+ * worker holds one queue for every tab, so it scopes the token by sender
+ * before using it as a key. */
+function lfAssistantRunKey(sender, runToken) {
+  const token = String(runToken || "");
+  if (!token) return "";
+  return String(sender && sender.tab ? sender.tab.id : 0) + " " + token;
+}
+
+function cancelLfAssistantDraft(runToken) {
+  const token = String(runToken || "");
+  if (!token) return;
+  const pending = lfAssistantPendingSaves.get(token);
+  if (pending) {
+    pending.cancelled = true;
+    return;
+  }
+  if (lfAssistantEarlyCancels.includes(token)) return;
+  lfAssistantEarlyCancels.push(token);
+  if (lfAssistantEarlyCancels.length > LF_ASSISTANT_EARLY_CANCEL_LIMIT) {
+    lfAssistantEarlyCancels.shift();
+  }
+}
+
+function takeEarlyLfAssistantCancel(token) {
+  const index = lfAssistantEarlyCancels.indexOf(token);
+  if (index < 0) return false;
+  lfAssistantEarlyCancels.splice(index, 1);
+  return true;
+}
+
+function saveLfAssistantDraft(draft, runToken) {
+  const token = String(runToken || "");
+  /* Registered before the turn is queued, so a recall arriving at any point
+   * from here on has somewhere to land that outlives every other cancellation. */
+  const pending = { cancelled: token ? takeEarlyLfAssistantCancel(token) : false };
+  if (token) lfAssistantPendingSaves.set(token, pending);
+
+  const write = lfAssistantDraftWrites.then(async () => {
+    try {
+      /* Checked when the turn starts rather than when it was queued, and again
+       * at the last moment before the write: a draft the user never saw must
+       * not take a slot in a capped store and evict one they downloaded. */
+      if (pending.cancelled) return { held: 0, cancelled: true };
+      const engine = assistantEngine();
+      const store = engine.putDraft(await readLfAssistantDraftStore(), draft);
+      if (pending.cancelled) return { held: 0, cancelled: true };
+      const item = {};
+      item[LF_ASSISTANT_DRAFTS_KEY] = store;
+      await chrome.storage.session.set(item);
+      return { held: store.drafts.length, cancelled: false };
+    } finally {
+      if (token) lfAssistantPendingSaves.delete(token);
+    }
+  });
+  /* A rejected write must not poison the queue for the next caller, and the
+   * rejection still reaches the one that caused it through `write`. */
+  lfAssistantDraftWrites = write.then(() => {}, () => {});
+  return write;
+}
+
+async function readLfAssistantDraft(exportId) {
+  return assistantEngine().getDraft(await readLfAssistantDraftStore(), exportId);
+}
+
 // Self-contained MAIN-world reader for classic RITM variables. The caller
 // supplies the definition list because g_form cannot enumerate these fields.
 // Every g_form call is isolated: one throwing prototype-collision key must not
@@ -4883,6 +5838,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .then(() => sendResponse({ ok: true, uiIncluded: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "INJECT_TRANSLATION_ASSISTANT" && sender.tab) {
+    /* Engine and panel together, into the frame that asked, isolated world.
+     * Both no-op when already present. The engine is also importScripts'd into
+     * this worker for the draft store; the two copies are the same file. */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["translation_assistant.js", "translation_assistant_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "GET_LF_ASSISTANT_CONTEXT" && sender.tab) {
+    readLfAssistantContext(sender.tab.id)
+      .then((result) => sendResponse(Object.assign({ ok: true }, result)))
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "SAVE_LF_ASSISTANT_DRAFT" && sender.tab) {
+    saveLfAssistantDraft(msg.draft, lfAssistantRunKey(sender, msg.runToken))
+      .then((result) => sendResponse({ ok: true, held: result.held, cancelled: result.cancelled }))
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "CANCEL_LF_ASSISTANT_DRAFT" && sender.tab) {
+    cancelLfAssistantDraft(lfAssistantRunKey(sender, msg.runToken));
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg && msg.type === "READ_LF_ASSISTANT_DRAFT" && sender.tab) {
+    readLfAssistantDraft(msg.exportId)
+      .then((draft) => sendResponse({ ok: true, draft }))
+      .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  if (msg && msg.type === "APPLY_LF_ASSISTANT" && sender.tab) {
+    applyLfAssistantReply(sender.tab.id, msg)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, code: "error", message: errorText(error) }));
     return true;
   }
   if (msg && msg.type === "INJECT_CODE_SEARCH" && sender.tab) {

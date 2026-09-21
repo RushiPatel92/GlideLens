@@ -10,6 +10,93 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **Translation Assistant.** A palette command listed only on the
+  Localization Framework comparison page of a catalog item or record producer
+  (**Edit Translations**, in ad-hoc mode). Step 1 downloads one JSON file
+  holding the item's untranslated, unlocked text together with the
+  instructions an AI tool needs to translate it, or copies the same prompt
+  and JSON to the clipboard. The file includes the item's script messages —
+  the `getMessage` keys in its client scripts, UI policies and producer
+  script — once per key. Rich text goes out as HTML. The panel counts what it
+  left out and why — already translated, rich text whose markup or editor it
+  cannot handle, a message that looks like a key rather
+  than text, a text shared with a locked field — and lists each text whose
+  translation is stored instance-wide, by source string or by message key,
+  linked to the row a publish would write and, for a field, to the fields
+  that use its text. Step 2 takes the tool's reply, pasted or uploaded, and fills
+  the page: every row that still passes the checks is written into the page's
+  own unsaved model through its own update channel, and the panel then lists
+  each row it did not fill with the reason, offers **Fill anyway** for a
+  placeholder mismatch and **Overwrite** for a field changed on the page
+  since the draft, and keeps the old text of every translation a fill
+  replaced so it can be typed back. Nothing is saved until the page's own
+  **Publish**; reloading the page discards every fill. GlideLens never
+  contacts an AI service: the file leaves the browser only when the user
+  uploads it somewhere.
+- **The fill is checked twice and written once.** The reply is matched to the
+  draft it answers by an id the file carries, so a reply from another item or
+  another browser is refused by name. Before writing, the page is read again
+  and every rule re-applied: a row whose source text changed, whose field is
+  now locked, which is too long for its destination column, or which shares
+  a stored translation with a field not in the draft is left alone and named.
+  The page is written only if it still holds exactly what the fill was built
+  from, so nothing typed in between is reverted, and only one fill runs per
+  tab until the page confirms it.
+- **Rich text is filled through its own editor.** An item's description and a
+  variable's rich text or instructions go out as HTML and come back through
+  the page's own editor rather than its model: the page copies model text into
+  an editor only when that editor starts, so writing the model alone would
+  leave the editor showing the old text while **Publish** sent the new. A
+  reply's markup is never written — its tags must match the source's one for
+  one, and what lands is the source's own tags with the reply's words between
+  them, so a reply cannot add an element, an attribute or a link. Rich text
+  holding a script, a form, an embedded frame or markup the check cannot fully
+  read is left to a person and named, as is a field whose editor has not
+  started yet. After a write the editor, the hidden textarea and the model
+  must agree, or the field is put back to what it showed and reported.
+- **Translation Lens finds text that never asked to be translated.** A new
+  **Hardcoded text** group lists wording written straight into a client script
+  or UI policy instead of being requested with `getMessage` — a label set by
+  `setLabelOf`, a message passed to `showFieldMsg`, an option label, an alert.
+  Any alphabet counts, not only English: an instance whose base language is
+  something else hardcodes that instead, and it is the same defect.
+  It reads the same scripts the message scan already reads, so it costs no
+  extra query. Three shapes are found: a literal sitting in the call, a
+  literal reached through one local variable on the line above, and a
+  hand-rolled translation table — an object whose `label`, `title` or
+  `helpText` property holds a bare string, which is how text arrives at a call
+  site that is several dynamic hops from the words. A string that is also
+  passed to `getMessage` somewhere in the same script is called out, because a
+  translation for that exact text is being asked for a few lines away. These
+  are findings to review, not gaps: hardcoded text has no translation record
+  to be missing, so the group keeps its own count and never moves any score.
+  The copied report carries the counts and the platform API names and neither
+  the text itself, the script's name, nor its identifier. The scan hands the
+  page's thread back as it goes and stops at a time limit rather than
+  freezing the tab, saying how many scripts it did not reach so silence never
+  reads as a clean result, and the panel lists findings a page at a time with
+  **Show all** rather than truncating at a cap with no way to see the rest.
+- **A high score can no longer look like a clean form.** While hardcoded text
+  exists the coverage score is drawn flagged rather than plain, with the count
+  beside it: the number still describes what is stored, and it now cannot be
+  read as a promise about what the form will show. That count is not drawn as
+  one more amber advisory among the row-level ones — a 99% is exactly what
+  gets believed when the sentence contradicting it looks like a note about
+  three stranded rows. It is marked **Not in any score**, styled apart from
+  the advisories, placed immediately after the number it qualifies rather
+  than at the end of the row, and clicking it opens the **Hardcoded text**
+  group and puts the keyboard on it. A finding whose call names
+  its field is also flagged on that field's own row, with the script, the line
+  and what it writes — which surfaces the case the score is blind to, a field
+  translated correctly in every language that a script overwrites with a fixed
+  string every time the form opens. It is a flag to check, never a gap: the
+  call is usually inside a condition, so it moves no count. A finding stays on
+  the half it came from, a `getMessage` key is never mistaken for a field, and
+  only the calls that actually replace stored text say that they do.
+
 ## [0.15.0] - 2026-09-08
 
 ### Added

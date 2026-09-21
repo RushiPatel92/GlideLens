@@ -49,7 +49,9 @@ function loadBuiltCommands(debugTimelineUI, options) {
     { runtime: { sendMessage: noop } },
     { href: "https://example.service-now.com/incident.do", origin: "https://example.service-now.com" },
     { SNDebugTimelineUI: debugTimelineUI || null },
-    () => [],
+    /* Page-conditional commands are decided from the decoded URL, so a test
+     * that wants one has to supply what decodedVariants would have seen. */
+    () => opts.decodedUrls || [],
     () => Boolean(opts.workspaceRoute),
     noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
@@ -94,6 +96,46 @@ test("current built-ins expose the accepted unique command labels", () => {
   );
   assert.ok(builtIns.every((item) => item.description));
   assert.ok(builtIns.filter((item) => item.input).every((item) => item.inputLabel));
+});
+
+/*
+ * Two commands whose labels share a first word, one of them page-conditional.
+ * The decision to call it "Translation Assistant" rested on the claim that both
+ * still win on their own names; that claim was never executed, because the
+ * default harness has no LF page and so never lists the second command.
+ */
+test("Translation Assistant and Translation Lens coexist and each wins its own label", () => {
+  const onLfPage = loadBuiltCommands(null, {
+    decodedUrls: ["https://example.service-now.com/sn_lf_comparison_ui.do?sysparm_caller_mode=adhoc"],
+  });
+  const assistant = onLfPage.find((item) => item.id === "translation-assistant");
+  assert.ok(assistant, "the command must be listed on the comparison page");
+  assert.strictEqual(assistant.label, "Translation Assistant");
+  assert.strictEqual(assistant.description, "Prepare and fill translations");
+  assert.strictEqual(assistant.run.name, "runTranslationAssistant");
+
+  /* It is absent everywhere else: an ordinary form must not offer it. */
+  assert.ok(!loadBuiltCommands().some((item) => item.id === "translation-assistant"));
+
+  /* No duplicate visible label, and no other validation complaint. */
+  palette.validatePaletteCommands(onLfPage);
+
+  for (const label of ["Translation Assistant", "Translation Lens"]) {
+    const prepared = palette.preparePaletteCommands(onLfPage, label, null);
+    assert.ok(prepared.length > 0, `"${label}" matched nothing`);
+    assert.strictEqual(
+      prepared[0].label,
+      label,
+      `typing "${label}" makes "${prepared[0].label}" the active row`
+    );
+  }
+
+  /* And every other built-in still wins its own name with the extra command in
+   * the list, since shared keywords could have moved any of them. */
+  for (const cmd of onLfPage) {
+    const prepared = palette.preparePaletteCommands(onLfPage, cmd.label, null);
+    assert.strictEqual(prepared[0].id, cmd.id, `"${cmd.label}" no longer ranks first`);
+  }
 });
 
 test("Translation Lens preserves the retired translation-toggle favorite key", () => {
@@ -300,6 +342,38 @@ test("rendering keeps interactive controls outside options and announces selecti
   assert.match(contentSource, /\.cmd-label\{\s*display:block;justify-self:start;width:max-content;max-width:100%/);
 });
 
+test("every result panel wears the shared palette and stops page inheritance at the host", () => {
+  /* There is no build step to share CSS, so each panel carries a verbatim copy
+   * of the tokens. The Translation Assistant first shipped with a light theme
+   * of its own -- white card, green button, no host reset -- and nothing
+   * noticed, because nothing compared the copies. Globbed rather than listed,
+   * so a panel added later is held to the same rule without anyone
+   * remembering to add it here. */
+  const root = path.join(__dirname, "..");
+  const panels = fs.readdirSync(root).filter((name) => /_ui\.js$/.test(name)).sort();
+  assert.ok(panels.length >= 7, "the glob must actually find the panels: " + panels.join(", "));
+
+  for (const file of panels) {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    assert.match(source, /--teal:#31d4c4;--pink:#ff6fae/,
+      file + " must use the shared teal and pink, not a palette of its own");
+    assert.match(source, /:host\{[^}]*all:initial/,
+      file + " must stop the ServiceNow page's inherited font and colour at the shadow host");
+    /* A present reset is not an effective one: a later host rule carrying
+     * all:inherit undid it while the match above still passed (Codex review,
+     * P3). Only a :host rule can undo it -- anything inside the shadow tree
+     * inherits from the reset host -- so no host rule may inherit. Node cannot
+     * compute styles; the static render's hostile page is where a leak that
+     * gets past this would show. */
+    for (const block of source.match(/:host[^{]*\{[^}]*\}/g) || []) {
+      assert.doesNotMatch(block, /:\s*(?:inherit|unset|revert)\b/,
+        file + " must not take anything from the page at the host: " + block);
+    }
+    assert.doesNotMatch(source, /\ball\s*:\s*(?:inherit|unset|revert)\b/,
+      file + " must not reset everything back to the page's values");
+  }
+});
+
 test("result panels use the same stable feature headings", () => {
   const files = {
     "record_search_ui.js": /<h2>Record Lens<\/h2>/,
@@ -307,6 +381,8 @@ test("result panels use the same stable feature headings", () => {
     "code_search_ui.js": /<h2>Code Search <span class="term"><\/span><\/h2>/,
     "hidden_variables_ui.js": /const panelTitle = workspaceMode[\s\S]*\["stored-only", "no-editor-empty", "no-candidate"\][\s\S]*\? "Stored Variables"[\s\S]*: "Variable Values"[\s\S]*<h2 id="snh-hidden-title">\$\{panelTitle\} /,
     "debug_timeline_ui.js": /<h2 id="snh-debug-title">Debug Timeline /,
+    "translation_lens_ui.js": /el\("h2", "", "Translation Lens"\)/,
+    "translation_assistant_ui.js": /el\("h2", "", "Translation Assistant"\)/,
   };
 
   for (const [file, pattern] of Object.entries(files)) {

@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js
 ```
 
 The suites cover:
@@ -75,7 +75,11 @@ The suites cover:
   single-appearance favourite, the stable Debug Timeline favourite key across
   Start/Stop, rejection of duplicate labels and implicit input labels, and
   source assertions for the listbox, `aria-activedescendant`, focus trap, and
-  shared panel headings.
+  shared panel headings. Also that every `*_ui.js` panel, found by glob rather
+  than listed, carries the shared GlideLens teal and pink tokens and stops the
+  page's inherited styles with `:host{all:initial}`, which no host rule undoes
+  with `inherit`, `unset` or `revert` — there is no build step to share CSS, so
+  the copies are compared instead.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
   encoded URLs, and the complete Workspace experience path. Workspace support is
@@ -190,6 +194,174 @@ The suites cover:
   six-method UI contract `content.js` depends on, the worker routes, the
   packaging allowlist, and source assertions for behaviour the engine
   deliberately does not export.
+- `translation_assistant.test.js` — the Translation Assistant engine: which
+  rows are eligible (lock state, not "has no translation"), the destination
+  grouping that makes a shared `sys_translated` row all-or-nothing, the JSON
+  envelope and its instruction block, reply parsing through fences and prose,
+  every per-row verdict, the overrides bound to a reviewed value, the budgets,
+  the merge invariant that writes `translatedValue` and introduces no other
+  key, and the bounded draft store that survives a worker teardown. A reload
+  on its own refuses nothing — the regression guard for a fingerprint that
+  must hold no frame handle. Also the language names: the `sys_language` query
+  is built only from ids shaped like one, so page text naming `javascript:` or
+  carrying a caret or comma never reaches it, and a name is used only when the
+  rows give exactly one — otherwise the draft shows the page's codes. And what
+  the fill reads back: every merged field is addressed by position and by
+  record, and each row says whether publishing it changes the translation
+  instance-wide. And rich text: the strict tag scanner reads ordinary markup
+  and refuses what a browser could read differently — a comment, a stray `<`,
+  `<p/onclick=…>`, a quoted value holding `>` — and stays fast on input built
+  to make it slow; a rich field is exported with `format: "html"` and a
+  prompt stating the rule only when its editor is reported ready; a source
+  with no words, a script, a form, an event handler or a script URL (entity-
+  encoded included) is excluded by name; a reply is written as the source's
+  own tag bytes around its words, and one that adds, drops, moves or changes a
+  tag, attribute or link is blocked with no override; tags with no words are
+  blank; unchanged is judged by words, since the page holds the editor's
+  serialisation; the limit is measured on what is written; and the merge
+  leaves rich text out of the array, keeps `$$hashKey`, and lists it for the
+  editor writer.
+- `translation_assistant_ui.test.js` — the panel, loaded under `node:vm`
+  against the same small DOM shim the Translation Lens panel uses. Drafts are
+  built by the real engine rather than written as literals, because the
+  defects worth pinning here only appear when two fields share one
+  destination: the tally is counted in fields and reconciles against the
+  exclusion buckets, the deduplicated row count is stated rather than
+  substituted for it, and the instance-wide warning follows the destination's
+  storage model, not how many fields on this item happen to share it. Also the
+  house style: the shared palette, the footer every panel carries, exactly one
+  pink primary route with the copy route drawn as a link, and the language pair
+  in the subtitle's mono accent. And feedback on the control that was pressed —
+  a copy or download flashes its own outcome and reverts, under fake timers —
+  plus the shared-translation list: each row named, each linked to the fields
+  that use its text through a same-origin URL built only from the page's own
+  table and column, and to the sys_translated row a publish would write for the
+  target language. Both follow Translation Lens's rules for what a filter can
+  carry — no link for a caret, a line break, an unsafe table or language — and
+  one more: no link for a text naming a `javascript:` expression, which the
+  server would run rather than match, and the row says why. And the counts
+  that open into a list — already translated, and the two rich-text buckets,
+  each naming its reason — closed by default,
+  each field shown with its current translation (rich text as plain words in
+  whichever bucket it sits, and in every report row and replaced translation,
+  read through the fill's own scanner rather than a pattern over angle
+  brackets, which would take a `>` inside a quoted attribute for the end of a
+  tag and put the rest of that tag on screen dressed as words — a source the
+  scanner refuses is shown as written instead, never stripped into something
+  that only looks like words; every other type literally, angle brackets and
+  all) and linked to its store:
+  `sys_translated` for shared text, `sys_translated_text` by sys_id for
+  per-record fields. Every entry is built from the same parts however long its
+  text — the text, its translation, then one line holding where it lives and
+  its link — and the stylesheet the panel injects keeps each text to one line,
+  cut at a whole word, with the whole of it on hover.
+
+  Then the reply coming back. There is no preview before the fill — the
+  comparison page is the preview — so the report is what these pin, against
+  evaluations the real engine produced: Fill sends the pasted text and reports
+  the fields filled; an empty box sends nothing; a placeholder mismatch is not
+  filled until Fill anyway resends the same reply with that row; a field changed
+  on the page offers Overwrite bound to the value it shows; a replaced
+  translation shows its old text, because clearing the box would delete it; a
+  partial landing names what did not take; a refusal keeps the reply in the box
+  and shows how it starts; a timeout says the fill may still be running. A
+  reply whose tags are not the source's is blocked with nothing to choose past
+  it, and names the first tag that differs: the two texts read alike, so a
+  reason that only says the tags differ leaves nothing to act on. Every reason
+  the page-side writer gives for a rich-text field it did not fill reaches the
+  report as its own sentence, including the three separate ways a write can
+  fail to hold, and only the one that leaves the page uncertain advises a
+  reload. A
+  second press while a fill runs sends nothing, an answer for a replaced panel
+  is not drawn, and choosing a file loads it into the box without filling.
+  Each report entry is built from the same parts — the field, its text, a
+  labelled pair of values, then one verdict line holding the reason and its
+  button. And the panel's per-run history: the old text of a replaced
+  translation and the shared-translation warning survive the next click and a
+  refusal; a shared row that half landed names the field that missed and
+  keeps the old text of the one that did; a fill the page could not confirm
+  keeps every attempted row's old text, labelled as attempted rather than
+  filled, and that uncertainty survives a refused click. The history is
+  kept by field and grouped by destination: a reply from another draft that
+  reuses a row number keeps its own old text, a member of a shared row that
+  lands only on a later fill joins, and shared translations are counted by
+  destination, not by field. And Overwrite from a per-field display binds
+  every field to the value shown for it, an empty one included.
+- `translation_assistant_integration.test.js` — the runtime boundary: the
+  four-method panel contract `content.js` depends on, the command listed from
+  the decoded URL but acting only on a probed scope, the MAIN-world read that
+  names why a frame is not the comparison page, the three independent
+  editability states it reads rather than infers, the draft held in
+  `storage.session` before it is ever offered, both output routes emitting the
+  one serialised string, the panel's link guard run against a same-origin link
+  and three it must refuse, and the packaging allowlist. Also the shape of the
+  one write: the page's own `updateDocumentContent` event, fired only by the
+  worker's MAIN-world writer into the one frame that fill's own fresh read
+  selected, never by the panel or the content script; the fill lock released
+  by a navigation or a closed tab; nothing persisting a frame handle; and no
+  user-facing string calling a locked field verified.
+
+  The second half of the file executes the worker's draft store and the
+  content script's runner rather than reading them, against storage and
+  messaging shims: concurrent saves both survive, a dismissed run writes
+  nothing to a store that outlives it, a slow first run never opens over the
+  panel a later run owns, the draft is not offered until the store accepts it,
+  and a frame that never answered is not reported as the wrong page. The
+  language-name read runs through the same shims: its names reach the prompt
+  and subtitle, a refused read still yields a draft in codes, a run dismissed
+  during it saves nothing, and codes that are not id-shaped send no read.
+
+  The fill route runs too, against a real engine, a faked page read and a
+  faked `executeScript`: every passing row is written and a placeholder
+  mismatch held back until asked for; rows the fill does not touch survive the
+  array replacement byte for byte; a fill that never settles is reported as
+  indeterminate and a retry is refused — before the page is even read — until
+  the injection settles, which is the case a timeout followed by a clean read
+  must not unlock; every page precondition (read-only, a request in flight or
+  unknowable, another item or language, a changed element count, no page)
+  refuses before anything is written and releases the lock; a reply from a
+  draft this browser no longer has refuses before the page is read; and the
+  count reported is what landed. The page-side writer runs against a faked
+  Angular scope: it fires once and counts only fields holding the value on
+  their own record, refuses when the page moved since the read and names where,
+  refuses on any page state it cannot confirm — including the accessor that
+  throws when `additionalInfo` is undefined — and does not refuse an untouched
+  page whose snapshot came back through Chrome with its keys reordered, the
+  defect the live check found. The faked scope keeps the original and the
+  bound copy apart, and typing lands only in the bound one, so a writer that
+  read the original would fail the refusal test rather than pass it. Also
+  from the Codex round on the fill: a navigation that releases the lock while
+  a fill is still awaiting its read stops that fill, and only the next one
+  injects; a shared row that half landed comes back by field, not only by
+  row; and a fill whose read-back threw after the event fired comes back
+  unconfirmed with its rows, never as a count of zero. From the round after:
+  the writer refuses a replacement page holding the same content — a
+  reloaded document, another target language from the URL or the scope,
+  another item — and writes the page the read came from, identified the same
+  way; the reader records the document's time origin and the fill hands the
+  writer that identity; and a stale fill leaving does not release a newer
+  fill's lock that is still held. Rich text runs against faked TinyMCE
+  editors wired the way the page wires them — bound through the textarea's
+  row scope, with a `SetContent` handler that moves the model and the
+  textarea — and rebound to the new objects when the event reuses a row: the
+  write lands after the event in the model the event installed, never in the
+  object it replaced; a page that has taken the event but not yet rebuilt its
+  rows — the fake defers that digest — leaves the field alone rather than
+  writing into an object about to be thrown away and swapped out behind an
+  editor still showing the translation; rich text alone fires no event; an
+  editor holding an edit the page has not recorded, an editor dropped with its
+  row, a locked field, a read-only or unstarted editor, two editors on one
+  field and another record are never written; a write that does not hold is
+  put back and reports which check it failed — the editor changed its words,
+  it came out over the limit once serialised, or the model did not follow,
+  each asking something different of the user — and one that cannot be put
+  back comes back uncertain. The worker hands rich text to the writer apart
+  from the merged array, and a fill whose every rich field was refused is a
+  report keeping only the reasons it knows. The reader and the writer each
+  hold a copy of the test for an editor bound to a field, so those two blocks
+  are compared as source and cannot drift apart. Those blocks are lifted
+  from their real files by the same anchors the source assertions use, so
+  moving one fails loudly instead of testing nothing.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real

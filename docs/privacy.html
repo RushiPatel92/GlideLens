@@ -128,7 +128,7 @@ main.wrap { padding-top: 40px; }
 
   <p class="eyebrow">Privacy</p>
   <h1>What GlideLens does with your data</h1>
-  <p class="updated">Last updated 23 August 2026 · applies to GlideLens v0.11.1 and later</p>
+  <p class="updated">Last updated 13 September 2026 · applies to GlideLens v0.11.1 and later</p>
 
   <div class="tldr">
     <p><strong>There is no GlideLens server.</strong> No account, no telemetry, no
@@ -177,6 +177,14 @@ main.wrap { padding-top: 40px; }
       events, GlideAjax requests and responses, and JavaScript errors</td>
       <td>To produce the timeline. See the caveat below</td>
     </tr>
+    <tr>
+      <td>When you run Translation Assistant: the text of the catalog item open
+      on the Localization Framework comparison page, including the messages its
+      scripts show and its rich text as HTML, and the language names on your
+      instance</td>
+      <td>To build the file you hand to your AI tool, and to fill its reply
+      back into that page for you to review. See the section below</td>
+    </tr>
   </table>
   </div>
 
@@ -219,6 +227,13 @@ main.wrap { padding-top: 40px; }
   GlideLens reads lives in memory while a panel is open and is gone when you
   close it.</p>
 
+  <p>One thing lives in memory a little longer. Translation Assistant keeps up
+  to five of the drafts it has exported in the browser's <em>session</em>
+  storage — memory, not disk — so that a reply can be matched to the page it
+  answers even after the extension's background process has been restarted in
+  between. A draft holds that item's text. It is never written to disk and is
+  gone when the browser closes.</p>
+
   <h2>What leaves your device</h2>
 
   <p><strong>Nothing, other than requests to the ServiceNow instance you are
@@ -232,20 +247,47 @@ main.wrap { padding-top: 40px; }
   every line that runs ships inside it and is readable in
   <a href="https://github.com/RushiPatel92/GlideLens">the public repository</a>.</p>
 
+  <h3>Translation Assistant and your AI tool</h3>
+  <div class="note">
+    <p>Translation Assistant is the one feature that produces something
+    <em>meant</em> to leave your device: a JSON file holding the untranslated
+    text of the catalog item in front of you, including the messages its
+    scripts show and its rich text as HTML, with instructions for an AI tool
+    to translate it. <strong>GlideLens does not upload that file, does not
+    connect to any AI service, and does not know which one you use.</strong>
+    The file leaves your device only when you upload it, or paste its contents,
+    into a tool of your own choosing, and from that point it is handled under
+    that tool's terms, not ours. The panel says so beside the download button.
+    Check your organisation's rules on sharing instance text with such a tool
+    before you do, and read the file first — it holds your item's text, and
+    nothing else.</p>
+  </div>
+
   <h2>What GlideLens writes</h2>
 
-  <p>It is a read-only tool with one deliberate exception, and it is worth being
-  precise about the difference.</p>
+  <p>It is a read-only tool with two deliberate exceptions, and it is worth
+  being precise about the difference.</p>
 
   <p><strong>It never writes to your ServiceNow records and never submits a
   form.</strong> Record search, code search, catalog insight, variable values,
-  translations and Debug Timeline only read.</p>
+  Translation Lens and Debug Timeline only read.</p>
 
   <p><strong>Prefill changes unsaved fields on the catalog form in front of
   you</strong>, which is the entire point of it — it copies values from a ticket
   you name into the form you are filling in, so you can review them and submit
   yourself. It fills the form; you decide what happens to it. Nothing is saved
   to the instance unless you submit it.</p>
+
+  <p><strong>Translation Assistant fills unsaved translations on the
+  Localization Framework comparison page in front of you</strong>, in the same
+  way: it puts your AI tool's reply into the page's own boxes, through the
+  page's own update channel — or, for rich text, the page's own editor — and
+  only for rows that still pass its checks. A reply's own markup is never
+  written: a rich field keeps the source's tags exactly, and only its words
+  change. The panel then lists every row it did not fill and why, and keeps the
+  old text of any translation it replaced. Nothing is saved to the instance unless you
+  press the page's own <em>Publish</em>; reloading the page discards every
+  fill.</p>
 
   <h2>Permissions, and what each is for</h2>
 

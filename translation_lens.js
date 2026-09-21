@@ -1037,6 +1037,641 @@
     };
   }
 
+  /* =====================================================================
+   * HARDCODED TEXT SCAN
+   *
+   * The complement of the getMessage scan above. That one asks "this key was
+   * requested -- is it translated?". This one asks "was a translation ever
+   * requested at all?", and it reads the same script bodies, so it costs no
+   * extra read.
+   *
+   * A finding is NOT a coverage row and never carries per-language states. A
+   * hardcoded label has no store row, so there is no language in which it is
+   * Missing and none in which it could be created; calling it Missing would
+   * claim a translation is absent when none was ever asked for. It keeps its
+   * own count outside every denominator, exactly as Messages does.
+   *
+   * Everything here is a text scan, not an evaluation. It is deliberately
+   * shallow: shapes that were measured against a sample of real catalog
+   * client scripts are in, and shapes that produced text the script does not
+   * own -- an option label arriving from a GlideAjax response, say -- are
+   * deliberately out. A rule that cannot be read off the source is a rule
+   * this file does not make.
+   * ===================================================================== */
+
+  /* High enough that a real surface is never silently truncated -- the
+   * largest sample measured produced 145 across 249 scripts -- and still a
+   * ceiling, because an unbounded list is a memory and render cost the panel
+   * would pay on every paint. The panel shows the list in pages of its own,
+   * so this is not the number a reader sees at once. */
+  const MAX_HARDCODED_FINDINGS = 1000;
+  /* The scan runs on the page's thread. It hands the thread back at least
+   * this often, and gives up at the budget rather than freezing the tab. */
+  const HARDCODED_SCAN_SLICE_MS = 12;
+  const HARDCODED_SCAN_BUDGET_MS = 4000;
+
+  /* The mask byte. Built rather than typed: a backslash-u escape written into
+   * this file by tooling is decoded on the way in, and a raw control byte in
+   * a string literal is invisible in a diff and reads as corruption. */
+  const MASK_CHAR = String.fromCharCode(1);
+
+  /* The EXACT argument indexes that carry user-visible text, never "from this
+   * one onward": showFieldMsg's third argument is the message type, and an
+   * at-or-after rule reported every 'error', 'info' and 'warning' in the
+   * sample as hardcoded English. */
+  /* `fieldArg` is the argument naming the field this call acts on, where
+   * there is one. When it is a plain string the finding can be tied to the
+   * row that field already has in the report, which is the difference
+   * between a list someone has to remember to open and a flag sitting on the
+   * field they are already looking at. */
+  const TEXT_ARGUMENT_APIS = Object.freeze([
+    { name: "setLabelOf", textArgs: [1], fieldArg: 0 },
+    { name: "addOption", textArgs: [2], fieldArg: 0 },
+    { name: "showFieldMsg", textArgs: [1], fieldArg: 0 },
+    { name: "showErrorBox", textArgs: [1], fieldArg: 0 },
+    { name: "addDecoration", textArgs: [2], fieldArg: 0 },
+    { name: "setValue", textArgs: [2], fieldArg: 0 },
+    { name: "addInfoMessage", textArgs: [0] },
+    { name: "addErrorMessage", textArgs: [0] },
+    { name: "alert", textArgs: [0] },
+    { name: "confirm", textArgs: [0] },
+  ]);
+
+  /* A catalog script may address a variable bare or through the `variables.`
+   * namespace, and neither spelling changes which variable it means. */
+  function targetKeyFor(name) {
+    return String(name || "").trim().replace(/^variables\./i, "").toLowerCase();
+  }
+
+  /* Property names whose value is read back out as text. This is how the scan
+   * reaches a hand-rolled translation table without tracing anything:
+   * `rule.countries[code].label` is two dynamic hops from its definition and
+   * no text scan can follow it, but the object literal that holds the words
+   * is sitting in the same script with `label:` in front of each one.
+   *
+   * Whole word or camelCase tail, never a substring: `context` contains
+   * "text", `headers` contains "header" and `msgType` contains "msg", and all
+   * three hold configuration rather than anything a reader sees. */
+  const TEXT_PROPERTY_WORDS =
+    "label|text|title|message|msg|caption|header|placeholder|hint|tooltip|description";
+  const TEXT_PROPERTY_NAME = new RegExp(
+    "^(?:" + TEXT_PROPERTY_WORDS + ")$|" +
+    "(?:" + TEXT_PROPERTY_WORDS.replace(/(^|\|)(\w)/g, (whole, bar, first) =>
+      bar + first.toUpperCase()) + ")$"
+  );
+
+  /* Two letters in any script, or one ideograph or kana or hangul, where two
+   * letters is already a phrase. Concatenation scaffolding -- ": ", " - ",
+   * " (" -- is not text anyone translates, and the sample produced sixteen
+   * copies of one separator before this filter went in. Deliberately not
+   * limited to A-Z: an instance whose base language is not English hardcodes
+   * its own language, and that is the same defect. */
+  const TRANSLATABLE_TEXT =
+    /\p{L}{2}|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+  /* A `/` here opens a regex rather than dividing. Anything that can end an
+   * expression -- an identifier, a literal, `)`, `]` -- means division. */
+  const REGEX_MAY_FOLLOW = new Set(
+    ["(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%",
+      "^", "<", ">", "~"]
+  );
+  const REGEX_MAY_FOLLOW_WORD = new Set(
+    ["return", "typeof", "instanceof", "in", "of", "case", "do", "else", "void",
+      "delete", "new", "yield", "await"]
+  );
+
+  function escapeForPattern(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  /* One pass that records every string literal and returns a same-length copy
+   * of the source with comments, regex literals and string BODIES blanked, so
+   * the structural searches below cannot match text that lives inside any of
+   * them. Offsets are preserved, so a hit in the masked copy indexes straight
+   * back into the original.
+   *
+   * Template literals are included, unlike in extractMessageKeys: there a
+   * backtick means the key may be built at run time and cannot be trusted,
+   * while here the words between the holes are hardcoded either way.
+   *
+   * Regex literals are skipped rather than ignored, and that is not a nicety.
+   * Left alone, `/\/*$/` opens a block comment that masks the rest of the
+   * FILE and `/`/` opens a template literal that swallows it -- one ordinary
+   * regex silently deleting every later finding in that script. */
+  function lexScript(source) {
+    const text = String(source || "");
+    const literals = [];
+    const masked = text.split("");
+    const newlines = [];
+    let index = 0;
+    let significant = -1;
+
+    const wordBefore = (at) => {
+      if (at < 0 || !/[\w$]/.test(text[at])) return "";
+      let start = at;
+      while (start > 0 && /[\w$]/.test(text[start - 1])) start--;
+      return text.slice(start, at + 1);
+    };
+
+    while (index < text.length) {
+      const char = text[index];
+      const next = text[index + 1];
+      if (char === "\n") { newlines.push(index); index++; continue; }
+      if (char === "/" && next === "/") {
+        while (index < text.length && text[index] !== "\n") masked[index++] = " ";
+        continue;
+      }
+      if (char === "/" && next === "*") {
+        const close = text.indexOf("*/", index + 2);
+        const stop = close === -1 ? text.length : close + 2;
+        while (index < stop) {
+          if (text[index] === "\n") newlines.push(index);
+          else masked[index] = " ";
+          index++;
+        }
+        continue;
+      }
+      if (char === "/") {
+        const previous = significant < 0 ? "" : text[significant];
+        const opensRegex = significant < 0 ||
+          REGEX_MAY_FOLLOW.has(previous) ||
+          REGEX_MAY_FOLLOW_WORD.has(wordBefore(significant));
+        if (opensRegex) {
+          /* A regex literal cannot span a line, so an unclosed one means this
+           * `/` was division after all and the scan carries on from it. */
+          let at = index + 1;
+          let escaped = false;
+          let inClass = false;
+          let closed = false;
+          for (; at < text.length; at++) {
+            const current = text[at];
+            if (current === "\n") break;
+            if (escaped) { escaped = false; continue; }
+            if (current === "\\") { escaped = true; continue; }
+            if (current === "[") inClass = true;
+            else if (current === "]") inClass = false;
+            else if (current === "/" && !inClass) { closed = true; at++; break; }
+          }
+          if (closed) {
+            while (at < text.length && /[a-z]/.test(text[at])) at++;
+            while (index < at) masked[index++] = " ";
+            significant = index - 1;
+            continue;
+          }
+        }
+        significant = index;
+        index++;
+        continue;
+      }
+      if (char === "'" || char === '"' || char === "`") {
+        const quote = char;
+        const start = index;
+        let body = "";
+        let escaped = false;
+        let closed = false;
+        index++;
+        for (; index < text.length; index++) {
+          const current = text[index];
+          if (escaped) { body += "\\" + current; escaped = false; continue; }
+          if (current === "\\") { escaped = true; continue; }
+          if (current === quote) { closed = true; index++; break; }
+          /* An unterminated single- or double-quoted string is a syntax error
+           * in the record, not a literal; abandon it rather than swallowing
+           * the rest of the file. */
+          if (current === "\n" && quote !== "`") break;
+          if (current === "\n") newlines.push(index);
+          body += current;
+        }
+        if (!closed) { significant = start; continue; }
+        literals.push({
+          start,
+          end: index,
+          quote,
+          value: unescapeMessageLiteral(body, quote),
+        });
+        for (let at = start + 1; at < index - 1; at++) {
+          if (text[at] === "\n") continue;
+          masked[at] = MASK_CHAR;
+        }
+        significant = index - 1;
+        continue;
+      }
+      if (!/\s/.test(char)) significant = index;
+      index++;
+    }
+    return { literals, masked: masked.join(""), newlines };
+  }
+
+  /* Both of these are binary searches over a sorted offset list, because the
+   * obvious linear versions are per-finding and turn a large hand-rolled
+   * translation table -- the very shape this scan is built for -- into a
+   * frozen tab. */
+  function lineNumberFrom(newlines, offset) {
+    let low = 0;
+    let high = newlines.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (newlines[middle] < offset) low = middle + 1;
+      else high = middle;
+    }
+    return low + 1;
+  }
+
+  function firstLiteralAtOrAfter(literals, offset) {
+    let low = 0;
+    let high = literals.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (literals[middle].start < offset) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
+  /* The literals directly inside a range, at its own bracket depth. A nested
+   * call's arguments are that call's business: `showFieldMsg(f,
+   * g_form.getLabelOf('assignment_group') + ' is required', 'error')` holds
+   * one piece of hardcoded English and one field name, and reporting the
+   * field name would send a reader to a script that is not wrong. */
+  function topLevelLiterals(masked, literals, from, to) {
+    const found = [];
+    let cursor = firstLiteralAtOrAfter(literals, from);
+    let depth = 0;
+    for (let at = from; at < to; at++) {
+      while (cursor < literals.length && literals[cursor].start === at) {
+        if (depth === 0) found.push(literals[cursor]);
+        cursor++;
+      }
+      const char = masked[at];
+      if (char === "(" || char === "[" || char === "{") depth++;
+      else if (char === ")" || char === "]" || char === "}") depth--;
+    }
+    return found;
+  }
+
+  /* Walk from an opening parenthesis to its match, recording the offsets of
+   * the commas that separate top-level arguments. */
+  function callSpanFrom(masked, openParen) {
+    let depth = 0;
+    const commas = [];
+    for (let index = openParen; index < masked.length; index++) {
+      const char = masked[index];
+      if (char === "(" || char === "[" || char === "{") depth++;
+      else if (char === ")" || char === "]" || char === "}") {
+        depth--;
+        if (depth === 0) return { start: openParen, end: index, commas };
+      } else if (char === "," && depth === 1) commas.push(index);
+    }
+    return null;
+  }
+
+  function argumentBounds(span, index) {
+    const start = index === 0 ? span.start + 1 : span.commas[index - 1] + 1;
+    if (!isFinite(start) || start <= span.start) return null;
+    const end = span.commas[index] === undefined ? span.end : span.commas[index];
+    return end > start ? { start, end } : null;
+  }
+
+  /* Deliberately broader than extractMessageKeys' own pattern, and the two
+   * disagree on purpose. Extraction must be strict, because a key it invents
+   * is queried and reported. Exclusion must be generous, because every call
+   * it fails to recognise becomes a false accusation that text was never
+   * translated. `i18n.getMessage(...)` asked for a translation whatever the
+   * receiver was called. */
+  function getMessageSpans(masked) {
+    const spans = [];
+    const call = /(^|[^\w$.])(?:[\w$]+\s*\.\s*)?getMessage\s*\(/g;
+    let match;
+    while ((match = call.exec(masked)) !== null) {
+      const span = callSpanFrom(masked, call.lastIndex - 1);
+      if (span) spans.push(span);
+    }
+    return spans;
+  }
+
+  function withinSpans(spans, offset) {
+    return spans.some((span) => offset > span.start && offset < span.end);
+  }
+
+  /* `cond ? label : 'text'` reads as IDENT-colon-literal exactly like an
+   * object entry does. An object key is preceded by `{` or `,`; a ternary's
+   * second arm is preceded by `?`, so the preceding character settles it. */
+  function isObjectKeyAt(masked, identifierStart) {
+    let index = identifierStart - 1;
+    while (index >= 0 && /\s/.test(masked[index])) index--;
+    return index < 0 || masked[index] === "{" || masked[index] === ",";
+  }
+
+  /* Every `IDENT = ` in one script, collected once per identifier and reused,
+   * so a script with thousands of calls does not rescan itself per call. */
+  function assignmentOffsets(masked, cache, name) {
+    const known = cache.get(name);
+    if (known) return known;
+    const offsets = [];
+    const assign = new RegExp("(?:^|[^\\w.$])" + escapeForPattern(name) + "\\s*=(?!=)", "g");
+    let match;
+    while ((match = assign.exec(masked)) !== null) offsets.push(assign.lastIndex);
+    cache.set(name, offsets);
+    return offsets;
+  }
+
+  /* The nearest preceding `IDENT = ...` and the literals directly on its
+   * right-hand side. One hop, same script, textually before the call --
+   * enough for the common `var msg = 'text'; g_form.showFieldMsg(f, msg,
+   * 'error')`, and deliberately not a dataflow analysis. A finding built this
+   * way says which identifier it followed, because a reassignment in between
+   * would make the trace point at the wrong string. */
+  function traceAssignment(masked, literals, cache, name, before) {
+    const offsets = assignmentOffsets(masked, cache.offsets, name);
+    let start = -1;
+    for (let index = 0; index < offsets.length; index++) {
+      if (offsets[index] >= before) break;
+      start = offsets[index];
+    }
+    if (start < 0) return [];
+    /* Keyed on the assignment actually reached, not on the call: a hundred
+     * calls resolving to the same `var msg = ...` walk its right-hand side
+     * once between them, which matters when that side is a large object. */
+    const memo = cache.traced.get(start);
+    if (memo) return memo;
+    let end = start;
+    let depth = 0;
+    for (; end < masked.length; end++) {
+      const char = masked[end];
+      if (char === "(" || char === "[" || char === "{") depth++;
+      else if (char === ")" || char === "]" || char === "}") {
+        if (depth === 0) break;
+        depth--;
+      } else if ((char === ";" || char === "\n") && depth === 0) break;
+    }
+    const traced = topLevelLiterals(masked, literals, start, end);
+    cache.traced.set(start, traced);
+    return traced;
+  }
+
+  function hardcodedFinding(origin, lexed, options) {
+    const pieces = options.pieces;
+    const offset = options.offset;
+    const record = options.record || {};
+    const table = String(record.table || "");
+    const sysId = String(record.sysId || "");
+    let link = "";
+    /* Same-origin, and only ever a record this run already read. A bad origin
+     * costs the link, never the finding. */
+    if (origin && TABLE_PATTERN.test(table) && SYS_ID_PATTERN.test(sysId)) {
+      try { link = safeOrigin(origin) + "/" + table + ".do?sys_id=" + sysId; }
+      catch (error) { link = ""; }
+    }
+    return {
+      id: "hardcoded:" + table + ":" + sysId + ":" + String(record.field || "") + ":" + offset,
+      aspect: "hardcoded",
+      kind: options.kind,
+      api: options.api || "",
+      property: options.property || "",
+      via: options.via || "",
+      table,
+      sysId,
+      scriptName: String(record.name || ""),
+      field: String(record.field || ""),
+      target: String(options.target || ""),
+      targetKey: targetKeyFor(options.target),
+      line: lineNumberFrom(lexed.newlines, offset),
+      texts: pieces.map((piece) => piece.value),
+      link,
+    };
+  }
+
+  function sortFindings(findings) {
+    findings.sort((left, right) =>
+      left.scriptName.localeCompare(right.scriptName) ||
+      left.sysId.localeCompare(right.sysId) ||
+      left.field.localeCompare(right.field) ||
+      left.line - right.line ||
+      left.id.localeCompare(right.id)
+    );
+    return findings;
+  }
+
+  function capFindings(findings, cap) {
+    /* An explicit 0 means zero, but `null` must not: Number(null) is 0, so a
+     * caller passing null for "no opinion" silently capped the list away. */
+    const number = Number(cap);
+    const limit = cap === null || cap === undefined || !isFinite(number) || number < 0
+      ? MAX_HARDCODED_FINDINGS
+      : number;
+    return {
+      findings: findings.slice(0, limit),
+      capped: findings.length > limit,
+      omittedCount: Math.max(0, findings.length - limit),
+    };
+  }
+
+  /* One script's worth of scanning, kept synchronous and whole: a script is
+   * small enough to be an indivisible unit of work, and splitting one would
+   * mean carrying a half-built lexer state across a yield. */
+  function scanScript(record, origin, claimedFindings) {
+    const source = String(record.source || "");
+    const lexed = lexScript(source);
+    const masked = lexed.masked;
+    const literals = lexed.literals;
+    const byStart = new Map();
+    literals.forEach((literal) => byStart.set(literal.start, literal));
+    const messageSpans = getMessageSpans(masked);
+    const traceCache = { offsets: new Map(), traced: new Map() };
+    const claimed = new Set();
+    const found = [];
+    const usable = (literal) =>
+      !withinSpans(messageSpans, literal.start) && TRANSLATABLE_TEXT.test(literal.value);
+
+    /* Tier A -- a literal sitting in a text argument, plus the one-hop trace
+     * when the whole argument is a bare identifier. */
+    TEXT_ARGUMENT_APIS.forEach((api) => {
+      /* The receiver and its dot are one optional unit. Written as
+       * `(?:g_form|gs|spUtil)?\s*\.?\s*` instead, the two unbounded
+       * whitespace runs sit next to each other with only an optional dot
+       * between them, and the engine tries every way to split a run of
+       * spaces between them. Comments are masked to spaces, so an ordinary
+       * commented-out script is a long run of them: one 2 KB script that was
+       * almost entirely commented out took 44 SECONDS, on the page's own
+       * thread. Every quantifier here is now separated by something that
+       * must match. */
+      const call = new RegExp(
+        "(?:^|[^\\w.])(?:(?:g_form|gs|spUtil)\\s*\\.\\s*)?" + api.name + "\\s*\\(", "g"
+      );
+      let match;
+      while ((match = call.exec(masked)) !== null) {
+        const span = callSpanFrom(masked, call.lastIndex - 1);
+        if (!span) continue;
+        api.textArgs.forEach((argIndex) => {
+          const bounds = argumentBounds(span, argIndex);
+          if (!bounds) return;
+          /* One finding per argument rather than per literal: a concatenated
+           * message is one piece of English to a reader. */
+          let pieces = topLevelLiterals(masked, literals, bounds.start, bounds.end)
+            .filter(usable);
+          let via = "";
+          if (!pieces.length) {
+            const expression = masked.slice(bounds.start, bounds.end).trim();
+            if (/^[A-Za-z_$][\w$]*$/.test(expression)) {
+              const traced = traceAssignment(
+                masked, literals, traceCache, expression, span.start
+              ).filter(usable);
+              if (traced.length) { pieces = traced; via = expression; }
+            }
+          }
+          if (!pieces.length) return;
+          pieces.forEach((piece) => claimed.add(piece.start));
+          /* Only a plain string names the field beyond doubt. When the
+           * argument is a variable the call still gets reported, just
+           * without a field to hang it on. */
+          let target = "";
+          if (api.fieldArg !== undefined) {
+            const fieldBounds = argumentBounds(span, api.fieldArg);
+            if (fieldBounds) {
+              const named = topLevelLiterals(
+                masked, literals, fieldBounds.start, fieldBounds.end
+              );
+              const only = named.length === 1 ? named[0] : null;
+              if (only && masked.slice(fieldBounds.start, fieldBounds.end).trim().length ===
+                only.end - only.start) {
+                target = only.value;
+              }
+            }
+          }
+          found.push(hardcodedFinding(origin, lexed, {
+            kind: via ? "traced" : "call",
+            api: api.name,
+            via,
+            target,
+            pieces,
+            offset: via ? span.start : pieces[0].start,
+            record,
+          }));
+        });
+      }
+    });
+
+    /* Tier B -- a text-shaped property whose value is a literal. The key is
+     * read both bare and quoted, because a table pasted in as JSON quotes
+     * every one of its keys. */
+    const addProperty = (name, keyStart, valueAt) => {
+      if (!TEXT_PROPERTY_NAME.test(name)) return;
+      if (!isObjectKeyAt(masked, keyStart)) return;
+      const literal = byStart.get(valueAt);
+      if (!literal) return;                   /* getMessage(...), or any expression */
+      if (claimed.has(literal.start)) return; /* already reported at its call site */
+      if (!usable(literal)) return;
+      found.push(hardcodedFinding(origin, lexed, {
+        kind: "property",
+        property: name,
+        pieces: [literal],
+        offset: literal.start,
+        record,
+      }));
+    };
+    const property = /([A-Za-z_$][\w$]*)\s*:\s*/g;
+    let entryMatch;
+    while ((entryMatch = property.exec(masked)) !== null) {
+      addProperty(entryMatch[1], entryMatch.index, property.lastIndex);
+    }
+    literals.forEach((literal) => {
+      if (literal.quote === "`") return;
+      let at = literal.end;
+      while (at < masked.length && /\s/.test(masked[at])) at++;
+      if (masked[at] !== ":") return;
+      at++;
+      while (at < masked.length && /\s/.test(masked[at])) at++;
+      addProperty(literal.value, literal.start, at);
+    });
+
+    /* A literal that is ALSO a getMessage key somewhere in the same script is
+     * the strongest finding the scan makes: a translation for that exact text
+     * is being asked for a few lines away, and this call walks past it. No
+     * cross-script claim is made -- one script is what was read. */
+    const keys = new Set();
+    literals.forEach((literal) => {
+      const span = messageSpans.find((candidate) =>
+        literal.start > candidate.start && literal.start < candidate.end
+      );
+      if (span && span.commas.filter((comma) => comma < literal.start).length === 0) {
+        keys.add(literal.value);
+      }
+    });
+    found.forEach((finding) => {
+      if (finding.texts.some((text) => keys.has(text))) finding.alsoAKey = true;
+    });
+    if (claimedFindings) found.forEach((finding) => claimedFindings.push(finding));
+    return found;
+  }
+
+  /* Hands the thread back so the tab can paint. The engine is injected into
+   * the page, not the worker, so every millisecond spent here is a
+   * millisecond the page is frozen -- which is why this yields on a slice
+   * rather than running to completion. */
+  function releaseThread() {
+    return typeof setTimeout === "function"
+      ? new Promise((resolve) => { setTimeout(resolve, 0); })
+      : Promise.resolve();
+  }
+
+  /* `sources` are the script bodies this run already read, each carrying the
+   * record it came from so a finding can point at it. Shape:
+   * { table, sysId, name, field, source }.
+   *
+   * Async on purpose. Nothing here needs to wait for anything, but the whole
+   * scan is CPU on the page's own thread, so it is sliced: a surface with
+   * hundreds of scripts must not stall the tab it is reporting on. Past its
+   * budget it stops and says how many scripts it did not reach, because a
+   * scan that quietly gave up would read as "no hardcoded text here". */
+  async function scanHardcodedText(sources, origin, cap, options) {
+    const opts = options || {};
+    /* Zero is a meaningful slice -- hand the thread back after every script --
+     * so these accept it rather than treating it as "unset". */
+    const given = (value, fallback) => {
+      const number = Number(value);
+      return isFinite(number) && number >= 0 ? number : fallback;
+    };
+    const budget = given(opts.budgetMs, HARDCODED_SCAN_BUDGET_MS);
+    const slice = given(opts.sliceMs, HARDCODED_SCAN_SLICE_MS);
+    const startedAt = Date.now();
+    let sliceStartedAt = startedAt;
+    const findings = [];
+    const list = sources || [];
+    let scanned = 0;
+    let scriptsWithFindings = 0;
+    let skipped = 0;
+    let timedOut = false;
+
+    for (let index = 0; index < list.length; index++) {
+      const record = list[index] || {};
+      if (!String(record.source || "").trim()) continue;
+      if (timedOut) { skipped++; continue; }
+      scanned++;
+      const produced = scanScript(record, origin, null);
+      if (produced.length) {
+        scriptsWithFindings++;
+        findings.push.apply(findings, produced);
+      }
+      if (Date.now() - startedAt >= budget) { timedOut = true; continue; }
+      if (Date.now() - sliceStartedAt >= slice) {
+        await releaseThread();
+        sliceStartedAt = Date.now();
+      }
+    }
+
+    sortFindings(findings);
+    const limited = capFindings(findings, cap);
+    return {
+      findings: limited.findings,
+      scriptCount: scanned,
+      scriptsWithFindings,
+      capped: limited.capped,
+      omittedCount: limited.omittedCount,
+      timedOut,
+      skippedCount: skipped,
+    };
+  }
+
   function safeOrigin(origin) {
     let url;
     try { url = new URL(String(origin || "")); } catch (error) {
@@ -1281,13 +1916,133 @@
   function summarizeResult(result) {
     const mainRows = [];
     (result.sections || []).forEach((section) => {
-      if (section.id !== "messages") mainRows.push.apply(mainRows, section.rows || []);
+      /* Messages keep their own denominator, and the hardcoded scan has no
+       * denominator at all: its findings are text that never asked to be
+       * translated, so there is no language in which they are covered or
+       * missing and nothing about them belongs in a percentage. */
+      if (section.id !== "messages" && section.id !== "hardcoded") {
+        mainRows.push.apply(mainRows, section.rows || []);
+      }
       section.summary = sectionSummary(section.rows || []);
     });
     result.summary = sectionSummary(mainRows);
     const messageSection = (result.sections || []).find((section) => section.id === "messages");
     result.messageSummary = messageSection ? messageSection.summary : sectionSummary([]);
+    const hardcodedSections = (result.sections || []).filter(
+      (section) => section.id === "hardcoded"
+    );
+    const hardcodedFindings = [];
+    let hardcodedCapped = false;
+    let hardcodedOmitted = 0;
+    let hardcodedScripts = 0;
+    let hardcodedTimedOut = false;
+    let hardcodedSkipped = 0;
+    hardcodedSections.forEach((section) => {
+      const scan = section.findings || {};
+      hardcodedFindings.push.apply(hardcodedFindings, scan.findings || []);
+      hardcodedCapped = hardcodedCapped || Boolean(scan.capped);
+      hardcodedOmitted += Number(scan.omittedCount) || 0;
+      hardcodedScripts += Number(scan.scriptCount) || 0;
+      hardcodedTimedOut = hardcodedTimedOut || Boolean(scan.timedOut);
+      hardcodedSkipped += Number(scan.skippedCount) || 0;
+    });
+    result.hardcodedSummary = {
+      findings: hardcodedFindings,
+      count: hardcodedFindings.length,
+      scriptCount: hardcodedScripts,
+      capped: hardcodedCapped,
+      omittedCount: hardcodedOmitted,
+      timedOut: hardcodedTimedOut,
+      skippedCount: hardcodedSkipped,
+    };
+    attachScriptOverrides(result.sections, hardcodedFindings);
     return result;
+  }
+
+  /* Which half of a run a script belongs to. A catalog item's variables and
+   * its definition form's own fields are different things that routinely
+   * share a name -- `description`, `short_description`, `category` are all
+   * both common variable names and `sc_cat_item` columns -- so a catalog
+   * script's finding must not land on a form field's row, or the reverse. */
+  const HARDCODED_SOURCE_HALF = Object.freeze({
+    catalog_script_client: "catalog",
+    catalog_ui_policy: "catalog",
+    sys_script_client: "form",
+    sys_ui_policy: "form",
+  });
+
+  /* The calls that REPLACE stored text, and the aspects they replace. Every
+   * other call puts its own fixed text on the field without touching what is
+   * stored: showFieldMsg adds a message under it, setValue's third argument
+   * is a displayed value, addDecoration's is an icon title. Saying "this is
+   * what the form shows instead" about those would be false. */
+  const OVERRIDING_APIS = Object.freeze({
+    setLabelOf: ["label", "source"],
+    addOption: ["choices", "choice"],
+  });
+
+  /* A finding that names its field is put on that field's own row as well as
+   * in the findings list. The case this exists for is the one the coverage
+   * number cannot see at all: a field whose translation is present and
+   * correct in every language, which a client script overwrites with a fixed
+   * string every time the form opens. That row reads 100% and is wrong on
+   * screen, and a reader looking at the field would never learn it from a
+   * separate list.
+   *
+   * It is evidence, never a state. Whether the line runs at all depends on a
+   * condition this scan does not evaluate -- the call is usually inside an
+   * `if` -- so it is reported as something to check, in the same register as
+   * a near-duplicate, and it moves no count.
+   *
+   * Only findings that survived the cap can attach, since the cap is applied
+   * before this runs. At a thousand that is a limit nothing real reaches, and
+   * the headline count still reports the ones the list omitted. */
+  function attachScriptOverrides(sections, findings) {
+    const byTarget = new Map();
+    (findings || []).forEach((finding) => {
+      if (!finding.targetKey) return;
+      const list = byTarget.get(finding.targetKey) || [];
+      list.push(finding);
+      byTarget.set(finding.targetKey, list);
+    });
+    if (!byTarget.size) return;
+    const visit = (list, inheritedOrigin) => {
+      (list || []).forEach((section) => {
+        if (!section || section.advisory) return;
+        const origin = String(section.origin || inheritedOrigin || "");
+        /* A message row's element is a getMessage key, not a field, and a key
+         * that happens to read like a field name is still a key. */
+        const isMessages = String(section.id || "") === "messages";
+        if (!isMessages) {
+          (section.rows || []).forEach((row) => {
+            if (!row || !row.element || row.aspect === "message") return;
+            const matched = (byTarget.get(targetKeyFor(row.element)) || []).filter((finding) => {
+              const half = HARDCODED_SOURCE_HALF[finding.table];
+              /* An unknown half matches anything, so a caller assembling
+               * sections by hand is not silently ignored. */
+              return !half || !origin || half === origin;
+            });
+            if (!matched.length) return;
+            row.evidence = row.evidence || {};
+            row.evidence.scriptOverrides = {
+              rowCount: matched.length,
+              findings: matched.map((finding) => ({
+                api: finding.api,
+                scriptName: finding.scriptName,
+                line: finding.line,
+                texts: finding.texts.slice(),
+                link: finding.link,
+                /* Whether this call replaces what this row measures, which
+                 * is what decides how strongly the panel may word it. */
+                overrides: (OVERRIDING_APIS[finding.api] || []).indexOf(row.aspect) !== -1,
+              })),
+            };
+          });
+        }
+        visit(section.subsections, origin);
+      });
+    };
+    visit(sections, "");
   }
 
   /* A report exists to be handed to someone who was never on the instance,
@@ -1320,6 +2075,7 @@
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) warnings.push("near-duplicate");
     if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) warnings.push("capitalisation-variant");
     if (evidence.stranded && evidence.stranded.rowCount) warnings.push("stranded");
+    if (evidence.scriptOverrides && evidence.scriptOverrides.rowCount) warnings.push("script-sets-text");
     if (evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) warnings.push("alternate-registration");
     if (Object.values(row.states || {}).some((item) => item.state === "conflict")) warnings.push("conflict");
     if (Object.values(row.states || {}).some((item) => item.state === "unavailable")) warnings.push("unavailable");
@@ -1343,6 +2099,40 @@
     (result && result.sections || []).forEach((section) => {
       lines.push("");
       lines.push(section.label || section.id);
+      /* The findings themselves are the customer's own source text and the
+       * names of their records; neither belongs in a file meant to be handed
+       * to someone who was never on the instance. What travels is the shape:
+       * how many, reached through which platform API. Those API names are
+       * this file's own fixed list, not anything read from the instance. A
+       * property name is read from the instance, so it is counted and not
+       * named. */
+      if (section.id === "hardcoded") {
+        const scan = section.findings || {};
+        const findings = scan.findings || [];
+        lines.push("- " + findings.length + " finding" + (findings.length === 1 ? "" : "s") +
+          " in " + (scan.scriptCount || 0) + " scanned script" +
+          ((scan.scriptCount || 0) === 1 ? "" : "s") + "; text withheld from this report");
+        const counts = new Map();
+        findings.forEach((finding) => {
+          const label = finding.kind === "property"
+            ? "text-shaped property"
+            : finding.api + (finding.kind === "traced" ? " (via a variable)" : "");
+          counts.set(label, (counts.get(label) || 0) + 1);
+        });
+        Array.from(counts.entries())
+          .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+          .forEach(([label, count]) => lines.push("- " + label + ": " + count));
+        const reused = findings.filter((finding) => finding.alsoAKey).length;
+        if (reused) {
+          lines.push("- " + reused + " also appear as a getMessage key in the same script");
+        }
+        if (scan.timedOut) {
+          lines.push("- stopped at its time limit; " + (scan.skippedCount || 0) +
+            " scripts were not scanned, so silence about them is not a clean result");
+        }
+        if (scan.capped) lines.push("- capped; " + scan.omittedCount + " further findings omitted");
+        return;
+      }
       (section.rows || []).forEach((row, index) => {
         const missing = (row.coverage && row.coverage.missing || []).join(",") || "none";
         const warnings = reportWarnings(row);
@@ -1855,15 +2645,26 @@
         options: { displayAll: true, excludeRefLinks: true },
       }),
     ]);
+    const scriptRecords = [];
     scriptReads.forEach((response, index) => {
+      const table = index ? "sys_ui_policy" : "sys_script_client";
       if (!response.ok || response.truncated) {
-        failures.push(failureFor(index ? "sys_ui_policy" : "sys_script_client", response));
+        failures.push(failureFor(table, response));
         return;
       }
+      const nameField = index ? "short_description" : "name";
       response.rows.forEach((row) => {
         ["script", "script_true", "script_false"].forEach((field) => {
           const source = fieldValue(row, field);
-          if (source) scriptSources.push(source);
+          if (!source) return;
+          scriptSources.push(source);
+          scriptRecords.push({
+            table,
+            sysId: fieldValue(row, "sys_id"),
+            name: fieldValue(row, nameField),
+            field,
+            source,
+          });
         });
       });
     });
@@ -1909,6 +2710,16 @@
       rows: messageRows,
       scan: extraction,
       separateHeadline: true,
+    });
+    notify(context, "hardcoded", "Scanning for text with no translation");
+    const hardcodedScan = await scanHardcodedText(scriptRecords, origin);
+    emitSection(context, emitted, {
+      id: "hardcoded",
+      label: "Hardcoded text",
+      rows: [],
+      findings: hardcodedScan,
+      advisory: true,
+      collapsed: true,
     });
     return emitted;
   }
@@ -2468,14 +3279,28 @@
         targets: ids,
       }))), "catalog_ui_policy", failures, STORE_CAPS.catalog_ui_policy),
     ]);
-    const messageSources = [];
-    scriptReads.forEach((read) => {
+    /* Kept as records rather than flattened to strings: the message scan only
+     * ever needed the text, but a hardcoded finding has to name the script it
+     * is in and link to it. */
+    const scriptRecords = [];
+    scriptReads.forEach((read, index) => {
+      const table = index ? "catalog_ui_policy" : "catalog_script_client";
+      const nameField = index ? "short_description" : "name";
       read.rows.forEach((row) => {
         ["script", "script_true", "script_false"].forEach((field) => {
-          if (fieldValue(row, field)) messageSources.push(fieldValue(row, field));
+          const source = fieldValue(row, field);
+          if (!source) return;
+          scriptRecords.push({
+            table,
+            sysId: fieldValue(row, "sys_id"),
+            name: fieldValue(row, nameField),
+            field,
+            source,
+          });
         });
       });
     });
+    const messageSources = scriptRecords.map((record) => record.source);
     const extraction = extractMessageKeys(messageSources.concat(context.messageSources || []));
     let messageRows = [];
     if (extraction.keys.length) {
@@ -2509,6 +3334,16 @@
     };
     emitSection(context, emitted, {
       id: "messages", label: "Messages", rows: messageRows, scan: extraction, separateHeadline: true,
+    });
+    notify(context, "hardcoded", "Scanning for text with no translation");
+    const hardcodedScan = await scanHardcodedText(scriptRecords, origin);
+    emitSection(context, emitted, {
+      id: "hardcoded",
+      label: "Hardcoded text",
+      rows: [],
+      findings: hardcodedScan,
+      advisory: true,
+      collapsed: true,
     });
     return emitted;
   }
@@ -2567,8 +3402,18 @@
     }
     const shared = { languages, failures, origin, linkTargets: null, notices: [] };
     let sections;
+    /* Which half produced a section, so a finding from a catalog script
+     * cannot be hung on a form field that merely shares its name. */
+    const markOrigin = (list, origin) => {
+      (list || []).forEach((section) => {
+        if (!section) return;
+        section.origin = origin;
+        markOrigin(section.subsections, origin);
+      });
+      return list;
+    };
     if (mode === "catalog") {
-      sections = await runCatalog(input, transport, shared);
+      sections = markOrigin(await runCatalog(input, transport, shared), "catalog");
       const catalogTargets = shared.linkTargets;
       if (input.formContext) {
         const formContext = Object.assign({}, input.formContext, {
@@ -2577,12 +3422,19 @@
           languagePicker: input.languagePicker,
           includeInactive: input.includeInactive,
         });
-        const formSections = await runForm(formContext, transport, shared);
+        const formSections = markOrigin(
+          await runForm(formContext, transport, shared), "form"
+        );
         /* The definition form contributes its own tables and scanned keys to
          * the footer; neither half's targets may swallow the other's. */
         shared.linkTargets = mergeLinkTargets(catalogTargets, shared.linkTargets);
+        /* Both scans keep their own section at the top level rather than
+         * being nested under Form fields: a message key and a hardcoded
+         * string belong to the surface, not to one half of it. */
+        const isNested = (section) =>
+          section.id !== "messages" && section.id !== "hardcoded";
         const formRows = [];
-        formSections.filter((section) => section.id !== "messages").forEach((section) => {
+        formSections.filter(isNested).forEach((section) => {
           formRows.push.apply(formRows, section.rows || []);
         });
         const messageSection = sections.find((section) => section.id === "messages");
@@ -2593,16 +3445,49 @@
             if (!seen.has(row.element)) messageSection.rows.push(row);
           });
         }
+        /* The form half reads sys_script_client on the table chain and the
+         * catalog half reads catalog_script_client on the item; a classic
+         * catalog form has both, and neither set is a subset of the other. */
+        const hardcodedSection = sections.find((section) => section.id === "hardcoded");
+        const formHardcoded = formSections.find((section) => section.id === "hardcoded");
+        if (hardcodedSection && formHardcoded) {
+          const scan = hardcodedSection.findings || {};
+          const extra = formHardcoded.findings || {};
+          const merged = (scan.findings || []).slice();
+          const seen = new Set(merged.map((finding) => finding.id));
+          (extra.findings || []).forEach((finding) => {
+            if (!seen.has(finding.id)) merged.push(finding);
+          });
+          /* Re-sorted and re-capped rather than concatenated: two halves each
+           * under the cap can exceed it together, and a list ordered by
+           * whichever half ran first is not ordered at all. The count each
+           * half already omitted is carried, since those findings are gone. */
+          const limited = capFindings(sortFindings(merged), MAX_HARDCODED_FINDINGS);
+          scan.findings = limited.findings;
+          scan.scriptCount = (Number(scan.scriptCount) || 0) + (Number(extra.scriptCount) || 0);
+          scan.scriptsWithFindings =
+            (Number(scan.scriptsWithFindings) || 0) + (Number(extra.scriptsWithFindings) || 0);
+          scan.capped = limited.capped || Boolean(scan.capped) || Boolean(extra.capped);
+          scan.omittedCount = limited.omittedCount +
+            (Number(scan.omittedCount) || 0) + (Number(extra.omittedCount) || 0);
+          /* Each half runs against its own budget, so either can give up on
+           * its own. Dropping the form half's verdict here would let a
+           * surface whose definition form was never fully scanned report as
+           * cleanly scanned. */
+          scan.timedOut = Boolean(scan.timedOut) || Boolean(extra.timedOut);
+          scan.skippedCount =
+            (Number(scan.skippedCount) || 0) + (Number(extra.skippedCount) || 0);
+        }
         const messageIndex = sections.findIndex((section) => section.id === "messages");
         sections.splice(messageIndex < 0 ? sections.length : messageIndex, 0, {
           id: "form-fields",
           label: "Form fields",
           rows: formRows,
-          subsections: formSections.filter((section) => section.id !== "messages"),
+          subsections: formSections.filter(isNested),
           collapsed: true,
         });
       }
-    } else sections = await runForm(input, transport, shared);
+    } else sections = markOrigin(await runForm(input, transport, shared), "form");
     return summarizeResult({
       version: VERSION,
       context: {
@@ -2649,6 +3534,11 @@
     extractMessageKeys,
     analyzeMessages,
     lookupMessage,
+    MAX_HARDCODED_FINDINGS,
+    lexScript,
+    scanHardcodedText,
+    targetKeyFor,
+    attachScriptOverrides,
     storeQuery,
     buildNewRecordUrl,
     buildListUrl,
