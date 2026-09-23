@@ -13,6 +13,61 @@ reconstructed version by version.
 ## [Unreleased]
 
 ### Added
+- **Impersonate.** A palette command that finds someone to test as by
+  **role** — "who holds `catalog_admin`?" — as well as by name, user ID,
+  email, title or exact `sys_id`. That is the reason it exists: other tools
+  answer "become this named person", and the question a debugging session
+  starts from has no name in it yet. Role membership is read from the
+  effective membership table, so grants arriving through a group or through
+  role containment are included and each holder is badged **Direct role** or
+  **Inherited role** — but never with a claimed provenance, because the rows
+  carry none. An optional attribute filter offers whichever filterable fields
+  your instance's own dictionary has, labelled the way that instance labels
+  them, with values read from the choice list or the referenced table as the
+  field's type requires; nothing about it is hardcoded, so an instance that
+  keeps its country in a custom reference column gets the right field offered
+  rather than the stock one. You can also narrow to the members of a
+  **group** — "who is in the team this is assigned to?" — alone or combined
+  with a role, an attribute or a name. Group suggestions match all the words
+  you type rather than just one, so a common word in a large instance's group
+  names does not bury the one you mean; inactive groups are still offered, labelled as such. A large
+  group is listed honestly as a partial page rather than with an invented
+  total. Searching by role, group or attribute alone needs no typed term.
+
+  **Inactive, locked-out and web-service-only accounts are never listed.**
+  ServiceNow documents that impersonating one can terminate your own session,
+  so this is a safety rule rather than a filter and there is no toggle for it.
+
+  A result never acts on a click: the labelled button opens a confirmation
+  repeating the identity in full and saying that the instance session — not
+  just this tab — is about to change. **Stop impersonating** returns you to
+  the account you started from, resolved from the platform's own record of it
+  where that is readable and from GlideLens's session memory otherwise; when
+  neither is available the panel says so and points at the ServiceNow user
+  menu rather than guessing. ServiceNow records impersonation in its own audit
+  log, as it would from that menu.
+- **This is the first thing GlideLens writes to an instance**, and the only
+  one that changes something on the server rather than in a page in front of
+  you. It changes no user record and administers nothing — only which account
+  your own session acts as. One confirmation causes **at most one** request:
+  the frame is discovered fresh and exactly one is targeted, rather than
+  reusing the cached resolution that is safe for repeated reads. If the
+  outcome cannot be confirmed — a timeout, a lost worker, a navigation
+  mid-flight — the panel says the impersonation may or may not have started
+  and tells you to check the user menu. **Nothing is ever retried**, on any
+  ambiguous failure, because a retry could impersonate twice. Only a definite
+  success reloads the tab.
+- **Content code cannot direct the write.** Three narrow worker routes, none a
+  fetch proxy: no URL, method, table, query or body crosses the boundary. A
+  start carries a username and nothing else, and the worker builds the one
+  fixed endpoint itself; a stop carries **no target at all**, so the account
+  to return to is resolved inside the worker from state held per instance in
+  session memory and never handed to the page. No search term, result, role or
+  impersonation history is stored anywhere.
+- **Impersonation is no longer a documented non-goal.** It was refused in five
+  places, including the issue template a contributor reads before filing.
+  What changed the decision was not parity with existing tools but the
+  question none of them answer.
 - **Translation Assistant.** A palette command listed only on the
   Localization Framework comparison page of a catalog item or record producer
   (**Edit Translations**, in ad-hoc mode). Step 1 downloads one JSON file

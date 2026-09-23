@@ -75,6 +75,8 @@ const SHIP = [
   "code_search_ui.js",
   "record_search.js",
   "record_search_ui.js",
+  "impersonate.js",
+  "impersonate_ui.js",
   "translation_lens.js",
   "translation_lens_ui.js",
   "translation_assistant.js",

@@ -5598,6 +5598,412 @@ function openUrlTabOptions(url, sender) {
   return options;
 }
 
+/* =====================================================================
+ * IMPERSONATION — the first write in this extension
+ *
+ * Everything else here is a GET. This POSTs, and what it changes is the
+ * operator's ServiceNow session on the instance, not something in a tab. Three
+ * rules follow from that and none of them is negotiable:
+ *
+ *   1. No generic proxy. Content code names no URL, method, table, query or
+ *      body. It sends a username for a start, and nothing at all for a stop.
+ *   2. Fresh frame, exactly once, never retried. The cached token-frame
+ *      resolution is safe for repeated reads and wrong for a mutation, and
+ *      `allFrames` is independently known not to settle on this platform's
+ *      about:blank frames, so a `.catch` would not save us.
+ *   3. Once executeScript begins, anything other than a response IS
+ *      indeterminate — a throw, a timeout, a teardown, a navigation, a lost
+ *      result. The user is told the session may already have changed and to
+ *      check the ServiceNow user menu. Nothing is sent a second time.
+ *
+ * The response body names the account to return to. The worker keeps that
+ * privately and hands the panel a boolean, so content code can never POST an
+ * arbitrary username as a "stop".
+ * ===================================================================== */
+
+const IMPERSONATE_STATE_KEY = "impersonateOriginals";
+const IMPERSONATE_PROBE_TIMEOUT_MS = 4000;
+const IMPERSONATE_POST_TIMEOUT_MS = 20000;
+/* The verified sys_user.user_name max_length. */
+const IMPERSONATE_MAX_USER_NAME = 40;
+
+/*
+ * encodeURIComponent is what makes the URL safe: it percent-encodes /, ?, #
+ * and % alike, so no value can escape the path segment or append a query. This
+ * check therefore exists to catch bugs, not to sanitise — and deliberately is
+ * NOT a character allowlist, because email-shaped and non-Latin user IDs are
+ * ordinary ServiceNow identities and a pattern like [A-Za-z0-9._-]+ would
+ * reject both, failing first on a customer instance with international users.
+ */
+function validImpersonationUserName(value) {
+  if (typeof value !== "string") return false;
+  if (!value || !value.trim()) return false;
+  if (value.length > IMPERSONATE_MAX_USER_NAME) return false;
+  if (/[\u0000-\u001F\u007F]/.test(value)) return false;
+  /* The response's `user` is the STRING "null" when there was no original. It
+   * means "there is no way home", not a user, so it is never stored or POSTed. */
+  return value !== "null";
+}
+
+function impersonationOrigin(sender) {
+  const raw = (sender && sender.origin) || (sender && sender.tab && sender.tab.url) || "";
+  try {
+    const url = new URL(raw);
+    return url.origin;
+  } catch (error) {
+    return "";
+  }
+}
+
+function readImpersonationStore() {
+  return chrome.storage.session
+    .get(IMPERSONATE_STATE_KEY)
+    .then((bag) => (bag && bag[IMPERSONATE_STATE_KEY]) || {})
+    .catch(() => ({}));
+}
+
+/*
+ * Keyed per origin, so one instance's original can never be POSTed at another.
+ * storage.session rather than local: this is the identity of the person using
+ * the browser, and it has no business surviving the browser.
+ */
+async function rememberImpersonationOriginal(origin, userName) {
+  if (!origin || !validImpersonationUserName(userName)) return;
+  const store = await readImpersonationStore();
+  store[origin] = userName;
+  await chrome.storage.session.set({ [IMPERSONATE_STATE_KEY]: store }).catch(() => {});
+}
+
+async function forgetImpersonationOriginal(origin) {
+  if (!origin) return;
+  const store = await readImpersonationStore();
+  if (!(origin in store)) return;
+  delete store[origin];
+  await chrome.storage.session.set({ [IMPERSONATE_STATE_KEY]: store }).catch(() => {});
+}
+
+async function storedImpersonationOriginal(origin) {
+  if (!origin) return "";
+  const store = await readImpersonationStore();
+  const value = store[origin];
+  return validImpersonationUserName(value) ? value : "";
+}
+
+/*
+ * MAIN-world state read. content.js is in the isolated world and cannot see
+ * NOW.user or the page's preference scripts at all, which is why this is a
+ * route rather than something the panel works out for itself.
+ *
+ * Read-only, and it reads nothing a person on the page cannot already see:
+ * whether the session is impersonated, who it currently is, and whether the
+ * platform itself recorded an account to return to.
+ */
+function readImpersonationStateInPage() {
+  const out = {
+    answered: true,
+    hasNowUser: false,
+    isImpersonating: null,
+    currentUserName: "",
+    displayName: "",
+    preferenceOriginal: "",
+  };
+  try {
+    /* Present and correct in BOTH the top window and gsft_main. */
+    if (typeof NOW !== "undefined" && NOW && NOW.user) {
+      out.hasNowUser = true;
+      if (typeof NOW.user.isImpersonating === "boolean") {
+        out.isImpersonating = NOW.user.isImpersonating;
+      }
+      /* `name` is a friendly name on some surfaces and the user ID itself on
+       * others — a live PDI returned the user ID, which the panel would
+       * otherwise have printed twice. Compose from the parts when they are
+       * there, and let the panel drop a name that just repeats the ID. */
+      const composed = [NOW.user.firstName, NOW.user.lastName]
+        .map((part) => String(part == null ? "" : part).trim())
+        .filter(Boolean)
+        .join(" ");
+      out.displayName = composed || String(NOW.user.name || "");
+    }
+  } catch (error) { /* a cross-origin or torn-down frame simply says nothing */ }
+  try {
+    /* gsft_main only. A surface without that frame names nobody rather than
+     * guessing who the session belongs to. */
+    if (typeof g_user !== "undefined" && g_user && g_user.userName) {
+      out.currentUserName = String(g_user.userName);
+    }
+  } catch (error) { /* ditto */ }
+  try {
+    /* The platform's own way home, written as a user preference when
+     * impersonation starts: empty when not impersonating, so it is
+     * self-validating. Read off the already-parsed DOM — snUtils scrapes a
+     * script tag and, on a miss, fires a SYNCHRONOUS XHR at a deliberate 404,
+     * which would freeze the tab. There is no XHR fallback here of any kind.
+     */
+    let found = "";
+    if (typeof NOW !== "undefined" && NOW && NOW.user && NOW.user.preferences) {
+      const direct = NOW.user.preferences["user.impersonation"];
+      if (direct) found = String(direct);
+    }
+    if (!found && typeof document !== "undefined" && document.scripts) {
+      const pattern =
+        /user\.impersonation["'\s,]*[:,]\s*["']([^"']*)["']|["']user\.impersonation["']\s*,\s*["']([^"']*)["']/;
+      for (let index = 0; index < document.scripts.length; index++) {
+        const source = document.scripts[index].textContent || "";
+        if (source.indexOf("user.impersonation") < 0) continue;
+        const match = pattern.exec(source);
+        if (match) {
+          found = String(match[1] || match[2] || "");
+          if (found) break;
+        }
+      }
+    }
+    out.preferenceOriginal = found;
+  } catch (error) { /* ditto */ }
+  return out;
+}
+
+/*
+ * Pure, so the rule is unit-testable without a browser — the same shape as
+ * selectTranslationFormFrame / selectLfAssistantFrame / selectClassicRecordFrame.
+ *
+ * The important asymmetry: a frame that CARRIES identity and never answered is
+ * `inconclusive`, not "no Stop target". Reading a hung gsft_main as an absence
+ * would strand someone inside an impersonated session with no offered way back.
+ */
+function selectImpersonationStateFrame(outcomes) {
+  const answers = (outcomes || []).filter((item) => item && item.ok && item.value);
+  /* Prefer a frame that returned identity: a username, or the platform's own
+   * record of the account to return to. */
+  const identity = answers.find((item) =>
+    item.value.currentUserName || item.value.preferenceOriginal);
+  if (identity) return { frame: identity, inconclusive: false };
+  /* Otherwise the boolean is still readable in the top window, and that alone
+   * is a complete answer to "are you impersonating". */
+  const boolean = answers.find((item) => typeof item.value.isImpersonating === "boolean");
+  const failures = (outcomes || []).filter((item) => item && !item.ok);
+  return {
+    frame: boolean || null,
+    /* A frame that never answered may be the very frame holding the identity. */
+    inconclusive: failures.length > 0,
+  };
+}
+
+async function readImpersonationState(tabId, origin) {
+  const outcomes = await injectInDiscoveredFrames(
+    tabId,
+    { world: "MAIN", func: readImpersonationStateInPage },
+    "read impersonation state",
+    { timeoutMs: IMPERSONATE_PROBE_TIMEOUT_MS }
+  );
+  const answers = outcomes.map((item) => ({
+    frameId: item.frameId,
+    ok: item.ok,
+    value: item.ok
+      ? (item.results || []).map((entry) => entry && entry.result).find((entry) => entry)
+      : null,
+  }));
+  const chosen = selectImpersonationStateFrame(answers);
+  const value = chosen.frame ? chosen.frame.value : null;
+  const isImpersonating = value && typeof value.isImpersonating === "boolean"
+    ? value.isImpersonating : null;
+
+  /*
+   * Stored state is cleared whenever the platform says the session has
+   * returned. Without this a later panel would offer a Stop into a session
+   * that already ended.
+   */
+  if (isImpersonating === false) await forgetImpersonationOriginal(origin);
+
+  /*
+   * Two sources for the way home, and the LIVE platform state wins: another
+   * tool can re-impersonate between our write and this read, which makes the
+   * platform right and our stored value stale.
+   */
+  const preference = value && validImpersonationUserName(value.preferenceOriginal)
+    ? value.preferenceOriginal : "";
+  if (isImpersonating && preference) {
+    await rememberImpersonationOriginal(origin, preference);
+  }
+  const stored = await storedImpersonationOriginal(origin);
+
+  return {
+    ok: true,
+    /* Unknown reads as not impersonating for display, but `inconclusive` says
+     * so, and Stop survives on a stored original either way. */
+    isImpersonating: Boolean(isImpersonating),
+    inconclusive: chosen.inconclusive || isImpersonating === null,
+    currentUserName: (value && value.currentUserName) || "",
+    displayName: (value && value.displayName) || "",
+    /* A boolean. The original account itself never crosses back to the panel. */
+    hasStopTarget: Boolean(preference || stored),
+  };
+}
+
+/*
+ * The one-shot POST. The worker passes a username; this builds the single
+ * fixed same-origin URL itself. Verified contract: keyed by user_name, no
+ * request body at all, 201 on success.
+ */
+async function impersonateInPage(userName) {
+  const url = location.origin + "/api/now/ui/impersonate/" + encodeURIComponent(userName);
+  const headers = { Accept: "application/json", "Content-Type": "application/json" };
+  try {
+    if (typeof g_ck !== "undefined" && g_ck) headers["X-UserToken"] = g_ck;
+  } catch (e) {}
+  try {
+    const res = await fetch(url, { method: "POST", credentials: "same-origin", headers });
+    let body = null;
+    try {
+      body = await res.json();
+    } catch (parseError) {
+      body = null;
+    }
+    const result = (body && body.result) || {};
+    return {
+      ok: res.ok,
+      status: res.status,
+      /* `user` is the ORIGINAL account even when chaining a second
+       * impersonation, so the way home is never lost. It is the string "null"
+       * when there was none. */
+      originalUserName: result.user == null ? "" : String(result.user),
+      impersonatedUserName: result.impersonatedUser == null ? "" : String(result.impersonatedUser),
+    };
+  } catch (error) {
+    return { ok: false, status: 0, failed: true };
+  }
+}
+
+function impersonationFailureMessage(status) {
+  if (status === 400) return "ServiceNow rejected that user ID.";
+  if (status === 401) {
+    return "ServiceNow did not authorize the session change. Refresh the page and sign in again.";
+  }
+  if (status === 403) return "You do not have permission to impersonate on this instance.";
+  if (status === 404) return "ServiceNow does not recognise that user ID.";
+  if (status === 429) {
+    return "ServiceNow is temporarily rate-limiting requests. Wait a moment and try again.";
+  }
+  if (status >= 500) return "ServiceNow could not complete the session change.";
+  return "ServiceNow refused the session change.";
+}
+
+const IMPERSONATE_INDETERMINATE = Object.freeze({
+  ok: false,
+  status: 0,
+  code: "indeterminate",
+  message:
+    "GlideLens could not confirm what happened. The impersonation may or may not have started. " +
+    "Check the ServiceNow user menu — nothing was retried.",
+});
+
+/*
+ * One confirmed action, one POST. Not SN_TABLE_GET, not allFrames, not a
+ * candidate list: the frame is discovered fresh and exactly one of them is
+ * targeted, so a click is structurally incapable of producing two requests.
+ */
+async function runImpersonation(tabId, userName) {
+  if (!validImpersonationUserName(userName)) {
+    /* Refused BEFORE any frame discovery: an invalid value never gets as far
+     * as a token-bearing frame. */
+    return { ok: false, status: 0, code: "validation", message: "That user ID is not usable." };
+  }
+  let frameId;
+  try {
+    frameId = await discoverTokenFrame(tabId);
+  } catch (error) {
+    /* Nothing was sent yet, so this is an ordinary failure rather than an
+     * ambiguous one. */
+    return {
+      ok: false,
+      status: 0,
+      code: "transient",
+      message: "GlideLens could not reach the ServiceNow page. Refresh the tab and try again.",
+    };
+  }
+
+  let results;
+  try {
+    results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        world: "MAIN",
+        func: impersonateInPage,
+        args: [userName],
+      }),
+      IMPERSONATE_POST_TIMEOUT_MS,
+      "impersonation request"
+    );
+  } catch (error) {
+    /* The injection began. Whether the fetch went out is unknowable from here,
+     * and a retry on another frame could impersonate twice. */
+    return IMPERSONATE_INDETERMINATE;
+  }
+
+  const response = (results || []).map((item) => item && item.result).filter(Boolean)[0];
+  if (!response) return IMPERSONATE_INDETERMINATE;
+  /* The page-side fetch itself threw — a navigation mid-flight, most likely.
+   * The request may still have been received. */
+  if (response.failed) return IMPERSONATE_INDETERMINATE;
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status || 0,
+      code: response.status === 401 || response.status === 403 ? "access"
+        : response.status === 429 || response.status >= 500 ? "transient"
+          : "validation",
+      message: impersonationFailureMessage(response.status || 0),
+    };
+  }
+
+  return { ok: true, status: response.status || 200, response };
+}
+
+async function startImpersonation(tabId, origin, userName) {
+  const outcome = await runImpersonation(tabId, userName);
+  if (outcome.ok) {
+    /* Read here, kept here. §6.2's redaction governs what crosses back to the
+     * panel, not what the worker may know. */
+    const original = outcome.response && outcome.response.originalUserName;
+    if (validImpersonationUserName(original)) {
+      await rememberImpersonationOriginal(origin, original);
+    }
+    return { ok: true, status: outcome.status, code: "ok", message: "Impersonation started." };
+  }
+  /* Nothing of the response body, no token, no hostname, no identity. */
+  return { ok: false, status: outcome.status, code: outcome.code, message: outcome.message };
+}
+
+/*
+ * There is no "unimpersonate" endpoint: the platform's way back is to
+ * impersonate the original account. So Stop is the same operation with a
+ * different target, and it carries no target from content code at all.
+ */
+async function stopImpersonation(tabId, origin) {
+  const target = await storedImpersonationOriginal(origin);
+  if (!target) {
+    return {
+      ok: false,
+      status: 0,
+      code: "validation",
+      message: "GlideLens does not know which account to return to. Use the ServiceNow user menu.",
+    };
+  }
+  const outcome = await runImpersonation(tabId, target);
+  if (outcome.ok) {
+    await forgetImpersonationOriginal(origin);
+    return { ok: true, status: outcome.status, code: "ok", message: "Impersonation ended." };
+  }
+  /*
+   * Kept on EVERY failure, definite or ambiguous alike. An indeterminate stop
+   * may have succeeded and the next state probe settles it; a definite refusal
+   * (a 403, a rate limit) leaves the session exactly where it was, and
+   * discarding the target there would take away the only way back GlideLens
+   * can offer. The probe's isImpersonating:false reading is what clears it.
+   */
+  return { ok: false, status: outcome.status, code: outcome.code, message: outcome.message };
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 // Keep the destination beside the ServiceNow tab that initiated the command,
 // rather than appending it to the end of whichever window is currently active.
@@ -5911,6 +6317,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "INJECT_IMPERSONATE" && sender.tab) {
+    /* record_search.js first: the engine reuses its anchor extraction, ranking
+     * and bounded Table API transport rather than carrying copies. Its panel is
+     * deliberately NOT injected — a generic table picker and read-only record
+     * actions do not belong in a flow that changes the session. */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["record_search.js", "impersonate.js", "impersonate_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  /* Read-only, and the only one of the three that answers with anything about
+   * identity. It takes no arguments at all. */
+  if (msg && msg.type === "SN_IMPERSONATE_STATE" && sender.tab) {
+    readImpersonationState(sender.tab.id, impersonationOrigin(sender))
+      .then(sendResponse)
+      .catch(() => sendResponse({
+        ok: false,
+        isImpersonating: false,
+        inconclusive: true,
+        currentUserName: "",
+        hasStopTarget: false,
+      }));
+    return true;
+  }
+  /* Takes a username and nothing else. No URL, method, table, query or body
+   * crosses this boundary; the worker builds the one fixed endpoint itself. */
+  if (msg && msg.type === "SN_IMPERSONATE_START" && sender.tab) {
+    startImpersonation(sender.tab.id, impersonationOrigin(sender), msg.userName)
+      .then(sendResponse)
+      .catch(() => sendResponse(IMPERSONATE_INDETERMINATE));
+    return true;
+  }
+  /* Takes nothing. The destination is resolved from the worker's own private
+   * state, so content code cannot steer a "stop" at an arbitrary account. */
+  if (msg && msg.type === "SN_IMPERSONATE_STOP" && sender.tab) {
+    stopImpersonation(sender.tab.id, impersonationOrigin(sender))
+      .then(sendResponse)
+      .catch(() => sendResponse(IMPERSONATE_INDETERMINATE));
     return true;
   }
   if (msg && msg.type === "SN_RECORD_SEARCH_GET" && sender.tab) {

@@ -32,6 +32,12 @@ walkthrough.
   GlideAjax and JavaScript errors — GlideAjax rows show the Script Include,
   method, parameters and decoded response, so you don't go digging in the
   Network tab.
+- **Impersonate**: find someone to test as by **role** — "who holds
+  `catalog_admin`?" — or by **group**, as well as by name, user ID, email or
+  title, with a direct-or-inherited badge on each role holder. Inactive,
+  locked-out and web-service-only accounts are never offered, and nothing
+  happens without an explicit confirmation. ServiceNow audits impersonation
+  itself.
 
 ---
 
@@ -198,6 +204,7 @@ line is the description shown beside it.
 | Translation Lens | *Audit translations on this form.* A read-only report of which labels, choices, catalog text and messages have a translation in each active language, with every gap linking to the record that would hold it. A separate **Hardcoded text** group lists wording written straight into the surface's client scripts and UI policies instead of being requested with `getMessage`, naming the script and line; it has no translation record to be missing, so it is a review list and is counted apart from every score — but the score is flagged while any exists, and a finding that names its field is shown on that field's own row, so a label translated in every language that a script overwrites at runtime is no longer reported as complete. Works on a classic form, a catalog item's definition form and a Service Portal catalog item; on a Workspace record it offers a link to the record's classic form to run there. |
 | Debug Timeline | *Start recording form activity, GlideAjax calls, and errors* — and, while it is recording, *Stop recording and view captured activity.* Records a single page's `g_form` calls, native field events, GlideAjax and JavaScript errors, then opens a filterable results panel. Each GlideAjax row expands to its Script Include, method, parameters and decoded response alongside the duration, so a call can be read without the Network tab; names that look like secrets are redacted. Best-effort; does not promise named Client Script / UI Policy attribution. |
 | Code Search | *Search verified code and configuration…* Searches all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
+| Impersonate | *Find a user by identity, role or group and start impersonation.* Searches `sys_user` by name, user ID, email, title or exact `sys_id`, by a filterable field discovered from your instance's own dictionary, by **role** or by **group** — including either one alone, so "who holds `catalog_admin`?" or "who is in this group?" is answerable without knowing a name first. Role membership comes from the effective membership table, so grants that arrive through a group or through role containment are included, and each holder is badged **Direct role** or **Inherited role**. Group membership is the group's direct members, as its Group Members list shows them. Inactive, locked-out and web-service-only accounts are never listed, because impersonating one can end your own session. A result opens a confirmation rather than acting; **Stop impersonating** returns you to the account you started from. ServiceNow records impersonation in its own audit log. |
 | Search Sources | *Refresh available Code Search sources.* Re-reads this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
 
 #### Code Search
@@ -379,7 +386,14 @@ produces something meant to leave your browser: a JSON file of a catalog
 item's field text, which you upload to an AI tool of your own choosing. GlideLens
 does not upload it and does not talk to any AI service.
 
-Full detail, including what a Debug Timeline trace can contain and the one place
+Impersonate is the one feature that changes anything on the instance rather
+than in a page, and only ever your own session — never a user record, and only
+after you confirm. ServiceNow audits it as it would from the platform's own
+user menu. No search term, result, role, group or impersonation history is stored; the
+account to return to is held only in the extension's session memory, for the
+one instance it came from, and is gone when the browser closes.
+
+Full detail, including what a Debug Timeline trace can contain and every place
 the extension writes anything: <https://rushipatel92.github.io/GlideLens/privacy.html>.
 
 ---
