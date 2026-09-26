@@ -98,7 +98,10 @@ without one, a hung sibling holds a successful read for the whole ceiling.
 
 Record Lens follows the same single-frame rule through
 `SN_RECORD_SEARCH_GET`. Its metadata and result reads are bounded but repeated,
-so they must not use the fan-out `SN_TABLE_GET` path either.
+so they must not use the fan-out `SN_TABLE_GET` path either. Impersonate reads
+through that same route rather than adding a fourth: its reads have the same
+bounded, repeated shape, which is why `record_search.js` is injected alongside
+it.
 
 ## Command palette
 
@@ -233,6 +236,492 @@ does not replay the broader server prefilter or open a Workspace route.
 
 Table metadata caches only in page memory. A newer search or a closed panel
 invalidates older work so stale results cannot replace the current search.
+
+## Impersonate
+
+`impersonate.js` (a DOM-free engine exporting `globalThis.SNImpersonate`) and
+`impersonate_ui.js` (the panel) are injected on first use through
+`INJECT_IMPERSONATE`, after `record_search.js`, whose anchor extraction,
+ranking, session tracker and Table API transport the engine reuses rather than
+copying. `record_search_ui.js` is deliberately **not** injected: a generic
+table picker and read-only record actions do not belong in a flow that changes
+the session.
+
+**This is the only write in the extension.** Everything else is a GET on the
+token-bearing-frame path. What this changes is the operator's ServiceNow
+session on the instance — not a record, and not something a reload undoes.
+
+**A pick searches, and so does a pause in the name field.** The four pickers
+report *how* their value changed.
+- A **pick** from the list, or a **clear**, is a finished question and runs
+  the search at once. The ✕ button and deleting the text by hand are the same
+  clear. Either one clears as a finished question when a choice was bound, or
+  was until an edit unbound it. Text that never became a choice clears quietly
+  and looks nothing up.
+- An **edit** is the first keystroke that stops the text naming the chosen
+  option. It is someone halfway through typing another value, so it only
+  unbinds the old one. Searching there would fire on every correction, which
+  is why the clear that follows must still withdraw the old answer.
+- **Leaving** the picker ends the edit. A choice that typing unbound is cleared
+  as the ✕ would, unfinished text and all. Text that never replaced a choice
+  stays, with its list closed. It is judged once focus has settled, so the
+  search it starts can give focus back to the control that took it. A window
+  losing focus, or the panel locking the picker for a search, is not leaving.
+- Choosing an attribute **field** is half a condition, so it opens that
+  field's value list instead of searching. Clearing the field searches only if
+  a whole condition went with it. That is either a value held now, or one that
+  was asked and then dropped, without a search, by typing over or re-picking
+  the field.
+- Clearing the last criterion puts the panel back at its start state rather
+  than leaving an answer to a question nobody is asking.
+
+The name field searches once typing has paused for **500 ms**; Enter and
+Search still ask at once and cancel the pending pause. It used to wait for
+Enter, which stopped being obvious once every picker searched on a pick. The
+term is judged by the engine's own `parseSearch` rule, passed in as
+`canSearchTerm`, not by a copy of it. A pause on a term the engine would refuse
+(fewer than three consecutive safe characters) sends nothing and says what is
+needed, in the neutral status style rather than as a validation error. It also
+withdraws the list on screen, because that list answered a longer term.
+Emptying the field is the same finished question as clearing a picker. A pause
+that changed nothing, such as a trailing space, asks nothing. The comparison is
+the whole trimmed request, so a picker edited in the meantime still counts as a
+change.
+
+A search disables every control **except the name field**, which only a
+session-changing request locks. Locking it would swallow the keystrokes that
+follow a pause, and the next pause supersedes the read in flight anyway. A
+disabled control loses focus, so focus is handed back to a picker afterwards
+without reopening the list just used.
+
+### The verified endpoint
+
+```
+POST /api/now/ui/impersonate/<user_name>
+headers: Accept: application/json, Content-Type: application/json, X-UserToken: <g_ck>
+no request body
+→ 201 Created
+{"result":{"user":"<original>","impersonatedUser":"<now>"}}
+```
+
+It is keyed by **`user_name`**, not by a sys_id, and needs no body at all. The
+username is `encodeURIComponent`-ed because ServiceNow user IDs are commonly
+email-shaped. `result.user` names the **true original** even when impersonating
+a second user while already impersonating, so the way home survives chaining;
+when there was no original it is the **string** `"null"`, which is never stored
+and never POSTed. There is no "unimpersonate" endpoint: Stop is the same
+operation aimed at the original account.
+
+### Four routes, and none of them is a proxy
+
+| Route | Takes | Returns |
+| --- | --- | --- |
+| `SN_IMPERSONATE_STATE` | nothing | `{ ok, isImpersonating, currentUserName, displayName, hasStopTarget, inconclusive }` |
+| `SN_IMPERSONATE_RECENT` | nothing | `{ ok, sysIds }` |
+| `SN_IMPERSONATE_START` | `{ userName }` | `{ ok, status, code, message }` |
+| `SN_IMPERSONATE_STOP` | nothing | `{ ok, status, code, message }` |
+
+No URL, method, table, query or body crosses that boundary. The worker builds
+the one fixed same-origin URL itself, and **Stop carries no target**: the
+destination is resolved from the worker's own state, keyed per origin in
+`chrome.storage.session`, so content code cannot direct a "stop" at an
+arbitrary account. `result.user` is extracted and kept inside the worker; the
+panel learns only a `hasStopTarget` boolean.
+
+Username validation exists to catch **bugs**, not to sanitise — encoding is
+what makes the URL safe. It is deliberately not a character allowlist:
+`[A-Za-z0-9._-]+` would reject email-shaped and non-Latin user IDs, both of
+which ServiceNow issues routinely, and the failure would surface first on a
+customer instance with international users. Non-empty, at most 40 characters
+(the verified `max_length`), no control characters, never `"null"`, and passed
+through byte for byte — this platform distinguishes identifiers differing only
+by a trailing space.
+
+### Fresh frame, exactly once, never retried
+
+A mutation must **not** reuse the cached token-frame resolution that is safe
+for repeated reads, and must not go through `codeSearchFrameGet`, whose 401
+re-resolution and stale-frame recovery would send a second request. The frame
+is discovered fresh per confirmed action and exactly one is targeted, so a
+click is structurally incapable of producing two POSTs.
+
+**Once `executeScript` begins, anything other than a response is
+`indeterminate`** — a throw, a timeout, a worker teardown, a navigation, a lost
+result, a page-side fetch that threw. Never retry: not on another frame, not on
+401, not after cache eviction. The one second request is Stop's dialog
+fallback, which runs only after a definite 403 has left the session untouched
+(see below). The user is told the impersonation may have
+started and to check the ServiceNow user menu. Only a **definite** success
+reloads the tab; an indeterminate one must not, because the reload would
+destroy the one place the ambiguity is explained.
+
+### The two frames disagree about identity
+
+`NOW.user.isImpersonating` is a real boolean and is present in **both** the top
+window and `gsft_main`. The current **username** (`g_user.userName`) and the
+`user.impersonation` preference are `gsft_main`-only. So
+`SN_IMPERSONATE_STATE` discovers concrete frames, probes them in the MAIN world
+(never `allFrames`), and chooses with the pure
+`selectImpersonationStateFrame(outcomes)` — the same idiom as
+`selectTranslationFormFrame` and `selectLfAssistantFrame`, so the rule is
+unit-testable. A frame that returned identity wins; the top window's boolean is
+the fallback and names nobody. A frame that **carries identity and never
+answered is `inconclusive`, not "no Stop target"** — reading that silence as an
+absence would strand someone inside an impersonated session with no offered way
+back.
+
+**A Service Portal page has no frame that can answer.** Measured on `/sp` and
+`/esc`: no `NOW.user`, no `g_user`, and `NOW.user_impersonating` is present but
+`undefined` whether or not the session is impersonated. The page does name the
+current user ID as `NOW.user_name`, which the reader takes as the identity. The
+boolean and the way home come from `fetchImpersonationStateInPage`, which runs
+only when the page cannot answer. It GETs a `.do` name that does not exist,
+because every classic page's server-rendered header carries
+`window.NOW.user.isImpersonating = <bool>;` and
+`CustomEvent.fireTop('user.impersonation', '<original>')`, and a missing page is
+the cheapest one that does: about 30 KB in about 190 ms, where a real form was
+126–184 KB and up to 2.8 s. It returns those two parsed facts, never the page.
+A login redirect, an error status or a missing marker leaves the state unknown,
+never "no", so it cannot clear a stored way home. Before this, the portal read
+came back unknown, unknown displayed as "not impersonating", and Stop vanished.
+
+**A Workspace page answers half.** Measured on `/now/sow/home` (one frame, no
+`gsft_main`): `NOW.user` holds `isImpersonating` and `userID` and nothing else,
+and there is no `g_user`. So the page says *that* you are impersonating but
+names neither who you are now nor the way home. The header fetch therefore also
+runs when a frame reports `isImpersonating: true` and no frame supplied the
+way home. It is asked for the way home **only**: the frame's boolean stands
+even if the header, read a moment later, disagrees. The fetch's "no" clears
+nothing in that case. Before this, Stop was never offered on a Workspace page
+after a first impersonation. The endpoint's `user` is `"null"` then, so nothing
+had been stored either, and the panel told the user to find the ServiceNow user
+menu. The panel still names nobody there ("another user"), because the page
+exposes no user ID. A live run on the PDI covered this path end to end: typed
+search, Impersonate, and Stop, all from the Workspace page.
+
+The way home has two sources and the **live platform state wins**: the
+`user.impersonation` preference is fresher than anything we stored, because
+another tool can re-impersonate between our write and our next read. Stored
+state is cleared on a successful Stop and whenever a probe reports
+`isImpersonating: false`, but **not** on an indeterminate Stop — we do not know
+that it succeeded, and the next probe settles it.
+
+**A Stop refused with 403 goes round through ServiceNow's classic dialog.**
+Reported on a customer instance: while impersonating an external supplier
+contact, Stop's POST came back 403, and the platform's own End Impersonation
+failed there too. The PDI's external account does **not** reproduce the 403
+(its Stop is accepted with 201), so the cause is that instance's configuration.
+The stock `impersonate_dialog` UI page does not use the REST endpoint. It is
+baseline and unmodified on both instances, with the same sys_id. While you
+impersonate, its recent list always offers the account the session started
+from **first**, valued with `gs.getImpersonatingUserName()`. Every other entry
+is valued with a sys_id. Its processing script calls
+`session.onlineUnimpersonate()` when that first value comes back.
+
+So `stopThroughDialog` runs after a **definite 403 only**, and at most once
+per Stop. That refusal changed nothing, so this is a second, different request,
+not a retry of an ambiguous one. An indeterminate Stop never reaches it.
+`unimpersonateThroughDialogInPage` reads the dialog and submits only if its
+first entry is the worker's stored way home. The form goes back as rendered,
+token included, with that entry chosen and the user search empty, which is what
+choosing it and pressing OK sends. The destination must be the same origin's
+`ui_page_process.do`, and the redirect is not followed. Nothing submitted
+leaves the 403 standing. Once something was submitted, only the session header
+decides: "not impersonating" is success, "still impersonating" is a definite
+failure, and no answer is indeterminate. A live PDI run of this exact page
+function ended an impersonation of the external account, confirmed by the
+header and the portal's own `NOW.user_name`. The owner then confirmed the
+whole path on the customer instance: a Stop refused with 403 ended the
+impersonation in one click.
+
+A refusal that still reaches the panel is worded as a Stop's, never as the
+start's "You do not have permission to impersonate", which is wrong from
+someone who just did. After any **definite** refusal, and whenever there is no
+Stop at all, the panel also offers the dialog in a new tab through `OPEN_URL`
+as the last resort. That button only opens it, and the user chooses their own
+account there. An indeterminate Stop offers nothing, because the panel stays
+locked until the outcome is known.
+
+**snUtils' detection must not be copied as it is.** It regex-scrapes a
+`<script>` tag and, on a miss, fires a **synchronous** XHR at a deliberate 404
+and regexes the response. Our reader runs in the page, where a blocking call
+freezes the tab. So the in-page reader reads the already-parsed DOM and never
+calls out. The portal fallback reads the same kind of page, but as a separate,
+async, timeout-bounded GET that runs only when the page itself cannot answer.
+
+### Recent impersonations are the platform's list
+
+While no question is being asked, the panel shows the people you recently
+impersonated, as the platform's own Impersonate dialog does. GlideLens keeps no
+copy. The list is read when the panel opens, from
+`GET /api/now/ui/impersonate/recent`, which is backed by the
+`recent.impersonations` user preference. That preference holds a comma-separated
+list of user IDs. On a customer instance the endpoint returned
+`{ result: [ { user_sys_id, user_name, user_display_value } ] }` (six rows, no
+duplicates), and it omits `avatar` entirely when that is empty. GlideLens's own
+Stop impersonates back to the original account. On the PDI test account, whose
+list the harness's POSTs had filled, a Stop did **not** add the account to its
+own list.
+
+`SN_IMPERSONATE_RECENT` is a fixed GET that takes nothing. It returns only
+validated, deduplicated sys_ids, at most ten. Names do not cross back, because
+the list records whoever you impersonated, not whoever is still safe to
+impersonate. `readRecentUsers` re-reads those ids through the search's own
+`sys_user` read, so the query carries eligibility clauses and every row is
+re-checked. An account deactivated or locked since then is counted in a note
+and never named. The endpoint's order is kept, so the list reads as the
+platform's own dialog does; the two were compared side by side on a customer
+instance. That is **not** the preference's order. The preference is
+newest-first, and ServiceNow rewrites it when an impersonation **ends**, not
+when it starts. On the PDI it read `B,A` while the endpoint returned `A,B`.
+While you are impersonating, the endpoint still returns the **original**
+account's list (measured on a Workspace page), so the list stays correct then.
+
+A recent row is built by the same function as a result row, and has the same
+confirmation. `onImpersonate` accepts a row from either list, the current
+search's results or the verified recent list. Both are cleared with the panel.
+The list lands only on the start state. If it arrives after a search began, or
+while a confirmation is open, it is held until the panel returns to the start.
+A list that cannot be read is simply not shown.
+
+### Why the searching is shaped the way it is
+
+`sys_user_has_role` is the **effective** membership table — direct grants, role
+containment and group-derived grants alike. `sys_user.roles` is direct-only,
+incomplete even at that, and substring-prone (`rolesLIKEitil` hits
+`itil_admin`), so it is never read. `accumulated_roles` is unusable in two
+different ways: querying it 403s the whole request, and requesting it as a
+field is **silently omitted** — a third behaviour beyond the known
+blank-versus-missing rule. `sys_user_role` has no `active` field, so no
+active-role filter may be invented.
+
+Eligibility is a **safety rule, not a filter**: ServiceNow documents that
+impersonating an inactive or locked account can terminate the operator's own
+session, so there is no "include unavailable users" toggle and an ineligible
+account must never look selectable. `user_nameISNOTEMPTY` is doubly required
+now that the endpoint is keyed by that field.
+
+The clause list is `active=true^locked_out=false^user_nameISNOTEMPTY^web_service_access_only=false^ORweb_service_access_onlyISEMPTY`,
+and that last term is not pedantry. **`web_service_access_only=false` alone is
+wrong in the direction that hides almost everybody.** Measured on the PDI: 642
+active users, but only 83 match `=false` — on more than 500 of them the field
+is **empty**, not false, and `=false` does not match empty. Neither does
+`!=true`, which returns the same 83. With the naive clause, a search for
+`abel.tuter` — the canonical demo user — returned nothing at all, and a role
+search reported 14 holders where there were 29.
+
+**A read cannot reveal this.** `sysparm_display_value=all` renders the empty
+field as the string `"false"`, so the row looks exactly like one that would
+match; only a query tells the two apart. That is the blank-versus-omitted trap
+in a third form, alongside the two `accumulated_roles` shows. `active` and
+`locked_out` are *not* affected — neither is ever empty on this instance — so
+the OR group is needed for this one field only.
+
+Because `^OR` binds to the condition immediately before it, that OR group must
+be the **last** thing in the query: anything appended after it falls inside the
+OR and stops being required. So every builder emits
+`<selector> ^ <attribute> ^ <eligibility>` in that order, and
+`eligibilityClauses` throws if the OR-group clause is ever not last.
+
+A typed identity term is anchored on its longest safe run, as Record Lens
+does — except that an **email-shaped term anchors on its local part**. The
+longest run of `t.okonkwo@example.com` is the domain, which every colleague
+shares, so the unordered 50-row window would fill with other people and the
+complete-term check would then find nobody; user IDs are routinely
+email-shaped, so this is the ordinary case. Only the anchor moves: rows are
+still verified against the complete term.
+
+Four query orders, and one rule behind them: **every condition narrows before
+the one cap.** **group-first** whenever a group is chosen, **role-first** for a
+role without a group, **user-first** for text alone, and **attribute-first**
+for an attribute alone. An exact `sys_id` is one row that nothing can crowd
+out, so it is always user-first. A membership read carries the text, the
+attribute and eligibility as dot-walks through `user`
+(`<selector> ^ <text> ^ <attribute> ^ <eligibility>`), so its window is spent
+only on rows that can appear. The following `sys_user` read by id applies
+eligibility and the attribute again, and every row is checked for the complete
+term, because a misspelt dot-walk is silently ignored rather than refused.
+
+Text used to win whenever it was present: a 50-row unordered text read,
+followed by asking which of those held the role or sat in the group. **That
+lost people.** Measured on a customer instance, one common surname matched
+237 eligible users. The one member of the chosen group was not among the 50 read, so a
+group whose own member list showed him answered "nobody". With the text
+dot-walked onto the member read, it returned exactly him, which matches the
+ground truth checked against all 237. For `itil` it returned exactly the 26
+holders a full intersection finds. A nonsense term returned zero rows, so the
+dot-walked text is applied, not ignored, and after `group=` or
+`role=…^state=active` every row stayed inside that group or role. The same
+check verified eligibility dot-walks on `sys_user_has_role` for three surnames:
+26 of 41, 31 of 67 and 5 of 7 holders were eligible, each set identical to a
+direct `sys_user` read.
+
+The attribute is an exact condition, never a `LIKE`, so the three-character
+minimum never applies to it. It enters the first read of every order, never as
+a post-filter after a cap, which would quietly shrink a capped page.
+
+A capped membership read means **opposite things** depending on whether it is
+an intersection or the population, and the rules must not be reconciled into
+one:
+
+- **an intersection** (a group's members asked about a role, or an exact
+  `sys_id` asked about a group or a role): the cap corrupts the *filter*. A
+  candidate cut off by it is indistinguishable from one that genuinely lacks
+  the membership, so that filter is reported **`unavailable`**, never as
+  no-match.
+- **a population read** (role-first, group-first): the cap merely truncates
+  the *list*. Every row returned is a genuine holder or member, so partial
+  results are honest — shown with a narrowing message and **no claimed
+  total**.
+
+An intersection asks about known candidates, so its bound is
+`max(100, 2 × candidates)`. That leaves room for a group's 100 members to hold a
+role twice over (a direct and an inherited row) without the filter going
+unavailable.
+
+Completeness and the displayed number come from different places. The `cap + 1`
+probe answers only *"did I see every membership row?"*; the number shown is the
+count of **deduplicated, eligibility- and attribute-filtered user rows**, never
+a membership row count, because duplicate rows collapse and the `sys_user` read
+then removes ineligible accounts. Role-only reads every collected id up to the
+membership cap of **100**, not the 50-row text-candidate window — applying the
+text window there would silently halve the population before counting. Duplicate
+membership rows are normal (`itil`: 70 rows, 66 users); a **direct** row wins
+over an inherited one. `granted_by` is empty on the PDI and one unreadable
+value on every customer row, and `included_in_role` is empty, so a badge may
+say *direct* or *inherited* but must **never** claim "via group X".
+
+Every order shows at most 20 rows and words the result the same way, whatever
+window it read. A known total that fits reads `7 eligible users`. A known total
+that does not fit reads `Showing 20 of 37 eligible users. Narrow the search to
+see the rest`. A capped read claims no total:
+`Showing 20 eligible users. More may exist — narrow the search`. The read window
+is never named. Naming it once put "the first 100" beside a list of 20, which
+read as two different limits. An empty capped read is "No eligible users among
+those read", never "No eligible users matched". A text search can fill its
+window with anchor matches that all fail the complete term, so an empty page is
+not evidence that nobody matches.
+
+### Groups
+
+`sys_user_grmember` is `user` and `group` and nothing else — no state, no
+inherited flag — and it is **direct** membership, which is what the platform's
+own Group Members list shows. Rows are not members: one customer group had 230
+rows with an **empty** `user`, and duplicate (user, group) rows occur, so rows
+are validated and deduplicated before anything is counted. Group membership
+carries no badge; every row that survives is a member by construction.
+
+A group outranks a role when both are chosen without text. It is the narrower
+population — a median of 3 members across 12,359 groups on a customer
+instance — and, unlike the role table, its read can carry **eligibility and
+the attribute as dot-walks** through `user`
+(`group=<id>^user.active=true^…^user.web_service_access_only=false^ORuser.web_service_access_onlyISEMPTY`,
+both halves of the OR group walked, the group still last). That matters
+because only 40–60% of a measured group's members were eligible: without the
+dot-walk, half of a 100-row cap would be spent on people who can never appear.
+The dot-walked set was verified identical to a direct `sys_user` eligibility
+read on the PDI and on four customer groups of ~380 members each.
+
+**The dot-walk is never trusted alone.** A misspelt dot-walked field is not an
+error: the condition is **silently ignored** and the whole group comes back
+unfiltered. So the `sys_user` read that follows applies eligibility and the
+attribute again, and the client-side eligibility check runs after that. The
+largest group measured had 41,580 members, so the group-first cap is routine
+rather than exceptional, and is worded as the role-only cap is.
+
+The picker searches **names only** and turns **each typed word into its own
+AND-ed `LIKE`** — up to four, longest first, ignoring single characters —
+where the role picker uses one anchor. The difference is
+measured: on 14,549 groups the single longest word matched hundreds or
+thousands — `Service` 713, `Approval` 4,279 — against 96 and 168 with every
+word of the phrase, and a description match would crowd the named group out
+of the 50-row window entirely. Rows are then verified per word rather than
+against the complete term, so `Acme-EU-Service Desk` is found from
+`Acme EU Service Desk`. There is **no `active` filter**: 2 of the measured
+groups had `active` empty, which `active=true` hides — the
+`web_service_access_only` trap again. Inactive groups are offered, labelled,
+and ranked after active groups of the same match quality, because their
+members are still members.
+
+### The attribute filter is discovered, never named
+
+The stock `sys_user.country` is a three-character code with a real choice list,
+but a real instance is free to relabel it and keep the field a person calls
+"Country" in a custom column pointing at `core_country` — a **Reference**, not
+a choice-backed String. So the field list is read from the live `sys_user`
+dictionary, labelled by its live `column_label`, and the value list dispatches
+on type: `sys_choice` for a choice-backed string, the referenced table for a
+reference. Nothing is named in code, and an empty or unreadable list disables
+the control rather than falling back to a hardcoded list that would confidently
+offer the wrong field.
+
+`sys_choice` carries three defects that all have to be filtered: 1,387 rows
+across six languages, 222 of the 232 English rows inactive, and one active row
+whose label is a raw `javascript:gs.getMessage(...)` expression with the value
+`NULL_OVERRIDE`. The read is language-scoped and active-only, and every row
+passes the same `javascript:`-scheme refusal this codebase already applies to a
+list link — the platform evaluates such a value instead of matching it, and
+encoding the URL does not stop it.
+
+### Panel
+
+Record Lens's visual language, modal overlay and keyboard model, with one
+difference: the panel has **no `innerHTML` at all**, not even for its static
+shell. The values on screen are real people's names, titles and email
+addresses read from an instance we do not control, so leaving no markup path is
+one fewer thing a test has to prove is static.
+
+**A row click never impersonates.** Only the labelled button enters a
+confirmation, which repeats the identity in full, says the instance session
+will change, and disables while in flight so a second click, Enter, rerender or
+late callback cannot send a second request.
+
+The confirmation also lists the person's roles, read by `readUserRoles` after
+it opens. **Start** never waits for them: the roles help you choose a test
+identity, and the safety checks do not depend on them. The read uses the
+effective table a role search reads, with `user=<id>^state=active`,
+deduplicated, and a direct row wins. The bound is 1,000 rows, with the
+`cap + 1` probe saying when the list is incomplete.
+
+Nearly every role in that table is inherited, because roles are normally
+granted through groups, so a direct-versus-inherited split hid the roles that
+matter behind a count. The confirmation shows the roles someone **assigned**
+instead: every direct grant, contained or not, and each inherited role that no
+other role the person *holds* contains. Containment comes from
+`sys_user_role_contains` (`role` is the parent, `contains` the role it brings),
+read with `roleIN<held ids>` 100 ids at a time — about 400 in one GET answered
+414 — and a 1,000-row bound per read. Only when the person holds an inherited
+role, since nothing else can be set aside. On a customer instance, ordinary
+accounts held 59–133 effective roles and 10–14 assigned, 2–3 of them direct;
+an admin held 328 and 22. The panel lists the assigned roles in full, names the
+direct ones and says the rest came "through groups", and puts the roles that
+come with them behind a `<details>` disclosure. "Through groups" is measured:
+57 of 58 top-level inherited roles were granted by the person's own groups.
+**No group is ever named** — `granted_by` is empty on the PDI and one
+unreadable value on every customer row, and `included_in_role` is empty. A
+containment cycle that nothing assigned reaches is assigned too, one role at a
+time, so every role behind the disclosure really does come with a listed one.
+
+"Assigned" is claimed only from a complete picture. A capped role read, or a
+containment read that fails, reaches its bound or returns a blank column —
+an ACL, not an absent edge — falls back to the direct-versus-inherited split
+with a note, because one lost edge would promote a bundled role to assigned. A
+name that comes back blank or as a bare sys_id is counted, never printed, and
+still takes part in containment. Each read carries a per-confirmation
+sequence, so a late answer for one person cannot land on another person's
+confirmation. Escape layers: an open menu, then
+the confirmation, then the panel — and it is inert while a request is out,
+since closing would hide the only place the outcome is reported. The header
+and footer close buttons obey the same lock. Cancelling a confirmation redraws
+the list it came from, which detaches the button that opened it, so focus goes
+to that button's replacement in the same row. **Stop** waits for a running
+search like every other control, and supersedes any read still out, because
+its outcome is reported only in the status line that a late search would
+repaint. Entering a
+confirmation supersedes reads already in flight, so one cannot land and repaint
+over it. Changing the attribute **field** discards the selected **value**: a
+value from the previous field would otherwise reach a query as a valid-looking
+condition on the wrong column.
 
 ## Translation Lens
 

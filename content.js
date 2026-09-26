@@ -5395,6 +5395,18 @@ function buildCommands() {
       },
     },
     {
+      id: "impersonate",
+      label: "Impersonate",
+      description: "Find a user by identity, role or group and start impersonation",
+      keywords: [
+        "user", "username", "email", "role", "group", "member", "country", "test",
+        "impersonator", "switch user",
+      ],
+      /* Tools, not Record: it changes the session, not the open record. */
+      group: "Tools",
+      run: openImpersonate,
+    },
+    {
       id: "refresh-code-search-coverage",
       label: "Search Sources",
       description: "Refresh available Code Search sources",
@@ -6319,6 +6331,355 @@ async function openRecordSearch() {
       }));
     },
   });
+}
+
+/* =====================================================================
+ * IMPERSONATE
+ *
+ * Orchestration only. The engine is impersonate.js, the panel is
+ * impersonate_ui.js, and the single POST that changes the session lives in
+ * background.js behind three narrow routes — this file never names a URL, a
+ * method or a body, and never learns which account a Stop would return to.
+ *
+ * Reads go through the same bounded token-bearing-frame transport Record Lens
+ * uses, which is why record_search.js is injected alongside.
+ * ===================================================================== */
+
+/* Pinned here so a rename in the panel cannot silently half-wire this flow. */
+const IMPERSONATE_UI_METHODS = [
+  "open",
+  "showSearchBusy",
+  "showResults",
+  "showError",
+  "showConfirmation",
+  "showMutationState",
+  "showCurrentState",
+  "showRecent",
+  "close",
+  "isOpen",
+];
+
+let impersonateSession = null;
+/*
+ * A second tracker for the three pickers. Sharing one with the search would
+ * mean a suggestion lookup silently discarding a search already in flight, and
+ * a superseded lookup rendering "no matches" — which is a different and
+ * untrue statement from "this was superseded".
+ */
+let impersonateLookupSession = null;
+/* The list the panel is currently showing. A confirmed row is re-checked
+ * against it before anything is sent, so a stale row from a superseded search
+ * can never become the target. */
+let impersonateRenderedResults = [];
+/* ServiceNow's recent-impersonations list, as verified for this panel. A
+ * confirmed row may come from here too: it was read through the same
+ * eligibility gate as a search, in this panel's lifetime. */
+let impersonateRecentUsers = [];
+/* Loaded value lists, per attribute field, so typing filters what was already
+ * read instead of re-reading it on every keystroke. Cleared with the panel. */
+let impersonateValueCache = null;
+
+async function ensureImpersonateLoaded() {
+  if (globalThis.SNImpersonate && globalThis.SNImpersonateUI) return true;
+  const response = await chrome.runtime.sendMessage({ type: "INJECT_IMPERSONATE" });
+  if (!response || !response.ok) {
+    throw new Error((response && response.error) || "Couldn't load Impersonate.");
+  }
+  const engine = globalThis.SNImpersonate;
+  const ui = globalThis.SNImpersonateUI;
+  if (!engine || !ui) throw new Error("Impersonate did not load in this frame.");
+  /* Validate both globals after injection rather than assuming the files ran:
+   * a half-loaded panel would take a click and do nothing with it. */
+  const missing = IMPERSONATE_UI_METHODS.filter((name) => typeof ui[name] !== "function");
+  if (missing.length) throw new Error("The Impersonate panel is incomplete.");
+  return true;
+}
+
+/*
+ * A definite success only. An indeterminate outcome never reaches here,
+ * because reloading would destroy the one place the ambiguity is explained.
+ * The top frame is what has to reload: the palette often runs in gsft_main,
+ * and reloading that alone would leave the shell showing the old identity.
+ */
+function reloadAfterSessionChange() {
+  setTimeout(() => {
+    try {
+      const top = window.top || window;
+      top.location.reload();
+    } catch (error) {
+      /* Cross-origin top, which ServiceNow's own frames are not, but a portal
+       * embedded elsewhere could be. Reloading this frame is still honest. */
+      try { location.reload(); } catch (inner) { /* nothing left to try */ }
+    }
+  }, 700);
+}
+
+/*
+ * ServiceNow's own recent-impersonations list, shown while the panel waits for
+ * a question. The worker hands back ids only, and every account is re-read
+ * through the search's eligibility gate, so one locked since it was last used
+ * is left out rather than offered. A list that cannot be read is simply not
+ * shown: it is a shortcut, and nothing else depends on it.
+ */
+async function loadImpersonateRecent(ui, engine, isClosed) {
+  try {
+    const recent = await chrome.runtime.sendMessage({ type: "SN_IMPERSONATE_RECENT" });
+    if (isClosed() || !recent || !recent.ok || !Array.isArray(recent.sysIds)) return;
+    if (!recent.sysIds.length) return;
+    const found = await engine.readRecentUsers(recent.sysIds, {
+      origin: location.origin,
+      shouldStop: isClosed,
+    });
+    if (isClosed() || found.stale) return;
+    impersonateRecentUsers = found.users || [];
+    ui.showRecent(found);
+  } catch (error) {
+    /* Not being able to read the list is not worth a message. */
+  }
+}
+
+async function refreshImpersonateState(ui) {
+  try {
+    const state = await chrome.runtime.sendMessage({ type: "SN_IMPERSONATE_STATE" });
+    if (!ui.isOpen()) return;
+    ui.showCurrentState(state || null);
+  } catch (error) {
+    /* Not knowing the state is not a reason to refuse the search. */
+    if (ui.isOpen()) ui.showCurrentState(null);
+  }
+}
+
+async function openImpersonate() {
+  try {
+    await ensureImpersonateLoaded();
+  } catch (error) {
+    showToast(String((error && error.message) || error), true, 7000);
+    return;
+  }
+  const engine = globalThis.SNImpersonate;
+  const ui = globalThis.SNImpersonateUI;
+  if (!impersonateSession) impersonateSession = engine.createSessionTracker();
+  if (!impersonateLookupSession) impersonateLookupSession = engine.createSessionTracker();
+  impersonateRenderedResults = [];
+  impersonateRecentUsers = [];
+  impersonateValueCache = new Map();
+  /* Per panel: a recent list still being read when this panel closes must
+   * not land in the next one. */
+  let panelClosed = false;
+
+  /* Starting another search, changing or clearing the role or the group,
+   * changing or clearing the attribute field or its value, and closing the
+   * panel all supersede the search in flight, so a late result can never
+   * repaint a newer question. */
+  const runCurrent = (operation) => {
+    const sessionId = impersonateSession.next();
+    return operation(() => !impersonateSession.isCurrent(sessionId));
+  };
+
+  /* Picker lookups supersede each other, and nothing else. */
+  const runLookup = (operation) => {
+    const sessionId = impersonateLookupSession.next();
+    return operation(() => !impersonateLookupSession.isCurrent(sessionId));
+  };
+
+  const schemaFor = (isStale) => engine.resolveUserSchema({
+    origin: location.origin,
+    shouldStop: isStale,
+  });
+
+  ui.open({
+    onCancel: () => {
+      panelClosed = true;
+      impersonateSession.cancel();
+      impersonateLookupSession.cancel();
+      impersonateRenderedResults = [];
+      impersonateRecentUsers = [];
+      impersonateValueCache = null;
+    },
+    /* The engine's own rule, so the name field never sends a term the
+     * search would refuse. */
+    canSearchTerm: (term) => {
+      const parsed = engine.parseSearch({ term });
+      return parsed.ok ? { ok: true } : { ok: false, message: parsed.error };
+    },
+    onRoleChanged: () => impersonateSession.cancel(),
+    onGroupChanged: () => impersonateSession.cancel(),
+    onAttributeFieldChanged: () => impersonateSession.cancel(),
+
+    onFindRoles: (input) => runLookup(async (isStale) => {
+      const found = await engine.findRoles(input, { shouldStop: isStale });
+      if (isStale() || found.stale) return { options: [] };
+      return {
+        options: (found.roles || []).map((role) => ({
+          label: role.name,
+          hint: role.description,
+          value: role.sysId,
+        })),
+        note: found.truncated ? "More roles match — keep typing to narrow." : "",
+      };
+    }),
+
+    onFindGroups: (input) => runLookup(async (isStale) => {
+      const found = await engine.findGroups(input, { shouldStop: isStale });
+      if (isStale() || found.stale) return { options: [] };
+      return {
+        options: (found.groups || []).map((group) => ({
+          label: group.name,
+          /* Still offered -- its members are still members -- but never
+           * mistakable for an active group. */
+          hint: group.active
+            ? group.description
+            : "Inactive group" + (group.description ? " · " + group.description : ""),
+          value: group.sysId,
+        })),
+        note: found.truncated ? "More groups match — keep typing to narrow." : "",
+      };
+    }),
+
+    onFindAttributeFields: (input) => runLookup(async (isStale) => {
+      const schema = await schemaFor(isStale);
+      if (isStale()) return { options: [] };
+      const needle = String(input || "").trim().toLowerCase();
+      /* Filtered locally and never truncated: the discovered list is short
+       * enough to hold, and capping it could hide the one custom field an
+       * instance actually stores what you are looking for in. */
+      const options = (schema.attributeFields || [])
+        .filter((field) => !needle ||
+          field.label.toLowerCase().includes(needle) ||
+          field.name.toLowerCase().includes(needle))
+        .map((field) => ({
+          label: field.label,
+          hint: field.name,
+          value: field.name,
+          type: field.type,
+        }));
+      return { options };
+    }),
+
+    onFindAttributeValues: (fieldOption, input) => runLookup(async (isStale) => {
+      if (!fieldOption) return { options: [], note: "Choose a field first." };
+      const schema = await schemaFor(isStale);
+      if (isStale()) return { options: [] };
+      const field = (schema.attributeFields || [])
+        .find((item) => item.name === fieldOption.value);
+      if (!field) return { options: [], note: "That field is no longer offered here." };
+      const term = String(input || "").trim();
+      const cached = impersonateValueCache && impersonateValueCache.get(field.name);
+      /* A complete list is filtered here; a capped one is re-read with the
+       * term, because filtering the part that happened to fit would only ever
+       * search that part. */
+      const loaded = cached && !cached.truncated
+        ? cached
+        : await engine.loadAttributeValues(field, {
+          schema,
+          origin: location.origin,
+          shouldStop: isStale,
+          term,
+        });
+      if (isStale() || loaded.stale) return { options: [] };
+      if (impersonateValueCache && !loaded.truncated) {
+        impersonateValueCache.set(field.name, loaded);
+      }
+      const needle = term.toLowerCase();
+      const values = needle
+        ? (loaded.values || []).filter((item) => item.label.toLowerCase().includes(needle))
+        : (loaded.values || []);
+      return {
+        options: values.map((item) => ({ label: item.label, value: item.value })),
+        note: loaded.truncated
+          ? "More values exist than can be listed — type to search them."
+          : "",
+      };
+    }),
+
+    onSearch: (request) => runCurrent(async (isStale) => {
+      const parsed = engine.parseSearch(request);
+      if (!parsed.ok) {
+        const error = new Error(parsed.error);
+        error.code = parsed.code || "validation";
+        throw error;
+      }
+      const schema = await schemaFor(isStale);
+      if (isStale()) return { stale: true };
+      const result = await engine.runSearch(parsed, {
+        origin: location.origin,
+        shouldStop: isStale,
+        schema,
+      });
+      if (isStale() || result.stale) return { stale: true };
+      impersonateRenderedResults = result.results || [];
+      return result;
+    }),
+
+    /* The confirmation's roles. Read-only, and the engine validates the
+     * sys_id before any query is built from it. */
+    onFindUserRoles: (user) => engine.readUserRoles(user && user.sysId, {
+      origin: location.origin,
+      shouldStop: () => panelClosed,
+    }),
+
+    onOpenUser: (user) => {
+      try {
+        chrome.runtime.sendMessage({
+          type: "OPEN_URL",
+          url: engine.buildUserUrl(location.origin, user),
+        });
+      } catch (error) {
+        showToast("That result has no usable record link.", true);
+      }
+    },
+
+    /*
+     * The only thing that crosses to the worker is a username, and only after
+     * the chosen row has been found again in a list this panel verified: the
+     * current search's results, or the recent list. Nothing is re-read from
+     * the DOM, and no table, URL, query or method is named here or anywhere
+     * in this file.
+     */
+    onImpersonate: async (user) => {
+      const chosen = (impersonateRenderedResults || [])
+        .concat(impersonateRecentUsers || []).find((item) =>
+        item.sysId === (user && user.sysId) && item.userName === (user && user.userName));
+      if (!chosen) {
+        return {
+          ok: false,
+          code: "validation",
+          message: "That result is no longer part of the current list. Search again.",
+        };
+      }
+      const valid = engine.validateUserName(chosen.userName);
+      if (!valid.ok) return { ok: false, code: valid.code, message: valid.error };
+      const outcome = await chrome.runtime.sendMessage({
+        type: "SN_IMPERSONATE_START",
+        userName: valid.userName,
+      });
+      if (outcome && outcome.ok) reloadAfterSessionChange();
+      return outcome || { ok: false, code: "indeterminate", message: "" };
+    },
+
+    /* Carries no target. The worker knows where home is; this file does not. */
+    onStop: async () => {
+      const outcome = await chrome.runtime.sendMessage({ type: "SN_IMPERSONATE_STOP" });
+      if (outcome && outcome.ok) reloadAfterSessionChange();
+      return outcome || { ok: false, code: "indeterminate", message: "" };
+    },
+
+    /* The way round a refused Stop: ServiceNow's own dialog in a new tab,
+     * where the user chooses their account. Opened, never submitted. */
+    onOpenImpersonateDialog: () => {
+      try {
+        chrome.runtime.sendMessage({
+          type: "OPEN_URL",
+          url: engine.buildImpersonateDialogUrl(location.origin),
+        });
+      } catch (error) {
+        showToast("GlideLens could not open ServiceNow's impersonation dialog.", true);
+      }
+    },
+  });
+
+  refreshImpersonateState(ui);
+  loadImpersonateRecent(ui, engine, () => panelClosed || !ui.isOpen());
 }
 
 /* =====================================================================

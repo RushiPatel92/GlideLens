@@ -6,12 +6,14 @@ body:
     attributes:
       value: |
         GlideLens deliberately covers the gaps left by snUtils rather than
-        competing with it. These are permanently out of scope, so please do not
-        request them: update-set switching, impersonation, and per-environment
-        favicons or instance badges. Anything that submits a form or writes a
-        record is also out — GlideLens reads and explains. (Filling values into
-        a form you are looking at, as Variable Prefill does, is fine; saving
-        them is yours to do.)
+        competing with it. These are out of scope, so please do not request
+        them: update-set switching, per-environment favicons or instance
+        badges, and role elevation of your own session. Anything that submits a
+        form or writes a record is also out — GlideLens reads and explains.
+        (Filling values into a form you are looking at, as Variable Prefill
+        does, is fine; saving them is yours to do. Impersonate changes your own
+        session on the instance, which is the one deliberate exception, and
+        ServiceNow audits it.)
 
   - type: checkboxes
     id: confidentiality

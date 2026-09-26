@@ -92,8 +92,15 @@ validation.
 
 Focus on gaps left by snUtils: catalog and Service Portal debugging,
 translation and dictionary inheritance, code search, and form introspection.
-Do not propose an update-set switcher, impersonation, or per-environment
-favicon/instance badges; snUtils already covers them.
+Do not propose an update-set switcher or per-environment favicon/instance
+badges; snUtils already covers them.
+
+Impersonation was on that list until 2026-09-21 and is no longer. The
+justification is not "we can also impersonate" — snUtils finds users by
+`user_name` and `name` only. It is that no tool here answers *"who holds this
+role, so I can impersonate them and test this ACL?"*, which is a debugging
+question and the whole reason the feature exists. Role elevation of your own
+session remains out of scope.
 
 Current roadmap candidates are a Background Script runner, a GlideRecord
 snippet generator, and toggle persistence for Workspace forms.

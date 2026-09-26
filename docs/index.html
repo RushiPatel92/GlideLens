@@ -1185,6 +1185,80 @@ a { color: var(--teal); }
 .dm-rl-open[disabled] { opacity: .45; cursor: default; }
 .dm-rl-open[disabled]:hover { background: #2b2b48; color: #cfcfe4; }
 
+/* --- Impersonate (impersonate_ui.js) -----------------------------------
+   Built on the Record Lens demo's form and row classes, because the real
+   panel is built on the real Record Lens panel. Only what this one adds is
+   defined here: the current-state strip, the role badge, and the
+   confirmation step that stands between a result and a session change. */
+.dm-im-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 9px;
+}
+.dm-im-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 15px;
+  border-bottom: 1px solid #2e2e4e;
+  background: #2b2342;
+  font-size: 11.5px;
+  color: #efe2f5;
+}
+.dm-im-current[hidden] { display: none; }
+.dm-im-current b { color: #fff; font-weight: 600; }
+.dm-im-current code { font: 10.5px var(--mono); color: #cbb8da; }
+.dm-im-stop {
+  margin-left: auto;
+  padding: 5px 11px;
+  border: 1px solid var(--pink, #ff6fae);
+  border-radius: 6px;
+  background: #3c2439;
+  color: #ffcbe2;
+  font: 600 11.5px/1.4 var(--sans);
+  cursor: pointer;
+}
+.dm-im-stop:hover { background: #512e4c; color: #fff; }
+.dm-im-badge {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid #4d5079;
+  border-radius: 999px;
+  background: #2a2b47;
+  color: #c8c8e0;
+  font: 600 9.5px/1.7 var(--sans);
+}
+.dm-im-badge.is-direct { border-color: var(--teal); color: #9ff0e5; }
+.dm-im-go {
+  border-color: transparent;
+  background: var(--pink, #ff6fae);
+  color: #2a0d1b;
+  font-weight: 600;
+}
+.dm-im-go:hover { background: #ff85bb; color: #2a0d1b; }
+.dm-im-confirm { padding: 18px 16px; }
+.dm-im-confirm h4 { margin: 0 0 7px; font-size: 13px; color: #f5f5ff; }
+.dm-im-warn { margin: 0 0 12px; font-size: 11.5px; line-height: 1.6; color: #e0c187; }
+.dm-im-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 14px;
+  margin: 0 0 14px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.dm-im-facts dt { color: #85859f; }
+.dm-im-facts dd { margin: 0; color: #dedeee; }
+.dm-im-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.dm-im-note {
+  margin: 13px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #7fded2;
+}
+
 
 .dm-foot {
   padding: 8px 15px;
@@ -1196,6 +1270,8 @@ a { color: var(--teal); }
 
 @media (max-width: 620px) {
   .dm-crow, .dm-vrow { grid-template-columns: 1fr; gap: 5px; }
+  .dm-im-filters { grid-template-columns: 1fr; }
+  .dm-im-badge, .dm-im-stop { margin-left: 0; }
   .dm-rl-main { grid-template-columns: 1fr; align-items: stretch; }
   .dm-rl-go { width: 100%; }
   .dm-rl-fmenu { width: 100%; }
@@ -1741,6 +1817,108 @@ a { color: var(--teal); }
         </div>
       </article>
 
+      <article class="feature" id="impersonate">
+        <div class="feature-rail">
+          <p class="eyebrow">Session</p>
+          <dl>
+            <dt>Finds</dt>
+            <dd class="plain">by identity, role or group</dd>
+            <dt>Changes</dt>
+            <dd class="plain">your own session</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Impersonate: start from the role, not from a name you already know</h2>
+          <p>
+            Other tools answer <em>"become this named person"</em>. The question a
+            debugging session actually starts from is <em>"who holds
+            <code>catalog_admin</code>, so I can test this ACL?"</em> — so this
+            searches by role as well as by name, user ID, email, title or exact
+            sys_id, and tells you whether each holder has the role directly or
+            through inheritance. Role membership is read from the effective
+            membership table, which includes grants that arrive through a group
+            or through role containment; the <code>roles</code> field on the user
+            record is direct-only, incomplete even at that, and is never used.
+          </p>
+          <p>
+            Inactive, locked-out and web-service-only accounts are never listed,
+            because impersonating one can end your own session. You can narrow
+            to the members of a group, alone or together with a role. You can
+            also filter by a field your own instance offers — the list is read from
+            the live dictionary and labelled the way your instance labels it,
+            so a custom country field appears where a hardcoded one would have
+            pointed at the wrong column. Nothing happens on a click: a result
+            opens a confirmation that repeats the identity in full. One
+            confirmation sends at most one request, nothing is ever retried, and
+            <strong>ServiceNow records the impersonation in its own audit
+            log</strong>. <em>Stop impersonating</em> returns you to the account
+            you started from. The people you impersonated recently are listed when
+            the panel opens. That is ServiceNow's own list, checked like any
+            result, and GlideLens keeps no copy of it.
+          </p>
+          <div class="tags">
+            <span class="tag">role search</span>
+            <span class="tag">group members</span>
+            <span class="tag">direct vs inherited</span>
+            <span class="tag">eligibility guard</span>
+            <span class="tag">explicit confirmation</span>
+            <span class="tag">never retried</span>
+          </div>
+          <div class="shot is-live">
+            <p class="dm-cap"><b>Interactive demo</b> — invented people, invented roles, real panel. Pick <em>catalog_admin</em> to see who holds it, or type <em>morgan</em>. Pressing <em>Impersonate</em> opens the confirmation and stops there, as it does before you confirm.</p>
+            <div class="dm" id="dmIm">
+              <div class="dm-head">
+                <h3 class="dm-title">Impersonate</h3>
+                <p class="dm-sub">Find a user by identity, attribute or role. Only eligible accounts are listed, and nothing changes until you confirm.</p>
+              </div>
+              <div class="dm-im-current" id="dmimCurrent" role="status" aria-live="polite" hidden></div>
+              <div class="dm-rl-form">
+                <div class="dm-rl-main">
+                  <div>
+                    <label class="dm-rl-lab" for="dmimTerm">Name, user ID, email, title, or sys_id</label>
+                    <input class="dm-rl-in" id="dmimTerm" type="text"
+                      placeholder="name, user ID, email, title, or exact sys_id"
+                      autocomplete="off" spellcheck="false" />
+                  </div>
+                  <button class="dm-rl-go" id="dmimGo" type="button">Search</button>
+                </div>
+                <div class="dm-im-filters">
+                  <div class="dm-rl-combo">
+                    <label class="dm-rl-lab" for="dmimField">Filter by field (optional)</label>
+                    <input class="dm-rl-in" id="dmimField" type="text"
+                      role="combobox" aria-autocomplete="list" aria-expanded="false"
+                      aria-controls="dmimFieldMenu" placeholder="any discovered field"
+                      autocomplete="off" spellcheck="false" />
+                    <div class="dm-rl-menu" id="dmimFieldMenu" role="listbox" aria-label="Discovered fields" hidden></div>
+                  </div>
+                  <div class="dm-rl-combo">
+                    <label class="dm-rl-lab" for="dmimValue">Value</label>
+                    <input class="dm-rl-in" id="dmimValue" type="text"
+                      role="combobox" aria-autocomplete="list" aria-expanded="false"
+                      aria-controls="dmimValueMenu" placeholder="choose a field first"
+                      autocomplete="off" spellcheck="false" disabled />
+                    <div class="dm-rl-menu" id="dmimValueMenu" role="listbox" aria-label="Values" hidden></div>
+                  </div>
+                  <div class="dm-rl-combo">
+                    <label class="dm-rl-lab" for="dmimRole">Role (optional)</label>
+                    <input class="dm-rl-in" id="dmimRole" type="text"
+                      role="combobox" aria-autocomplete="list" aria-expanded="false"
+                      aria-controls="dmimRoleMenu" placeholder="role name or description"
+                      autocomplete="off" spellcheck="false" />
+                    <div class="dm-rl-menu" id="dmimRoleMenu" role="listbox" aria-label="Matching roles" hidden></div>
+                  </div>
+                </div>
+              </div>
+              <div class="dm-rl-status" id="dmimStatus" role="status" aria-live="polite">Enter a name, choose a role, or pick an attribute to begin.</div>
+              <div class="dm-rows" id="dmimRows"></div>
+              <div class="dm-rl-bar">
+                <span>No search term, result, role, group or impersonation history is stored. ServiceNow records impersonation in its own audit log.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
       <!-- 6 -->
       <article class="feature" id="code-search">
         <div class="feature-rail">
@@ -1922,22 +2100,32 @@ a { color: var(--teal); }
       <h2>Deliberately narrow.</h2>
       <p>
         It is not a general ServiceNow toolbelt, and it does not try to become
-        one. Update set switching, impersonation and environment badges are well
-        served by tools that already exist, so they stay out of scope. This aims
-        squarely at the gaps: <strong>catalog and Service Portal debugging</strong>,
+        one. Update set switching and environment badges are well served by
+        tools that already exist, so they stay out of scope. This aims squarely
+        at the gaps: <strong>catalog and Service Portal debugging</strong>,
         dictionary inheritance, form introspection, and the script no index
         reaches.
       </p>
       <p>
+        <strong>Impersonation used to be on that list.</strong> It came off
+        because the existing tools answer <em>"become this named person"</em>,
+        and the question a debugging session actually starts from is
+        <em>"who holds this role, so I can test this ACL?"</em> — which none of
+        them answer. So Impersonate searches by role as well as by identity, and
+        role elevation of your own session stays out.
+      </p>
+      <p>
         Everything it reads goes through the Table API on your own session, with
         your own permissions — there is no server, no account and no telemetry.
-        It never writes directly to your records and never submits a form; the
-        two things that change anything are Prefill, which fills unsaved fields
-        on the catalog form in front of you for you to review, and Translation
-        Assistant, which fills unsaved translations on the comparison page in
-        front of you and leaves Publish to you. Code search shows the
-        matching lines and one line either side, and redacts hits whose field
-        names read like secrets. The
+        It never writes to your records and never submits a form. Three things
+        change anything at all: Prefill, which fills unsaved fields on the
+        catalog form in front of you for you to review; Translation Assistant,
+        which fills unsaved translations on the comparison page in front of you
+        and leaves Publish to you; and Impersonate, which is the only one that
+        changes something on the instance rather than in a page — your own
+        session, after an explicit confirmation, and ServiceNow records it in
+        its own audit log. Code search shows the matching lines and one line
+        either side, and redacts hits whose field names read like secrets. The
         <a href="privacy.html">privacy policy</a> spells all of this out.
       </p>
     </div>
@@ -1988,6 +2176,7 @@ a { color: var(--teal); }
     { group: "Record",   name: "Translation Assistant", desc: "Prepare and fill translations",                        key: "",        go: "#translation-assistant" },
     { group: "Tools",    name: "Debug Timeline",   desc: "Start recording form activity, GlideAjax calls, and errors", key: "",        go: "#debug-timeline" },
     { group: "Tools",    name: "Code Search",      desc: "Search verified code and configuration…",                    key: "",        go: "#code-search" },
+    { group: "Tools",    name: "Impersonate",      desc: "Find a user by identity, role or group and start impersonation",    key: "",        go: "#impersonate" },
     { group: "Tools",    name: "Search Sources",   desc: "Refresh available Code Search sources",                      key: "",        go: "#code-search" },
     { group: "Record",   name: "sys_id",           desc: "Copy the current record sys_id",                             key: "",        go: "#install" },
     { group: "Record",   name: "Record Lens",      desc: "Search verified records across readable tables",             key: "",        go: "#record-search" },
@@ -3989,6 +4178,499 @@ a { color: var(--teal); }
   termInput.value = "laptop";
   search();
 })();
+
+/* ---------------------------------------------------------------------------
+   Demo 6 — "Impersonate" (impersonate_ui.js + impersonate.js).
+
+   Every person, role, department and country below is invented. Nothing here
+   is copied from any instance, and the demo sends nothing anywhere: pressing
+   Impersonate opens the confirmation and stops, which is exactly where the
+   real panel stops until you confirm.
+
+   Three rules are copied from the engine rather than approximated, because
+   they are the point of the feature:
+     - Eligibility is a SAFETY rule. Inactive, locked-out and web-service-only
+       accounts never reach the list, so they can never be clicked.
+     - Role membership is effective membership, and each row says whether it is
+       direct or inherited -- but never claims which group it came through.
+     - The displayed total counts eligible people, not membership rows.
+   --------------------------------------------------------------------------- */
+(function () {
+  "use strict";
+
+  var root = document.getElementById("dmIm");
+  if (!root) return;
+
+  var MIN_ANCHOR = 3;
+  var RESULT_LIMIT = 20;
+
+  var ROLES = [
+    { id: "r1", name: "catalog_admin", desc: "Administer catalog items and variable sets" },
+    { id: "r2", name: "catalog_editor", desc: "Edit catalog item content" },
+    { id: "r3", name: "itil", desc: "Fulfiller access to task records" },
+    { id: "r4", name: "translation_admin", desc: "Manage translated fields and messages" }
+  ];
+
+  /* `roles` is effective membership: each entry says how it is held. */
+  var PEOPLE = [
+    {
+      sysId: "1b6e0c4a7f2d40c9ae53d81b6c0f2a47",
+      userName: "avery.morgan", name: "Avery Morgan",
+      email: "avery.morgan@example.com", title: "Catalog Lead",
+      country: "XA", department: "Service Design",
+      active: true, lockedOut: false, apiOnly: false,
+      roles: { r1: "direct", r2: "direct", r3: "inherited" }
+    },
+    {
+      sysId: "8d21f9b5e4c74a0f93b621ad7e5c0846",
+      userName: "priya.raman", name: "Priya Raman",
+      email: "priya.raman@example.com", title: "Platform Engineer",
+      country: "XB", department: "Platform",
+      active: true, lockedOut: false, apiOnly: false,
+      roles: { r1: "inherited", r3: "direct", r4: "direct" }
+    },
+    {
+      sysId: "44a7c0e2b18d4f639e0c5a7b2d1f8093",
+      userName: "t.okonkwo@example.com", name: "Tomi Okonkwo",
+      email: "t.okonkwo@example.com", title: "Service Owner",
+      country: "XA", department: "Service Design",
+      active: true, lockedOut: false, apiOnly: false,
+      roles: { r1: "inherited", r2: "inherited" }
+    },
+    {
+      sysId: "90fe3b7d5c284a19b7e6042fa8c1d375",
+      userName: "lena.fischer", name: "Lena Fischer",
+      email: "lena.fischer@example.com", title: "Localization Manager",
+      country: "XB", department: "Content",
+      active: true, lockedOut: false, apiOnly: false,
+      roles: { r4: "direct" }
+    },
+    {
+      sysId: "2c58a1d9e0b74836af12d7c4e93b6015",
+      userName: "sam.whitfield", name: "Sam Whitfield",
+      email: "sam.whitfield@example.com", title: "Support Analyst",
+      country: "XC", department: "Support",
+      active: true, lockedOut: false, apiOnly: false,
+      roles: { r3: "inherited" }
+    },
+    /* The three below exist only to prove they are never listed. */
+    {
+      sysId: "77d0be14a2c9403f81e5b6720cd3f498",
+      userName: "jordan.ellis", name: "Jordan Ellis (left the company)",
+      email: "jordan.ellis@example.com", title: "Catalog Lead",
+      country: "XA", department: "Service Design",
+      active: false, lockedOut: false, apiOnly: false,
+      roles: { r1: "direct" }
+    },
+    {
+      sysId: "05c3f8a6d71b492e8a04c9d5e2f71b60",
+      userName: "kim.andersen", name: "Kim Andersen (locked out)",
+      email: "kim.andersen@example.com", title: "Platform Engineer",
+      country: "XB", department: "Platform",
+      active: true, lockedOut: true, apiOnly: false,
+      roles: { r1: "direct", r3: "direct" }
+    },
+    {
+      sysId: "e319d7402b8c4f56a1d0837be5c94f2a",
+      userName: "svc.catalog.sync", name: "Catalog Sync (integration)",
+      email: "", title: "",
+      country: "", department: "Platform",
+      active: true, lockedOut: false, apiOnly: true,
+      roles: { r1: "direct" }
+    }
+  ];
+
+  /* Discovered, never named. On a real instance this list comes from the live
+   * dictionary, which is how an instance that keeps its country in a custom
+   * reference field gets the right one offered. */
+  var FIELDS = [
+    {
+      name: "country", label: "Country code", kind: "choice",
+      values: [
+        { value: "XA", label: "Alderney Isles" },
+        { value: "XB", label: "Brindle Republic" },
+        { value: "XC", label: "Corvia" }
+      ]
+    },
+    {
+      name: "department", label: "Department", kind: "reference",
+      values: [
+        { value: "Content", label: "Content" },
+        { value: "Platform", label: "Platform" },
+        { value: "Service Design", label: "Service Design" },
+        { value: "Support", label: "Support" }
+      ]
+    }
+  ];
+
+  var termInput = document.getElementById("dmimTerm");
+  var goBtn = document.getElementById("dmimGo");
+  var statusEl = document.getElementById("dmimStatus");
+  var rowsEl = document.getElementById("dmimRows");
+  var currentEl = document.getElementById("dmimCurrent");
+  var fieldInput = document.getElementById("dmimField");
+  var fieldMenu = document.getElementById("dmimFieldMenu");
+  var valueInput = document.getElementById("dmimValue");
+  var valueMenu = document.getElementById("dmimValueMenu");
+  var roleInput = document.getElementById("dmimRole");
+  var roleMenu = document.getElementById("dmimRoleMenu");
+
+  var selectedField = null;
+  var selectedValue = null;
+  var selectedRole = null;
+  var impersonating = null;
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = String(text);
+    return node;
+  }
+
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = "dm-rl-status" + (kind ? " " + kind : "");
+  }
+
+  function closeMenus(except) {
+    [[fieldInput, fieldMenu], [valueInput, valueMenu], [roleInput, roleMenu]]
+      .forEach(function (pair) {
+        if (pair[1] === except) return;
+        pair[1].hidden = true;
+        pair[0].setAttribute("aria-expanded", "false");
+      });
+  }
+
+  function openMenu(input, menu, options, onPick, emptyText) {
+    menu.textContent = "";
+    if (!options.length) {
+      menu.appendChild(el("div", "dm-rl-msg", emptyText || "No matches."));
+    } else {
+      options.forEach(function (option) {
+        var button = el("button", "dm-rl-opt");
+        button.type = "button";
+        button.setAttribute("role", "option");
+        button.appendChild(el("span", null, option.label));
+        if (option.hint) button.appendChild(el("span", "dm-rl-tname", option.hint));
+        button.addEventListener("click", function () {
+          onPick(option);
+          closeMenus();
+        });
+        menu.appendChild(button);
+      });
+    }
+    closeMenus(menu);
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  }
+
+  function matches(text, needle) {
+    return String(text || "").toLowerCase().indexOf(needle) >= 0;
+  }
+
+  /* ---- the three pickers ---- */
+
+  /* A picker whose input already holds its own selection reopens the WHOLE
+     list, rather than filtering itself down to the one thing chosen -- which
+     would leave no way to pick a different one without clearing the box. */
+  function needleFor(input, selectedLabel) {
+    var typed = input.value.trim();
+    if (selectedLabel && typed === selectedLabel) return "";
+    return typed.toLowerCase();
+  }
+
+  function showFields() {
+    var needle = needleFor(fieldInput, selectedField && selectedField.label);
+    var options = FIELDS
+      .filter(function (field) {
+        return !needle || matches(field.label, needle) || matches(field.name, needle);
+      })
+      .map(function (field) {
+        return { label: field.label, hint: field.name, field: field };
+      });
+    openMenu(fieldInput, fieldMenu, options, pickField,
+      "No filterable fields are readable here.");
+  }
+
+  function pickField(option) {
+    selectedField = option ? option.field : null;
+    fieldInput.value = selectedField ? selectedField.label : "";
+    /* Changing the field discards the value chosen for the old one: carried
+     * over, it would be a valid-looking condition on the wrong column. */
+    selectedValue = null;
+    valueInput.value = "";
+    valueInput.disabled = !selectedField;
+    valueInput.placeholder = selectedField ? "choose a value" : "choose a field first";
+  }
+
+  function showValues() {
+    if (!selectedField) return;
+    var chosen = (selectedField.values.filter(function (item) {
+      return item.value === selectedValue;
+    })[0] || {}).label;
+    var needle = needleFor(valueInput, chosen);
+    var options = selectedField.values
+      .filter(function (item) { return !needle || matches(item.label, needle); })
+      .map(function (item) { return { label: item.label, value: item.value }; });
+    openMenu(valueInput, valueMenu, options, function (option) {
+      selectedValue = option.value;
+      valueInput.value = option.label;
+    }, "No values are available for that field.");
+  }
+
+  function showRoles() {
+    var needle = needleFor(roleInput, selectedRole && selectedRole.name);
+    /* Two characters, not three: a role anchor is shorter than a text one. */
+    var options = (needle.length && needle.length < 2 ? [] : ROLES)
+      .filter(function (role) {
+        return !needle || matches(role.name, needle) || matches(role.desc, needle);
+      })
+      .map(function (role) { return { label: role.name, hint: role.desc, role: role }; });
+    openMenu(roleInput, roleMenu, options, function (option) {
+      selectedRole = option.role;
+      roleInput.value = option.role.name;
+    }, "No matching roles.");
+  }
+
+  /* ---- the search ---- */
+
+  function eligible(person) {
+    return person.active && !person.lockedOut && !person.apiOnly &&
+      Boolean(person.userName);
+  }
+
+  function anchorOf(term) {
+    var runs = term.match(/[A-Za-z0-9_]+/g) || [];
+    var best = "";
+    runs.forEach(function (run) { if (run.length > best.length) best = run; });
+    return best.length >= MIN_ANCHOR ? best : null;
+  }
+
+  function rank(person, needle) {
+    var best = 4;
+    [person.userName, person.name, person.email, person.title].forEach(function (value) {
+      var text = String(value || "").toLowerCase();
+      var index = text.indexOf(needle);
+      if (index < 0) return;
+      var score = text === needle ? 0 : index === 0 ? 1
+        : /[a-z0-9_]/.test(text.charAt(index - 1)) ? 3 : 2;
+      if (score < best) best = score;
+    });
+    return best;
+  }
+
+  function search() {
+    var term = termInput.value.trim();
+    var needle = term.toLowerCase();
+    var isSysId = /^[0-9a-f]{32}$/i.test(term);
+
+    if (!term && !selectedRole && !(selectedField && selectedValue)) {
+      rowsEl.textContent = "";
+      setStatus("Enter a name, choose a role, or pick an attribute to begin.");
+      return;
+    }
+    if (term && !isSysId && !anchorOf(term)) {
+      rowsEl.textContent = "";
+      setStatus("Enter at least " + MIN_ANCHOR +
+        " consecutive letters, numbers or underscores, or an exact sys_id.", "is-empty");
+      return;
+    }
+
+    /* Eligibility first, and as a filter on the read rather than afterwards --
+     * an ineligible account must never be clickable. */
+    var found = PEOPLE.filter(eligible);
+    if (selectedField && selectedValue) {
+      found = found.filter(function (person) {
+        return person[selectedField.name] === selectedValue;
+      });
+    }
+    if (selectedRole) {
+      found = found.filter(function (person) {
+        return Boolean(person.roles[selectedRole.id]);
+      });
+    }
+    if (term) {
+      found = isSysId
+        ? found.filter(function (person) { return person.sysId === term.toLowerCase(); })
+        : found.filter(function (person) { return rank(person, needle) < 4; });
+    }
+    if (term && !isSysId) {
+      found = found.slice().sort(function (a, b) {
+        return rank(a, needle) - rank(b, needle) || a.name.localeCompare(b.name);
+      });
+    } else {
+      found = found.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    }
+
+    render(found.slice(0, RESULT_LIMIT), found.length);
+  }
+
+  function render(people, total) {
+    rowsEl.textContent = "";
+    if (!people.length) {
+      setStatus("No eligible users matched.", "is-empty");
+      var empty = el("div", "dm-rl-row");
+      empty.appendChild(el("div", "dm-rl-values",
+        "Inactive, locked-out and web-service-only accounts are never listed, " +
+        "because impersonating one can end your own session."));
+      rowsEl.appendChild(empty);
+      return;
+    }
+    /* The number is eligible PEOPLE, counted after every filter -- never a
+     * membership row count. */
+    setStatus(total + (total === 1 ? " eligible user" : " eligible users") +
+      (selectedRole ? " holding " + selectedRole.name : ""), "is-ok");
+
+    people.forEach(function (person) {
+      var row = el("div", "dm-rl-row");
+      var top = el("div", "dm-rl-top");
+      top.appendChild(el("span", "dm-rl-title", person.name));
+      top.appendChild(el("span", "dm-rl-sysid", person.userName));
+      if (selectedRole) {
+        var held = person.roles[selectedRole.id];
+        /* Direct or inherited, and nothing more: the membership rows carry no
+         * usable provenance, so "via group X" cannot be said honestly. */
+        top.appendChild(el("span", "dm-im-badge" + (held === "direct" ? " is-direct" : ""),
+          held === "direct" ? "Direct role" : "Inherited role"));
+      }
+      row.appendChild(top);
+
+      var values = el("div", "dm-rl-values");
+      [["Email", person.email], ["Title", person.title],
+        ["Country code", person.country], ["Department", person.department]]
+        .forEach(function (pair) {
+          if (!pair[1]) return;
+          var item = el("span");
+          item.appendChild(el("span", "dm-rl-vlab", pair[0] + ": "));
+          item.appendChild(document.createTextNode(pair[1]));
+          values.appendChild(item);
+        });
+      row.appendChild(values);
+
+      var acts = el("div", "dm-rl-acts");
+      var open = el("button", "dm-rl-act", "Open user");
+      open.type = "button";
+      open.addEventListener("click", function () {
+        setStatus("Opens this user's record in ServiceNow — inert in this demo.");
+      });
+      var go = el("button", "dm-rl-act dm-im-go", "Impersonate");
+      go.type = "button";
+      /* A row click does nothing at all. Only this button confirms. */
+      go.addEventListener("click", function () { confirm(person); });
+      acts.appendChild(open);
+      acts.appendChild(go);
+      row.appendChild(acts);
+      rowsEl.appendChild(row);
+    });
+  }
+
+  function confirm(person) {
+    rowsEl.textContent = "";
+    setStatus("Confirm the identity before the session changes.", "is-empty");
+
+    var wrap = el("div", "dm-im-confirm");
+    wrap.appendChild(el("h4", null, "Start impersonating this user?"));
+    wrap.appendChild(el("p", "dm-im-warn",
+      "This changes your ServiceNow session on the instance, not just this tab, " +
+      "and the platform records it. The tab reloads once it succeeds."));
+
+    var facts = el("dl", "dm-im-facts");
+    var addFact = function (label, value) {
+      if (!value) return;
+      facts.appendChild(el("dt", null, label));
+      facts.appendChild(el("dd", null, value));
+    };
+    addFact("Name", person.name);
+    addFact("User ID", person.userName);
+    addFact("Email", person.email);
+    addFact("Title", person.title);
+    if (selectedRole) {
+      addFact("Selected role", selectedRole.name + " — " +
+        (person.roles[selectedRole.id] === "direct"
+          ? "granted directly" : "held through inheritance"));
+    }
+    wrap.appendChild(facts);
+
+    var acts = el("div", "dm-im-acts");
+    var go = el("button", "dm-rl-act dm-im-go", "Start impersonation");
+    go.type = "button";
+    go.addEventListener("click", function () {
+      go.disabled = true;
+      impersonating = person;
+      showCurrent();
+      setStatus("On a real instance this is where the session changes and the tab reloads. " +
+        "Nothing was sent here.", "is-ok");
+      wrap.appendChild(el("p", "dm-im-note",
+        "The demo stops at this point. One confirmation sends at most one request, " +
+        "and nothing is ever retried — if the outcome cannot be confirmed, the panel " +
+        "says so and stops rather than trying again."));
+    });
+    var cancel = el("button", "dm-rl-act", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", search);
+    acts.appendChild(go);
+    acts.appendChild(cancel);
+    wrap.appendChild(acts);
+    rowsEl.appendChild(wrap);
+    go.focus();
+  }
+
+  function showCurrent() {
+    currentEl.textContent = "";
+    if (!impersonating) {
+      currentEl.hidden = true;
+      return;
+    }
+    currentEl.hidden = false;
+    var text = el("span");
+    text.appendChild(document.createTextNode("You are impersonating "));
+    text.appendChild(el("b", null, impersonating.name));
+    text.appendChild(document.createTextNode(" — "));
+    text.appendChild(el("code", null, impersonating.userName));
+    currentEl.appendChild(text);
+
+    var stop = el("button", "dm-im-stop", "Stop impersonating");
+    stop.type = "button";
+    stop.addEventListener("click", function () {
+      impersonating = null;
+      showCurrent();
+      setStatus("Returned to your original account — inert in this demo.", "is-ok");
+      search();
+    });
+    currentEl.appendChild(stop);
+  }
+
+  /* ---- wiring ---- */
+
+  fieldInput.addEventListener("focus", showFields);
+  fieldInput.addEventListener("input", function () {
+    if (selectedField && fieldInput.value !== selectedField.label) pickField(null);
+    showFields();
+  });
+  valueInput.addEventListener("focus", showValues);
+  valueInput.addEventListener("input", function () {
+    selectedValue = null;
+    showValues();
+  });
+  roleInput.addEventListener("focus", showRoles);
+  roleInput.addEventListener("input", function () {
+    if (selectedRole && roleInput.value !== selectedRole.name) selectedRole = null;
+    showRoles();
+  });
+  termInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); search(); }
+  });
+  goBtn.addEventListener("click", search);
+  root.addEventListener("click", function (e) {
+    if (!e.target.closest(".dm-rl-combo")) closeMenus();
+  });
+
+  /* Start on the question the feature exists for. */
+  selectedRole = ROLES[0];
+  roleInput.value = ROLES[0].name;
+  search();
+})();
+
 </script>
 
 </body>

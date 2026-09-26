@@ -265,8 +265,9 @@ main.wrap { padding-top: 40px; }
 
   <h2>What GlideLens writes</h2>
 
-  <p>It is a read-only tool with two deliberate exceptions, and it is worth
-  being precise about the difference.</p>
+  <p>It is a read-only tool with three deliberate exceptions, and it is worth
+  being precise about the difference — because two of them change a page you
+  are looking at, and the third changes something on the instance.</p>
 
   <p><strong>It never writes to your ServiceNow records and never submits a
   form.</strong> Record search, code search, catalog insight, variable values,
@@ -288,6 +289,39 @@ main.wrap { padding-top: 40px; }
   old text of any translation it replaced. Nothing is saved to the instance unless you
   press the page's own <em>Publish</em>; reloading the page discards every
   fill.</p>
+
+  <p><strong>Impersonate changes your own ServiceNow session, and that one is
+  different in kind.</strong> The other two put text into a page and leave
+  saving to you; a reload undoes them. This one asks the instance to make your
+  session act as another user, so it takes effect on the instance and on every
+  tab, and a reload does not undo it. It is the only server-changing thing
+  GlideLens does.</p>
+
+  <p>What it does <em>not</em> do matters as much. It changes no user record and
+  administers nothing — the only thing it alters is who your own session is
+  acting as. It never starts without an explicit confirmation naming the person
+  in full, and a click on a result opens that confirmation rather than doing
+  anything. <strong>ServiceNow records impersonation in its own audit log</strong>,
+  as it would if you had used the platform's user menu; that record belongs to
+  your instance, and GlideLens neither writes nor reads it. Searching for
+  someone to impersonate reads only the identity fields needed to recognise a
+  colleague — user ID, name, email, title, and the country, department and
+  company shown on each result — plus whichever filterable fields
+  your instance's own dictionary offers, role membership when you pick a role,
+  and group names and group membership when you pick a group. A confirmation
+  also reads the roles of the person it names, and which of those roles
+  contain others, so you can see what you are about to act as. When the panel
+  opens it also reads ServiceNow's own list of the people you recently
+  impersonated, the one the platform keeps for its Impersonate dialog, and then
+  the same identity fields for each of them. A Service Portal page does not say
+  whether you are impersonating, and a Workspace page does not say which account
+  to return to, so on those pages it fetches a page from your own instance and
+  reads only those two facts from it. Inactive,
+  locked-out and web-service-only accounts are never listed, because
+  impersonating one can end your own session. GlideLens stores no search term,
+  result, role, group or impersonation history anywhere; the account to return to is
+  held only in the extension's session memory, for the one instance it came
+  from, and is gone when the browser closes.</p>
 
   <h2>Permissions, and what each is for</h2>
 
