@@ -5623,6 +5623,8 @@ function openUrlTabOptions(url, sender) {
 
 const IMPERSONATE_STATE_KEY = "impersonateOriginals";
 const IMPERSONATE_PROBE_TIMEOUT_MS = 4000;
+/* A server round trip rather than a DOM read: measured at about 190 ms. */
+const IMPERSONATE_SHELL_TIMEOUT_MS = 8000;
 const IMPERSONATE_POST_TIMEOUT_MS = 20000;
 /* The verified sys_user.user_name max_length. */
 const IMPERSONATE_MAX_USER_NAME = 40;
@@ -5726,10 +5728,21 @@ function readImpersonationStateInPage() {
     }
   } catch (error) { /* a cross-origin or torn-down frame simply says nothing */ }
   try {
-    /* gsft_main only. A surface without that frame names nobody rather than
-     * guessing who the session belongs to. */
+    /*
+     * gsft_main on the classic surface. A Service Portal page has no g_user
+     * and no NOW.user at all, but it does name the session's CURRENT user ID on
+     * NOW itself -- measured on /sp and /esc, where it follows an
+     * impersonation. It never says WHETHER that is one: NOW.user_impersonating
+     * is present there and `undefined` in both states, so the boolean comes
+     * from fetchImpersonationStateInPage instead. Any other surface names
+     * nobody rather than guessing who the session belongs to.
+     */
     if (typeof g_user !== "undefined" && g_user && g_user.userName) {
       out.currentUserName = String(g_user.userName);
+    } else if (!out.hasNowUser && typeof NOW !== "undefined" && NOW &&
+      typeof NOW.user_name === "string" && NOW.user_name) {
+      out.currentUserName = NOW.user_name;
+      if (typeof NOW.user_display_name === "string") out.displayName = NOW.user_display_name;
     }
   } catch (error) { /* ditto */ }
   try {
@@ -5788,6 +5801,61 @@ function selectImpersonationStateFrame(outcomes) {
   };
 }
 
+/*
+ * The fallback for a surface whose frames cannot answer at all. A Service
+ * Portal page is one: no frame carries NOW.user, so the state read came back
+ * unknown, the panel treated unknown as "not impersonating", and Stop vanished
+ * from a portal page even while a stored way home existed.
+ *
+ * Every classic page's server-rendered header carries both facts --
+ *   window.NOW.user.isImpersonating = true;
+ *   CustomEvent.fireTop('user.impersonation', '<original>');
+ * -- and a .do name that does not exist is the cheapest page that has one:
+ * measured at about 30 KB in about 190 ms, where a real form was 126-184 KB and
+ * up to 2.8 s. snUtils reads the same page with a SYNCHRONOUS XHR, which
+ * freezes the tab. This is one async GET, bounded by the caller's timeout, and
+ * it returns the two parsed facts, never the page.
+ */
+async function fetchImpersonationStateInPage() {
+  const out = { isImpersonating: null, preferenceOriginal: "" };
+  try {
+    const res = await fetch(location.origin + "/glidelens_session_state.do", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { Accept: "text/html" },
+    });
+    /* A signed-out session is redirected to a login page with no header, which
+     * leaves the answer unknown rather than "no". */
+    if (!res.ok) return out;
+    const text = await res.text();
+    const flag = /NOW\.user\.isImpersonating\s*=\s*(true|false)\s*;/.exec(text);
+    if (!flag) return out;
+    out.isImpersonating = flag[1] === "true";
+    const original = /["']user\.impersonation["']\s*,\s*["']([^"']*)["']/.exec(text);
+    if (original) out.preferenceOriginal = original[1];
+  } catch (error) { /* an unreachable page simply says nothing */ }
+  return out;
+}
+
+async function readImpersonationStateFromShell(tabId) {
+  try {
+    const frameId = await discoverTokenFrame(tabId);
+    const results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        world: "MAIN",
+        func: fetchImpersonationStateInPage,
+      }),
+      IMPERSONATE_SHELL_TIMEOUT_MS,
+      "read impersonation state"
+    );
+    const value = (results || []).map((entry) => entry && entry.result).find((entry) => entry);
+    return value && typeof value.isImpersonating === "boolean" ? value : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 async function readImpersonationState(tabId, origin) {
   const outcomes = await injectInDiscoveredFrames(
     tabId,
@@ -5804,8 +5872,34 @@ async function readImpersonationState(tabId, origin) {
   }));
   const chosen = selectImpersonationStateFrame(answers);
   const value = chosen.frame ? chosen.frame.value : null;
-  const isImpersonating = value && typeof value.isImpersonating === "boolean"
+  let isImpersonating = value && typeof value.isImpersonating === "boolean"
     ? value.isImpersonating : null;
+  let preferenceOriginal = value ? value.preferenceOriginal : "";
+
+  /*
+   * The fetch is asked only what the page itself could not say, and a frame's
+   * boolean is never second-guessed by it.
+   *   - No frame gave the boolean (a Service Portal page): both facts.
+   *   - A frame says impersonating but no frame carries the way home: the way
+   *     home alone. That is a Workspace page -- measured on /now/sow/home, its
+   *     only NOW.user keys are isImpersonating and userID, with no g_user and
+   *     no inner classic frame. Before this, a Workspace page never offered
+   *     Stop after a first impersonation: the endpoint's `user` is "null"
+   *     then, so nothing had been stored either, and the user was stranded.
+   * A classic surface answers both in-page and costs no request.
+   */
+  if (isImpersonating === null) {
+    const shell = await readImpersonationStateFromShell(tabId);
+    if (shell) {
+      isImpersonating = shell.isImpersonating;
+      preferenceOriginal = shell.preferenceOriginal;
+    }
+  } else if (isImpersonating && !validImpersonationUserName(preferenceOriginal)) {
+    const shell = await readImpersonationStateFromShell(tabId);
+    if (shell && validImpersonationUserName(shell.preferenceOriginal)) {
+      preferenceOriginal = shell.preferenceOriginal;
+    }
+  }
 
   /*
    * Stored state is cleared whenever the platform says the session has
@@ -5819,8 +5913,7 @@ async function readImpersonationState(tabId, origin) {
    * tool can re-impersonate between our write and this read, which makes the
    * platform right and our stored value stale.
    */
-  const preference = value && validImpersonationUserName(value.preferenceOriginal)
-    ? value.preferenceOriginal : "";
+  const preference = validImpersonationUserName(preferenceOriginal) ? preferenceOriginal : "";
   if (isImpersonating && preference) {
     await rememberImpersonationOriginal(origin, preference);
   }
@@ -5975,6 +6068,134 @@ async function startImpersonation(tabId, origin, userName) {
 }
 
 /*
+ * Stop's way round a refused POST: ServiceNow's stock impersonation dialog,
+ * submitted the way its own OK button submits it.
+ *
+ * Reported: while impersonating an external supplier contact, the REST
+ * endpoint answered Stop with 403, and the platform's own End Impersonation
+ * failed too. The dialog (UI page impersonate_dialog, baseline and unmodified
+ * on both verified instances) does not use that endpoint. Its recent list
+ * always offers the account the session started from FIRST, valued with
+ * gs.getImpersonatingUserName(), and its processing script calls
+ * session.onlineUnimpersonate() when that value comes back.
+ *
+ * So this reads the dialog, and submits only if the dialog itself offers the
+ * stored original as that first entry -- a value this function never invents.
+ * The form is sent back as rendered, token included, with that entry chosen
+ * and the user search empty, which is exactly what choosing it and pressing
+ * OK sends. Only the platform's own ui_page_process.do is accepted as the
+ * destination. The processing script always redirects, so the redirect is not
+ * followed: the caller asks the session header whether it worked.
+ */
+async function unimpersonateThroughDialogInPage(originalUserName) {
+  const pageUrl = location.origin + "/impersonate_dialog.do";
+  let doc;
+  try {
+    const res = await fetch(pageUrl, {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { Accept: "text/html" },
+    });
+    if (!res.ok) return { sent: false, reason: "dialog-status", status: res.status };
+    doc = new DOMParser().parseFromString(await res.text(), "text/html");
+  } catch (error) {
+    return { sent: false, reason: "dialog-unreadable" };
+  }
+  const recent = doc.getElementById("imp_recent");
+  const form = recent && recent.form;
+  if (!form) return { sent: false, reason: "no-form" };
+  const first = recent.options && recent.options[0];
+  if (!first || first.value !== originalUserName) return { sent: false, reason: "no-way-home" };
+  let action;
+  try {
+    action = new URL(form.getAttribute("action") || "", pageUrl);
+  } catch (error) {
+    return { sent: false, reason: "unexpected-action" };
+  }
+  if (action.origin !== location.origin || action.pathname !== "/ui_page_process.do") {
+    return { sent: false, reason: "unexpected-action" };
+  }
+  let fields;
+  try {
+    const ok = doc.getElementById("ok_button");
+    fields = ok && ok.form === form ? new FormData(form, ok) : new FormData(form);
+  } catch (error) {
+    fields = new FormData(form);
+  }
+  fields.set("imp_recent", originalUserName);
+  fields.set("sys_user", "");
+  const multipart = String(form.getAttribute("enctype") || "").toLowerCase() === "multipart/form-data";
+  try {
+    const res = await fetch(action.toString(), {
+      method: "POST",
+      credentials: "same-origin",
+      redirect: "manual",
+      body: multipart ? fields : new URLSearchParams(fields),
+    });
+    return { sent: true, status: res.status, redirected: res.type === "opaqueredirect" };
+  } catch (error) {
+    return { sent: true, failed: true };
+  }
+}
+
+async function runDialogUnimpersonation(tabId, userName) {
+  let frameId;
+  try {
+    frameId = await discoverTokenFrame(tabId);
+  } catch (error) {
+    return { sent: false, reason: "no-frame" };
+  }
+  let results;
+  try {
+    results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        world: "MAIN",
+        func: unimpersonateThroughDialogInPage,
+        args: [userName],
+      }),
+      IMPERSONATE_POST_TIMEOUT_MS,
+      "impersonation dialog"
+    );
+  } catch (error) {
+    /* The injection began, so whether the form went out is unknowable. */
+    return { sent: true, failed: true };
+  }
+  const response = (results || []).map((item) => item && item.result).filter(Boolean)[0];
+  if (!response) return { sent: true, failed: true };
+  return response;
+}
+
+/*
+ * After a definite 403 only, and at most once per Stop. That refusal changed
+ * nothing, so this is a second, different request rather than a retry of an
+ * ambiguous one; an indeterminate Stop never reaches it. Returns null when
+ * nothing was submitted, so the refusal stands and the panel offers the dialog
+ * by hand. Once something was, only the session header decides: "not
+ * impersonating" is success, "still impersonating" a definite failure, and no
+ * answer is indeterminate.
+ */
+async function stopThroughDialog(tabId, origin, target) {
+  const submitted = await runDialogUnimpersonation(tabId, target);
+  if (!submitted || submitted.sent !== true) return null;
+  if (submitted.failed) return IMPERSONATE_INDETERMINATE;
+  const state = await readImpersonationStateFromShell(tabId);
+  if (state && state.isImpersonating === false) {
+    await forgetImpersonationOriginal(origin);
+    return { ok: true, status: submitted.status || 0, code: "ok", message: "Impersonation ended." };
+  }
+  if (state && state.isImpersonating === true) {
+    return {
+      ok: false,
+      status: 403,
+      code: "access",
+      message: "ServiceNow refused to end impersonation from inside this account.",
+    };
+  }
+  return IMPERSONATE_INDETERMINATE;
+}
+
+/*
  * There is no "unimpersonate" endpoint: the platform's way back is to
  * impersonate the original account. So Stop is the same operation with a
  * different target, and it carries no target from content code at all.
@@ -5994,14 +6215,92 @@ async function stopImpersonation(tabId, origin) {
     await forgetImpersonationOriginal(origin);
     return { ok: true, status: outcome.status, code: "ok", message: "Impersonation ended." };
   }
+  if (outcome.status === 403) {
+    const fallback = await stopThroughDialog(tabId, origin, target);
+    if (fallback) return fallback;
+  }
   /*
    * Kept on EVERY failure, definite or ambiguous alike. An indeterminate stop
    * may have succeeded and the next state probe settles it; a definite refusal
    * (a 403, a rate limit) leaves the session exactly where it was, and
    * discarding the target there would take away the only way back GlideLens
    * can offer. The probe's isImpersonating:false reading is what clears it.
+   *
+   * A 403 is not worded as a start's. "You do not have permission to
+   * impersonate" is wrong from someone who just did: reported, it came while
+   * impersonating an external supplier contact, where the platform's own End
+   * Impersonation was refused too.
    */
-  return { ok: false, status: outcome.status, code: outcome.code, message: outcome.message };
+  const message = outcome.status === 403
+    ? "ServiceNow refused to end impersonation from inside this account."
+    : outcome.message;
+  return { ok: false, status: outcome.status, code: outcome.code, message };
+}
+
+/*
+ * ServiceNow's own recent-impersonations list: the one the platform's
+ * Impersonate dialog shows, backed by the `recent.impersonations` user
+ * preference. Verified on a customer instance as
+ *   { result: [ { user_sys_id, user_name, user_display_value } ] }
+ * with `avatar` omitted when empty. On the PDI test account, GlideLens's own
+ * Stop did not add the account to its own list.
+ *
+ * One fixed same-origin GET that takes nothing. Only the ids cross back: the
+ * panel re-reads every account through the search's eligibility gate, so no
+ * name from this list reaches the screen unverified.
+ */
+async function recentImpersonationsInPage() {
+  const headers = { Accept: "application/json" };
+  try {
+    if (typeof g_ck !== "undefined" && g_ck) headers["X-UserToken"] = g_ck;
+  } catch (e) {}
+  try {
+    const res = await fetch(location.origin + "/api/now/ui/impersonate/recent", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers,
+    });
+    if (!res.ok) return { ok: false, status: res.status };
+    const body = await res.json();
+    const rows = body && Array.isArray(body.result) ? body.result : [];
+    return { ok: true, sysIds: rows.map((row) => String((row && row.user_sys_id) || "")) };
+  } catch (error) {
+    return { ok: false, status: 0 };
+  }
+}
+
+/* The engine's RECENT_LIMIT, restated because the worker trims the list
+ * before it crosses back. */
+const IMPERSONATE_RECENT_LIMIT = 10;
+
+async function readRecentImpersonations(tabId) {
+  let answer = null;
+  try {
+    const frameId = await discoverTokenFrame(tabId);
+    const results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        world: "MAIN",
+        func: recentImpersonationsInPage,
+      }),
+      /* A server round trip, like the shell read. */
+      IMPERSONATE_SHELL_TIMEOUT_MS,
+      "read recent impersonations"
+    );
+    answer = (results || []).map((entry) => entry && entry.result).find((entry) => entry);
+  } catch (error) {
+    answer = null;
+  }
+  if (!answer || !answer.ok || !Array.isArray(answer.sysIds)) return { ok: false, sysIds: [] };
+  const sysIds = [];
+  answer.sysIds.forEach((value) => {
+    const id = String(value || "").toLowerCase();
+    if (/^[0-9a-f]{32}$/.test(id) && !sysIds.includes(id) &&
+      sysIds.length < IMPERSONATE_RECENT_LIMIT) {
+      sysIds.push(id);
+    }
+  });
+  return { ok: true, sysIds };
 }
 
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
@@ -6345,6 +6644,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         currentUserName: "",
         hasStopTarget: false,
       }));
+    return true;
+  }
+  /* Read-only and takes nothing. Only sys_ids cross back; the panel re-reads
+   * each account through the search's eligibility gate before showing it. */
+  if (msg && msg.type === "SN_IMPERSONATE_RECENT" && sender.tab) {
+    readRecentImpersonations(sender.tab.id)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, sysIds: [] }));
     return true;
   }
   /* Takes a username and nothing else. No URL, method, table, query or body

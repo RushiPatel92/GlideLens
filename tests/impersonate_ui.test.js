@@ -52,6 +52,14 @@ function createDom() {
     /* STYLE is skipped for the same reason the Lens harness skips it: the
      * stylesheet is a child of the shadow root, and folding it into every
      * assertion would make a text match mean nothing. */
+    /* As in a browser: disabling the focused control drops focus. Without
+     * this, a test could not tell a panel that restores focus after a search
+     * from one that never lost it. */
+    get disabled() { return Boolean(this._disabled); }
+    set disabled(value) {
+      this._disabled = Boolean(value);
+      if (this._disabled && activeElement === this) activeElement = null;
+    }
     get textContent() {
       return this._text + this.children
         .filter((child) => child.tagName !== "STYLE")
@@ -92,6 +100,14 @@ function createDom() {
       const shadow = new El("#shadow");
       shadow.host = this;
       this.shadowRoot = shadow;
+      /* ShadowRoot.activeElement: the focused node, if it is inside. */
+      Object.defineProperty(shadow, "activeElement", {
+        get() {
+          let node = activeElement;
+          while (node && node !== shadow) node = node.parentNode;
+          return node === shadow ? activeElement : null;
+        },
+      });
       return shadow;
     }
     focus() {
@@ -182,8 +198,8 @@ function load() {
     document: dom.document,
     window: dom.window,
     location: { origin: "https://example.service-now.com" },
-    setTimeout: (fn) => {
-      timers.push({ fn, cancelled: false, done: false });
+    setTimeout: (fn, ms) => {
+      timers.push({ fn, ms, cancelled: false, done: false });
       return timers.length;
     },
     clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].cancelled = true; },
@@ -208,6 +224,11 @@ function load() {
           timer.fn();
         }
       });
+    },
+    /* The delays still waiting, so a test can see a pause was scheduled --
+     * and for how long -- without running it. */
+    pendingDelays() {
+      return timers.filter((timer) => !timer.cancelled && !timer.done).map((timer) => timer.ms);
     },
     shadow() {
       const host = dom.document.documentElement.children.find((node) => node.id === HOST_ID);
@@ -314,8 +335,10 @@ test("nothing is written to browser storage", () => {
   ["localStorage", "sessionStorage", "indexedDB", "document.cookie"].forEach((store) => {
     assert.ok(!code.includes(store), "no search term or result may be stored: found " + store);
   });
-  assert.ok(/no search term, result, role, group or impersonation history is stored/i.test(UI_SOURCE),
+  assert.ok(/stores no search term, result, role, group or impersonation history/i.test(UI_SOURCE),
     "and the footer has to say so");
+  /* The recent list is on screen, so the footer has to say whose it is. */
+  assert.ok(/recent list is ServiceNow's own/i.test(UI_SOURCE));
 });
 
 /* ------------------------------------------------------------------ *
@@ -503,6 +526,249 @@ test("cancelling confirmation returns focus to the button that opened it", () =>
   buttonsLabelled(harness.shadow(), "Cancel")[0].fire("click", {});
   assert.strictEqual(byClass(harness.shadow(), "confirm").length, 0);
   assert.ok(byClass(harness.shadow(), "row").length >= 1, "the list comes back");
+  /* The list is redrawn, so the old button is detached and focusing it would
+   * do nothing in a browser. Its replacement in the same row takes focus. */
+  const redrawn = buttonsLabelled(harness.shadow(), "Impersonate")[0];
+  assert.notStrictEqual(redrawn, opener);
+  assert.strictEqual(harness.dom.document.activeElement, redrawn);
+});
+
+/* ------------------------------------------------------------------ *
+ * The confirmation's roles
+ * ------------------------------------------------------------------ */
+
+function rolesCell(shadow) {
+  const facts = byClass(shadow, "confirm-facts")[0];
+  const labels = findAll(facts, (node) => node.tagName === "DT");
+  const index = labels.findIndex((node) => node.textContent === "Roles");
+  if (index < 0) return null;
+  const cells = findAll(facts, (node) => node.tagName === "DD");
+  return cells[index];
+}
+
+function confirmFirst(harness) {
+  buttonsLabelled(harness.shadow(), "Impersonate")[0].fire("click", {});
+}
+
+test("the confirmation reads the roles, and Start never waits for them", async () => {
+  const harness = load();
+  let release = null;
+  const asked = [];
+  openPanel(harness, {
+    onFindUserRoles: (person) => {
+      asked.push(person);
+      return new Promise((resolve) => { release = resolve; });
+    },
+  });
+  const person = user({ name: "Role Person" });
+  harness.ui.showResults(resultSet({ results: [person] }));
+  confirmFirst(harness);
+  const shadow = harness.shadow();
+
+  assert.strictEqual(asked.length, 1);
+  assert.strictEqual(asked[0].sysId, person.sysId);
+  assert.strictEqual(rolesCell(shadow).textContent, "Reading roles…");
+  const go = buttonsLabelled(shadow, "Start impersonation")[0];
+  assert.strictEqual(go.disabled, false, "evidence, not a precondition");
+  assert.strictEqual(harness.dom.document.activeElement, go);
+
+  release({
+    direct: ["catalog_admin", "itil"],
+    inherited: ["approver_user", "catalog", "itil_part", "snc_internal"],
+    assigned: ["approver_user", "catalog_admin", "itil", "snc_internal"],
+    bundled: ["catalog", "itil_part"],
+    containment: "applied",
+    unnamed: 0,
+    capped: false,
+  });
+  await tick();
+  const cell = rolesCell(shadow);
+  const lines = byClass(cell, "roles-line").map((node) => node.textContent);
+  assert.deepStrictEqual(lines, ["Assigned: approver_user, catalog_admin, itil, snc_internal (4)"]);
+  assert.strictEqual(byClass(cell, "roles-source")[0].textContent,
+    "catalog_admin, itil granted directly; the rest through groups");
+  /* The bundled list sits behind a disclosure: ordinary accounts held 59-133
+   * roles in all on a measured instance, and 10-14 were assigned. */
+  const more = findAll(cell, (node) => node.tagName === "DETAILS")[0];
+  assert.ok(more, "the bundled roles are behind a disclosure");
+  assert.ok(!more.open && more.getAttribute("open") === null, "collapsed until asked for");
+  assert.strictEqual(findAll(more, (node) => node.tagName === "SUMMARY")[0].textContent,
+    "2 more come with these roles");
+  assert.ok(more.textContent.includes("catalog, itil_part"));
+  /* "Through groups" is the most that is said: no group is ever named. */
+  const claimed = cell.textContent.replace("the rest through groups", "");
+  assert.ok(!/via|group|Inherited|Direct:/i.test(claimed), "no source is ever claimed: " + claimed);
+  assert.strictEqual(byClass(cell, "roles-note").length, 0, "a complete read has no caveat");
+});
+
+test("the source line fits who granted what", async () => {
+  const cases = [
+    [{ direct: ["itil"], assigned: ["itil"] }, "Granted directly"],
+    [{ direct: ["admin", "itil"], assigned: ["admin", "itil"] }, "All granted directly"],
+    [{ direct: [], assigned: ["itil"] }, "Granted through a group"],
+    [{ direct: [], assigned: ["approver_user", "itil"] }, "None granted directly; all through groups"],
+  ];
+  for (const [found, expected] of cases) {
+    const harness = load();
+    openPanel(harness, {
+      onFindUserRoles: async () => Object.assign(
+        { inherited: [], bundled: ["one_bundled"], containment: "applied" }, found),
+    });
+    harness.ui.showResults(resultSet({ results: [user()] }));
+    confirmFirst(harness);
+    await tick();
+    const cell = rolesCell(harness.shadow());
+    assert.strictEqual(byClass(cell, "roles-source")[0].textContent, expected);
+    assert.strictEqual(findAll(cell, (node) => node.tagName === "SUMMARY")[0].textContent,
+      "1 more comes with these roles");
+  }
+});
+
+test("an account with no roles at all says none, not nothing", async () => {
+  const harness = load();
+  openPanel(harness, {
+    onFindUserRoles: async () => ({
+      direct: [], inherited: [], assigned: [], bundled: [], containment: "applied",
+    }),
+  });
+  harness.ui.showResults(resultSet({ results: [user()] }));
+  confirmFirst(harness);
+  await tick();
+  const cell = rolesCell(harness.shadow());
+  assert.strictEqual(cell.textContent, "Assigned: none");
+  assert.strictEqual(byClass(cell, "roles-source").length, 0);
+  assert.strictEqual(findAll(cell, (node) => node.tagName === "DETAILS").length, 0);
+});
+
+test("without containment the confirmation falls back to direct and inherited, and says why", async () => {
+  const harness = load();
+  openPanel(harness, {
+    onFindUserRoles: async () => ({
+      direct: ["admin"],
+      inherited: ["approver_user", "itil"],
+      assigned: null,
+      bundled: null,
+      containment: "unavailable",
+      unnamed: 0,
+      capped: false,
+    }),
+  });
+  harness.ui.showResults(resultSet({ results: [user()] }));
+  confirmFirst(harness);
+  await tick();
+  const cell = rolesCell(harness.shadow());
+  assert.ok(cell.textContent.includes("Direct: admin"), cell.textContent);
+  assert.ok(!cell.textContent.includes("Assigned"), "nothing is called assigned: " + cell.textContent);
+  const more = findAll(cell, (node) => node.tagName === "DETAILS")[0];
+  assert.strictEqual(findAll(more, (node) => node.tagName === "SUMMARY")[0].textContent,
+    "Inherited: 2 roles");
+  assert.ok(more.textContent.includes("approver_user, itil"));
+  assert.ok(/could not be read, so every inherited role is listed/.test(cell.textContent),
+    cell.textContent);
+});
+
+test("an account with no direct or inherited roles in the fallback says none, not nothing", async () => {
+  const harness = load();
+  openPanel(harness, { onFindUserRoles: async () => ({ direct: [], inherited: [] }) });
+  harness.ui.showResults(resultSet({ results: [user()] }));
+  confirmFirst(harness);
+  await tick();
+  const cell = rolesCell(harness.shadow());
+  assert.ok(cell.textContent.includes("Direct: none"), cell.textContent);
+  assert.ok(cell.textContent.includes("Inherited: none"), cell.textContent);
+  assert.strictEqual(findAll(cell, (node) => node.tagName === "DETAILS").length, 0);
+});
+
+test("a capped or partly unnamed role read says so", async () => {
+  const harness = load();
+  openPanel(harness, {
+    onFindUserRoles: async () => ({
+      direct: ["admin"],
+      inherited: ["itil"],
+      assigned: null,
+      bundled: null,
+      containment: "unavailable",
+      unnamed: 3,
+      capped: true,
+    }),
+  });
+  harness.ui.showResults(resultSet({ results: [user()] }));
+  confirmFirst(harness);
+  await tick();
+  const text = rolesCell(harness.shadow()).textContent;
+  assert.ok(/3 more roles could not be named/.test(text), text);
+  assert.ok(/incomplete/.test(text), text);
+  /* The capped note already says why; the containment one would repeat it. */
+  assert.ok(!/every inherited role is listed/.test(text), text);
+});
+
+test("a failed role read says so without blocking the confirmation", async () => {
+  const harness = load();
+  openPanel(harness, {
+    onFindUserRoles: async () => {
+      const error = new Error("You do not have read access to the user or role data this needs.");
+      error.code = "access";
+      throw error;
+    },
+  });
+  harness.ui.showResults(resultSet({ results: [user()] }));
+  confirmFirst(harness);
+  await tick();
+  const text = rolesCell(harness.shadow()).textContent;
+  assert.ok(/could not be read/.test(text), text);
+  assert.strictEqual(buttonsLabelled(harness.shadow(), "Start impersonation")[0].disabled, false);
+});
+
+test("roles read for one confirmation never land on another", async () => {
+  const harness = load();
+  const pending = [];
+  openPanel(harness, {
+    onFindUserRoles: () => new Promise((resolve) => { pending.push(resolve); }),
+  });
+  harness.ui.showResults(resultSet({
+    results: [user({ name: "First Person" }), user({ name: "Second Person" })],
+  }));
+  const shadow = harness.shadow();
+  buttonsLabelled(byClass(shadow, "row")[0], "Impersonate")[0].fire("click", {});
+  buttonsLabelled(shadow, "Cancel")[0].fire("click", {});
+  buttonsLabelled(byClass(shadow, "row")[1], "Impersonate")[0].fire("click", {});
+  assert.ok(byClass(shadow, "confirm")[0].textContent.includes("Second Person"));
+
+  /* The first person's roles answer late, onto the second person's screen. */
+  pending[0]({ direct: ["first_persons_role"], inherited: [] });
+  await tick();
+  assert.strictEqual(rolesCell(shadow).textContent, "Reading roles…");
+  pending[1]({ direct: ["second_persons_role"], inherited: [] });
+  await tick();
+  assert.ok(rolesCell(shadow).textContent.includes("second_persons_role"));
+  assert.ok(!harness.text().includes("first_persons_role"));
+});
+
+test("role names render as text, never as markup", async () => {
+  const hostile = "<img src=x onerror=alert(1)>";
+  /* The fallback split, and the assigned view with the name in every place it
+   * can appear: the list, the source line and the disclosure. */
+  for (const found of [
+    { direct: [hostile], inherited: [hostile] },
+    { direct: [hostile], inherited: [], assigned: [hostile, "other"], bundled: [hostile],
+      containment: "applied" },
+  ]) {
+    const harness = load();
+    openPanel(harness, { onFindUserRoles: async () => found });
+    harness.ui.showResults(resultSet({ results: [user()] }));
+    confirmFirst(harness);
+    await tick();
+    assert.ok(rolesCell(harness.shadow()).textContent.includes(hostile));
+    assert.strictEqual(findAll(harness.shadow(), (node) => node.tagName === "IMG").length, 0);
+  }
+});
+
+test("without a roles reader the confirmation has no roles line at all", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults(resultSet({ results: [user()] }));
+  confirmFirst(harness);
+  assert.strictEqual(rolesCell(harness.shadow()), null);
 });
 
 /* ------------------------------------------------------------------ *
@@ -646,6 +912,788 @@ test("changing the attribute field discards the value that was selected for the 
 });
 
 /* ------------------------------------------------------------------ *
+ * Picking searches; the clear button
+ * ------------------------------------------------------------------ */
+
+const comboInput = (shadow, key) => findAll(shadow, (node) =>
+  node.getAttribute("aria-controls") === "snh-imp-" + key + "-menu")[0];
+const clearButtonFor = (shadow, what) => findAll(shadow, (node) =>
+  node.tagName === "BUTTON" && node.getAttribute("aria-label") === "Clear " + what)[0];
+const termInput = (shadow) => findAll(shadow, (node) =>
+  node.getAttribute("placeholder") === "name, user ID, email, title, or exact sys_id")[0];
+
+async function pickFirst(shadow, key) {
+  const input = comboInput(shadow, key);
+  input.fire("keydown", { key: "ArrowDown" });
+  await tick();
+  findAll(shadow, (node) => node.id === "snh-imp-" + key + "-option-0")[0].fire("click", {});
+  await tick();
+}
+
+const ATTRIBUTE_FIELDS = [{ label: "Country code", value: "country", type: "choice" }];
+
+function pickerPanel(harness, searches, extra) {
+  const roleId = sysId();
+  const groupId = sysId();
+  openPanel(harness, Object.assign({
+    onFindRoles: async () => ({ options: [{ label: "example_role", value: roleId }] }),
+    onFindGroups: async () => ({ options: [{ label: "Example Group", value: groupId }] }),
+    onFindAttributeFields: async () => ({ options: ATTRIBUTE_FIELDS }),
+    onFindAttributeValues: async () => ({ options: [{ label: "Example Country", value: "XA" }] }),
+    onSearch: async (request) => {
+      searches.push(request);
+      return resultSet();
+    },
+  }, extra || {}));
+  return { roleId, groupId };
+}
+
+test("picking a role or a group searches at once, without pressing Search", async () => {
+  /* Reported: having to press Search after choosing from a list was not
+   * obvious. A pick is a finished question, so it is asked straight away. */
+  const harness = load();
+  const searches = [];
+  const { roleId, groupId } = pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+
+  /* By keyboard. */
+  const roleInput = comboInput(shadow, "role");
+  roleInput.fire("keydown", { key: "ArrowDown" });
+  await tick();
+  roleInput.fire("keydown", { key: "Enter" });
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(searches[0].roleSysId, roleId);
+
+  /* By pointer, and the earlier pick travels with it. */
+  await pickFirst(shadow, "group");
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(searches[1].groupSysId, groupId);
+  assert.strictEqual(searches[1].roleSysId, roleId);
+});
+
+test("typing over a chosen value waits for the next pick instead of searching", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "role");
+  assert.strictEqual(searches.length, 1);
+
+  const roleInput = comboInput(shadow, "role");
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  assert.strictEqual(searches.length, 1, "a search on every correction would be noise");
+});
+
+test("choosing a field opens its values rather than searching, and a value searches", async () => {
+  const harness = load();
+  const searches = [];
+  let valueLookups = 0;
+  pickerPanel(harness, searches, {
+    onFindAttributeValues: async () => {
+      valueLookups += 1;
+      return { options: [{ label: "Example Country", value: "XA" }] };
+    },
+  });
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "attr-field");
+  assert.strictEqual(searches.length, 0, "a field without a value is half a condition");
+  assert.strictEqual(valueLookups, 1, "its values are read once, not once per focus");
+  const valueInput = comboInput(shadow, "attr-value");
+  assert.strictEqual(harness.dom.document.activeElement, valueInput, "focus moves to the value");
+  assert.strictEqual(byClass(shadow, "menu").find((menu) =>
+    menu.id === "snh-imp-attr-value-menu").hidden, false, "and its list is open");
+
+  findAll(shadow, (node) => node.id === "snh-imp-attr-value-option-0")[0].fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(searches[0].attribute.field, "country");
+  assert.strictEqual(searches[0].attribute.value, "XA");
+});
+
+test("each picker offers a clear button only while it holds something", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  ["role", "group", "field", "value"].forEach((what) => {
+    const button = clearButtonFor(shadow, what);
+    assert.ok(button, "no clear button for the " + what + " picker");
+    assert.strictEqual(button.hidden, true, what + " is empty, so there is nothing to clear");
+  });
+  await pickFirst(shadow, "role");
+  assert.strictEqual(clearButtonFor(shadow, "role").hidden, false);
+  /* The value picker stays blocked until a field is chosen, so its button
+   * stays hidden too. */
+  assert.strictEqual(clearButtonFor(shadow, "value").hidden, true);
+});
+
+test("clearing a picker searches again with whatever is left", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+  await pickFirst(shadow, "role");
+  assert.strictEqual(searches.length, 1);
+  assert.ok(searches[0].roleSysId);
+
+  clearButtonFor(shadow, "role").fire("click", {});
+  await tick();
+  assert.strictEqual(comboInput(shadow, "role").value, "");
+  assert.strictEqual(clearButtonFor(shadow, "role").hidden, true);
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(searches[1].roleSysId, "", "the cleared role is gone from the question");
+  assert.strictEqual(searches[1].term, "sample", "and what remains is still asked");
+});
+
+test("clearing the last criterion puts the panel back where it opened", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "group");
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(byClass(shadow, "row").length, 1, "a result is on screen");
+
+  clearButtonFor(shadow, "group").fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 1, "with nothing left to ask, nothing is asked");
+  assert.strictEqual(byClass(shadow, "row").length, 0, "the old answer does not linger");
+  assert.ok(/to begin/.test(byClass(shadow, "status")[0].textContent));
+  assert.ok(harness.text().includes("Find a user to impersonate."));
+});
+
+test("clearing the field searches only when a whole condition went with it", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+
+  await pickFirst(shadow, "attr-field");
+  clearButtonFor(shadow, "field").fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 0, "a field with no value changed no question");
+
+  await pickFirst(shadow, "attr-field");
+  findAll(shadow, (node) => node.id === "snh-imp-attr-value-option-0")[0].fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  clearButtonFor(shadow, "field").fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(searches[1].attribute, null);
+  assert.strictEqual(comboInput(shadow, "attr-value").disabled, true, "the value is blocked again");
+});
+
+test("clearing typed text that never became a choice asks nothing", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  const roleInput = comboInput(shadow, "role");
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  const button = clearButtonFor(shadow, "role");
+  assert.strictEqual(button.hidden, false, "typed text can be cleared too");
+  button.fire("click", {});
+  await tick();
+  assert.strictEqual(roleInput.value, "");
+  assert.strictEqual(searches.length, 0);
+});
+
+const menuFor = (shadow, key) => byClass(shadow, "menu").find((menu) =>
+  menu.id === "snh-imp-" + key + "-menu");
+
+test("deleting a chosen role by hand clears it as the button does", async () => {
+  /* Reported: backspacing a role away left the list of its holders on
+   * screen, and opened "No matching roles." for text that asked nothing. */
+  const harness = load();
+  const searches = [];
+  const roleLookups = [];
+  const roleId = sysId();
+  pickerPanel(harness, searches, {
+    onFindRoles: async (input) => {
+      roleLookups.push(input);
+      return { options: [{ label: "example_role", value: roleId }] };
+    },
+  });
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+  await pickFirst(shadow, "role");
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(searches[0].roleSysId, roleId);
+  const lookupsBefore = roleLookups.length;
+
+  const roleInput = comboInput(shadow, "role");
+  roleInput.value = "example_rol";
+  roleInput.fire("input", {});
+  assert.strictEqual(searches.length, 1, "part-way through deleting is still an edit");
+  roleInput.value = "";
+  roleInput.fire("input", {});
+  assert.strictEqual(menuFor(shadow, "role").hidden, true, "no list opens for empty text");
+  harness.runTimers();
+  await tick();
+
+  assert.strictEqual(roleLookups.length, lookupsBefore,
+    "the lookup the last keystroke scheduled is withdrawn, not run for empty text");
+  assert.ok(!harness.text().includes("No matching roles."));
+  assert.strictEqual(clearButtonFor(shadow, "role").hidden, true);
+  assert.strictEqual(searches.length, 2, "the emptied role is a finished question");
+  assert.strictEqual(searches[1].roleSysId, "", "and it is gone from what is asked");
+  assert.strictEqual(searches[1].term, "sample", "while what remains is still asked");
+});
+
+test("deleting the last criterion by hand puts the panel back where it opened", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "group");
+  assert.strictEqual(byClass(shadow, "row").length, 1, "a result is on screen");
+
+  /* Select-all and delete: the choice goes in one keystroke, with no edit
+   * before it. */
+  const groupInput = comboInput(shadow, "group");
+  groupInput.value = "";
+  groupInput.fire("input", {});
+  await tick();
+  assert.strictEqual(searches.length, 1, "with nothing left to ask, nothing is asked");
+  assert.strictEqual(byClass(shadow, "row").length, 0, "the old answer does not linger");
+  assert.ok(harness.text().includes("Find a user to impersonate."));
+});
+
+test("deleting typed text that never became a choice asks nothing", async () => {
+  const harness = load();
+  const searches = [];
+  const roleLookups = [];
+  pickerPanel(harness, searches, {
+    onFindRoles: async (input) => {
+      roleLookups.push(input);
+      return { options: [] };
+    },
+  });
+  const shadow = harness.shadow();
+  const roleInput = comboInput(shadow, "role");
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  roleInput.value = "";
+  roleInput.fire("input", {});
+  harness.runTimers();
+  await tick();
+  assert.deepStrictEqual(roleLookups, [], "the pending lookup went with the text");
+  assert.strictEqual(menuFor(shadow, "role").hidden, true);
+  assert.strictEqual(searches.length, 0);
+});
+
+test("the clear button after typing over a choice still withdraws its answer", async () => {
+  /* The first keystroke unbound the role as an edit and asked nothing, so
+   * the list on screen still answers the role. */
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+  await pickFirst(shadow, "role");
+  const roleInput = comboInput(shadow, "role");
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  assert.strictEqual(searches.length, 1);
+
+  clearButtonFor(shadow, "role").fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(searches[1].roleSysId, "");
+});
+
+test("emptying the field by hand withdraws the condition it held", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+  await pickFirst(shadow, "attr-field");
+  findAll(shadow, (node) => node.id === "snh-imp-attr-value-option-0")[0].fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.ok(searches[0].attribute);
+
+  /* Typing over the field takes its value with it, without asking. */
+  const fieldInput = comboInput(shadow, "attr-field");
+  fieldInput.value = "Country cod";
+  fieldInput.fire("input", {});
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(comboInput(shadow, "attr-value").value, "");
+
+  fieldInput.value = "";
+  fieldInput.fire("input", {});
+  await tick();
+  assert.strictEqual(searches.length, 2,
+    "the condition on screen went with the field, even though no value was left to see");
+  assert.strictEqual(searches[1].attribute, null);
+  assert.strictEqual(searches[1].term, "sample");
+});
+
+test("clearing a re-picked field withdraws the condition the first one asked", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+  await pickFirst(shadow, "attr-field");
+  findAll(shadow, (node) => node.id === "snh-imp-attr-value-option-0")[0].fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 1);
+
+  /* Picking a field again discards the value and waits for a new one. */
+  await pickFirst(shadow, "attr-field");
+  assert.strictEqual(searches.length, 1);
+  clearButtonFor(shadow, "field").fire("click", {});
+  await tick();
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(searches[1].attribute, null);
+});
+
+/* ------------------------------------------------------------------ *
+ * Leaving a picker ends its edit
+ * ------------------------------------------------------------------ */
+
+test("leaving a picker part-way through replacing its choice withdraws the choice", async () => {
+  /* Reported alongside the backspace fault: "admi" left behind kept the
+   * old role's holders on screen with no role bound. */
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  termInput(shadow).value = "sample";
+  await pickFirst(shadow, "role");
+  assert.strictEqual(searches.length, 1);
+
+  const roleInput = comboInput(shadow, "role");
+  const groupInput = comboInput(shadow, "group");
+  roleInput.focus();
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  /* Tab to the next picker: focus moves, then the input hears its blur. */
+  groupInput.focus();
+  roleInput.fire("blur", {});
+  harness.runTimers();
+  await tick();
+
+  assert.strictEqual(roleInput.value, "", "the unfinished text goes with the choice it replaced");
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(searches[1].roleSysId, "");
+  assert.strictEqual(searches[1].term, "sample");
+  assert.strictEqual(harness.dom.document.activeElement, groupInput,
+    "the search this starts gives focus back to where it went");
+});
+
+test("text that never replaced a choice stays when leaving, with its list closed", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  const roleInput = comboInput(shadow, "role");
+  roleInput.focus();
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(menuFor(shadow, "role").hidden, false, "its list is open");
+
+  termInput(shadow).focus();
+  roleInput.fire("blur", {});
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(menuFor(shadow, "role").hidden, true);
+  assert.strictEqual(roleInput.value, "exa", "nothing was bound, so nothing is taken");
+  assert.strictEqual(searches.length, 0);
+});
+
+test("a window losing focus is not leaving the picker", async () => {
+  /* Switching to another window blurs the input but leaves it the page's
+   * focused element, and focus comes straight back to it. */
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "role");
+  const roleInput = comboInput(shadow, "role");
+  roleInput.focus();
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+  roleInput.fire("blur", {});
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(roleInput.value, "exa");
+  assert.strictEqual(searches.length, 1);
+});
+
+test("a picker the panel disables for a search has not been left", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches, {
+    onSearch: (request) => {
+      searches.push(request);
+      return searches.length === 1 ? Promise.resolve(resultSet()) : new Promise(() => {});
+    },
+  });
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "role");
+  const roleInput = comboInput(shadow, "role");
+  roleInput.focus();
+  roleInput.value = "exa";
+  roleInput.fire("input", {});
+
+  byClass(shadow, "form")[0].fire("submit", {});
+  assert.strictEqual(roleInput.disabled, true, "the search locks the picker and takes its focus");
+  roleInput.fire("blur", {});
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(roleInput.value, "exa", "a lock is not the user leaving");
+  assert.strictEqual(searches.length, 2);
+});
+
+test("a press inside a list never takes focus from its input", () => {
+  const harness = load();
+  pickerPanel(harness, []);
+  const shadow = harness.shadow();
+  ["role", "group", "attr-field", "attr-value"].forEach((key) => {
+    assert.strictEqual(menuFor(shadow, key).fire("mousedown", {}).defaultPrevented, true, key);
+  });
+});
+
+test("the clear button is inert while a search runs", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches, {
+    onSearch: (request) => {
+      searches.push(request);
+      return new Promise(() => {});
+    },
+  });
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "role");
+  const button = clearButtonFor(shadow, "role");
+  assert.strictEqual(button.disabled, true);
+  assert.strictEqual(button.hidden, false, "inert, not gone, so nothing shifts under the pointer");
+  button.fire("click", {});
+  assert.strictEqual(comboInput(shadow, "role").value, "example_role");
+});
+
+test("focus comes back to the picker after the search it started", async () => {
+  /* A search disables every control and a disabled control loses focus, so
+   * a keyboard user who picked a role used to land on the page behind. */
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  const roleInput = comboInput(shadow, "role");
+  roleInput.focus();
+  roleInput.fire("keydown", { key: "ArrowDown" });
+  await tick();
+  roleInput.fire("keydown", { key: "Enter" });
+  assert.strictEqual(roleInput.disabled, true, "busy while the search runs");
+  assert.notStrictEqual(harness.dom.document.activeElement, roleInput, "so focus was lost");
+  await tick();
+  assert.strictEqual(roleInput.disabled, false);
+  assert.strictEqual(harness.dom.document.activeElement, roleInput, "and it is given back");
+  assert.strictEqual(byClass(shadow, "menu").find((menu) =>
+    menu.id === "snh-imp-role-menu").hidden, true, "without reopening the list just used");
+});
+
+/* ------------------------------------------------------------------ *
+ * The name field searches as you type
+ * ------------------------------------------------------------------ */
+
+/* The real engine's rule, as content.js passes it. */
+function typingPanel(harness, searches, extra) {
+  const engine = harness.sandbox.SNImpersonate;
+  return pickerPanel(harness, searches, Object.assign({
+    canSearchTerm: (term) => {
+      const parsed = engine.parseSearch({ term });
+      return parsed.ok ? { ok: true } : { ok: false, message: parsed.error };
+    },
+  }, extra || {}));
+}
+
+function type(shadow, value) {
+  const input = termInput(shadow);
+  input.value = value;
+  input.fire("input", {});
+  return input;
+}
+
+test("typing searches once it pauses for half a second, not once per keystroke", async () => {
+  /* Reported: that the name field waited for Enter was not obvious, once
+   * every picker searched on a pick. */
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches);
+  const shadow = harness.shadow();
+  ["a", "ab", "abe", "abel"].forEach((value) => type(shadow, value));
+  assert.deepStrictEqual(harness.pendingDelays(), [500], "one pause, of 500 ms, is waiting");
+  assert.strictEqual(searches.length, 0, "and nothing is asked while typing");
+
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(searches[0].term, "abel");
+  assert.ok(byClass(shadow, "row").length >= 1, "the answer is on screen");
+});
+
+test("the name field stays usable while its search runs, and the pickers wait", async () => {
+  /* Locking it, as every control used to be, would swallow the keystrokes
+   * that follow a pause. */
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches, {
+    onSearch: (request) => {
+      searches.push(request);
+      return new Promise(() => {});
+    },
+  });
+  const shadow = harness.shadow();
+  const input = type(shadow, "abel");
+  input.focus();
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(input.disabled, false);
+  assert.strictEqual(harness.dom.document.activeElement, input, "focus never left it");
+  assert.strictEqual(comboInput(shadow, "role").disabled, true);
+  assert.strictEqual(buttonsLabelled(shadow, "Search")[0].disabled, true);
+
+  /* Typing on starts the next pause, which will supersede this read. */
+  type(shadow, "abel.t");
+  assert.deepStrictEqual(harness.pendingDelays(), [500]);
+});
+
+test("a pause on a term too short to search says so, and asks nothing", async () => {
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches);
+  const shadow = harness.shadow();
+  type(shadow, "ab");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 0, "a term Enter would refuse is never sent");
+  const status = byClass(shadow, "status")[0];
+  assert.ok(/at least 3/.test(status.textContent), status.textContent);
+  /* Guidance, not an error: nothing went wrong, the word is unfinished. */
+  assert.ok(!/validation/.test(status.className), status.className);
+  assert.ok(!harness.text().includes("could not run"));
+});
+
+test("a short term withdraws the answer to the longer one", async () => {
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches);
+  const shadow = harness.shadow();
+  await pickFirst(shadow, "role");
+  type(shadow, "abel");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 2);
+  assert.ok(byClass(shadow, "row").length >= 1);
+
+  type(shadow, "ab");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(byClass(shadow, "row").length, 0,
+    "the list answered a question the field no longer asks");
+  assert.ok(/clear the name/i.test(harness.text()), "and says how to use the other filters alone");
+});
+
+test("a pause that changed nothing asks nothing", async () => {
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches);
+  const shadow = harness.shadow();
+  type(shadow, "abel");
+  harness.runTimers();
+  await tick();
+  type(shadow, "abel ");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 1, "a trailing space is the same question");
+
+  type(shadow, "abel.t");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 2);
+});
+
+test("Enter asks at once, and the pause it interrupted does not ask again", async () => {
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches);
+  const shadow = harness.shadow();
+  type(shadow, "abel");
+  byClass(shadow, "form")[0].fire("submit", {});
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.deepStrictEqual(harness.pendingDelays(), [], "the pending pause was cancelled");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 1);
+});
+
+test("emptying the name field goes back to the start, or asks what the pickers still hold", async () => {
+  const harness = load();
+  const searches = [];
+  typingPanel(harness, searches);
+  const shadow = harness.shadow();
+  type(shadow, "abel");
+  harness.runTimers();
+  await tick();
+  type(shadow, "");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 1, "nothing is left to ask");
+  assert.strictEqual(byClass(shadow, "row").length, 0);
+  assert.ok(/to begin/.test(byClass(shadow, "status")[0].textContent));
+
+  await pickFirst(shadow, "role");
+  type(shadow, "abel");
+  harness.runTimers();
+  await tick();
+  type(shadow, "");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 4);
+  assert.strictEqual(searches[3].term, "");
+  assert.ok(searches[3].roleSysId, "the role is still asked");
+});
+
+test("without the engine's rule the name field waits for Enter", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  type(harness.shadow(), "abel");
+  assert.deepStrictEqual(harness.pendingDelays(), []);
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(searches.length, 0);
+});
+
+/* ------------------------------------------------------------------ *
+ * Recent impersonations
+ * ------------------------------------------------------------------ */
+
+function sectionHeading(shadow) {
+  return byClass(shadow, "section-heading")[0] || null;
+}
+
+test("the recent list fills the start, in the platform's order, with a result's own actions", () => {
+  const harness = load();
+  let opened = null;
+  openPanel(harness, { onOpenUser: (person) => { opened = person; } });
+  const shadow = harness.shadow();
+  assert.strictEqual(sectionHeading(shadow), null, "nothing until the list has been read");
+  assert.ok(harness.text().includes("Find a user to impersonate."));
+
+  const later = user({ name: "Zed Recent", userName: "zed.recent" });
+  const earlier = user({ name: "Amy Recent", userName: "amy.recent", email: "amy@example.com" });
+  harness.ui.showRecent({ users: [later, earlier], hidden: 0 });
+
+  assert.ok(/Recent impersonations/.test(sectionHeading(shadow).textContent));
+  assert.ok(/Kept by ServiceNow/.test(sectionHeading(shadow).textContent));
+  const rows = byClass(shadow, "row");
+  assert.deepStrictEqual(rows.map((row) => byClass(row, "title")[0].textContent),
+    ["Zed Recent", "Amy Recent"], "the platform's order, as its own dialog shows it");
+  assert.ok(rows[1].textContent.includes("amy@example.com"), "as much detail as a result");
+  assert.ok(/to begin/.test(byClass(shadow, "status")[0].textContent),
+    "no question has been asked, so the status still invites one");
+
+  buttonsLabelled(rows[0], "Open user")[0].fire("click", {});
+  assert.strictEqual(opened, later);
+  /* And a recent row is exactly as far from a session change as a result. */
+  rows[0].fire("click", {});
+  rows[0].fire("keydown", { key: "Enter" });
+  assert.strictEqual(byClass(shadow, "confirm").length, 0);
+  buttonsLabelled(rows[0], "Impersonate")[0].fire("click", {});
+  assert.strictEqual(byClass(shadow, "confirm").length, 1);
+  assert.ok(byClass(shadow, "confirm")[0].textContent.includes("zed.recent"));
+});
+
+test("cancelling a confirmation from the recent list goes back to the recent list", () => {
+  const harness = load();
+  openPanel(harness);
+  const shadow = harness.shadow();
+  harness.ui.showRecent({ users: [user({ name: "One Recent" }), user({ name: "Two Recent" })] });
+  buttonsLabelled(byClass(shadow, "row")[1], "Impersonate")[0].fire("click", {});
+  buttonsLabelled(shadow, "Cancel")[0].fire("click", {});
+
+  assert.ok(sectionHeading(shadow), "the recent list comes back");
+  assert.strictEqual(byClass(shadow, "row").length, 2);
+  assert.ok(/to begin/.test(byClass(shadow, "status")[0].textContent));
+  assert.strictEqual(harness.dom.document.activeElement,
+    buttonsLabelled(byClass(shadow, "row")[1], "Impersonate")[0], "focus returns to that row");
+});
+
+test("hidden recent accounts are counted, never named", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showRecent({ users: [user({ name: "Still Eligible" })], hidden: 2 });
+  const note = byClass(harness.shadow(), "section-note")[0];
+  assert.ok(note, "the gap is explained");
+  assert.ok(/2 recent accounts are not listed/.test(note.textContent), note.textContent);
+  assert.ok(/locked out/.test(note.textContent));
+});
+
+test("a recent list arriving late never replaces a search or a confirmation", async () => {
+  const harness = load();
+  const searches = [];
+  let release = null;
+  typingPanel(harness, searches, {
+    onSearch: (request) => {
+      searches.push(request);
+      return new Promise((resolve) => { release = resolve; });
+    },
+  });
+  const shadow = harness.shadow();
+  type(shadow, "abel");
+  harness.runTimers();
+  await tick();
+  harness.ui.showRecent({ users: [user({ name: "Late Recent" })] });
+  assert.ok(!harness.text().includes("Late Recent"), "a search is running; its answer is due");
+  release(resultSet({ results: [user({ name: "Search Answer" })] }));
+  await tick();
+  assert.ok(harness.text().includes("Search Answer"));
+
+  buttonsLabelled(shadow, "Impersonate")[0].fire("click", {});
+  harness.ui.showRecent({ users: [user({ name: "Later Still" })] });
+  assert.strictEqual(byClass(shadow, "confirm").length, 1);
+  assert.ok(!harness.text().includes("Later Still"));
+});
+
+test("the recent list is back once the last criterion is cleared", async () => {
+  const harness = load();
+  const searches = [];
+  pickerPanel(harness, searches);
+  const shadow = harness.shadow();
+  harness.ui.showRecent({ users: [user({ name: "Recent Person" })] });
+  await pickFirst(shadow, "group");
+  assert.strictEqual(sectionHeading(shadow), null, "a search answer replaced it");
+  clearButtonFor(shadow, "group").fire("click", {});
+  await tick();
+  assert.ok(sectionHeading(shadow));
+  assert.ok(harness.text().includes("Recent Person"));
+});
+
+test("an empty recent list leaves the ordinary start hint", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showRecent({ users: [], hidden: 0 });
+  assert.strictEqual(sectionHeading(harness.shadow()), null);
+  assert.ok(harness.text().includes("Find a user to impersonate."));
+});
+
+/* ------------------------------------------------------------------ *
  * Current state and Stop
  * ------------------------------------------------------------------ */
 
@@ -657,6 +1705,19 @@ test("the current-state block is absent when not impersonating", () => {
   assert.strictEqual(block.hidden, true);
   assert.strictEqual(block.textContent, "");
   assert.strictEqual(buttonsLabelled(harness.shadow(), "Stop impersonating").length, 0);
+});
+
+test("a hidden block takes no space, whatever display its class sets", () => {
+  /* The current-state block is display:flex, and an author display beats the
+   * user-agent [hidden] rule: it drew as an empty band under the header on
+   * every panel that was not impersonating, while its hidden property -- all
+   * the test above can see -- said it was gone. */
+  const harness = load();
+  openPanel(harness);
+  const css = findAll(harness.shadow(), (node) => node.tagName === "STYLE")
+    .map((node) => node.textContent).join("");
+  assert.ok(/^\s*\[hidden\]\{display:none!important\}/.test(css),
+    "the [hidden] rule must come first and must win");
 });
 
 test("impersonating shows who you are, and offers Stop when there is a way back", () => {
@@ -817,6 +1878,74 @@ test("Stop carries no target and is not retried", async () => {
   assert.ok(/may or may not/i.test(harness.text()));
 });
 
+const DIALOG_LABEL = "Open impersonation dialog";
+
+test("a refused Stop offers ServiceNow's impersonation dialog", async () => {
+  /* Reported: from inside an external supplier contact's session Stop was
+   * refused, and so was the platform's own End Impersonation; the classic
+   * dialog still switched back. */
+  const harness = load();
+  let opened = 0;
+  openPanel(harness, {
+    onStop: async () => ({
+      ok: false, status: 403, code: "access",
+      message: "ServiceNow refused to end impersonation from inside this account.",
+    }),
+    onOpenImpersonateDialog: (...args) => {
+      assert.deepStrictEqual(args, [], "it chooses no account");
+      opened += 1;
+    },
+  });
+  harness.ui.showCurrentState({
+    isImpersonating: true, currentUserName: "example.identity", hasStopTarget: true,
+  });
+  assert.strictEqual(buttonsLabelled(harness.shadow(), DIALOG_LABEL).length, 0,
+    "not offered while Stop has not been tried");
+
+  buttonsLabelled(harness.shadow(), "Stop impersonating")[0].fire("click", {});
+  await tick();
+  const dialog = buttonsLabelled(harness.shadow(), DIALOG_LABEL)[0];
+  assert.ok(dialog, "offered once Stop is refused");
+  assert.strictEqual(dialog.disabled, false);
+  assert.strictEqual(harness.dom.document.activeElement, dialog, "and it takes the focus");
+  const status = byClass(harness.shadow(), "status")[0].textContent;
+  assert.ok(/refused to end impersonation/.test(status), status);
+  assert.ok(/impersonation dialog/.test(status), status);
+  assert.strictEqual(buttonsLabelled(harness.shadow(), "Stop impersonating").length, 1,
+    "Stop itself stays");
+
+  dialog.fire("click", {});
+  assert.strictEqual(opened, 1);
+});
+
+test("an undecided Stop does not offer the dialog", async () => {
+  const harness = load();
+  openPanel(harness, {
+    onStop: async () => ({ ok: false, code: "indeterminate", message: "" }),
+    onOpenImpersonateDialog: () => {},
+  });
+  harness.ui.showCurrentState({
+    isImpersonating: true, currentUserName: "example.identity", hasStopTarget: true,
+  });
+  buttonsLabelled(harness.shadow(), "Stop impersonating")[0].fire("click", {});
+  await tick();
+  assert.strictEqual(buttonsLabelled(harness.shadow(), DIALOG_LABEL).length, 0,
+    "it may have worked, and the panel stays locked until that is known");
+});
+
+test("with no way home, the dialog is offered beside the user menu", () => {
+  const harness = load();
+  let opened = 0;
+  openPanel(harness, { onOpenImpersonateDialog: () => { opened += 1; } });
+  harness.ui.showCurrentState({
+    isImpersonating: true, currentUserName: "example.identity", hasStopTarget: false,
+  });
+  const block = byClass(harness.shadow(), "current")[0];
+  assert.ok(/user menu/i.test(block.textContent), block.textContent);
+  buttonsLabelled(harness.shadow(), DIALOG_LABEL)[0].fire("click", {});
+  assert.strictEqual(opened, 1);
+});
+
 /* ------------------------------------------------------------------ *
  * What the results say
  * ------------------------------------------------------------------ */
@@ -835,9 +1964,63 @@ test("a capped role search claims no total and says how to narrow", () => {
     },
   }));
   const status = byClass(harness.shadow(), "status")[0].textContent;
-  assert.ok(/first 100/.test(status), status);
-  assert.ok(/narrow/i.test(status));
-  assert.ok(!/eligible/i.test(status), "no total may be claimed: " + status);
+  assert.strictEqual(status, "Showing 1 eligible user. More may exist — narrow the search");
+  /* The read window is an implementation detail. Naming it put "the first
+   * 100" beside a list of 20, which read as two different limits. */
+  assert.ok(!/100|first/.test(status), "no read window is named: " + status);
+});
+
+test("every search order words a capped result the same way", () => {
+  /* Reported: a text search said one thing and a group search another, with
+   * different numbers in each. One sentence now serves all four orders. */
+  const said = ["user-first", "role-first", "group-first", "attribute-first"].map((order) => {
+    const harness = load();
+    openPanel(harness);
+    const shown = [];
+    for (let index = 0; index < 20; index += 1) shown.push(user({ name: "Person " + index }));
+    harness.ui.showResults(resultSet({
+      results: shown,
+      extra: {
+        order,
+        membershipCapped: order === "role-first" || order === "group-first",
+        eligibleTotal: null,
+        truncated: true,
+      },
+    }));
+    return byClass(harness.shadow(), "status")[0].textContent;
+  });
+  said.forEach((status) => {
+    assert.strictEqual(status, "Showing 20 eligible users. More may exist — narrow the search");
+  });
+});
+
+test("a known total larger than the list names both numbers", () => {
+  const harness = load();
+  openPanel(harness);
+  const shown = [];
+  for (let index = 0; index < 20; index += 1) shown.push(user({ name: "Person " + index }));
+  harness.ui.showResults(resultSet({
+    results: shown,
+    extra: { order: "group-first", membershipCapped: false, eligibleTotal: 37, truncated: true },
+  }));
+  assert.strictEqual(byClass(harness.shadow(), "status")[0].textContent,
+    "Showing 20 of 37 eligible users. Narrow the search to see the rest");
+});
+
+test("an empty capped read never claims that nobody matched", () => {
+  /* A text search can fill its window with anchor matches that all fail the
+   * complete term. That is not evidence that no user matches. */
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults(resultSet({
+    results: [],
+    extra: { order: "user-first", eligibleTotal: null, truncated: true },
+  }));
+  const shown = harness.text();
+  assert.strictEqual(byClass(harness.shadow(), "status")[0].textContent,
+    "No eligible users among those read. More may exist — narrow the search");
+  assert.ok(!/No eligible users matched/.test(shown), shown);
+  assert.ok(/read limit/.test(shown), shown);
 });
 
 test("an uncapped role search reports the eligible total", () => {
@@ -917,9 +2100,8 @@ test("a capped group search claims no total and says how to narrow", () => {
     },
   }));
   const status = byClass(harness.shadow(), "status")[0].textContent;
-  assert.ok(/first 100/.test(status), status);
-  assert.ok(/narrow/i.test(status));
-  assert.ok(!/eligible/i.test(status), "no total may be claimed: " + status);
+  assert.strictEqual(status, "Showing 1 eligible user. More may exist — narrow the search");
+  assert.ok(!/100|first/.test(status), "no read window is named: " + status);
 });
 
 test("unavailable group filtering is said in those terms, never as no-match", () => {

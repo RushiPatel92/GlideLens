@@ -19,6 +19,10 @@
   const USER_TABLE = "sys_user";
   const ROLE_TABLE = "sys_user_role";
   const MEMBERSHIP_TABLE = "sys_user_has_role";
+  /* Role containment, read for the confirmation alone. Verified on the PDI and
+   * a customer instance: `role` is the parent and `contains` the role it
+   * brings with it. */
+  const CONTAINMENT_TABLE = "sys_user_role_contains";
   /* Verified live: sys_user_grmember is `user` + `group` and nothing else --
    * no state, no inherited flag. It is DIRECT membership, which is what the
    * platform's own Group Members list shows. */
@@ -33,8 +37,8 @@
    * hierarchy to sys_user on any instance that had extended it. */
   const TABLE_METADATA_TABLE = "sys_db_object";
   const TABLE_ALLOWLIST = Object.freeze([
-    USER_TABLE, ROLE_TABLE, MEMBERSHIP_TABLE, GROUP_TABLE, GROUP_MEMBER_TABLE,
-    DICTIONARY_TABLE, CHOICE_TABLE, PROPERTY_TABLE, TABLE_METADATA_TABLE,
+    USER_TABLE, ROLE_TABLE, MEMBERSHIP_TABLE, CONTAINMENT_TABLE, GROUP_TABLE,
+    GROUP_MEMBER_TABLE, DICTIONARY_TABLE, CHOICE_TABLE, PROPERTY_TABLE, TABLE_METADATA_TABLE,
   ]);
 
   /*
@@ -77,6 +81,29 @@
    */
   const ATTRIBUTE_VALUE_LIMIT = 300;
   const MAX_DICTIONARY_FIELDS = 250;
+  /*
+   * ServiceNow's own recent-impersonations list. The platform's dialog showed
+   * six on a customer instance; this bound only stops an unexpectedly long
+   * list from becoming an unbounded sys_idIN.
+   */
+  const RECENT_LIMIT = 10;
+  /*
+   * One account's effective roles, for the confirmation. Measured on a
+   * customer instance: ordinary accounts held 115-135 effective roles and
+   * admin holders 270-490, but only 3-6 of them directly. The bound sits well
+   * above the largest measured, and a read that reaches it says so.
+   */
+  const USER_ROLE_LIMIT = 1000;
+  /*
+   * The containment read names every role one account holds. A sys_idIN of
+   * ~400 ids answered 414 on a customer instance and 100 was fine, so the ids
+   * go 100 at a time. The same instance's accounts held roles with 109-554
+   * containment rows between them in total, so a chunk's bound sits well above
+   * the largest measured -- and a chunk that reaches it gives containment up
+   * rather than guessing.
+   */
+  const CONTAINMENT_CHUNK = 100;
+  const CONTAINMENT_LIMIT = 1000;
 
   const MIN_USER_ANCHOR = 3;
   const MIN_ROLE_ANCHOR = 2;
@@ -326,28 +353,36 @@
 
   /*
    * Four inputs, each present or absent, and the order each combination has
-   * to run in. Text narrows before any cap, so text wins whenever it is there;
-   * the attribute is an exact condition, so it is cheap and selective wherever
-   * it lands and never needs an anchor.
+   * to run in. The rule is that EVERY condition narrows before the one cap:
+   * a membership read carries the text, the attribute and eligibility as
+   * dot-walks through `user`, so the window is spent only on rows that can
+   * appear.
    *
-   * Group outranks role when both are chosen without text. A group is the
-   * narrower population -- median 3 members across 12,359 groups on a
-   * customer instance, where one common role has thousands of holders -- and
-   * its membership read can carry eligibility and the attribute as dot-walked
-   * conditions, so its cap is spent on eligible members only. A role-first
-   * read cannot, so reading the role first would cap on the wider set and then
-   * look for the group inside whatever fitted.
+   * Text used to win whenever it was there, reading 50 unordered text matches
+   * and then asking which of them held the role or sat in the group. That
+   * lost people. Measured on a customer instance: one surname matched 237
+   * eligible users, the one group member among them was not in the 50 read,
+   * and a group that plainly listed him answered "nobody". Reading the
+   * membership with the text dot-walked found exactly him, and for a role
+   * found exactly the 26 holders a full intersection finds.
+   *
+   * Group outranks role. A group is the narrower population -- median 3
+   * members across 12,359 groups on a customer instance, where one common
+   * role has thousands of holders -- so the role becomes an intersection over
+   * at most one window of members. An exact sys_id is one row that nothing
+   * can crowd out, so it stays user-first and intersects.
    */
   function searchOrder(input) {
-    const hasText = Boolean(input && text(input.term));
+    const term = text(input && input.term);
     const hasRole = Boolean(input && text(input.roleSysId));
     const hasGroup = Boolean(input && text(input.groupSysId));
     const hasAttribute = Boolean(
       input && input.attribute && text(input.attribute.field) && text(input.attribute.value)
     );
-    if (hasText) return "user-first";
+    if (term && SYS_ID_PATTERN.test(term)) return "user-first";
     if (hasGroup) return "group-first";
     if (hasRole) return "role-first";
+    if (term) return "user-first";
     if (hasAttribute) return "attribute-first";
     return "none";
   }
@@ -496,16 +531,41 @@
       .join("^");
   }
 
-  function buildUserTextQuery(fields, anchor, schema, attribute) {
+  /*
+   * The OR chain for a typed term. `via` dot-walks every link through a
+   * reference to sys_user, as eligibilityClauses does. The chain is safe
+   * after another condition, which the live check settled: after `group=`, every
+   * row returned was in that group, because `^OR` joins only the links of
+   * the chain it follows.
+   */
+  function textChain(fields, anchor, via) {
     const safeAnchor = assertSafeAnchor(anchor, MIN_USER_ANCHOR);
     const safeFields = Array.from(new Set((fields || []).map(assertSafeField)));
     if (!safeFields.length) {
       throw createError("schema", "No verified identity fields are readable on this instance.");
     }
-    const chain = safeFields
-      .map((field, index) => (index ? "OR" : "") + field + "LIKE" + safeAnchor)
+    const prefix = via ? assertSafeField(via) + "." : "";
+    return safeFields
+      .map((field, index) => (index ? "OR" : "") + prefix + field + "LIKE" + safeAnchor)
       .join("^");
-    return buildUserQuery(chain, schema, attribute);
+  }
+
+  function buildUserTextQuery(fields, anchor, schema, attribute) {
+    return buildUserQuery(textChain(fields, anchor), schema, attribute);
+  }
+
+  /*
+   * A membership population read: <selector> ^ <text> ^ <attribute> ^
+   * <eligibility>, every term after the selector dot-walked through `user` --
+   * the same order and the same reason as buildUserQuery.
+   */
+  function membershipPopulationQuery(selector, schema, attribute, anchor) {
+    const condition = attributeCondition(attribute, schema);
+    const fields = (schema && schema.searchFields) || SEARCH_FIELDS;
+    return [selector]
+      .concat(anchor ? [textChain(fields, anchor, "user")] : [])
+      .concat(condition ? ["user." + condition] : [], eligibilityClauses(schema, "user"))
+      .join("^");
   }
 
   function buildUserSysIdQuery(sysId, schema, attribute) {
@@ -528,16 +588,23 @@
    * sys_user_has_role is the EFFECTIVE role table -- direct grants, role
    * containment and group-derived grants alike. sys_user.roles is direct-only,
    * incomplete even at that, and substring-prone, so it is never read.
+   *
+   * Given candidates, it asks which of THEM hold the role. Given none, it is
+   * the role-first population read, carrying the text, the attribute and
+   * eligibility as dot-walks, exactly as the group read does. Verified on a
+   * customer instance for three surnames: the dot-walked eligibility selected
+   * precisely the holders a direct sys_user read calls eligible (26 of 41,
+   * 31 of 67, 5 of 7), so without it half the window went on accounts that
+   * can never be listed.
    */
-  function buildMembershipQuery(roleSysId, userSysIds) {
+  function buildMembershipQuery(roleSysId, userSysIds, schema, attribute, anchor) {
     const role = assertSafeSysId(roleSysId);
-    const clauses = ["role=" + role, "state=active"];
     if (userSysIds) {
       const ids = Array.from(new Set(userSysIds.map(assertSafeSysId)));
       if (!ids.length) throw createError("empty", "No candidates to intersect.");
-      clauses.unshift("userIN" + ids.join(","));
+      return ["userIN" + ids.join(","), "role=" + role, "state=active"].join("^");
     }
-    return clauses.join("^");
+    return membershipPopulationQuery("role=" + role + "^state=active", schema, attribute, anchor);
   }
 
   function buildRoleQuery(anchor) {
@@ -550,28 +617,28 @@
   /*
    * Two shapes. Given candidates, it asks which of THEM are members, and needs
    * nothing else: they were read eligible. Given none, it is the group-first
-   * population read, and eligibility and the attribute ride along as
-   * dot-walks through `user`, so the cap is spent on members who could appear
-   * in the list at all. Measured on a customer instance, 40-60% of a group's
-   * members were eligible; without the dot-walk half the window was waste.
+   * population read, and the text, the attribute and eligibility ride along
+   * as dot-walks through `user`, so the cap is spent on members who could
+   * appear in the list at all. Measured on a customer instance, 40-60% of a
+   * group's members were eligible; without the dot-walk half the window was
+   * waste.
    *
    * The dot-walk is verified to select exactly the set a direct sys_user read
-   * selects -- on the PDI and on four customer groups of ~380 members each.
+   * selects -- on the PDI and on four customer groups of ~380 members each,
+   * and for the text on a customer group against every one of 237 matches.
    * It is still never trusted alone: a misspelt dot-walked field is silently
    * IGNORED, returning the whole group unfiltered, so the sys_user read that
-   * follows applies eligibility and the attribute again.
+   * follows applies eligibility and the attribute again and every row is
+   * checked for the complete term.
    */
-  function buildGroupMemberQuery(groupSysId, userSysIds, schema, attribute) {
+  function buildGroupMemberQuery(groupSysId, userSysIds, schema, attribute, anchor) {
     const group = assertSafeSysId(groupSysId);
     if (userSysIds) {
       const ids = Array.from(new Set(userSysIds.map(assertSafeSysId)));
       if (!ids.length) throw createError("empty", "No candidates to intersect.");
       return "userIN" + ids.join(",") + "^group=" + group;
     }
-    const condition = attributeCondition(attribute, schema);
-    return ["group=" + group]
-      .concat(condition ? ["user." + condition] : [], eligibilityClauses(schema, "user"))
-      .join("^");
+    return membershipPopulationQuery("group=" + group, schema, attribute, anchor);
   }
 
   /*
@@ -923,8 +990,9 @@
   /*
    * Duplicate rows are normal -- itil returns 70 rows for 66 users -- so
    * membership is deduplicated by user and a DIRECT row wins when both appear.
-   * granted_by and included_in_role are empty on every sampled row, so the
-   * panel may say direct or inherited but must never claim "via group X".
+   * granted_by is empty on the PDI and one unreadable value on every customer
+   * row, and included_in_role is empty, so the panel may say direct or
+   * inherited but must never claim "via group X".
    */
   function dedupeMemberships(rows, allowedUserIds) {
     const allowed = allowedUserIds ? new Set(allowedUserIds.map((id) => String(id).toLowerCase())) : null;
@@ -1430,14 +1498,21 @@
     return { users: users.filter((user) => members.has(user.sysId)) };
   }
 
+  /* The anchor a membership read dot-walks, or none. An exact sys_id never
+   * reaches here: it is user-first. */
+  function membershipAnchor(parsed) {
+    return parsed.term && !parsed.isSysId ? parsed.anchor : "";
+  }
+
   /*
-   * Group alone, or group with a role and/or an attribute and no text. The
-   * member read carries eligibility and the attribute as dot-walks, so its cap
-   * is spent on members who can appear; the user read then applies both again
-   * (see buildGroupMemberQuery for why the dot-walk is never trusted alone).
+   * A group, with any mix of text, a role and an attribute. The member read
+   * carries the text, the attribute and eligibility as dot-walks, so its cap
+   * is spent on members who can appear; the user read then applies the last
+   * two again and every row is checked for the complete term (see
+   * buildGroupMemberQuery for why the dot-walk is never trusted alone).
    *
-   * Like role-only, the cap truncates the LIST here: every member returned is
-   * a genuine member, so partial results are honest, with no claimed total.
+   * Like role-first, the cap truncates the LIST here: every member returned
+   * is a genuine member, so partial results are honest, with no claimed total.
    * The largest group measured on a customer instance had 41,580 members.
    */
   async function runGroupFirst(parsed, schema, get, shouldStop) {
@@ -1447,7 +1522,9 @@
     };
     const memberRows = await getRows(get, {
       table: GROUP_MEMBER_TABLE,
-      query: buildGroupMemberQuery(parsed.groupSysId, null, schema, parsed.attribute),
+      query: buildGroupMemberQuery(
+        parsed.groupSysId, null, schema, parsed.attribute, membershipAnchor(parsed)
+      ),
       fields: "user,group",
       limit: MEMBERSHIP_LIMIT + 1,
     });
@@ -1473,6 +1550,7 @@
     const members = new Set(ids);
     let users = rows
       .filter((row) => isEligibleRow(row, schema))
+      .filter((row) => verifyUserRow(row, schema, parsed.term))
       .map((row) => normalizeUser(row, schema))
       .filter(Boolean)
       .filter((user) => members.has(user.sysId));
@@ -1488,7 +1566,7 @@
     return Object.assign(
       { order: "group-first", membershipCapped },
       filters,
-      presentation(users, "", users.length, membershipCapped)
+      presentation(users, parsed.term, users.length, membershipCapped)
     );
   }
 
@@ -1501,7 +1579,9 @@
      */
     const membershipRows = await getRows(get, {
       table: MEMBERSHIP_TABLE,
-      query: buildMembershipQuery(parsed.roleSysId, null),
+      query: buildMembershipQuery(
+        parsed.roleSysId, null, schema, parsed.attribute, membershipAnchor(parsed)
+      ),
       fields: "user,role,inherited,state",
       limit: MEMBERSHIP_LIMIT + 1,
     });
@@ -1531,6 +1611,7 @@
     if (shouldStop()) return { stale: true };
     const users = rows
       .filter((row) => isEligibleRow(row, schema))
+      .filter((row) => verifyUserRow(row, schema, parsed.term))
       .map((row) => normalizeUser(row, schema))
       .filter(Boolean)
       .filter((user) => byUser.has(user.sysId))
@@ -1544,7 +1625,7 @@
      */
     return Object.assign(
       { order: "role-first", membershipCapped, roleFilter: { status: "applied" } },
-      presentation(users, "", users.length, membershipCapped)
+      presentation(users, parsed.term, users.length, membershipCapped)
     );
   }
 
@@ -1593,6 +1674,217 @@
     return Object.assign({ stale: false, term: parsed.term, schema }, outcome);
   }
 
+  /*
+   * The platform's recent-impersonations list, read back through the same
+   * eligibility gate as a search. ServiceNow lists whoever you impersonated,
+   * not whoever is still safe to impersonate: an account deactivated or locked
+   * since then stays on its list. So the list contributes ids only, and the
+   * sys_user read decides who appears and what each row says.
+   *
+   * The endpoint's order is kept, so the list reads exactly as ServiceNow's
+   * own Impersonate dialog does -- confirmed side by side on a customer
+   * instance. It is NOT the preference's order: that value is newest-first,
+   * and on the PDI the endpoint returned the same two accounts the other way
+   * round.
+   */
+  async function readRecentUsers(sysIds, options) {
+    const opts = options || {};
+    const get = opts.get || defaultTransport;
+    const shouldStop = opts.shouldStop || (() => false);
+    const ids = [];
+    (Array.isArray(sysIds) ? sysIds : []).forEach((value) => {
+      const id = text(value).toLowerCase();
+      if (SYS_ID_PATTERN.test(id) && !ids.includes(id) && ids.length < RECENT_LIMIT) ids.push(id);
+    });
+    if (!ids.length) return { stale: false, users: [], hidden: 0 };
+    const schema = opts.schema || await resolveUserSchema({
+      get, origin: opts.origin, shouldStop,
+    });
+    if (shouldStop()) return { stale: true, users: [], hidden: 0 };
+    const rows = await readUsers(buildUserIdsQuery(ids, schema, null), ids.length, schema, get);
+    if (shouldStop()) return { stale: true, users: [], hidden: 0 };
+    const byId = new Map();
+    rows
+      .filter((row) => isEligibleRow(row, schema))
+      .map((row) => normalizeUser(row, schema))
+      .filter(Boolean)
+      .forEach((user) => { if (ids.includes(user.sysId)) byId.set(user.sysId, user); });
+    const users = ids.map((id) => byId.get(id)).filter(Boolean);
+    /* A count, never a list: the panel says that someone was left out and
+     * why, but an account that cannot be impersonated is not named. */
+    return { stale: false, users, hidden: ids.length - users.length };
+  }
+
+  /*
+   * The containment rows between the roles one account holds, as parent ->
+   * the held roles it contains. Null when they cannot all be read: a failed
+   * read, a capped one, or a row with a blank column, which is an ACL rather
+   * than an absent edge. Any of the three would lose an edge, and a lost edge
+   * calls a bundled role assigned.
+   */
+  async function readContainment(heldIds, get, shouldStop) {
+    const held = new Set(heldIds);
+    const edges = new Map();
+    for (let start = 0; start < heldIds.length; start += CONTAINMENT_CHUNK) {
+      const chunk = heldIds.slice(start, start + CONTAINMENT_CHUNK);
+      const asked = new Set(chunk);
+      let rows;
+      try {
+        rows = await getRows(get, {
+          table: CONTAINMENT_TABLE,
+          query: "roleIN" + chunk.join(","),
+          fields: "role,contains",
+          limit: CONTAINMENT_LIMIT + 1,
+          /* Two ids a row and nothing to display. */
+          options: { displayAll: false },
+        });
+      } catch (error) {
+        return shouldStop() ? { stale: true } : null;
+      }
+      if (shouldStop()) return { stale: true };
+      if (rows.length > CONTAINMENT_LIMIT) return null;
+      for (const row of rows) {
+        const parent = rawValue(row && row.role).toLowerCase();
+        const child = rawValue(row && row.contains).toLowerCase();
+        if (!SYS_ID_PATTERN.test(parent) || !SYS_ID_PATTERN.test(child)) return null;
+        /* A row about a role not asked for is a condition that did not hold,
+         * and a role the account does not hold bundles nothing here. */
+        if (!asked.has(parent) || parent === child || !held.has(child)) continue;
+        if (!edges.has(parent)) edges.set(parent, new Set());
+        edges.get(parent).add(child);
+      }
+    }
+    return { edges };
+  }
+
+  /*
+   * Assigned: every direct grant, contained or not, and every inherited role
+   * no other held role contains. The rest are said to come with those, which
+   * is true only if each is reachable from one -- so a containment cycle that
+   * nothing assigned reaches is assigned too, one role at a time, rather than
+   * hidden behind a claim that would not hold.
+   */
+  function assignedRoleIds(byRole, edges) {
+    const contained = new Set();
+    edges.forEach((children) => children.forEach((child) => contained.add(child)));
+    const assigned = new Set();
+    byRole.forEach((role, roleId) => {
+      if (!role.inherited || !contained.has(roleId)) assigned.add(roleId);
+    });
+    const reached = new Set();
+    const reach = (from) => {
+      const queue = [from];
+      reached.add(from);
+      while (queue.length) {
+        (edges.get(queue.pop()) || new Set()).forEach((child) => {
+          if (reached.has(child)) return;
+          reached.add(child);
+          queue.push(child);
+        });
+      }
+    };
+    assigned.forEach(reach);
+    byRole.forEach((role, roleId) => {
+      if (reached.has(roleId)) return;
+      assigned.add(roleId);
+      reach(roleId);
+    });
+    return assigned;
+  }
+
+  /*
+   * Every role one account effectively holds, for the confirmation, and which
+   * of them someone actually assigned. The effective table lists direct
+   * grants, group grants and every role that came inside another held role
+   * alike: ordinary accounts on a customer instance held 59-133, of which
+   * 10-14 were left once each role another HELD role contains was set aside.
+   * What is left is every direct grant and each inherited role nothing held
+   * contains -- granted by one of the account's own groups for 57 of the 58
+   * measured, which is what lets the panel say "through groups".
+   *
+   * The same effective table a role search reads, and the same rules:
+   * duplicate rows collapse, a direct row wins over an inherited one, and no
+   * group or parent role is ever named -- granted_by is empty on the PDI and
+   * one unreadable value on every customer row, and included_in_role is empty.
+   *
+   * "Assigned" is claimed only from a complete picture. A capped role read, or
+   * containment that could not all be read, returns the plain direct and
+   * inherited split with `containment: "unavailable"` instead.
+   *
+   * Verified on the PDI and a customer instance: the role's display value is
+   * its name, `inherited` is never empty and `state` is always `active`.
+   */
+  async function readUserRoles(userSysId, options) {
+    const opts = options || {};
+    const get = opts.get || defaultTransport;
+    const shouldStop = opts.shouldStop || (() => false);
+    const user = assertSafeSysId(userSysId);
+    const stale = () => ({
+      stale: true, direct: [], inherited: [], assigned: null, bundled: null,
+      containment: "unavailable", unnamed: 0, capped: false,
+    });
+    const rows = await getRows(get, {
+      table: MEMBERSHIP_TABLE,
+      query: "user=" + user + "^state=active",
+      fields: "user,role,inherited",
+      limit: USER_ROLE_LIMIT + 1,
+    });
+    if (shouldStop()) return stale();
+    const byRole = new Map();
+    let unnamed = 0;
+    rows.slice(0, USER_ROLE_LIMIT).forEach((row) => {
+      /* A row about anyone else is a condition that did not hold. */
+      if (rawValue(row && row.user).toLowerCase() !== user) return;
+      const roleId = rawValue(row && row.role).toLowerCase();
+      if (!SYS_ID_PATTERN.test(roleId)) return;
+      const name = displayValue(row && row.role).trim();
+      const inherited = isTrue(row && row.inherited);
+      const previous = byRole.get(roleId);
+      if (!previous || (previous.inherited && !inherited)) byRole.set(roleId, { name, inherited });
+    });
+    const capped = rows.length > USER_ROLE_LIMIT;
+    const named = [];
+    byRole.forEach((role, roleId) => {
+      /* A restricted name comes back blank, or as the bare sys_id; neither is
+       * a name, so it is counted rather than printed. It still takes part in
+       * containment: its id is as good as any other. */
+      if (!role.name || role.name.toLowerCase() === roleId) unnamed += 1;
+      else named.push({ roleId, name: role.name, inherited: role.inherited });
+    });
+
+    /* Only an inherited role can be set aside, so an account with none needs
+     * no containment read. A capped read is missing roles whose containment
+     * would matter, so it gets none either. */
+    let containment = null;
+    if (!capped) {
+      const anyInherited = Array.from(byRole.values()).some((role) => role.inherited);
+      containment = anyInherited
+        ? await readContainment(Array.from(byRole.keys()), get, shouldStop)
+        : { edges: new Map() };
+      if (containment && containment.stale) return stale();
+    }
+
+    const names = (list) => list.map((role) => role.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    const found = {
+      stale: false,
+      direct: names(named.filter((role) => !role.inherited)),
+      inherited: names(named.filter((role) => role.inherited)),
+      assigned: null,
+      bundled: null,
+      containment: "unavailable",
+      unnamed,
+      capped,
+    };
+    if (containment) {
+      const assigned = assignedRoleIds(byRole, containment.edges);
+      found.assigned = names(named.filter((role) => assigned.has(role.roleId)));
+      found.bundled = names(named.filter((role) => !assigned.has(role.roleId)));
+      found.containment = "applied";
+    }
+    return found;
+  }
+
   /* ------------------------------------------------------------------ *
    * The mutation's only input
    * ------------------------------------------------------------------ */
@@ -1638,6 +1930,13 @@
     return String(origin || "") + "/" + USER_TABLE + ".do?sys_id=" + encodeURIComponent(sysId);
   }
 
+  /* ServiceNow's classic impersonation dialog: a stock UI page, verified on a
+   * customer instance as baseline and unmodified. The panel offers it when
+   * Stop is refused; GlideLens only opens it and never submits it. */
+  function buildImpersonateDialogUrl(origin) {
+    return String(origin || "") + "/impersonate_dialog.do";
+  }
+
   function createSessionTracker() {
     const engine = globalThis.SNRecordSearch;
     if (engine && typeof engine.createSessionTracker === "function") {
@@ -1655,6 +1954,7 @@
     USER_TABLE,
     ROLE_TABLE,
     MEMBERSHIP_TABLE,
+    CONTAINMENT_TABLE,
     GROUP_TABLE,
     GROUP_MEMBER_TABLE,
     DICTIONARY_TABLE,
@@ -1669,6 +1969,10 @@
     GROUP_SUGGESTION_LIMIT,
     MEMBERSHIP_LIMIT,
     ATTRIBUTE_VALUE_LIMIT,
+    RECENT_LIMIT,
+    USER_ROLE_LIMIT,
+    CONTAINMENT_CHUNK,
+    CONTAINMENT_LIMIT,
     MIN_USER_ANCHOR,
     MIN_ROLE_ANCHOR,
     MAX_USER_NAME_LENGTH,
@@ -1715,8 +2019,11 @@
     loadAttributeValues,
     resolveLanguage,
     runSearch,
+    readRecentUsers,
+    readUserRoles,
     validateUserName,
     buildUserUrl,
+    buildImpersonateDialogUrl,
     createSessionTracker,
     /* One argument only: the admitted reference table is getRows's to pass,
      * never an exported caller's. */

@@ -308,10 +308,18 @@ main.wrap { padding-top: 40px; }
   colleague — user ID, name, email, title, and the country, department and
   company shown on each result — plus whichever filterable fields
   your instance's own dictionary offers, role membership when you pick a role,
-  and group names and group membership when you pick a group. Inactive,
+  and group names and group membership when you pick a group. A confirmation
+  also reads the roles of the person it names, and which of those roles
+  contain others, so you can see what you are about to act as. When the panel
+  opens it also reads ServiceNow's own list of the people you recently
+  impersonated, the one the platform keeps for its Impersonate dialog, and then
+  the same identity fields for each of them. A Service Portal page does not say
+  whether you are impersonating, and a Workspace page does not say which account
+  to return to, so on those pages it fetches a page from your own instance and
+  reads only those two facts from it. Inactive,
   locked-out and web-service-only accounts are never listed, because
-  impersonating one can end your own session. No search term, result, role,
-  group or impersonation history is stored anywhere; the account to return to is
+  impersonating one can end your own session. GlideLens stores no search term,
+  result, role, group or impersonation history anywhere; the account to return to is
   held only in the extension's session memory, for the one instance it came
   from, and is gone when the browser closes.</p>
 

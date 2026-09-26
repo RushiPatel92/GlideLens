@@ -559,9 +559,15 @@ test("each input combination picks its documented order", () => {
   const group = sysId("ga");
   const attribute = { field: "country", value: "GB" };
   assert.strictEqual(IMP.searchOrder({ term: "abel" }), "user-first");
-  assert.strictEqual(IMP.searchOrder({ term: "abel", roleSysId: role }), "user-first");
-  assert.strictEqual(IMP.searchOrder({ term: "abel", groupSysId: group }), "user-first");
+  /* Text rides the membership read rather than capping ahead of it: an
+   * unordered text window can hold none of the members at all. */
+  assert.strictEqual(IMP.searchOrder({ term: "abel", roleSysId: role }), "role-first");
+  assert.strictEqual(IMP.searchOrder({ term: "abel", groupSysId: group }), "group-first");
+  assert.strictEqual(IMP.searchOrder({ term: "abel", groupSysId: group, roleSysId: role }), "group-first");
   assert.strictEqual(IMP.searchOrder({ term: "abel", attribute }), "user-first");
+  /* An exact sys_id is one row that nothing can crowd out. */
+  assert.strictEqual(IMP.searchOrder({ term: sysId("exact"), groupSysId: group }), "user-first");
+  assert.strictEqual(IMP.searchOrder({ term: sysId("exact"), roleSysId: role }), "user-first");
   assert.strictEqual(IMP.searchOrder({ groupSysId: group }), "group-first");
   /* The group is the narrower population and its read can carry eligibility,
    * so it drives whenever there is no text -- a role included. */
@@ -608,7 +614,7 @@ test("the attribute joins the candidate read when text is present, never a post-
   assert.strictEqual(call.limit, IMP.USER_CANDIDATE_LIMIT);
 });
 
-test("role-only takes the role-first order and text plus role takes user-first", async () => {
+test("a role reads its holders first, with the text and eligibility dot-walked", async () => {
   const schema = await schemaFrom();
   const role = sysId("ab");
   const user = userRow({ userName: "holder", name: "Holder One" });
@@ -616,22 +622,34 @@ test("role-only takes the role-first order and text plus role takes user-first",
     sys_user: [user],
     sys_user_has_role: [membershipRow(user.sys_id, role, false)],
   });
+  const eligibility = "^user.active=true^user.locked_out=false^user.user_nameISNOTEMPTY" +
+    "^user.web_service_access_only=false^ORuser.web_service_access_onlyISEMPTY";
 
   const roleOnly = makeGet(tables);
   const first = await IMP.runSearch(IMP.parseSearch({ roleSysId: role }), {
     get: roleOnly, schema,
   });
   assert.strictEqual(first.order, "role-first");
-  assert.strictEqual(roleOnly.calls[0].table, "sys_user_has_role",
-    "membership is read first when there is no text to narrow with");
+  assert.strictEqual(roleOnly.calls[0].table, "sys_user_has_role");
+  /* Verified on a customer instance: dot-walked eligibility kept exactly the
+   * holders a direct sys_user read calls eligible -- 26 of 41 for one surname
+   * -- so without it half the window went on accounts never listed. */
+  assert.strictEqual(roleOnly.calls[0].query, "role=" + role + "^state=active" + eligibility);
 
   const withText = makeGet(tables);
   const second = await IMP.runSearch(
     IMP.parseSearch({ term: "Holder", roleSysId: role }), { get: withText, schema }
   );
-  assert.strictEqual(second.order, "user-first");
-  assert.strictEqual(withText.calls[0].table, "sys_user",
-    "text narrows first, so a common role cannot crowd out the match");
+  assert.strictEqual(second.order, "role-first");
+  assert.strictEqual(withText.calls[0].table, "sys_user_has_role",
+    "the text narrows the membership read itself, before its cap");
+  assert.strictEqual(withText.calls[0].query,
+    "role=" + role + "^state=active" +
+    "^user.user_nameLIKEHolder^ORuser.nameLIKEHolder^ORuser.emailLIKEHolder^ORuser.titleLIKEHolder" +
+    eligibility);
+  assert.ok(!withText.forTable("sys_user").some((call) => call.query.includes("LIKE")),
+    "no unordered text window is read at all");
+  assert.deepStrictEqual(own(second.results.map((found) => found.userName)), ["holder"]);
 });
 
 test("role-only reads every collected id up to 100, not the 50-row text window", async () => {
@@ -721,21 +739,26 @@ test("a capped membership read in the ROLE-ONLY order truncates the list honestl
   assert.notStrictEqual(result.roleFilter.status, "unavailable");
 });
 
-test("a capped membership read in the TEXT+ROLE order makes role filtering unavailable", async () => {
+test("a role intersection too large to read makes role filtering unavailable", async () => {
   const schema = await schemaFrom();
+  const group = sysId("ah-group");
   const role = sysId("ah");
-  const users = [];
-  const memberships = [];
+  const members = [];
   for (let index = 0; index < 40; index += 1) {
-    const row = userRow({ userName: "holder" + index, name: "Holder " + index });
-    users.push(row);
+    members.push(userRow({ userName: "holder" + index, name: "Holder " + index }));
   }
-  for (let index = 0; index < IMP.MEMBERSHIP_LIMIT + 1; index += 1) {
-    memberships.push(membershipRow(users[index % users.length].sys_id, role, false));
-  }
-  const get = makeGet(baseTables({ sys_user: users, sys_user_has_role: memberships }));
+  /* Forty members, each with far more role rows than one window can hold. */
+  const roleRows = [];
+  members.forEach((row) => {
+    for (let copy = 0; copy < 5; copy += 1) roleRows.push(membershipRow(row.sys_id, role, copy > 0));
+  });
+  const get = makeGet(baseTables({
+    sys_user_grmember: members.map((row) => groupMemberRow(row.sys_id, group)),
+    sys_user: (request) => members.filter((row) => request.query.includes(row.sys_id)),
+    sys_user_has_role: roleRows,
+  }));
   const result = await IMP.runSearch(
-    IMP.parseSearch({ term: "Holder", roleSysId: role }), { get, schema }
+    IMP.parseSearch({ groupSysId: group, roleSysId: role }), { get, schema }
   );
 
   /*
@@ -943,52 +966,83 @@ test("a capped member read truncates the list honestly and claims no total", asy
   assert.strictEqual(ids.length, IMP.MEMBERSHIP_LIMIT, "cap + 1 detects the cap; cap are used");
 });
 
-test("text plus a group narrows by text first, then asks which candidates are members", async () => {
+test("text with a group finds the member an unordered text window would have missed", async () => {
+  /*
+   * The reported defect, measured on a customer instance: a surname matched
+   * 237 eligible users, the one group member among them was not in the 50 the
+   * text read returned, and a group that plainly listed him answered
+   * "nobody". Sixty namesakes stand in for the 237 here.
+   */
   const schema = await schemaFrom();
   const group = sysId("gi");
-  const member = userRow({ userName: "holder.in", name: "Holder In" });
-  const outsider = userRow({ userName: "holder.out", name: "Holder Out" });
+  const namesakes = [];
+  for (let index = 0; index < 60; index += 1) {
+    namesakes.push(userRow({ userName: "namesake" + index, name: "Namesake Surname " + index }));
+  }
+  const member = userRow({ userName: "the.member", name: "Member Surname" });
+  const everyone = namesakes.concat([member]);
   const get = makeGet(baseTables({
-    sys_user: [member, outsider],
-    sys_user_grmember: (request) => [member, outsider]
-      .filter((row) => request.query.includes(row.sys_id) && row === member)
-      .map((row) => groupMemberRow(row.sys_id, group)),
+    /* The member read honours its dot-walked text, as the live one did. */
+    sys_user_grmember: (request) => (request.query.includes("^ORuser.nameLIKESurname")
+      ? [groupMemberRow(member.sys_id, group)] : []),
+    /* An unordered text read would have answered with namesakes first. */
+    sys_user: (request) => (request.query.includes("sys_idIN")
+      ? everyone.filter((row) => request.query.includes(row.sys_id))
+      : everyone.slice(0, request.limit)),
   }));
   const result = await IMP.runSearch(
-    IMP.parseSearch({ term: "Holder", groupSysId: group }), { get, schema }
+    IMP.parseSearch({ term: "Surname", groupSysId: group }), { get, schema }
   );
-  assert.strictEqual(result.order, "user-first");
-  assert.strictEqual(get.calls[0].table, "sys_user", "text narrows first");
+  assert.strictEqual(result.order, "group-first");
+  assert.strictEqual(get.calls[0].table, "sys_user_grmember",
+    "the group and the text narrow together, before any cap");
   const memberQuery = get.forTable("sys_user_grmember")[0].query;
-  assert.ok(memberQuery.startsWith("userIN"), memberQuery);
-  assert.ok(memberQuery.endsWith("^group=" + group));
-  assert.ok(!memberQuery.includes("user."),
-    "candidates were read eligible, so the intersection needs no dot-walk");
-  assert.deepStrictEqual(own(result.results.map((user) => user.userName)), ["holder.in"]);
+  assert.ok(memberQuery.startsWith("group=" + group +
+    "^user.user_nameLIKESurname^ORuser.nameLIKESurname^ORuser.emailLIKESurname^ORuser.titleLIKESurname" +
+    "^user.active=true^"), memberQuery);
+  assert.ok(!get.forTable("sys_user").some((call) => call.query.includes("LIKE")),
+    "no unordered text window is read at all");
+  assert.deepStrictEqual(own(result.results.map((user) => user.userName)), ["the.member"]);
+  assert.strictEqual(result.eligibleTotal, 1);
   assert.strictEqual(result.groupFilter.status, "applied");
 });
 
-test("a capped member read in the TEXT+GROUP order makes group filtering unavailable", async () => {
+test("an ignored text dot-walk cannot put a non-matching member in the list", async () => {
+  /* A misspelt dot-walked field is SILENTLY IGNORED and the whole group comes
+   * back. So this fixture answers the member read unfiltered, and the complete
+   * term is all that stands between the panel and a wrong row. */
   const schema = await schemaFrom();
   const group = sysId("gj");
-  const users = [];
-  for (let index = 0; index < 40; index += 1) {
-    users.push(userRow({ userName: "holder" + index, name: "Holder " + index }));
-  }
-  const rows = [];
-  for (let index = 0; index < IMP.MEMBERSHIP_LIMIT + 1; index += 1) {
-    rows.push(groupMemberRow(users[index % users.length].sys_id, group));
-  }
-  const get = makeGet(baseTables({ sys_user: users, sys_user_grmember: rows }));
+  const match = userRow({ userName: "s.match", name: "Surname Match" });
+  const other = userRow({ userName: "o.other", name: "Other Person" });
+  const get = makeGet(baseTables({
+    sys_user_grmember: [groupMemberRow(match.sys_id, group), groupMemberRow(other.sys_id, group)],
+    sys_user: (request) => [match, other].filter((row) => request.query.includes(row.sys_id)),
+  }));
   const result = await IMP.runSearch(
-    IMP.parseSearch({ term: "Holder", groupSysId: group }), { get, schema }
+    IMP.parseSearch({ term: "Surname", groupSysId: group }), { get, schema }
   );
-  /* The same rule as text+role: a candidate the cap cut off is
-   * indistinguishable from one that is not a member. */
-  assert.strictEqual(result.groupFilter.status, "unavailable");
-  assert.ok(/group/.test(result.groupFilter.reason), result.groupFilter.reason);
-  assert.deepStrictEqual(own(result.results), []);
-  assert.strictEqual(result.eligibleTotal, null);
+  assert.deepStrictEqual(own(result.results.map((user) => user.userName)), ["s.match"]);
+  assert.strictEqual(result.eligibleTotal, 1, "and the count is of verified rows");
+});
+
+test("an exact sys_id with a group stays user-first and asks about that one user", async () => {
+  const schema = await schemaFrom();
+  const group = sysId("gz");
+  const target = userRow({ name: "Exact Person" });
+  const get = makeGet(baseTables({
+    sys_user: [target],
+    sys_user_grmember: (request) => (request.query.includes(target.sys_id)
+      ? [groupMemberRow(target.sys_id, group)] : []),
+  }));
+  const result = await IMP.runSearch(
+    IMP.parseSearch({ term: target.sys_id, groupSysId: group }), { get, schema }
+  );
+  assert.strictEqual(result.order, "user-first");
+  assert.strictEqual(get.calls[0].table, "sys_user");
+  assert.strictEqual(get.forTable("sys_user_grmember")[0].query,
+    "userIN" + target.sys_id + "^group=" + group);
+  assert.deepStrictEqual(own(result.results.map((user) => user.sysId)), [target.sys_id]);
 });
 
 test("a group and a role together: group drives, the role badge survives, non-holders drop", async () => {
@@ -1347,6 +1401,355 @@ test("no error string carries a query, an identity or a hostname", async () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * The recent-impersonations list
+ * ------------------------------------------------------------------ */
+
+test("a recent account is read through the eligibility gate, and a locked one is counted, not listed", async () => {
+  const schema = await schemaFrom();
+  const kept = sysId("recent-kept");
+  const locked = sysId("recent-locked");
+  const gone = sysId("recent-gone");
+  /* The fake server ignores the query and answers with every row, so this
+   * proves the client-side re-check rather than the server condition. */
+  const get = makeGet(baseTables({
+    sys_user: [
+      userRow({ sysId: kept, userName: "kept.user", name: "Kept User" }),
+      userRow({ sysId: locked, userName: "locked.user", name: "Locked User", lockedOut: "true" }),
+    ],
+  }));
+  const found = await IMP.readRecentUsers([kept, locked, gone], { get, schema });
+  assert.deepStrictEqual(own(found.users.map((user) => user.userName)), ["kept.user"]);
+  /* Deleted and locked alike: a count, and nobody named. */
+  assert.strictEqual(found.hidden, 2);
+
+  const read = get.forTable("sys_user")[0];
+  assert.ok(read.query.startsWith("sys_idIN" + [kept, locked, gone].join(",") + "^"), read.query);
+  assert.ok(read.query.endsWith(
+    "web_service_access_only=false^ORweb_service_access_onlyISEMPTY"), read.query);
+  assert.ok(read.query.includes("active=true^locked_out=false"), read.query);
+  assert.strictEqual(read.limit, 3);
+});
+
+test("the recent list keeps the platform's order, not the search's alphabetical one", async () => {
+  const schema = await schemaFrom();
+  const zed = sysId("recent-zed");
+  const amy = sysId("recent-amy");
+  const get = makeGet(baseTables({
+    sys_user: [
+      userRow({ sysId: amy, userName: "amy.user", name: "Amy User" }),
+      userRow({ sysId: zed, userName: "zed.user", name: "Zed User" }),
+    ],
+  }));
+  const found = await IMP.readRecentUsers([zed, amy], { get, schema });
+  assert.deepStrictEqual(own(found.users.map((user) => user.userName)), ["zed.user", "amy.user"]);
+});
+
+test("recent ids are validated, deduplicated and bounded before any read", async () => {
+  const schema = await schemaFrom();
+  const get = makeGet(baseTables({ sys_user: [] }));
+  const nothing = await IMP.readRecentUsers(["not-an-id", "", null, "x".repeat(32)], { get, schema });
+  assert.strictEqual(nothing.users.length, 0);
+  assert.strictEqual(nothing.hidden, 0);
+  assert.strictEqual(get.forTable("sys_user").length, 0, "nothing valid, so nothing is read");
+
+  const ids = [];
+  for (let index = 0; index < IMP.RECENT_LIMIT + 5; index += 1) ids.push(sysId());
+  const upper = ids[0].toUpperCase();
+  await IMP.readRecentUsers([upper, ids[0]].concat(ids), { get, schema });
+  const read = get.forTable("sys_user")[0];
+  const listed = read.query.split("^")[0].replace("sys_idIN", "").split(",");
+  assert.strictEqual(listed.length, IMP.RECENT_LIMIT);
+  assert.strictEqual(new Set(listed).size, listed.length, "a repeated id is read once");
+  assert.strictEqual(listed[0], ids[0], "and case-folded, since the table stores lower case");
+});
+
+test("a superseded recent read reports stale rather than an empty list", async () => {
+  const schema = await schemaFrom();
+  const get = makeGet(baseTables({ sys_user: [userRow({ sysId: sysId("recent-stale") })] }));
+  const found = await IMP.readRecentUsers([sysId("recent-stale")], {
+    get, schema, shouldStop: () => true,
+  });
+  assert.strictEqual(found.stale, true);
+  assert.strictEqual(found.users.length, 0);
+});
+
+/* ------------------------------------------------------------------ *
+ * The confirmation's roles
+ * ------------------------------------------------------------------ */
+
+function roleRow(userSysId, roleSysId, name, inherited) {
+  return {
+    user: { value: userSysId, display_value: "Sample User" },
+    role: { value: roleSysId, display_value: name },
+    inherited: { value: inherited ? "true" : "false", display_value: inherited ? "true" : "false" },
+  };
+}
+
+test("one account's roles are read from the effective table, bounded, and verified", async () => {
+  const person = sysId("roles-person");
+  const get = makeGet({ sys_user_has_role: [] });
+  await IMP.readUserRoles(person.toUpperCase(), { get });
+  const read = get.forTable("sys_user_has_role")[0];
+  assert.strictEqual(read.query, "user=" + person + "^state=active");
+  assert.strictEqual(read.limit, IMP.USER_ROLE_LIMIT + 1, "cap + 1 answers whether it was complete");
+  assert.ok(read.fields.split(",").includes("inherited"));
+  assert.strictEqual(read.options.displayAll, true, "the role's display value is its name");
+
+  await assert.rejects(IMP.readUserRoles("not-an-id", { get }), (error) => error.code === "validation");
+  assert.strictEqual(get.forTable("sys_user_has_role").length, 1, "nothing is read for a bad id");
+});
+
+test("roles split into direct and inherited, a direct row wins, and duplicates collapse", async () => {
+  const person = sysId("roles-split");
+  const itil = sysId("role-itil");
+  const approver = sysId("role-approver");
+  const catalog = sysId("role-catalog");
+  const get = makeGet({
+    sys_user_has_role: [
+      roleRow(person, itil, "itil", true),
+      roleRow(person, itil, "itil", false),
+      roleRow(person, approver, "approver_user", true),
+      roleRow(person, approver, "approver_user", true),
+      roleRow(person, catalog, "Catalog", false),
+    ],
+  });
+  const found = await IMP.readUserRoles(person, { get });
+  assert.deepStrictEqual(own(found.direct), ["Catalog", "itil"], "sorted, case-insensitively");
+  assert.deepStrictEqual(own(found.inherited), ["approver_user"]);
+  assert.strictEqual(found.capped, false);
+  assert.strictEqual(found.unnamed, 0);
+});
+
+test("a row about someone else, a malformed role and a nameless role never become a name", async () => {
+  const person = sysId("roles-verify");
+  const get = makeGet({
+    sys_user_has_role: [
+      roleRow(person, sysId("role-kept"), "kept_role", false),
+      /* The fake server ignores the query: a row for another account is a
+       * condition that did not hold. */
+      roleRow(sysId("roles-other"), sysId("role-other"), "someone_elses_role", false),
+      roleRow(person, "not-a-sys-id", "malformed_role", false),
+      /* A restricted name comes back blank, or as the bare sys_id. */
+      roleRow(person, sysId("role-blank"), "", true),
+      roleRow(person, sysId("role-bare"), sysId("role-bare"), true),
+    ],
+  });
+  const found = await IMP.readUserRoles(person, { get });
+  assert.deepStrictEqual(own(found.direct), ["kept_role"]);
+  assert.deepStrictEqual(own(found.inherited), []);
+  assert.strictEqual(found.unnamed, 2, "counted, not printed");
+});
+
+test("a read that reaches the cap says the lists are incomplete", async () => {
+  const person = sysId("roles-capped");
+  const rows = [];
+  for (let index = 0; index <= IMP.USER_ROLE_LIMIT; index += 1) {
+    rows.push(roleRow(person, String(index).padStart(32, "a"), "role_" + index, true));
+  }
+  const get = makeGet({ sys_user_has_role: rows });
+  const found = await IMP.readUserRoles(person, { get });
+  assert.strictEqual(found.capped, true);
+  assert.strictEqual(found.inherited.length, IMP.USER_ROLE_LIMIT, "the probe row is not listed");
+  /* The roles the read missed may be the ones that contain these, so nothing
+   * is called assigned from it. */
+  assert.strictEqual(get.forTable("sys_user_role_contains").length, 0);
+  assert.strictEqual(found.containment, "unavailable");
+  assert.strictEqual(found.assigned, null);
+  assert.strictEqual(found.bundled, null);
+});
+
+test("a superseded roles read reports stale", async () => {
+  const person = sysId("roles-stale");
+  const get = makeGet({ sys_user_has_role: [roleRow(person, sysId("role-s"), "some_role", false)] });
+  const found = await IMP.readUserRoles(person, { get, shouldStop: () => true });
+  assert.strictEqual(found.stale, true);
+  assert.strictEqual(found.direct.length, 0);
+});
+
+/* sys_user_role_contains is read with raw values, so its rows are plain ids:
+ * `role` is the parent and `contains` the role it brings with it. */
+function containsRow(parentSysId, childSysId) {
+  return { role: parentSysId, contains: childSysId };
+}
+
+test("assigned roles are every direct grant plus each inherited role no held role contains", async () => {
+  const person = sysId("assigned-person");
+  const role = (name) => sysId("assigned-role-" + name);
+  const get = makeGet({
+    sys_user_has_role: [
+      roleRow(person, role("catalog_admin"), "catalog_admin", false),
+      /* Direct AND contained: a direct grant is always assigned. */
+      roleRow(person, role("itil"), "itil", false),
+      roleRow(person, role("approver_user"), "approver_user", true),
+      roleRow(person, role("snc_internal"), "snc_internal", true),
+      roleRow(person, role("catalog"), "catalog", true),
+      roleRow(person, role("itil_part"), "itil_part", true),
+      roleRow(person, role("deep_part"), "deep_part", true),
+    ],
+    sys_user_role_contains: [
+      containsRow(role("catalog_admin"), role("itil")),
+      containsRow(role("catalog_admin"), role("catalog")),
+      containsRow(role("itil"), role("itil_part")),
+      /* Two levels down is still bundled. */
+      containsRow(role("itil_part"), role("deep_part")),
+      /* A contained role the person does not hold bundles nothing. */
+      containsRow(role("itil"), role("not_held")),
+      /* A row about a role never asked for is a condition that did not hold:
+       * it must not bundle a held role away. */
+      containsRow(role("never_asked"), role("approver_user")),
+    ],
+  });
+  const found = await IMP.readUserRoles(person, { get });
+  assert.strictEqual(found.containment, "applied");
+  assert.deepStrictEqual(own(found.assigned), ["approver_user", "catalog_admin", "itil", "snc_internal"]);
+  assert.deepStrictEqual(own(found.bundled), ["catalog", "deep_part", "itil_part"]);
+  assert.deepStrictEqual(own(found.direct), ["catalog_admin", "itil"]);
+  /* The plain split is still there for the fallback. */
+  assert.strictEqual(found.inherited.length, 5);
+
+  const read = get.forTable("sys_user_role_contains")[0];
+  assert.strictEqual(read.fields, "role,contains");
+  assert.strictEqual(read.limit, IMP.CONTAINMENT_LIMIT + 1, "cap + 1 answers whether it was complete");
+  assert.strictEqual(read.options.displayAll, false, "two ids a row and nothing to display");
+  assert.ok(read.query.startsWith("roleIN"), read.query);
+  assert.deepStrictEqual(read.query.slice("roleIN".length).split(",").sort(),
+    ["approver_user", "catalog", "catalog_admin", "deep_part", "itil", "itil_part", "snc_internal"]
+      .map(role).sort(), "every held role is asked about, and nothing else");
+});
+
+test("the containment table joins the allowlist, and a roles read goes 100 ids at a time", async () => {
+  assert.ok(IMP.TABLE_ALLOWLIST.includes("sys_user_role_contains"));
+  const person = sysId("chunk-person");
+  const rows = [];
+  for (let index = 0; index < 250; index += 1) {
+    rows.push(roleRow(person, String(index).padStart(32, "b"), "chunk_role_" + index, true));
+  }
+  const get = makeGet({ sys_user_has_role: rows });
+  const found = await IMP.readUserRoles(person, { get });
+  get.calls.forEach((call) => {
+    assert.ok(IMP.TABLE_ALLOWLIST.includes(call.table), "unexpected table read: " + call.table);
+  });
+  const reads = get.forTable("sys_user_role_contains");
+  /* ~400 ids in one GET answered 414 on a customer instance; 100 was fine. */
+  assert.deepStrictEqual(own(reads.map((read) => read.query.split(",").length)), [100, 100, 50]);
+  const asked = reads.flatMap((read) => read.query.slice("roleIN".length).split(","));
+  assert.strictEqual(new Set(asked).size, 250, "every held role asked about once");
+  assert.strictEqual(found.containment, "applied");
+  assert.strictEqual(found.assigned.length, 250, "nothing contains anything, so all are assigned");
+  assert.strictEqual(found.bundled.length, 0);
+  /* Allowlisted, so the transport check passes it and it fails on the absent
+   * transport instead. */
+  await assert.rejects(
+    () => IMP.tableGet({ table: "sys_user_role_contains", query: "", fields: "", limit: 1 }),
+    (error) => error.code === "transient"
+  );
+});
+
+test("containment that cannot all be read falls back to direct and inherited, never to assigned", async () => {
+  const person = sysId("fallback-person");
+  const direct = sysId("fallback-direct");
+  const parent = sysId("fallback-parent");
+  const child = sysId("fallback-child");
+  const roles = [
+    roleRow(person, direct, "direct_role", false),
+    roleRow(person, parent, "parent_role", true),
+    roleRow(person, child, "child_role", true),
+  ];
+  const tooMany = [];
+  for (let index = 0; index <= IMP.CONTAINMENT_LIMIT; index += 1) {
+    tooMany.push(containsRow(parent, child));
+  }
+  const cases = {
+    "a failed read": () => { throw Object.assign(new Error("denied"), { code: "access" }); },
+    "a capped read": tooMany,
+    /* A restricted column comes back blank: an ACL, not an absent edge. */
+    "a blank column": [containsRow(parent, ""), containsRow(parent, child)],
+    "a malformed id": [containsRow("not-an-id", child)],
+  };
+  for (const [label, answer] of Object.entries(cases)) {
+    const get = makeGet({ sys_user_has_role: roles, sys_user_role_contains: answer });
+    const found = await IMP.readUserRoles(person, { get });
+    assert.strictEqual(found.stale, false, label);
+    assert.strictEqual(found.containment, "unavailable", label);
+    assert.strictEqual(found.assigned, null, label + ": nothing is called assigned");
+    assert.strictEqual(found.bundled, null, label);
+    assert.deepStrictEqual(own(found.direct), ["direct_role"], label);
+    assert.deepStrictEqual(own(found.inherited), ["child_role", "parent_role"], label);
+  }
+});
+
+test("an account with no inherited roles needs no containment read", async () => {
+  const person = sysId("direct-only");
+  const get = makeGet({
+    sys_user_has_role: [
+      roleRow(person, sysId("direct-only-a"), "role_a", false),
+      roleRow(person, sysId("direct-only-b"), "role_b", false),
+    ],
+  });
+  const found = await IMP.readUserRoles(person, { get });
+  assert.strictEqual(get.forTable("sys_user_role_contains").length, 0);
+  assert.strictEqual(found.containment, "applied");
+  assert.deepStrictEqual(own(found.assigned), ["role_a", "role_b"]);
+  assert.deepStrictEqual(own(found.bundled), []);
+});
+
+test("a containment cycle nothing assigned reaches is assigned, not hidden", async () => {
+  const person = sysId("cycle-person");
+  const a = sysId("cycle-a");
+  const b = sysId("cycle-b");
+  const c = sysId("cycle-c");
+  const d = sysId("cycle-d");
+  const get = makeGet({
+    sys_user_has_role: [
+      roleRow(person, a, "cycle_a", true),
+      roleRow(person, b, "cycle_b", true),
+      roleRow(person, c, "contained_c", true),
+      roleRow(person, d, "direct_d", false),
+    ],
+    sys_user_role_contains: [containsRow(a, b), containsRow(b, a), containsRow(a, c)],
+  });
+  const found = await IMP.readUserRoles(person, { get });
+  /* Without the reachability step all three inherited roles would be
+   * "contained", and the panel would say they come with direct_d -- which
+   * contains none of them. One member of the cycle is assigned instead, and
+   * the rest genuinely come with it. */
+  assert.deepStrictEqual(own(found.assigned), ["cycle_a", "direct_d"]);
+  assert.deepStrictEqual(own(found.bundled), ["contained_c", "cycle_b"]);
+});
+
+test("unnamed roles still take part in containment, and are counted rather than listed", async () => {
+  const person = sysId("unnamed-parent");
+  const hidden = sysId("unnamed-hidden");
+  const visible = sysId("unnamed-visible");
+  const get = makeGet({
+    sys_user_has_role: [
+      roleRow(person, hidden, "", true),
+      roleRow(person, visible, "visible_role", true),
+    ],
+    sys_user_role_contains: [containsRow(hidden, visible)],
+  });
+  const found = await IMP.readUserRoles(person, { get });
+  assert.strictEqual(found.unnamed, 1);
+  assert.deepStrictEqual(own(found.assigned), []);
+  assert.deepStrictEqual(own(found.bundled), ["visible_role"],
+    "it came inside a held role, even one whose name is restricted");
+});
+
+test("a containment read superseded mid-way reports stale", async () => {
+  const person = sysId("contains-stale");
+  const get = makeGet({
+    sys_user_has_role: [roleRow(person, sysId("contains-stale-r"), "some_role", true)],
+    sys_user_role_contains: [],
+  });
+  const found = await IMP.readUserRoles(person, {
+    get,
+    shouldStop: () => get.forTable("sys_user_role_contains").length > 0,
+  });
+  assert.strictEqual(found.stale, true);
+  assert.strictEqual(found.assigned, null);
+});
+
+/* ------------------------------------------------------------------ *
  * The mutation's only input
  * ------------------------------------------------------------------ */
 
@@ -1381,4 +1784,11 @@ test("the record link is built from a validated sys_id and nothing else", () => 
   );
   assert.throws(() => IMP.buildUserUrl("https://example.service-now.com", { sysId: "nope" }),
     (error) => error.code === "validation");
+});
+
+test("the impersonation dialog link is the stock UI page on the same instance", () => {
+  assert.strictEqual(
+    IMP.buildImpersonateDialogUrl("https://example.service-now.com"),
+    "https://example.service-now.com/impersonate_dialog.do"
+  );
 });

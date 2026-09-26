@@ -6354,6 +6354,7 @@ const IMPERSONATE_UI_METHODS = [
   "showConfirmation",
   "showMutationState",
   "showCurrentState",
+  "showRecent",
   "close",
   "isOpen",
 ];
@@ -6370,6 +6371,10 @@ let impersonateLookupSession = null;
  * against it before anything is sent, so a stale row from a superseded search
  * can never become the target. */
 let impersonateRenderedResults = [];
+/* ServiceNow's recent-impersonations list, as verified for this panel. A
+ * confirmed row may come from here too: it was read through the same
+ * eligibility gate as a search, in this panel's lifetime. */
+let impersonateRecentUsers = [];
 /* Loaded value lists, per attribute field, so typing filters what was already
  * read instead of re-reading it on every keystroke. Cleared with the panel. */
 let impersonateValueCache = null;
@@ -6409,6 +6414,30 @@ function reloadAfterSessionChange() {
   }, 700);
 }
 
+/*
+ * ServiceNow's own recent-impersonations list, shown while the panel waits for
+ * a question. The worker hands back ids only, and every account is re-read
+ * through the search's eligibility gate, so one locked since it was last used
+ * is left out rather than offered. A list that cannot be read is simply not
+ * shown: it is a shortcut, and nothing else depends on it.
+ */
+async function loadImpersonateRecent(ui, engine, isClosed) {
+  try {
+    const recent = await chrome.runtime.sendMessage({ type: "SN_IMPERSONATE_RECENT" });
+    if (isClosed() || !recent || !recent.ok || !Array.isArray(recent.sysIds)) return;
+    if (!recent.sysIds.length) return;
+    const found = await engine.readRecentUsers(recent.sysIds, {
+      origin: location.origin,
+      shouldStop: isClosed,
+    });
+    if (isClosed() || found.stale) return;
+    impersonateRecentUsers = found.users || [];
+    ui.showRecent(found);
+  } catch (error) {
+    /* Not being able to read the list is not worth a message. */
+  }
+}
+
 async function refreshImpersonateState(ui) {
   try {
     const state = await chrome.runtime.sendMessage({ type: "SN_IMPERSONATE_STATE" });
@@ -6432,7 +6461,11 @@ async function openImpersonate() {
   if (!impersonateSession) impersonateSession = engine.createSessionTracker();
   if (!impersonateLookupSession) impersonateLookupSession = engine.createSessionTracker();
   impersonateRenderedResults = [];
+  impersonateRecentUsers = [];
   impersonateValueCache = new Map();
+  /* Per panel: a recent list still being read when this panel closes must
+   * not land in the next one. */
+  let panelClosed = false;
 
   /* Starting another search, changing or clearing the role or the group,
    * changing or clearing the attribute field or its value, and closing the
@@ -6456,10 +6489,18 @@ async function openImpersonate() {
 
   ui.open({
     onCancel: () => {
+      panelClosed = true;
       impersonateSession.cancel();
       impersonateLookupSession.cancel();
       impersonateRenderedResults = [];
+      impersonateRecentUsers = [];
       impersonateValueCache = null;
+    },
+    /* The engine's own rule, so the name field never sends a term the
+     * search would refuse. */
+    canSearchTerm: (term) => {
+      const parsed = engine.parseSearch({ term });
+      return parsed.ok ? { ok: true } : { ok: false, message: parsed.error };
     },
     onRoleChanged: () => impersonateSession.cancel(),
     onGroupChanged: () => impersonateSession.cancel(),
@@ -6570,6 +6611,13 @@ async function openImpersonate() {
       return result;
     }),
 
+    /* The confirmation's roles. Read-only, and the engine validates the
+     * sys_id before any query is built from it. */
+    onFindUserRoles: (user) => engine.readUserRoles(user && user.sysId, {
+      origin: location.origin,
+      shouldStop: () => panelClosed,
+    }),
+
     onOpenUser: (user) => {
       try {
         chrome.runtime.sendMessage({
@@ -6583,12 +6631,14 @@ async function openImpersonate() {
 
     /*
      * The only thing that crosses to the worker is a username, and only after
-     * the chosen row has been found again in the list the panel is actually
-     * showing. Nothing is re-read from the DOM, and no table, URL, query or
-     * method is named here or anywhere in this file.
+     * the chosen row has been found again in a list this panel verified: the
+     * current search's results, or the recent list. Nothing is re-read from
+     * the DOM, and no table, URL, query or method is named here or anywhere
+     * in this file.
      */
     onImpersonate: async (user) => {
-      const chosen = (impersonateRenderedResults || []).find((item) =>
+      const chosen = (impersonateRenderedResults || [])
+        .concat(impersonateRecentUsers || []).find((item) =>
         item.sysId === (user && user.sysId) && item.userName === (user && user.userName));
       if (!chosen) {
         return {
@@ -6613,9 +6663,23 @@ async function openImpersonate() {
       if (outcome && outcome.ok) reloadAfterSessionChange();
       return outcome || { ok: false, code: "indeterminate", message: "" };
     },
+
+    /* The way round a refused Stop: ServiceNow's own dialog in a new tab,
+     * where the user chooses their account. Opened, never submitted. */
+    onOpenImpersonateDialog: () => {
+      try {
+        chrome.runtime.sendMessage({
+          type: "OPEN_URL",
+          url: engine.buildImpersonateDialogUrl(location.origin),
+        });
+      } catch (error) {
+        showToast("GlideLens could not open ServiceNow's impersonation dialog.", true);
+      }
+    },
   });
 
   refreshImpersonateState(ui);
+  loadImpersonateRecent(ui, engine, () => panelClosed || !ui.isOpen());
 }
 
 /* =====================================================================
