@@ -1188,14 +1188,64 @@ a { color: var(--teal); }
 /* --- Impersonate (impersonate_ui.js) -----------------------------------
    Built on the Record Lens demo's form and row classes, because the real
    panel is built on the real Record Lens panel. Only what this one adds is
-   defined here: the current-state strip, the role badge, and the
-   confirmation step that stands between a result and a session change. */
+   defined here: the two filter pairs and their clear buttons, the recent
+   list, the current-state strip, the role badge, and the confirmation step
+   that stands between a result and a session change. */
 .dm-im-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 9px;
   margin-top: 9px;
 }
+.dm-im-filters .dm-rl-in { padding-right: 30px; }
+.dm-im-filters .dm-rl-in:disabled { opacity: .5; }
+.dm-im-clear {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #9d9dba;
+  font: 11px/1.2 var(--sans);
+  cursor: pointer;
+}
+.dm-im-clear[hidden] { display: none; }
+.dm-im-clear:hover, .dm-im-clear:focus-visible { outline: none; background: #3d3d62; color: #fff; }
+.dm-im-section {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 15px 5px;
+  color: #9ff0e5;
+  font: 600 9.5px/1.4 var(--sans);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.dm-im-section span + span {
+  margin-left: auto;
+  color: #74748d;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.dm-im-snote { padding: 8px 15px; font-size: 11px; line-height: 1.5; color: #85859d; }
+.dm-im-roles { font: 10.5px/1.6 var(--mono); color: #d6d6ea; }
+.dm-im-roles b { font: 400 11.5px var(--sans); color: #85859f; }
+.dm-im-rsrc { display: block; font-size: 11px; line-height: 1.5; color: #a9a9c2; }
+.dm-im-more { margin-top: 3px; }
+.dm-im-more summary { width: max-content; cursor: pointer; font-size: 11.5px; color: #bdbdd0; }
+.dm-im-more div {
+  margin-top: 5px;
+  padding: 5px 8px;
+  border: 1px solid #33335a;
+  border-radius: 6px;
+  background: #1f1f33;
+  font: 10.5px/1.6 var(--mono);
+  color: #d6d6ea;
+}
+.dm-im-facts dd.is-pending { color: #85859f; }
 .dm-im-current {
   display: flex;
   flex-wrap: wrap;
@@ -1865,11 +1915,11 @@ a { color: var(--teal); }
             <span class="tag">never retried</span>
           </div>
           <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — invented people, invented roles, real panel. Pick <em>catalog_admin</em> to see who holds it, or type <em>morgan</em>. Pressing <em>Impersonate</em> opens the confirmation and stops there, as it does before you confirm.</p>
+            <p class="dm-cap"><b>Interactive demo</b> — invented people, roles and groups, real panel. It opens on the recent list. Pick <em>catalog_admin</em> to see who holds it, pick a group to see who is in it, or type <em>morgan</em>. Pressing <em>Impersonate</em> opens the confirmation with the person's roles, and <em>Start impersonation</em> stops short of sending anything.</p>
             <div class="dm" id="dmIm">
               <div class="dm-head">
                 <h3 class="dm-title">Impersonate</h3>
-                <p class="dm-sub">Find a user by identity, attribute or role. Only eligible accounts are listed, and nothing changes until you confirm.</p>
+                <p class="dm-sub">Find a user by identity, attribute, role or group. Only eligible accounts are listed, and nothing changes until you confirm.</p>
               </div>
               <div class="dm-im-current" id="dmimCurrent" role="status" aria-live="polite" hidden></div>
               <div class="dm-rl-form">
@@ -1889,6 +1939,7 @@ a { color: var(--teal); }
                       role="combobox" aria-autocomplete="list" aria-expanded="false"
                       aria-controls="dmimFieldMenu" placeholder="any discovered field"
                       autocomplete="off" spellcheck="false" />
+                    <button class="dm-im-clear" type="button" aria-label="Clear field" hidden>✕</button>
                     <div class="dm-rl-menu" id="dmimFieldMenu" role="listbox" aria-label="Discovered fields" hidden></div>
                   </div>
                   <div class="dm-rl-combo">
@@ -1897,6 +1948,7 @@ a { color: var(--teal); }
                       role="combobox" aria-autocomplete="list" aria-expanded="false"
                       aria-controls="dmimValueMenu" placeholder="choose a field first"
                       autocomplete="off" spellcheck="false" disabled />
+                    <button class="dm-im-clear" type="button" aria-label="Clear value" hidden>✕</button>
                     <div class="dm-rl-menu" id="dmimValueMenu" role="listbox" aria-label="Values" hidden></div>
                   </div>
                   <div class="dm-rl-combo">
@@ -1905,14 +1957,24 @@ a { color: var(--teal); }
                       role="combobox" aria-autocomplete="list" aria-expanded="false"
                       aria-controls="dmimRoleMenu" placeholder="role name or description"
                       autocomplete="off" spellcheck="false" />
+                    <button class="dm-im-clear" type="button" aria-label="Clear role" hidden>✕</button>
                     <div class="dm-rl-menu" id="dmimRoleMenu" role="listbox" aria-label="Matching roles" hidden></div>
+                  </div>
+                  <div class="dm-rl-combo">
+                    <label class="dm-rl-lab" for="dmimGroup">Group (optional)</label>
+                    <input class="dm-rl-in" id="dmimGroup" type="text"
+                      role="combobox" aria-autocomplete="list" aria-expanded="false"
+                      aria-controls="dmimGroupMenu" placeholder="group name"
+                      autocomplete="off" spellcheck="false" />
+                    <button class="dm-im-clear" type="button" aria-label="Clear group" hidden>✕</button>
+                    <div class="dm-rl-menu" id="dmimGroupMenu" role="listbox" aria-label="Matching groups" hidden></div>
                   </div>
                 </div>
               </div>
-              <div class="dm-rl-status" id="dmimStatus" role="status" aria-live="polite">Enter a name, choose a role, or pick an attribute to begin.</div>
+              <div class="dm-rl-status" id="dmimStatus" role="status" aria-live="polite">Type a name, choose a role or group, or pick an attribute to begin.</div>
               <div class="dm-rows" id="dmimRows"></div>
               <div class="dm-rl-bar">
-                <span>No search term, result, role, group or impersonation history is stored. ServiceNow records impersonation in its own audit log.</span>
+                <span>GlideLens stores no search term, result, role, group or impersonation history. The recent list is ServiceNow's own, and ServiceNow records impersonation in its audit log.</span>
               </div>
             </div>
           </div>
@@ -4182,18 +4244,21 @@ a { color: var(--teal); }
 /* ---------------------------------------------------------------------------
    Demo 6 — "Impersonate" (impersonate_ui.js + impersonate.js).
 
-   Every person, role, department and country below is invented. Nothing here
-   is copied from any instance, and the demo sends nothing anywhere: pressing
-   Impersonate opens the confirmation and stops, which is exactly where the
-   real panel stops until you confirm.
+   Every person, role, group, department and country below is invented, and
+   so is the recent list. Nothing here is copied from any instance, and the
+   demo sends nothing anywhere: Start impersonation stops short of the request
+   the real panel would send.
 
-   Three rules are copied from the engine rather than approximated, because
-   they are the point of the feature:
+   Four rules are copied from the engine and panel rather than approximated,
+   because they are the point of the feature:
      - Eligibility is a SAFETY rule. Inactive, locked-out and web-service-only
-       accounts never reach the list, so they can never be clicked.
+       accounts never reach the list, so they can never be clicked -- and a
+       recent account that has become one since is counted, not offered.
      - Role membership is effective membership, and each row says whether it is
        direct or inherited -- but never claims which group it came through.
      - The displayed total counts eligible people, not membership rows.
+     - A pick or a clear is a finished question and searches at once; a typed
+       name searches when typing pauses.
    --------------------------------------------------------------------------- */
 (function () {
   "use strict";
@@ -4203,6 +4268,10 @@ a { color: var(--teal); }
 
   var MIN_ANCHOR = 3;
   var RESULT_LIMIT = 20;
+  var TERM_SEARCH_DELAY_MS = 500;
+  var START_STATUS = "Type a name, choose a role or group, or pick an attribute to begin.";
+  var TOO_SHORT = "Enter at least " + MIN_ANCHOR +
+    " consecutive letters, numbers or underscores, or an exact sys_id.";
 
   var ROLES = [
     { id: "r1", name: "catalog_admin", desc: "Administer catalog items and variable sets" },
@@ -4211,7 +4280,17 @@ a { color: var(--teal); }
     { id: "r4", name: "translation_admin", desc: "Manage translated fields and messages" }
   ];
 
-  /* `roles` is effective membership: each entry says how it is held. */
+  var GROUPS = [
+    { id: "g1", name: "Catalog Design", desc: "Owns the service catalog", active: true },
+    { id: "g2", name: "Platform Support", desc: "Second-line platform fixes", active: true },
+    { id: "g3", name: "Translation Desk", desc: "Reviews translated catalog text", active: true },
+    { id: "g4", name: "Catalog Design Pilot", desc: "Replaced by Catalog Design", active: false }
+  ];
+
+  /* `access` is what the confirmation shows: the roles granted directly, the
+   * ones that came through a group, and the ones that only come bundled inside
+   * those. The search's direct/inherited map is derived from it below, so the
+   * badge and the confirmation can never disagree. */
   var PEOPLE = [
     {
       sysId: "1b6e0c4a7f2d40c9ae53d81b6c0f2a47",
@@ -4219,7 +4298,12 @@ a { color: var(--teal); }
       email: "avery.morgan@example.com", title: "Catalog Lead",
       country: "XA", department: "Service Design",
       active: true, lockedOut: false, apiOnly: false,
-      roles: { r1: "direct", r2: "direct", r3: "inherited" }
+      groups: ["g1"],
+      access: {
+        direct: ["catalog_admin"],
+        viaGroups: ["itil"],
+        bundled: ["catalog_editor", "catalog_viewer", "task_reader"]
+      }
     },
     {
       sysId: "8d21f9b5e4c74a0f93b621ad7e5c0846",
@@ -4227,7 +4311,12 @@ a { color: var(--teal); }
       email: "priya.raman@example.com", title: "Platform Engineer",
       country: "XB", department: "Platform",
       active: true, lockedOut: false, apiOnly: false,
-      roles: { r1: "inherited", r3: "direct", r4: "direct" }
+      groups: ["g2"],
+      access: {
+        direct: ["itil", "translation_admin"],
+        viaGroups: ["catalog_admin"],
+        bundled: ["catalog_editor", "catalog_viewer", "message_editor", "task_reader"]
+      }
     },
     {
       sysId: "44a7c0e2b18d4f639e0c5a7b2d1f8093",
@@ -4235,7 +4324,12 @@ a { color: var(--teal); }
       email: "t.okonkwo@example.com", title: "Service Owner",
       country: "XA", department: "Service Design",
       active: true, lockedOut: false, apiOnly: false,
-      roles: { r1: "inherited", r2: "inherited" }
+      groups: ["g1", "g4"],
+      access: {
+        direct: [],
+        viaGroups: ["catalog_admin"],
+        bundled: ["catalog_editor", "catalog_viewer"]
+      }
     },
     {
       sysId: "90fe3b7d5c284a19b7e6042fa8c1d375",
@@ -4243,7 +4337,8 @@ a { color: var(--teal); }
       email: "lena.fischer@example.com", title: "Localization Manager",
       country: "XB", department: "Content",
       active: true, lockedOut: false, apiOnly: false,
-      roles: { r4: "direct" }
+      groups: ["g3"],
+      access: { direct: ["translation_admin"], viaGroups: [], bundled: ["message_editor"] }
     },
     {
       sysId: "2c58a1d9e0b74836af12d7c4e93b6015",
@@ -4251,7 +4346,8 @@ a { color: var(--teal); }
       email: "sam.whitfield@example.com", title: "Support Analyst",
       country: "XC", department: "Support",
       active: true, lockedOut: false, apiOnly: false,
-      roles: { r3: "inherited" }
+      groups: ["g2", "g3"],
+      access: { direct: [], viaGroups: ["itil", "report_viewer"], bundled: ["task_reader"] }
     },
     /* The three below exist only to prove they are never listed. */
     {
@@ -4260,7 +4356,8 @@ a { color: var(--teal); }
       email: "jordan.ellis@example.com", title: "Catalog Lead",
       country: "XA", department: "Service Design",
       active: false, lockedOut: false, apiOnly: false,
-      roles: { r1: "direct" }
+      groups: ["g1", "g4"],
+      access: { direct: ["catalog_admin"], viaGroups: [], bundled: [] }
     },
     {
       sysId: "05c3f8a6d71b492e8a04c9d5e2f71b60",
@@ -4268,7 +4365,8 @@ a { color: var(--teal); }
       email: "kim.andersen@example.com", title: "Platform Engineer",
       country: "XB", department: "Platform",
       active: true, lockedOut: true, apiOnly: false,
-      roles: { r1: "direct", r3: "direct" }
+      groups: ["g2"],
+      access: { direct: ["catalog_admin", "itil"], viaGroups: [], bundled: [] }
     },
     {
       sysId: "e319d7402b8c4f56a1d0837be5c94f2a",
@@ -4276,9 +4374,23 @@ a { color: var(--teal); }
       email: "", title: "",
       country: "", department: "Platform",
       active: true, lockedOut: false, apiOnly: true,
-      roles: { r1: "direct" }
+      groups: [],
+      access: { direct: ["catalog_admin"], viaGroups: [], bundled: [] }
     }
   ];
+
+  PEOPLE.forEach(function (person) {
+    person.roles = {};
+    ROLES.forEach(function (role) {
+      if (person.access.direct.indexOf(role.name) >= 0) person.roles[role.id] = "direct";
+      else if (person.access.viaGroups.indexOf(role.name) >= 0 ||
+        person.access.bundled.indexOf(role.name) >= 0) person.roles[role.id] = "inherited";
+    });
+  });
+
+  /* ServiceNow's own recent-impersonations list, in the platform's order. One
+   * entry has been deactivated since, so it is counted rather than offered. */
+  var RECENT = ["priya.raman", "jordan.ellis", "sam.whitfield"];
 
   /* Discovered, never named. On a real instance this list comes from the live
    * dictionary, which is how an instance that keeps its country in a custom
@@ -4308,17 +4420,13 @@ a { color: var(--teal); }
   var statusEl = document.getElementById("dmimStatus");
   var rowsEl = document.getElementById("dmimRows");
   var currentEl = document.getElementById("dmimCurrent");
-  var fieldInput = document.getElementById("dmimField");
-  var fieldMenu = document.getElementById("dmimFieldMenu");
-  var valueInput = document.getElementById("dmimValue");
-  var valueMenu = document.getElementById("dmimValueMenu");
-  var roleInput = document.getElementById("dmimRole");
-  var roleMenu = document.getElementById("dmimRoleMenu");
 
-  var selectedField = null;
-  var selectedValue = null;
-  var selectedRole = null;
   var impersonating = null;
+  var confirming = null;
+  var confirmFromStart = false;
+  var atStart = true;
+  var termTimer = null;
+  var lastKey = "";
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -4332,105 +4440,210 @@ a { color: var(--teal); }
     statusEl.className = "dm-rl-status" + (kind ? " " + kind : "");
   }
 
-  function closeMenus(except) {
-    [[fieldInput, fieldMenu], [valueInput, valueMenu], [roleInput, roleMenu]]
-      .forEach(function (pair) {
-        if (pair[1] === except) return;
-        pair[1].hidden = true;
-        pair[0].setAttribute("aria-expanded", "false");
-      });
-  }
-
-  function openMenu(input, menu, options, onPick, emptyText) {
-    menu.textContent = "";
-    if (!options.length) {
-      menu.appendChild(el("div", "dm-rl-msg", emptyText || "No matches."));
-    } else {
-      options.forEach(function (option) {
-        var button = el("button", "dm-rl-opt");
-        button.type = "button";
-        button.setAttribute("role", "option");
-        button.appendChild(el("span", null, option.label));
-        if (option.hint) button.appendChild(el("span", "dm-rl-tname", option.hint));
-        button.addEventListener("click", function () {
-          onPick(option);
-          closeMenus();
-        });
-        menu.appendChild(button);
-      });
-    }
-    closeMenus(menu);
-    menu.hidden = false;
-    input.setAttribute("aria-expanded", "true");
-  }
-
   function matches(text, needle) {
     return String(text || "").toLowerCase().indexOf(needle) >= 0;
   }
 
-  /* ---- the three pickers ---- */
-
-  /* A picker whose input already holds its own selection reopens the WHOLE
-     list, rather than filtering itself down to the one thing chosen -- which
-     would leave no way to pick a different one without clearing the box. */
-  function needleFor(input, selectedLabel) {
-    var typed = input.value.trim();
-    if (selectedLabel && typed === selectedLabel) return "";
-    return typed.toLowerCase();
+  function renderEmpty(title, hint) {
+    rowsEl.textContent = "";
+    var row = el("div", "dm-rl-row");
+    row.appendChild(el("div", "dm-rl-title", title));
+    if (hint) row.appendChild(el("div", "dm-rl-values", hint));
+    rowsEl.appendChild(row);
   }
 
-  function showFields() {
-    var needle = needleFor(fieldInput, selectedField && selectedField.label);
-    var options = FIELDS
-      .filter(function (field) {
-        return !needle || matches(field.label, needle) || matches(field.name, needle);
-      })
-      .map(function (field) {
-        return { label: field.label, hint: field.name, field: field };
-      });
-    openMenu(fieldInput, fieldMenu, options, pickField,
-      "No filterable fields are readable here.");
+  /* ---- the four pickers ----
+     One control, as the real panel has one. A pick and a clear are finished
+     questions; an "edit" -- the first keystroke that stops the text naming
+     the choice -- is someone halfway through typing another. Deleting the
+     text, or leaving the control part-way through replacing a choice, clears
+     it exactly as the ✕ does. */
+
+  var combos = [];
+
+  function makeCombo(config) {
+    var input = document.getElementById(config.inputId);
+    var menu = document.getElementById(config.menuId);
+    var clearBtn = input.parentNode.querySelector(".dm-im-clear");
+    var combo = { input: input, menu: menu, selected: null, dropped: false };
+
+    function refreshClear() {
+      clearBtn.hidden = input.disabled || !input.value;
+    }
+
+    function close() {
+      menu.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+    }
+
+    /* A picker whose input already holds its own selection reopens the WHOLE
+       list, rather than filtering itself down to the one thing chosen. */
+    function open() {
+      if (input.disabled) return;
+      var typed = input.value.trim();
+      var needle = combo.selected && typed === combo.selected.label ? "" : typed.toLowerCase();
+      var options = config.options(needle);
+      menu.textContent = "";
+      if (!options.length) {
+        menu.appendChild(el("div", "dm-rl-msg", config.emptyText));
+      } else {
+        options.forEach(function (option) {
+          var button = el("button", "dm-rl-opt");
+          button.type = "button";
+          button.setAttribute("role", "option");
+          button.appendChild(el("span", null, option.label));
+          if (option.hint) button.appendChild(el("span", "dm-rl-tname", option.hint));
+          button.addEventListener("click", function () { select(option); });
+          menu.appendChild(button);
+        });
+      }
+      combos.forEach(function (other) { if (other !== combo) other.close(); });
+      menu.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+    }
+
+    function select(option) {
+      combo.selected = option;
+      combo.dropped = false;
+      input.value = option.label;
+      close();
+      refreshClear();
+      config.onSelect(option, "pick");
+    }
+
+    function clearSelection(silent) {
+      combo.selected = null;
+      combo.dropped = false;
+      input.value = "";
+      close();
+      refreshClear();
+      if (!silent) config.onSelect(null, "clear");
+    }
+
+    /* The ✕ and deleting the text by hand are one act. A bound choice, or
+       one typing unbound, clears as a finished question; text alone clears
+       quietly, because no question changed. */
+    function clearByUser() {
+      clearSelection(!(combo.selected || combo.dropped));
+    }
+
+    /* Presses inside the list and on the ✕ keep focus in the input, so
+       neither reads as leaving the control. */
+    menu.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    clearBtn.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    clearBtn.addEventListener("click", function () {
+      input.focus();
+      clearByUser();
+    });
+    input.addEventListener("focus", open);
+    input.addEventListener("input", function () {
+      if (!input.value) {
+        clearByUser();
+        return;
+      }
+      if (combo.selected && input.value !== combo.selected.label) {
+        combo.selected = null;
+        combo.dropped = true;
+        config.onSelect(null, "edit");
+      }
+      refreshClear();
+      open();
+    });
+    input.addEventListener("blur", function () {
+      setTimeout(function () {
+        if (document.activeElement === input) return;
+        if (combo.dropped) clearByUser();
+        else close();
+      }, 0);
+    });
+
+    combo.close = close;
+    combo.focusAndOpen = function () { input.focus(); open(); };
+    combo.clearSelection = clearSelection;
+    combo.setDisabled = function (disabled, placeholder) {
+      input.disabled = disabled;
+      input.placeholder = placeholder;
+      refreshClear();
+    };
+    combos.push(combo);
+    return combo;
   }
 
-  function pickField(option) {
-    selectedField = option ? option.field : null;
-    fieldInput.value = selectedField ? selectedField.label : "";
-    /* Changing the field discards the value chosen for the old one: carried
-     * over, it would be a valid-looking condition on the wrong column. */
-    selectedValue = null;
-    valueInput.value = "";
-    valueInput.disabled = !selectedField;
-    valueInput.placeholder = selectedField ? "choose a value" : "choose a field first";
-  }
+  var fieldCombo = makeCombo({
+    inputId: "dmimField", menuId: "dmimFieldMenu",
+    emptyText: "No filterable fields are readable here.",
+    options: function (needle) {
+      return FIELDS
+        .filter(function (field) {
+          return !needle || matches(field.label, needle) || matches(field.name, needle);
+        })
+        .map(function (field) { return { label: field.label, hint: field.name, field: field }; });
+    },
+    onSelect: function (option, how) {
+      var hadValue = Boolean(valueCombo.selected);
+      /* Changing the field discards the value chosen for the old one: carried
+       * over, it would be a valid-looking condition on the wrong column. */
+      valueCombo.clearSelection(true);
+      valueCombo.setDisabled(!option, option ? "choose a value" : "choose a field first");
+      /* A field alone is half a condition, so its values open instead of a
+       * search running. */
+      if (how === "pick") valueCombo.focusAndOpen();
+      else if (how === "clear" && hadValue) searchAfterPick();
+    }
+  });
 
-  function showValues() {
-    if (!selectedField) return;
-    var chosen = (selectedField.values.filter(function (item) {
-      return item.value === selectedValue;
-    })[0] || {}).label;
-    var needle = needleFor(valueInput, chosen);
-    var options = selectedField.values
-      .filter(function (item) { return !needle || matches(item.label, needle); })
-      .map(function (item) { return { label: item.label, value: item.value }; });
-    openMenu(valueInput, valueMenu, options, function (option) {
-      selectedValue = option.value;
-      valueInput.value = option.label;
-    }, "No values are available for that field.");
-  }
+  var valueCombo = makeCombo({
+    inputId: "dmimValue", menuId: "dmimValueMenu",
+    emptyText: "No values are available for that field.",
+    options: function (needle) {
+      var field = fieldCombo.selected && fieldCombo.selected.field;
+      if (!field) return [];
+      return field.values
+        .filter(function (item) { return !needle || matches(item.label, needle); })
+        .map(function (item) { return { label: item.label, value: item.value }; });
+    },
+    onSelect: function (option, how) { if (how !== "edit") searchAfterPick(); }
+  });
 
-  function showRoles() {
-    var needle = needleFor(roleInput, selectedRole && selectedRole.name);
-    /* Two characters, not three: a role anchor is shorter than a text one. */
-    var options = (needle.length && needle.length < 2 ? [] : ROLES)
-      .filter(function (role) {
-        return !needle || matches(role.name, needle) || matches(role.desc, needle);
-      })
-      .map(function (role) { return { label: role.name, hint: role.desc, role: role }; });
-    openMenu(roleInput, roleMenu, options, function (option) {
-      selectedRole = option.role;
-      roleInput.value = option.role.name;
-    }, "No matching roles.");
-  }
+  var roleCombo = makeCombo({
+    inputId: "dmimRole", menuId: "dmimRoleMenu",
+    emptyText: "No matching roles.",
+    options: function (needle) {
+      /* Two characters, not three: a role anchor is shorter than a text one. */
+      if (needle.length && needle.length < 2) return [];
+      return ROLES
+        .filter(function (role) {
+          return !needle || matches(role.name, needle) || matches(role.desc, needle);
+        })
+        .map(function (role) { return { label: role.name, hint: role.desc, role: role }; });
+    },
+    onSelect: function (option, how) { if (how !== "edit") searchAfterPick(); }
+  });
+
+  var groupCombo = makeCombo({
+    inputId: "dmimGroup", menuId: "dmimGroupMenu",
+    emptyText: "No matching groups.",
+    options: function (needle) {
+      /* Every word must match, and an inactive group is still offered --
+       * its members are still members -- but labelled, and ranked last. */
+      var words = needle.split(/\s+/).filter(Boolean);
+      return GROUPS
+        .filter(function (group) {
+          return words.every(function (word) { return matches(group.name, word); });
+        })
+        .sort(function (a, b) {
+          return Number(!a.active) - Number(!b.active) || a.name.localeCompare(b.name);
+        })
+        .map(function (group) {
+          return {
+            label: group.name,
+            hint: group.active ? group.desc : "Inactive group · " + group.desc,
+            group: group
+          };
+        });
+    },
+    onSelect: function (option, how) { if (how !== "edit") searchAfterPick(); }
+  });
 
   /* ---- the search ---- */
 
@@ -4459,112 +4672,259 @@ a { color: var(--teal); }
     return best;
   }
 
+  function currentAttribute() {
+    return fieldCombo.selected && valueCombo.selected
+      ? { field: fieldCombo.selected.field, value: valueCombo.selected.value }
+      : null;
+  }
+
+  function hasPickedCriteria() {
+    return Boolean(roleCombo.selected || groupCombo.selected || currentAttribute());
+  }
+
+  function hasCriteria() {
+    return Boolean(termInput.value.trim()) || hasPickedCriteria();
+  }
+
+  function requestKey() {
+    var attribute = currentAttribute();
+    return JSON.stringify([
+      termInput.value.trim(),
+      roleCombo.selected ? roleCombo.selected.role.id : "",
+      groupCombo.selected ? groupCombo.selected.group.id : "",
+      attribute ? [attribute.field.name, attribute.value] : null
+    ]);
+  }
+
+  function termIsSearchable(term) {
+    return !term || /^[0-9a-f]{32}$/i.test(term) || Boolean(anchorOf(term));
+  }
+
   function search() {
+    clearTimeout(termTimer);
     var term = termInput.value.trim();
     var needle = term.toLowerCase();
     var isSysId = /^[0-9a-f]{32}$/i.test(term);
+    var role = roleCombo.selected && roleCombo.selected.role;
+    var group = groupCombo.selected && groupCombo.selected.group;
+    var attribute = currentAttribute();
 
-    if (!term && !selectedRole && !(selectedField && selectedValue)) {
-      rowsEl.textContent = "";
-      setStatus("Enter a name, choose a role, or pick an attribute to begin.");
+    confirming = null;
+    combos.forEach(function (combo) { combo.close(); });
+    if (!hasCriteria()) {
+      resetToStart();
       return;
     }
-    if (term && !isSysId && !anchorOf(term)) {
-      rowsEl.textContent = "";
-      setStatus("Enter at least " + MIN_ANCHOR +
-        " consecutive letters, numbers or underscores, or an exact sys_id.", "is-empty");
+    if (!termIsSearchable(term)) {
+      lastKey = "";
+      atStart = false;
+      setStatus(TOO_SHORT, "is-empty");
+      renderEmpty("The search could not run.", TOO_SHORT);
       return;
     }
+    lastKey = requestKey();
+    atStart = false;
 
     /* Eligibility first, and as a filter on the read rather than afterwards --
      * an ineligible account must never be clickable. */
     var found = PEOPLE.filter(eligible);
-    if (selectedField && selectedValue) {
+    if (attribute) {
       found = found.filter(function (person) {
-        return person[selectedField.name] === selectedValue;
+        return person[attribute.field.name] === attribute.value;
       });
     }
-    if (selectedRole) {
-      found = found.filter(function (person) {
-        return Boolean(person.roles[selectedRole.id]);
-      });
+    if (role) {
+      found = found.filter(function (person) { return Boolean(person.roles[role.id]); });
+    }
+    if (group) {
+      found = found.filter(function (person) { return person.groups.indexOf(group.id) >= 0; });
     }
     if (term) {
       found = isSysId
-        ? found.filter(function (person) { return person.sysId === term.toLowerCase(); })
+        ? found.filter(function (person) { return person.sysId === needle; })
         : found.filter(function (person) { return rank(person, needle) < 4; });
     }
-    if (term && !isSysId) {
-      found = found.slice().sort(function (a, b) {
-        return rank(a, needle) - rank(b, needle) || a.name.localeCompare(b.name);
-      });
-    } else {
-      found = found.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
-    }
+    found = found.slice().sort(term && !isSysId
+      ? function (a, b) { return rank(a, needle) - rank(b, needle) || a.name.localeCompare(b.name); }
+      : function (a, b) { return a.name.localeCompare(b.name); });
 
     render(found.slice(0, RESULT_LIMIT), found.length);
   }
 
-  function render(people, total) {
-    rowsEl.textContent = "";
-    if (!people.length) {
-      setStatus("No eligible users matched.", "is-empty");
-      var empty = el("div", "dm-rl-row");
-      empty.appendChild(el("div", "dm-rl-values",
-        "Inactive, locked-out and web-service-only accounts are never listed, " +
-        "because impersonating one can end your own session."));
-      rowsEl.appendChild(empty);
-      return;
-    }
-    /* The number is eligible PEOPLE, counted after every filter -- never a
-     * membership row count. */
-    setStatus(total + (total === 1 ? " eligible user" : " eligible users") +
-      (selectedRole ? " holding " + selectedRole.name : ""), "is-ok");
-
-    people.forEach(function (person) {
-      var row = el("div", "dm-rl-row");
-      var top = el("div", "dm-rl-top");
-      top.appendChild(el("span", "dm-rl-title", person.name));
-      top.appendChild(el("span", "dm-rl-sysid", person.userName));
-      if (selectedRole) {
-        var held = person.roles[selectedRole.id];
-        /* Direct or inherited, and nothing more: the membership rows carry no
-         * usable provenance, so "via group X" cannot be said honestly. */
-        top.appendChild(el("span", "dm-im-badge" + (held === "direct" ? " is-direct" : ""),
-          held === "direct" ? "Direct role" : "Inherited role"));
-      }
-      row.appendChild(top);
-
-      var values = el("div", "dm-rl-values");
-      [["Email", person.email], ["Title", person.title],
-        ["Country code", person.country], ["Department", person.department]]
-        .forEach(function (pair) {
-          if (!pair[1]) return;
-          var item = el("span");
-          item.appendChild(el("span", "dm-rl-vlab", pair[0] + ": "));
-          item.appendChild(document.createTextNode(pair[1]));
-          values.appendChild(item);
-        });
-      row.appendChild(values);
-
-      var acts = el("div", "dm-rl-acts");
-      var open = el("button", "dm-rl-act", "Open user");
-      open.type = "button";
-      open.addEventListener("click", function () {
-        setStatus("Opens this user's record in ServiceNow — inert in this demo.");
-      });
-      var go = el("button", "dm-rl-act dm-im-go", "Impersonate");
-      go.type = "button";
-      /* A row click does nothing at all. Only this button confirms. */
-      go.addEventListener("click", function () { confirm(person); });
-      acts.appendChild(open);
-      acts.appendChild(go);
-      row.appendChild(acts);
-      rowsEl.appendChild(row);
-    });
+  /* A pick or a clear asks at once; clearing the last criterion puts the
+   * panel back where it opened. */
+  function searchAfterPick() {
+    if (hasCriteria()) search();
+    else resetToStart();
   }
 
-  function confirm(person) {
+  /* The name field asks once typing pauses. A term too short to search is
+   * never asked: the panel says what it needs instead of drawing an error. */
+  function searchTypedTerm() {
+    var term = termInput.value.trim();
+    if (term && !termIsSearchable(term)) {
+      lastKey = "";
+      confirming = null;
+      setStatus(TOO_SHORT);
+      if (hasPickedCriteria()) {
+        atStart = false;
+        renderEmpty("Keep typing to search.",
+          "Or clear the name to search by the other filters alone.");
+      } else {
+        renderStart();
+      }
+      return;
+    }
+    if (!hasCriteria()) {
+      resetToStart();
+      return;
+    }
+    if (requestKey() !== lastKey) search();
+  }
+
+  function eligibleUsers(count) {
+    return count + (count === 1 ? " eligible user" : " eligible users");
+  }
+
+  function render(people, total) {
+    rowsEl.textContent = "";
+    /* The number is eligible PEOPLE, counted after every filter -- never a
+     * membership row count -- and said the same way for every search. */
+    setStatus(total <= people.length
+      ? eligibleUsers(total)
+      : "Showing " + people.length + " of " + eligibleUsers(total) +
+        ". Narrow the search to see the rest", people.length ? "is-ok" : "is-empty");
+    if (!people.length) {
+      renderEmpty("No eligible users matched.",
+        "Inactive, locked-out and web-service-only accounts are never listed, " +
+        "because impersonating one can end your own session.");
+      return;
+    }
+    var role = roleCombo.selected && roleCombo.selected.role;
+    people.forEach(function (person) { rowsEl.appendChild(buildRow(person, role)); });
+  }
+
+  /* One row shape for a search result and a recent account alike. */
+  function buildRow(person, role) {
+    var row = el("div", "dm-rl-row");
+    var top = el("div", "dm-rl-top");
+    top.appendChild(el("span", "dm-rl-title", person.name));
+    top.appendChild(el("span", "dm-rl-sysid", person.userName));
+    if (role) {
+      var held = person.roles[role.id];
+      /* Direct or inherited, and nothing more: the membership rows carry no
+       * usable provenance, so "via group X" cannot be said honestly. */
+      top.appendChild(el("span", "dm-im-badge" + (held === "direct" ? " is-direct" : ""),
+        held === "direct" ? "Direct role" : "Inherited role"));
+    }
+    row.appendChild(top);
+
+    var values = el("div", "dm-rl-values");
+    [["Email", person.email], ["Title", person.title],
+      ["Country code", person.country], ["Department", person.department]]
+      .forEach(function (pair) {
+        if (!pair[1]) return;
+        var item = el("span");
+        item.appendChild(el("span", "dm-rl-vlab", pair[0] + ": "));
+        item.appendChild(document.createTextNode(pair[1]));
+        values.appendChild(item);
+      });
+    row.appendChild(values);
+
+    var acts = el("div", "dm-rl-acts");
+    var open = el("button", "dm-rl-act", "Open user");
+    open.type = "button";
+    open.addEventListener("click", function () {
+      setStatus("Opens this user's record in ServiceNow — inert in this demo.");
+    });
+    var go = el("button", "dm-rl-act dm-im-go", "Impersonate");
+    go.type = "button";
+    /* A row click does nothing at all. Only this button confirms. */
+    go.addEventListener("click", function () { confirm(person, role); });
+    acts.appendChild(open);
+    acts.appendChild(go);
+    row.appendChild(acts);
+    return row;
+  }
+
+  /* What the panel shows while no question is asked: ServiceNow's own recent
+   * list, each account checked exactly as a search result is. */
+  function renderStart() {
+    atStart = true;
+    rowsEl.textContent = "";
+    var shown = [];
+    var hidden = 0;
+    RECENT.forEach(function (userName) {
+      var person = PEOPLE.filter(function (p) { return p.userName === userName; })[0];
+      if (person && eligible(person)) shown.push(person);
+      else hidden += 1;
+    });
+    if (!shown.length) {
+      renderEmpty("Find a user to impersonate.",
+        "Search by identity, filter by a discovered field, pick a role to see who holds it, " +
+        "or a group to see who is in it.");
+      return;
+    }
+    var heading = el("div", "dm-im-section");
+    heading.appendChild(el("span", null, "Recent impersonations"));
+    heading.appendChild(el("span", null, "Kept by ServiceNow"));
+    rowsEl.appendChild(heading);
+    shown.forEach(function (person) { rowsEl.appendChild(buildRow(person, null)); });
+    if (hidden) {
+      rowsEl.appendChild(el("div", "dm-im-snote",
+        (hidden === 1 ? "1 recent account is" : hidden + " recent accounts are") +
+        " not listed: inactive, locked out, web-service-only or no longer readable."));
+    }
+  }
+
+  function resetToStart() {
+    lastKey = "";
+    confirming = null;
+    setStatus(START_STATUS);
+    renderStart();
+  }
+
+  /* ---- confirmation ---- */
+
+  function assignedSource(direct, assignedCount) {
+    if (!direct.length) {
+      return assignedCount === 1 ? "Granted through a group" : "None granted directly; all through groups";
+    }
+    if (direct.length >= assignedCount) {
+      return assignedCount === 1 ? "Granted directly" : "All granted directly";
+    }
+    return direct.join(", ") + " granted directly; the rest through groups";
+  }
+
+  /* The roles someone ASSIGNED, in full, with the ones that come bundled
+   * inside them behind a disclosure. A group is said as "through groups" and
+   * never named: the rows do not say which. */
+  function renderRoles(cell, person) {
+    cell.textContent = "";
+    cell.className = "";
+    var assigned = person.access.direct.concat(person.access.viaGroups);
+    var line = el("div", "dm-im-roles");
+    line.appendChild(el("b", null, "Assigned: "));
+    line.appendChild(document.createTextNode(assigned.length
+      ? assigned.join(", ") + " (" + assigned.length + ")" : "none"));
+    cell.appendChild(line);
+    if (assigned.length) {
+      cell.appendChild(el("small", "dm-im-rsrc", assignedSource(person.access.direct, assigned.length)));
+    }
+    var bundled = person.access.bundled;
+    if (bundled.length) {
+      var more = el("details", "dm-im-more");
+      more.appendChild(el("summary", null, bundled.length === 1
+        ? "1 more comes with these roles" : bundled.length + " more come with these roles"));
+      more.appendChild(el("div", null, bundled.join(", ")));
+      cell.appendChild(more);
+    }
+  }
+
+  function confirm(person, role) {
+    confirming = person;
+    confirmFromStart = atStart;
+    atStart = false;
     rowsEl.textContent = "";
     setStatus("Confirm the identity before the session changes.", "is-empty");
 
@@ -4576,19 +4936,29 @@ a { color: var(--teal); }
 
     var facts = el("dl", "dm-im-facts");
     var addFact = function (label, value) {
-      if (!value) return;
+      if (!value) return null;
       facts.appendChild(el("dt", null, label));
-      facts.appendChild(el("dd", null, value));
+      var dd = el("dd", null, value);
+      facts.appendChild(dd);
+      return dd;
     };
     addFact("Name", person.name);
     addFact("User ID", person.userName);
     addFact("Email", person.email);
     addFact("Title", person.title);
-    if (selectedRole) {
-      addFact("Selected role", selectedRole.name + " — " +
-        (person.roles[selectedRole.id] === "direct"
-          ? "granted directly" : "held through inheritance"));
+    addFact("Country code", person.country);
+    addFact("Department", person.department);
+    if (role) {
+      addFact("Selected role", person.roles[role.id] === "direct"
+        ? "Granted directly" : "Held through inheritance");
     }
+    /* Read after the confirmation opens: evidence for choosing a test
+     * identity, not a precondition, so Start never waits for it. */
+    var rolesCell = addFact("Roles", "Reading roles…");
+    rolesCell.className = "is-pending";
+    setTimeout(function () {
+      if (confirming === person) renderRoles(rolesCell, person);
+    }, 450);
     wrap.appendChild(facts);
 
     var acts = el("div", "dm-im-acts");
@@ -4596,6 +4966,7 @@ a { color: var(--teal); }
     go.type = "button";
     go.addEventListener("click", function () {
       go.disabled = true;
+      cancel.disabled = true;
       impersonating = person;
       showCurrent();
       setStatus("On a real instance this is where the session changes and the tab reloads. " +
@@ -4607,12 +4978,16 @@ a { color: var(--teal); }
     });
     var cancel = el("button", "dm-rl-act", "Cancel");
     cancel.type = "button";
-    cancel.addEventListener("click", search);
+    /* Cancel goes back to where the button was: the recent list or a result list. */
+    cancel.addEventListener("click", function () {
+      if (confirmFromStart) resetToStart();
+      else search();
+    });
     acts.appendChild(go);
     acts.appendChild(cancel);
     wrap.appendChild(acts);
     rowsEl.appendChild(wrap);
-    go.focus();
+    go.focus({ preventScroll: true });
   }
 
   function showCurrent() {
@@ -4634,41 +5009,29 @@ a { color: var(--teal); }
     stop.addEventListener("click", function () {
       impersonating = null;
       showCurrent();
-      setStatus("Returned to your original account — inert in this demo.", "is-ok");
-      search();
+      searchAfterPick();
+      setStatus("Returned to your original account — inert in this demo. If ServiceNow " +
+        "refuses the usual way back, Stop goes through its impersonation dialog instead.", "is-ok");
     });
     currentEl.appendChild(stop);
   }
 
   /* ---- wiring ---- */
 
-  fieldInput.addEventListener("focus", showFields);
-  fieldInput.addEventListener("input", function () {
-    if (selectedField && fieldInput.value !== selectedField.label) pickField(null);
-    showFields();
-  });
-  valueInput.addEventListener("focus", showValues);
-  valueInput.addEventListener("input", function () {
-    selectedValue = null;
-    showValues();
-  });
-  roleInput.addEventListener("focus", showRoles);
-  roleInput.addEventListener("input", function () {
-    if (selectedRole && roleInput.value !== selectedRole.name) selectedRole = null;
-    showRoles();
+  termInput.addEventListener("input", function () {
+    clearTimeout(termTimer);
+    termTimer = setTimeout(searchTypedTerm, TERM_SEARCH_DELAY_MS);
   });
   termInput.addEventListener("keydown", function (e) {
     if (e.key === "Enter") { e.preventDefault(); search(); }
   });
   goBtn.addEventListener("click", search);
   root.addEventListener("click", function (e) {
-    if (!e.target.closest(".dm-rl-combo")) closeMenus();
+    if (!e.target.closest(".dm-rl-combo")) combos.forEach(function (combo) { combo.close(); });
   });
 
-  /* Start on the question the feature exists for. */
-  selectedRole = ROLES[0];
-  roleInput.value = ROLES[0].name;
-  search();
+  /* Open where the real panel opens: on the recent list. */
+  resetToStart();
 })();
 
 </script>
