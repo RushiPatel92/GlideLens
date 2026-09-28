@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
 ```
 
 The suites cover:
@@ -362,6 +362,109 @@ The suites cover:
   are compared as source and cannot drift apart. Those blocks are lifted
   from their real files by the same anchors the source assertions use, so
   moving one fails loudly instead of testing nothing.
+
+- `impersonate.test.js` — the Impersonate engine under `node:vm`, with
+  `record_search.js` loaded first as the worker injects it. The query
+  boundary (a three-character user anchor, a two-character role anchor, the
+  sys_id path that bypasses both, and a hostile term becoming at most one
+  `[A-Za-z0-9_]` run); the fixed table allowlist, which the suite caught as
+  incomplete — the hierarchy walk reads `sys_db_object` through this
+  transport, so omitting it had silently pinned `sys_user`'s hierarchy to
+  itself. Eligibility as a safety rule, re-checked client-side after the
+  server was asked for it. The four query orders and which one each input
+  combination takes, with the attribute entering the *candidate* read when
+  text is present and the *user* read otherwise — never as a post-filter after
+  a cap. The two opposite capped-membership rules: in text+role and
+  text+group the cap corrupts the filter, so that filter is `unavailable`; in
+  role-only and group-first it truncates the list, so partial results are
+  honest and no total is claimed. Group-first's member read dot-walks every
+  eligibility term through `user`, both halves of the OR group included and
+  still last, with the attribute before it; and because a misspelt dot-walk is
+  silently ignored rather than refused, one fixture answers that read
+  unfiltered — duplicates, an empty user, an inactive, a locked and a
+  web-service-only member, and a row for another group — and the list and
+  count must still come out right. Group suggestions AND every typed word,
+  verify each word rather than the complete term, carry no `active` filter,
+  treat an empty `active` as active, and rank inactive groups after active
+  ones. An email-shaped term anchors on its local part while rows are still
+  verified against the whole term, and an attribute condition is refused for
+  any column the filter does not offer, credential-adjacent ones included. The displayed total counted after dedupe, eligibility
+  **and** the attribute, pinned by a fixture where a membership count, a
+  deduplicated count and the honest count are three different numbers. The
+  attribute filter dispatching on dictionary type — a choice-backed string
+  reads `sys_choice`, a reference reads its referenced table — with the
+  `javascript:` refusal, the `NULL_OVERRIDE` sentinel, language scoping and
+  the inactive rows all exercised by one fixture carrying every defect the
+  live table has; fields labelled from the live `column_label`, against a
+  dictionary where the stock field is relabelled and a custom one carries the
+  familiar label; and the discovered list left untruncated, since capping it
+  would hide exactly that custom field.
+
+- `impersonate_ui.test.js` — the panel under `node:vm` against the same small
+  DOM shim its siblings use. The panel has no markup path at all, not even a
+  static shell, so the shim needs no parser and hostile names, emails and
+  titles cannot be passing because markup was interpolated somewhere it
+  ignored. A row click and a row Enter never impersonate; only the labelled
+  button confirms. Double submission is impossible — a second click, Enter,
+  Escape, a rerender underneath and a late callback are all refused while a
+  request is out, and the lock survives a success; so are the header and
+  footer close buttons. Stop waits for a running search and supersedes it, so
+  a late result cannot repaint Stop's outcome. An indeterminate outcome
+  says so and offers no retry; a definite refusal releases the lock. Escape
+  layers: menu, then confirmation, then panel. Two staleness rules the suite
+  found unimplemented: `showResults` now records what it drew, so cancelling
+  a confirmation restores it, and entering a confirmation supersedes reads
+  already in flight, so one cannot repaint over it. Stop absent with an
+  explanation when no original is recoverable, and present when a frame was
+  merely unreadable.
+
+- `impersonate_integration.test.js` — the runtime boundary. The worker's
+  impersonation block is evaluated on its own against a `chrome` stub, so the
+  storage rules, frame selection and no-retry invariant are executed rather
+  than grepped for. Exactly three routes, and the only field any of them
+  reads off a message is `userName`. The response crossing back to content
+  code carries no identity while the worker still holds `result.user`
+  privately; the string `"null"` is never stored or POSTed; Stop carries no
+  target and is keyed per origin. Stored state clears on a successful Stop
+  and on any `isImpersonating: false` reading, survives an indeterminate one,
+  and the live preference wins over it. Frame selection prefers identity,
+  falls back to the top window's boolean, and treats a hung identity-bearing
+  frame as `inconclusive` rather than "no Stop target". One confirmation
+  causes one `executeScript` and one `fetch`, with no retry after a
+  rejection, a timeout, a missing result or a 401 — and the mutation resolves
+  its frame fresh rather than through the caching read path. Email-shaped and
+  non-ASCII user IDs pass validation and arrive byte for byte; an invalid one
+  is refused before frame discovery. Mutation-transport assertions live here
+  rather than in `search_transport_frames.test.js`, so read-retry semantics
+  can never be applied to the write path by accident.
+
+Impersonate additionally has an end-to-end browser check, because the POST is
+the one thing no Node suite and no Table API client can exercise. It lives with
+the rest of the browser tooling rather than in this repo, impersonates a stock
+demo user once on a PDI, and restores in a `finally`:
+
+```powershell
+node ..\tooling\probe-impersonate.mjs
+```
+
+It covers the palette entry, the panel wiring, the MAIN-world state probe, the
+confirmation step doing nothing until confirmed, the session actually changing,
+the reload on a definite success, and Stop returning to the original account.
+Verified 25/25 on 2026-09-22 and again on 2026-09-23.
+
+A second, read-only probe covers the search paths the Table API cannot show
+through the real transport — an email-shaped term, the group picker, a group's
+exact eligible total with no cap (which holds only if the dot-walked
+eligibility reached the server), group plus role, and a reference field's
+value list:
+
+```powershell
+node ..\tooling\probe-impersonate-groups.mjs
+```
+
+Verified on 2026-09-23. `--values-only` re-runs just the value-list step; its
+field picker loads a full list on focus, so the probe waits for the typed
+filter before choosing an option.
 
 The Debug Timeline and prefill tests run page-owned code with browser-global
 fakes. They do not replace testing timing and rendered behavior on a real

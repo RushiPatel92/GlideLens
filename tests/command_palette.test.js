@@ -39,7 +39,7 @@ function loadBuiltCommands(debugTimelineUI, options) {
     "openCurrentPlaybookCustomerUpdates", "openCustomerUpdatesBySysId",
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
     "showVariableValues",
-    "showCatalogInsight", "refreshCodeSearchCoverage",
+    "showCatalogInsight", "refreshCodeSearchCoverage", "openImpersonate",
     contentSource.slice(commandStart, commandEnd) +
       contentSource.slice(helperStart, helperEnd) +
       "\nreturn buildCommands();"
@@ -53,7 +53,7 @@ function loadBuiltCommands(debugTimelineUI, options) {
      * that wants one has to supply what decodedVariants would have seen. */
     () => opts.decodedUrls || [],
     () => Boolean(opts.workspaceRoute),
-    noop, noop, noop, noop, noop, noop, noop, noop, noop
+    noop, noop, noop, noop, noop, noop, noop, noop, noop, noop
   );
 }
 
@@ -91,7 +91,8 @@ test("current built-ins expose the accepted unique command labels", () => {
     [
       "Translation Lens", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
       "Customer Updates", "Variable Prefill", "Variable Values", "Catalog Logic",
-      "Variable Insight", "Code Search", "Search Sources", "Table List", "New Record",
+      "Variable Insight", "Code Search", "Impersonate", "Search Sources",
+      "Table List", "New Record",
     ]
   );
   assert.ok(builtIns.every((item) => item.description));
