@@ -119,10 +119,20 @@
     return text;
   }
 
+  /* The platform evaluates a query value that begins javascript: as a script
+   * instead of matching it as text, through the Table API and a list URL
+   * alike, and URL encoding does not stop it (Codex review, measured
+   * read-only on a test instance). A read built from one would run the page's
+   * text; a link would run it on click. Capitalised, mid-text and spaced
+   * forms were not seen to run and are refused anyway, as policy: refusing
+   * too much costs a named, uncounted row, never a wrong count. */
+  const SCRIPT_EXPRESSION = /javascript\s*:/i;
+
   function queryValueStatus(value, options) {
     const opts = options || {};
     const text = String(value == null ? "" : value);
     if (!text && !opts.allowEmpty) return { ok: false, reason: "empty" };
+    if (SCRIPT_EXPRESSION.test(text)) return { ok: false, reason: "javascript-expression" };
     if (text.length > 255) return { ok: false, reason: "over-255" };
     if (text.includes("^") || /[\r\n]/.test(text)) {
       return { ok: false, reason: "encoded-query-separator" };
@@ -905,6 +915,9 @@
     const invalid = [];
     let dynamicCount = 0;
     const seen = new Set();
+    /* A refused key is one key however often a script calls it, as a checked
+     * key is, so the note and the report count keys rather than calls. */
+    const refused = new Set();
     (sources || []).forEach((source) => {
       const text = String(source || "");
       const call = /(^|[^\w.])((?:gs\.)?getMessage)\s*\(/g;
@@ -948,7 +961,10 @@
         const key = unescapeMessageLiteral(body, quote);
         const status = queryValueStatus(key);
         if (!status.ok) {
-          invalid.push({ key, reason: status.reason });
+          if (!refused.has(key)) {
+            refused.add(key);
+            invalid.push({ key, reason: status.reason });
+          }
         } else if (!seen.has(key)) {
           seen.add(key);
           keys.push(key);
@@ -962,6 +978,9 @@
       invalid,
       capped: keys.length > limit,
       omittedCount: Math.max(0, keys.length - limit),
+      /* Kept so a merge can tell which omitted keys the other scan checked.
+       * Never printed: the note and the report carry the count only. */
+      omitted: keys.slice(limit),
     };
   }
 
@@ -1787,6 +1806,11 @@
       /* Only when every scanned key fits one chunk. A truncated key list would
        * open a list that silently answers a narrower question than the panel
        * asked, which is worse than offering no button. */
+      /* A scan that refused or capped a key hands over only the rest, so the
+       * builder cannot see what is missing; the scan says so instead. The cap
+       * is five chunks' worth today and would be refused below anyway, but
+       * that holds only while the two constants keep their sizes. */
+      if (scope.messageKeysIncomplete) return "";
       const keys = unique(scope.messageKeys || []);
       if (!keys.length) return "";
       const plan = buildValueQueryChunks("", "key", keys);
@@ -2082,6 +2106,48 @@
     return warnings;
   }
 
+  /* Reasons a report may print beside an Unverified language or a refused
+   * message key. Each is the engine's own wording; any other reason is left
+   * out rather than risk copying instance text or a read error. */
+  const REPORT_REASONS = new Set([
+    "empty", "over-255", "encoded-query-separator", "javascript-expression",
+    "dynamic choice source", "a choice key is not expressible", "choice text not expressible",
+    "storage unverified for type translated",
+  ]);
+
+  function reportReasons(reasons) {
+    const codes = unique((reasons || []).map((reason) => String(reason || ""))
+      .filter((reason) => REPORT_REASONS.has(reason)));
+    return codes.length ? " (" + codes.join(", ") + ")" : "";
+  }
+
+  /* An Unverified language is out of the count, so without this a refused
+   * row reads 0/0 with nothing missing -- the line of a row with nothing to
+   * translate. */
+  function reportUnverified(row) {
+    const states = (row && row.states) || {};
+    const ids = Object.keys(states).filter((id) => states[id] && states[id].state === "unverified");
+    if (!ids.length) return "";
+    return "; unverified=" + ids.join(",") + reportReasons(ids.map((id) => states[id].reason));
+  }
+
+  /* What a message scan could not check, as counts and reason codes. The
+   * keys themselves are script text and stay out. */
+  function reportScan(scan) {
+    if (!scan) return "";
+    const parts = [];
+    const dynamic = Number(scan.dynamicCount) || 0;
+    if (dynamic) parts.push(dynamic + (dynamic === 1 ? " dynamic key" : " dynamic keys"));
+    const invalid = Array.isArray(scan.invalid) ? scan.invalid : [];
+    if (invalid.length) {
+      parts.push(invalid.length + (invalid.length === 1 ? " key refused" : " keys refused") +
+        reportReasons(invalid.map((item) => item && item.reason)));
+    }
+    const omitted = scan.capped ? Number(scan.omittedCount) || 0 : 0;
+    if (omitted) parts.push(omitted + (omitted === 1 ? " key past the cap" : " keys past the cap"));
+    return parts.length ? "Not checked: " + parts.join("; ") : "";
+  }
+
   function formatResultsAsText(result) {
     const lines = ["Translation Lens"];
     const context = result && result.context || {};
@@ -2133,13 +2199,15 @@
         if (scan.capped) lines.push("- capped; " + scan.omittedCount + " further findings omitted");
         return;
       }
+      const scan = reportScan(section.scan);
+      if (scan) lines.push(scan);
       (section.rows || []).forEach((row, index) => {
         const missing = (row.coverage && row.coverage.missing || []).join(",") || "none";
         const warnings = reportWarnings(row);
         lines.push(
           "- " + reportIdentifier(row, index) + " [" + row.aspect + "]: " +
           row.coverage.covered + "/" + row.coverage.counted +
-          "; missing=" + missing +
+          "; missing=" + missing + reportUnverified(row) +
           (warnings.length ? "; warnings=" + warnings.join(",") : "")
         );
       });
@@ -2702,6 +2770,7 @@
       tables: chain.slice(),
       documentKey: SYS_ID_PATTERN.test(sysId) ? sysId : "",
       messageKeys: extraction.keys.slice(),
+      messageKeysIncomplete: extraction.invalid.length > 0 || extraction.capped,
     };
 
     emitSection(context, emitted, {
@@ -3331,6 +3400,7 @@
       tables: unique(CATALOG_REGISTRATION_TABLES.concat(itemChain)),
       documentKey: itemId,
       messageKeys: extraction.keys.slice(),
+      messageKeysIncomplete: extraction.invalid.length > 0 || extraction.capped,
     };
     emitSection(context, emitted, {
       id: "messages", label: "Messages", rows: messageRows, scan: extraction, separateHeadline: true,
@@ -3355,6 +3425,36 @@
       tables: unique((left.tables || []).concat(right.tables || [])),
       documentKey: left.documentKey || right.documentKey || "",
       messageKeys: unique((left.messageKeys || []).concat(right.messageKeys || [])),
+      messageKeysIncomplete: Boolean(left.messageKeysIncomplete || right.messageKeysIncomplete),
+    };
+  }
+
+  /* One scan from two, for the Messages note and the report. Both halves'
+   * keys were read, so a key is not checked only when neither half checked
+   * it: an omitted key the other half read is not reported, and a key both
+   * halves omitted or refused is one key, whichever half it came from. */
+  function mergeScans(first, second) {
+    const left = first || {};
+    const right = second || {};
+    const keys = unique((left.keys || []).concat(right.keys || []));
+    const checked = new Set(keys);
+    const invalid = [];
+    const refused = new Set();
+    (left.invalid || []).concat(right.invalid || []).forEach((item) => {
+      const key = item && item.key;
+      if (refused.has(key)) return;
+      refused.add(key);
+      invalid.push(item);
+    });
+    const omitted = unique((left.omitted || []).concat(right.omitted || []))
+      .filter((key) => !checked.has(key));
+    return {
+      keys,
+      dynamicCount: (Number(left.dynamicCount) || 0) + (Number(right.dynamicCount) || 0),
+      invalid,
+      capped: omitted.length > 0,
+      omittedCount: omitted.length,
+      omitted,
     };
   }
 
@@ -3444,6 +3544,10 @@
           (formMessages.rows || []).forEach((row) => {
             if (!seen.has(row.element)) messageSection.rows.push(row);
           });
+          /* The note and the report say what the scan could not check. The
+           * definition form's refusals belong there too, or a footer button
+           * withheld for one of them would have no stated reason. */
+          messageSection.scan = mergeScans(messageSection.scan, formMessages.scan);
         }
         /* The form half reads sys_script_client on the table chain and the
          * catalog half reads catalog_script_client on the item; a classic
@@ -3548,6 +3652,9 @@
     sectionSummary,
     summarizeResult,
     reportIdentifier,
+    /* A copy, for the panel's tests: its engine-absent report keeps its own
+     * list, and the two are compared against this one. */
+    REPORT_REASONS: Array.from(REPORT_REASONS),
     formatResultsAsText,
     readChunked,
     runForm,

@@ -188,6 +188,28 @@ reconstructed version by version.
   the half it came from, a `getMessage` key is never mistaken for a field, and
   only the calls that actually replace stored text say that they do.
 
+### Fixed
+- **Translation Lens never puts a `javascript:` value into a query.** The
+  platform evaluates an encoded-query value that is a `javascript:`
+  expression instead of matching it as text, and URL encoding does not stop
+  it. Translation Lens refused only what the query language cannot carry --
+  a caret, a line break, more than 255 characters -- so a question text,
+  choice text, record value or `getMessage` key naming `javascript:` went
+  into its reads and into its list and prefilled-record links. Such a value
+  is now refused in any capitalisation and any position: it is neither read
+  nor linked, and its row is Unverified -- named, never counted.
+- **A Translation Lens report now says what it could not assess.** An
+  Unverified row is out of the count, so it copied as `0/0; missing=none`,
+  the line of a row with nothing to translate, and a refused `getMessage`
+  key left no trace. The report now lists a row's Unverified languages with
+  the engine's own reason code, and the Messages section says how many keys
+  the scan could not check, without printing them.
+- **The Messages footer button no longer opens a narrower list.** When the
+  script scan refused or capped a key, the button opened a list of the keys
+  that were left, which answered a narrower question than the panel asked.
+  It is now withheld; the Messages note gives the count of keys that could
+  not be checked.
+
 ## [0.15.0] - 2026-09-08
 
 ### Added

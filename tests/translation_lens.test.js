@@ -90,11 +90,15 @@ test("dictionary types route to their verified stores", () => {
 
 test("value query chunks preserve commas and equals while refusing unsafe values", () => {
   const values = Array.from({ length: 41 }, (_, index) => "value," + index + "=ok");
-  values.push("value,0=ok", "bad^query", "bad\nquery", "x".repeat(256));
+  /* 255 characters is the last accepted length and 256 the first refused;
+   * both sit in the list so a slip to >= 255 fails here (Codex, fourth
+   * round: the boundary was asserted from the refused side only). */
+  values.push("value,0=ok", "bad^query", "bad\nquery", "x".repeat(255), "x".repeat(256));
   const result = TL.buildValueQueryChunks("name=example^element=label", "value", values);
   assert.strictEqual(result.chunks.length, 2);
   assert.strictEqual(result.chunks[0].values.length, 40);
-  assert.strictEqual(result.chunks[1].values.length, 1);
+  assert.strictEqual(result.chunks[1].values.length, 2);
+  assert.ok(result.chunks[1].values.includes("x".repeat(255)), "a 255-character value is accepted");
   assert.ok(result.chunks[0].query.includes("value=value,0=ok"));
   assert.ok(result.chunks.every((chunk) => chunk.query.length <= TL.MAX_QUERY_LENGTH));
   assert.deepStrictEqual(own(result.rejected).map((item) => item.reason), [
@@ -107,6 +111,56 @@ test("a single overlong query value is refused instead of emitted", () => {
   const result = TL.buildValueQueryChunks("x=" + "a".repeat(5990), "value", ["short"]);
   assert.strictEqual(result.chunks.length, 0);
   assert.strictEqual(result.rejected[0].reason, "over-6000-query");
+});
+
+test("a value naming javascript: is refused, because the platform would run it rather than match it", () => {
+  /* Codex review, measured read-only on a test instance: a query value that
+   * begins javascript: is evaluated instead of matched as text, through the
+   * Table API and a list URL alike, and encoding the URL does not stop it.
+   * Capitalised, mid-text and spaced forms were not seen to run; they are
+   * refused anyway, on purpose, because a refusal costs only an Unverified
+   * row. */
+  const origin = "https://example.service-now.com";
+  const scripts = [
+    "javascript:'Cost centre'",
+    "JavaScript:gs.getUserName()",
+    "Cost centre javascript:'x'",
+    "javascript :'x'",
+    "JAVASCRIPT  :1",
+  ];
+  scripts.forEach((value) => {
+    assert.deepStrictEqual(json(TL.queryValueStatus(value)), { ok: false, reason: "javascript-expression" }, value);
+    assert.throws(() => TL.assertQueryValue(value), /javascript-expression/, value);
+  });
+  /* The word alone, or a colon somewhere else, is still text. */
+  ["JavaScript basics", "Language: JavaScript", "java script: a guide"].forEach((value) => {
+    assert.strictEqual(TL.queryValueStatus(value).ok, true, value);
+  });
+
+  const plan = TL.buildValueQueryChunks("name=question_choice^element=text", "value", ["Choice A"].concat(scripts));
+  assert.deepStrictEqual(own(plan.chunks).map((chunk) => chunk.query),
+    ["name=question_choice^element=text^value=Choice A"]);
+  assert.deepStrictEqual(own(plan.rejected).map((item) => item.reason), scripts.map(() => "javascript-expression"));
+
+  const key = { name: "question_choice", element: "text", value: scripts[0], language: "fr" };
+  assert.throws(() => TL.buildListUrl(origin, "sys_translated", key), /javascript-expression/);
+  assert.throws(() => TL.buildNewRecordUrl(origin, "sys_translated", key), /javascript-expression/);
+  assert.throws(() => TL.buildNewRecordUrl(origin, "sys_ui_message", { key: scripts[0], language: "fr" }),
+    /javascript-expression/);
+  assert.throws(() => TL.buildNewRecordUrl(origin, "sys_choice", {
+    name: "example_record", element: "state", value: scripts[0], dependentValue: "", language: "fr",
+  }), /javascript-expression/);
+  assert.strictEqual(TL.buildRowLinks({
+    origin, store: "sys_translated", linkKey: { name: "question_choice", element: "text", value: scripts[0] },
+  }, { fr: { state: "missing" } }), null, "a row keyed on a script offers no link at all");
+  assert.strictEqual(
+    TL.buildContextListUrl(origin, "sys_ui_message", { messageKeys: ["Example key", scripts[0]] }), "",
+    "a footer list that would carry the script is not offered"
+  );
+
+  const extracted = TL.extractMessageKeys(["getMessage('javascript:gs.getUserName()'); getMessage('Example key');"]);
+  assert.deepStrictEqual(own(extracted.keys), ["Example key"]);
+  assert.deepStrictEqual(json(extracted.invalid), [{ key: "javascript:gs.getUserName()", reason: "javascript-expression" }]);
 });
 
 test("field chunk width derives from language count, hierarchy depth, and cap", () => {
@@ -474,13 +528,14 @@ test("getMessage extraction handles quotes, escapes, gs prefix, dedupe, invalid,
     "getMessage('Simple key'); gs.getMessage(\"Double key\");",
     "getMessage('It\\'s ready'); getMessage('Simple key');",
     "getMessage(dynamicKey); getMessage(`template`); getMessage('joined' + suffix);",
-    "object.getMessage('ignore me'); getMessage('bad^key');",
+    "object.getMessage('ignore me'); getMessage('bad^key'); getMessage('bad^key');",
   ], 2);
   assert.deepStrictEqual(own(extracted.keys), ["Simple key", "Double key"]);
   assert.strictEqual(extracted.dynamicCount, 3);
-  assert.strictEqual(extracted.invalid.length, 1);
+  assert.strictEqual(extracted.invalid.length, 1, "a refused key called twice is one key");
   assert.strictEqual(extracted.capped, true);
   assert.strictEqual(extracted.omittedCount, 1);
+  assert.deepStrictEqual(own(extracted.omitted), ["It's ready"]);
 });
 
 test("scanned messages have a separate denominator from the form headline", () => {
@@ -1231,6 +1286,256 @@ test("a catalog choice whose text cannot be queried is unverified, not unavailab
     !fixture.requests.some((request) => request.table === "sys_translated" && request.query.includes("Choice^A")),
     "the unexpressible text is never put into a query"
   );
+});
+
+/* Every link a result carries, decoded, so an encoded expression cannot hide
+ * behind %3A. JSON.stringify visits every nested value -- row links, chip
+ * links, evidence links and the footer alike -- and throws on a cycle rather
+ * than walking one forever. */
+function linksIn(result) {
+  const urls = [];
+  JSON.stringify(result, (key, value) => {
+    if (typeof value === "string" && value.includes("sysparm_query=")) urls.push(decodeURIComponent(value));
+    return value;
+  });
+  return urls;
+}
+
+test("a catalog text naming javascript: is Unverified, and no read or link ever carries it", async () => {
+  /* Codex review: the platform evaluates a javascript: query value instead of
+   * matching it, so a catalog author's text would run as a script in the
+   * Lens's own reads, and again from any list or prefilled link on click. The
+   * question text, a choice text and a getMessage key all name the scheme
+   * here; none of them may reach a query. */
+  const script = "javascript:'Cost centre'";
+  const fixture = catalogTransport({
+    choiceText: script,
+    answer: (request) => {
+      if (request.table === "item_option_new" && request.query.startsWith("cat_item=")) {
+        return [{
+          sys_id: "00000000000000000000000000000011", name: "example_topic", question_text: script,
+          tooltip: "Example tooltip", type: "5", active: "true", variable_set: "",
+        }];
+      }
+      if (request.table === "catalog_script_client" && request.query.startsWith("cat_item=")) {
+        return [{
+          sys_id: "00000000000000000000000000000040", name: "Example script",
+          script: "g_form.addInfoMessage(getMessage('javascript:gs.getUserName()'));",
+        }];
+      }
+      return undefined;
+    },
+  });
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+    origin: "https://example.service-now.com",
+  }, fixture.transport);
+
+  const scripted = fixture.requests.filter((request) => /javascript\s*:/i.test(String(request.query || "")));
+  assert.deepStrictEqual(scripted.map((request) => request.table), [], "no read carries the expression");
+  const urls = linksIn(result);
+  /* Controls, so the check below cannot pass by finding nothing: a safe
+   * tooltip's own link sits inside a section's rows, and the footer's links
+   * at the top of the result. */
+  assert.ok(urls.some((url) => url.includes("element=tooltip^value=Example tooltip")), "row links are walked");
+  assert.ok(urls.some((url) => url.includes("sys_translated_list.do?sysparm_query=nameIN")), "the footer is walked");
+  urls.forEach((url) => assert.doesNotMatch(url, /javascript\s*:/i));
+
+  const values = result.sections.find((section) => section.id === "values");
+  const question = values.rows.find((row) => row.aspect === "source");
+  assert.strictEqual(question.states.fr.state, "unverified");
+  assert.strictEqual(question.evidence.unverifiedReason, "javascript-expression");
+  assert.strictEqual(question.coverage.counted, 0, "named, never counted");
+  const choices = result.sections.find((section) => section.id === "choices").rows[0];
+  assert.strictEqual(choices.states.fr.state, "unverified");
+  assert.strictEqual(choices.coverage.counted, 0);
+  const messages = result.sections.find((section) => section.id === "messages");
+  assert.deepStrictEqual(json(messages.scan.invalid),
+    [{ key: "javascript:gs.getUserName()", reason: "javascript-expression" }]);
+});
+
+test("a form value naming javascript: is Unverified, and no read or link carries it", async () => {
+  /* The record value is the most direct route: anyone who can write the
+   * record writes the text the Lens would put into its read. */
+  const fixture = formTransport();
+  const result = await TL.run({
+    mode: "form",
+    table: "example_child",
+    sysId: "00000000000000000000000000000009",
+    fields: ["title", "state"],
+    loadValues: async () => ({ values: { title: "javascript:'Base title'" } }),
+    origin: "https://example.service-now.com",
+  }, fixture.transport);
+  assert.ok(!fixture.requests.some((request) => /javascript\s*:/i.test(String(request.query || ""))),
+    "no read carries the expression");
+  const urls = linksIn(result);
+  /* A control: the state field's per-choice link is kept inside its row's
+   * evidence, the deepest place a result holds a link. */
+  assert.ok(urls.some((url) => url.includes("element=state^value=1^dependent_value=")), "evidence links are walked");
+  urls.forEach((url) => assert.doesNotMatch(url, /javascript\s*:/i));
+  const title = result.sections.find((section) => section.id === "values").rows
+    .find((row) => row.element === "title");
+  assert.strictEqual(title.states.fr.state, "unverified");
+  assert.strictEqual(title.evidence.unverifiedReason, "javascript-expression");
+});
+
+test("a message scan with a refused key offers no footer message list", async () => {
+  /* Codex review: the footer was handed only the keys that could be queried,
+   * so a scan with one refused key opened a list of the rest -- a narrower
+   * question than the panel asked. The builder already refuses such a list;
+   * the scan had dropped the refused key before the builder could see it.
+   * Form mode, catalog mode, and the definition-form merge of the two. */
+  const origin = "https://example.service-now.com";
+  const clean = "getMessage('Safe_key');";
+  const mixed = "getMessage('Safe_key'); getMessage('javascript:1');";
+  const messageList = (result) => (result.links || {}).sys_ui_message;
+
+  const form = formTransport();
+  const formRun = (script) => TL.run({
+    mode: "form", table: "example_child", sysId: "00000000000000000000000000000009",
+    fields: ["title"], loadValues: async () => ({ values: { title: "Base title" } }), origin,
+  }, async (request) => (request.table === "sys_script_client" ? [{ script }] : form.transport(request)));
+  assert.ok(messageList(await formRun(clean)), "a complete scan keeps its button");
+  const formMixed = await formRun(mixed);
+  assert.strictEqual(messageList(formMixed), undefined, "form: no list that leaves the refused key out");
+  assert.ok(formMixed.links.sys_translated, "the other footer buttons stay");
+
+  const catalogRun = (catalogScript, formScript) => {
+    const fixture = catalogTransport({
+      answer: (request) => {
+        if (request.table === "catalog_script_client" && request.query.startsWith("cat_item=")) {
+          return [{ sys_id: "00000000000000000000000000000040", name: "Example script", script: catalogScript }];
+        }
+        if (request.table === "sys_script_client") return [{ script: formScript }];
+        return undefined;
+      },
+    });
+    return TL.run({
+      mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId, origin,
+      formContext: formScript === undefined ? undefined : {
+        table: "sc_cat_item", sysId: fixture.itemId, fields: ["name"], loadValues: async () => ({ values: {} }),
+      },
+    }, fixture.transport);
+  };
+  assert.ok(messageList(await catalogRun(clean)), "a complete catalog scan keeps its button");
+  assert.strictEqual(messageList(await catalogRun(mixed)), undefined, "catalog: the same");
+  /* The definition form's scan joins the catalog's. A refusal on either
+   * side withholds the button, and the merged scan names it, so the Messages
+   * note has a reason to give. */
+  assert.ok(messageList(await catalogRun(clean, clean)), "two complete scans keep the button");
+  const merged = await catalogRun(clean, mixed);
+  assert.strictEqual(messageList(merged), undefined, "a refusal in the definition form's scan counts");
+  const messages = merged.sections.find((section) => section.id === "messages");
+  assert.deepStrictEqual(json(messages.scan.invalid), [{ key: "javascript:1", reason: "javascript-expression" }]);
+});
+
+test("a capped or merged message scan offers no list and counts each unchecked key once", async () => {
+  /* Codex review, round 3. The footer relied on the cap being five chunks
+   * wide, so a smaller cap would have offered a list of the keys that fit.
+   * Merging summed each half's omissions -- two for one key both halves
+   * omitted, and two where each half read the key the other omitted -- and
+   * kept one half's repeated refusals, so the count changed with the order. */
+  const origin = "https://example.service-now.com";
+  const keys = Array.from({ length: TL.MAX_MESSAGE_KEYS + 1 }, (_, index) => "Example key " + index);
+  const script = (list) => list.map((key) => "getMessage('" + key + "');").join(" ");
+  const forward = script(keys);
+  const backward = script(keys.slice().reverse());
+  const messageList = (result) => (result.links || {}).sys_ui_message;
+  const messages = (result) => result.sections.find((section) => section.id === "messages");
+  const scanLines = (result) => TL.formatResultsAsText(result).split(String.fromCharCode(10))
+    .filter((line) => line.startsWith("Not checked:"));
+
+  const form = formTransport();
+  const formResult = await TL.run({
+    mode: "form", table: "example_child", sysId: "00000000000000000000000000000009",
+    fields: ["title"], loadValues: async () => ({ values: { title: "Base title" } }), origin,
+  }, async (request) => (request.table === "sys_script_client" ? [{ script: forward }] : form.transport(request)));
+  assert.strictEqual(messageList(formResult), undefined, "form: a capped scan offers no list");
+  assert.deepStrictEqual(scanLines(formResult), ["Not checked: 1 key past the cap"]);
+
+  const catalogRun = (catalogScript, formScript) => {
+    const fixture = catalogTransport({
+      answer: (request) => {
+        if (request.table === "catalog_script_client" && request.query.startsWith("cat_item=")) {
+          return [{ sys_id: "00000000000000000000000000000040", name: "Example script", script: catalogScript }];
+        }
+        if (request.table === "sys_script_client") return [{ script: formScript }];
+        return undefined;
+      },
+    });
+    return TL.run({
+      mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId, origin,
+      formContext: formScript === undefined ? undefined : {
+        table: "sc_cat_item", sysId: fixture.itemId, fields: ["name"], loadValues: async () => ({ values: {} }),
+      },
+    }, fixture.transport);
+  };
+  assert.strictEqual(messageList(await catalogRun(forward)), undefined, "catalog: the same");
+
+  const same = await catalogRun(forward, forward);
+  assert.strictEqual(messageList(same), undefined, "merged: the same");
+  assert.strictEqual(messages(same).scan.omittedCount, 1, "a key both halves omitted is one key");
+  assert.deepStrictEqual(scanLines(same), ["Not checked: 1 key past the cap"]);
+
+  const opposite = await catalogRun(forward, backward);
+  assert.strictEqual(messageList(opposite), undefined, "still more keys than one list holds");
+  assert.strictEqual(messages(opposite).scan.omittedCount, 0, "each half read the key the other omitted");
+  assert.deepStrictEqual(scanLines(opposite), [], "nothing went unchecked");
+
+  const twice = "getMessage('javascript:1'); getMessage('javascript:1');";
+  const once = "getMessage('javascript:1');";
+  for (const [catalogScript, formScript] of [[twice, once], [once, twice]]) {
+    const merged = await catalogRun(catalogScript, formScript);
+    assert.strictEqual(messages(merged).scan.invalid.length, 1, "one refused key, whichever half repeats it");
+    assert.deepStrictEqual(scanLines(merged), ["Not checked: 1 key refused (javascript-expression)"]);
+  }
+});
+
+test("a report names Unverified languages and what a message scan could not check, never the text", () => {
+  /* Codex review: an Unverified row is out of the count, so the report read
+   * "0/0; missing=none" -- the line of a row with nothing to translate -- and
+   * a refused getMessage key left no trace. The report now lists the row's
+   * Unverified languages, with a reason only when it is one of the engine's
+   * own codes, and counts what the scan could not check without a key. */
+  const languageContext = languages();
+  const counted = own(languageContext.countedLanguageIds).join(",");
+  const refused = TL.analyzeStringRows({
+    element: "example_topic", aspect: "source", source: "JavaScript: required?",
+    effectiveTable: "question", rows: [], languages: languageContext,
+  });
+  const foreign = {
+    element: "example_field", aspect: "value",
+    states: { fr: { state: "unverified", reason: "https://secret.service-now.com/nav_to.do" } },
+    coverage: { covered: 0, counted: 0, percent: null, missing: [], unavailable: [] },
+    evidence: {},
+  };
+  const result = TL.summarizeResult({
+    context: { mode: "catalog", table: "sc_cat_item" },
+    languages: languageContext,
+    sections: [
+      { id: "values", label: "Catalog Text", rows: [refused, foreign] },
+      {
+        id: "messages", label: "Messages", rows: [],
+        scan: {
+          keys: [], dynamicCount: 1, capped: false, omittedCount: 0,
+          invalid: [
+            { key: "javascript:gs.getUserName()", reason: "javascript-expression" },
+            { key: "bad^key", reason: "encoded-query-separator" },
+            { key: "Another key", reason: "Denied by https://secret.service-now.com" },
+          ],
+        },
+      },
+    ],
+    failures: [],
+  });
+  const report = TL.formatResultsAsText(result);
+  const lines = report.split(String.fromCharCode(10));
+  assert.ok(lines.includes("- example_topic [source]: 0/0; missing=none; unverified=" + counted + " (javascript-expression)"), report);
+  assert.ok(lines.includes("- example_field [value]: 0/0; missing=none; unverified=fr"), "an unlisted reason is left out: " + report);
+  assert.ok(lines.includes("Not checked: 1 dynamic key; 3 keys refused (javascript-expression, encoded-query-separator)"), report);
+  ["required?", "gs.getUserName", "bad^key", "Another key", "secret.service-now.com"].forEach((fragment) => {
+    assert.ok(!report.includes(fragment), "never in the report: " + fragment);
+  });
 });
 
 test("a record-keyed row for a variable set title is reported as stranded", async () => {
