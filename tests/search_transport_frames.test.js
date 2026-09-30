@@ -23,14 +23,14 @@ function loadSearchFrameHelpers(options) {
     .slice(sharedStart, source.lastIndexOf("/*", sharedMarker))
     .replace("const FRAME_DISCOVERY_WAIT_MS = 150;", "const FRAME_DISCOVERY_WAIT_MS = 1;");
 
-  const start = source.indexOf("const codeSearchFrameByTab");
+  const start = source.indexOf("const tokenFrameByTab");
   const end = source.indexOf("function codeSearchTableGet", start);
   assert.ok(start >= 0 && end > start, "search frame helper block not found");
   const searchBlock = source
     .slice(start, end)
     .replace(
-      "const SEARCH_FRAME_PROBE_TIMEOUT_MS = 2000;",
-      "const SEARCH_FRAME_PROBE_TIMEOUT_MS = 5;"
+      "const TOKEN_FRAME_PROBE_TIMEOUT_MS = 2000;",
+      "const TOKEN_FRAME_PROBE_TIMEOUT_MS = 5;"
     );
 
   const calls = [];

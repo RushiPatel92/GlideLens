@@ -630,9 +630,9 @@ function inconclusiveError(failures, what) {
  * no reason for two copies of it to drift apart.
  * ===================================================================== */
 
-const codeSearchFrameByTab = new Map();
-const searchFrameResolutionByTab = new Map();
-const SEARCH_FRAME_PROBE_TIMEOUT_MS = 2000;
+const tokenFrameByTab = new Map();
+const tokenFrameResolutionByTab = new Map();
+const TOKEN_FRAME_PROBE_TIMEOUT_MS = 2000;
 
 function hasUserTokenInPage() {
   try {
@@ -651,7 +651,7 @@ function probeTokenFrame(tabId, frameId) {
       clearTimeout(timer);
       resolve(value);
     };
-    const timer = setTimeout(() => finish(null), SEARCH_FRAME_PROBE_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null), TOKEN_FRAME_PROBE_TIMEOUT_MS);
     chrome.scripting.executeScript({
       target: { tabId, frameIds: [frameId] },
       world: "MAIN",
@@ -678,25 +678,26 @@ async function discoverTokenFrame(tabId) {
 }
 
 async function resolveTokenFrame(tabId) {
-  if (codeSearchFrameByTab.has(tabId)) return codeSearchFrameByTab.get(tabId);
-  if (!searchFrameResolutionByTab.has(tabId)) {
-    searchFrameResolutionByTab.set(tabId, discoverTokenFrame(tabId));
+  if (tokenFrameByTab.has(tabId)) return tokenFrameByTab.get(tabId);
+  if (!tokenFrameResolutionByTab.has(tabId)) {
+    tokenFrameResolutionByTab.set(tabId, discoverTokenFrame(tabId));
   }
   try {
-    const frameId = await searchFrameResolutionByTab.get(tabId);
-    codeSearchFrameByTab.set(tabId, frameId);
+    const frameId = await tokenFrameResolutionByTab.get(tabId);
+    tokenFrameByTab.set(tabId, frameId);
     return frameId;
   } finally {
-    searchFrameResolutionByTab.delete(tabId);
+    tokenFrameResolutionByTab.delete(tabId);
   }
 }
 
 /*
  * Runs one read in the tab's token-bearing frame, with the frame-cache
- * recovery both callers need. `func` is the MAIN-world reader; `what` names the
- * thing being read for error messages only.
+ * recovery every repeated reader needs: Code Search, Record Search and
+ * Translation Lens. `func` is the MAIN-world reader; `what` names the thing
+ * being read for error messages only.
  */
-async function codeSearchFrameGet(tabId, func, request, what, isRetry) {
+async function tokenFrameGet(tabId, func, request, what, isRetry) {
   const frameId = await resolveTokenFrame(tabId);
   let results;
   try {
@@ -709,8 +710,8 @@ async function codeSearchFrameGet(tabId, func, request, what, isRetry) {
   } catch (error) {
     /* The cached frame can go away under navigation. Re-resolve once before
      * treating it as a real failure. */
-    codeSearchFrameByTab.delete(tabId);
-    if (!isRetry) return codeSearchFrameGet(tabId, func, request, what, true);
+    tokenFrameByTab.delete(tabId);
+    if (!isRetry) return tokenFrameGet(tabId, func, request, what, true);
     return { ok: false, status: 0, error: String(error) };
   }
   const response = results.map((item) => item && item.result).filter(Boolean)[0];
@@ -724,21 +725,21 @@ async function codeSearchFrameGet(tabId, func, request, what, isRetry) {
    * needed to notice, which keeps the manifest as small as it is today.
    */
   if (response.status === 401 && !isRetry) {
-    codeSearchFrameByTab.delete(tabId);
-    return codeSearchFrameGet(tabId, func, request, what, true);
+    tokenFrameByTab.delete(tabId);
+    return tokenFrameGet(tabId, func, request, what, true);
   }
   return response;
 }
 
 function codeSearchTableGet(tabId, request) {
-  return codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table);
+  return tokenFrameGet(tabId, tableApiGetInPage, request, request.table);
 }
 
 /* Record Search has the same bounded, repeated-read shape as Code Search, so
  * it shares the resolved token-bearing frame instead of fanning metadata and
  * result requests out across every ServiceNow frame. */
 function recordSearchTableGet(tabId, request) {
-  return codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table);
+  return tokenFrameGet(tabId, tableApiGetInPage, request, request.table);
 }
 
 /* Translation Lens performs several bounded reads per panel. Keep all of them
@@ -746,7 +747,7 @@ function recordSearchTableGet(tabId, request) {
  * would multiply every store query by the number of ServiceNow frames. */
 function translationTableGet(tabId, request) {
   return withTimeout(
-    codeSearchFrameGet(tabId, tableApiGetInPage, request, request.table),
+    tokenFrameGet(tabId, tableApiGetInPage, request, request.table),
     PAGE_READ_TIMEOUT_MS,
     "Translation Lens read for " + request.table
   );
@@ -765,7 +766,7 @@ function translationTableGet(tabId, request) {
  * from a scoped one. The engine re-checks the record types that come back.
  */
 function codeSearchApiGet(tabId, request) {
-  return codeSearchFrameGet(
+  return tokenFrameGet(
     tabId,
     codeSearchApiGetInPage,
     request,
@@ -774,8 +775,8 @@ function codeSearchApiGet(tabId, request) {
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  codeSearchFrameByTab.delete(tabId);
-  searchFrameResolutionByTab.delete(tabId);
+  tokenFrameByTab.delete(tabId);
+  tokenFrameResolutionByTab.delete(tabId);
   forgetFrameList(tabId);
   frameGenerationByTab.delete(tabId);
   releasePrefillLock(tabId, null);
