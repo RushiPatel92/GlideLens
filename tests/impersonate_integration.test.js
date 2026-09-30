@@ -1004,7 +1004,7 @@ test("the mutation resolves a frame fresh and never reuses the cached read frame
   assert.ok(code.includes("discoverTokenFrame"), "fresh discovery per confirmed action");
   assert.ok(!code.includes("resolveTokenFrame"),
     "resolveTokenFrame caches, which is safe for repeated reads and wrong for a mutation");
-  assert.ok(!code.includes("codeSearchFrameGet"),
+  assert.ok(!code.includes("tokenFrameGet"),
     "that path retries on 401 and on a lost frame; a mutation must not");
   assert.ok(!code.includes("SN_TABLE_GET"));
 });

@@ -134,7 +134,7 @@ test("Translation Lens uses the shared single-token-frame transport", () => {
   const start = source.indexOf("function translationTableGet");
   const end = source.indexOf("\n}", start) + 2;
   const block = source.slice(start, end);
-  assert.ok(block.includes("codeSearchFrameGet(tabId, tableApiGetInPage"));
+  assert.ok(block.includes("tokenFrameGet(tabId, tableApiGetInPage"));
   assert.ok(block.includes("withTimeout("));
   assert.ok(block.includes("PAGE_READ_TIMEOUT_MS"));
   assert.ok(!block.includes("readFromPageFrames"));

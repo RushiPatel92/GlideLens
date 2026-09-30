@@ -247,7 +247,7 @@ test("translation reads and form probes have dedicated worker routes", () => {
   assert.ok(backgroundSource.includes("translationTableGet(sender.tab.id"));
   assert.ok(backgroundSource.includes("readTranslationFormContext(sender.tab.id"));
   const transport = between(backgroundSource, "function translationTableGet", "function codeSearchApiGet");
-  assert.ok(transport.includes("codeSearchFrameGet"));
+  assert.ok(transport.includes("tokenFrameGet"));
   assert.ok(transport.includes("PAGE_READ_TIMEOUT_MS"));
   assert.ok(transport.includes("withTimeout"));
   assert.ok(!transport.includes("readFromPageFrames"));

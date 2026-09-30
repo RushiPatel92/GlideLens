@@ -340,7 +340,7 @@ by a trailing space.
 ### Fresh frame, exactly once, never retried
 
 A mutation must **not** reuse the cached token-frame resolution that is safe
-for repeated reads, and must not go through `codeSearchFrameGet`, whose 401
+for repeated reads, and must not go through `tokenFrameGet`, whose 401
 re-resolution and stale-frame recovery would send a second request. The frame
 is discovered fresh per confirmed action and exactly one is targeted, so a
 click is structurally incapable of producing two POSTs.
