@@ -50,6 +50,21 @@ reconstructed version by version.
   out or failed on the server either. It says the read failed and to try
   again. A fill that may be missing values because one table could not be read
   now says so under **Done**.
+- **Translation Lens no longer reports Missing for a translation the form
+  shows.** `sys_translated` is keyed by the source text, and the platform
+  matches that key more loosely than by capitalisation alone: an accented
+  letter matches its plain form, `ß` matches a single `s`, the dotless `ı`
+  matches `i`, and a trailing space is ignored. The read already returned
+  those rows, but Translation Lens compared them by capitalisation only and
+  dropped them silently, so a question stored as `Café` read Missing on a
+  form asking for `Cafe` even though the form rendered the translation. Those
+  rows now count as covered, marked **different accents or spacing**. Only
+  equivalences measured on live instances count. A row that matches only
+  through one nobody has measured, such as an accent outside the tested set
+  or a tab, makes its language **Unverified**, counted neither as covered nor
+  as missing, and the row is named so that nobody adds a second one beside
+  it. Message keys keep the stricter rule, because only capitalisation was
+  measured there.
 
 ## [0.16.0] - 2026-09-28
 

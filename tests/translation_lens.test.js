@@ -367,6 +367,237 @@ test("a language covered by both spellings is not reported as a capitalisation v
   assert.strictEqual(row.states.de.duplicateCount, 1);
 });
 
+/* What sys_translated's key lookup treats as one key, measured 2026-09-09 on
+ * both instances by re-querying real rows with variants of their own key, each
+ * positive tied to the control row's own sys_id
+ * (tooling/probe-sys-translated-fold-battery). Copied here as data rather than
+ * read from the engine, so these tests pin the measurement and a change to the
+ * engine's table cannot move both sides at once. Characters are built from
+ * code points because an escape typed through the authoring tools is decoded
+ * on the way in. */
+const MEASURED_FOLDS = {
+  a: [0x00e0, 0x00e1, 0x00e2, 0x00e3, 0x00e4, 0x00e5, 0x0101, 0x0103, 0x0105],
+  e: [0x00e8, 0x00e9, 0x00ea, 0x00eb, 0x0113, 0x0117, 0x0119, 0x011b],
+  i: [0x00ec, 0x00ed, 0x00ee, 0x00ef, 0x0129, 0x012b, 0x012f, 0x0131],
+  o: [0x00f2, 0x00f3, 0x00f4, 0x00f5, 0x00f6, 0x014d, 0x0151],
+  u: [0x00f9, 0x00fa, 0x00fb, 0x00fc, 0x0169, 0x016b, 0x016f, 0x0171],
+  c: [0x00e7, 0x0107, 0x0109, 0x010d],
+  n: [0x00f1, 0x0144, 0x0146, 0x0148],
+  s: [0x015b, 0x015f, 0x0161, 0x00df],
+  y: [0x00fd, 0x00ff],
+  z: [0x017a, 0x017c, 0x017e],
+  d: [0x010f],
+  l: [0x013a, 0x013c, 0x013e],
+  g: [0x011d, 0x011f, 0x0121],
+  t: [0x0163, 0x0165],
+  r: [0x0155, 0x0159],
+};
+/* Tested in the same battery and kept apart by the server. */
+const MEASURED_DISTINCT = {
+  a: [0x00e6],
+  o: [0x00f8, 0x0153, 0x03bf, 0x043e, 0xff4f],
+  n: [0x014b],
+  d: [0x0111, 0x00f0],
+  l: [0x0142],
+  t: [0x0167],
+};
+const cp = (code) => String.fromCodePoint(code);
+const hex = (code) => "U+" + code.toString(16).toUpperCase().padStart(4, "0");
+const TAB = String.fromCharCode(9);
+const NBSP = String.fromCharCode(0xa0);
+
+function catalogTextRow(source, rows, store) {
+  return TL.analyzeStringRows({
+    element: "example_topic",
+    aspect: "source",
+    store: store || "sys_translated",
+    effectiveTable: "question",
+    source,
+    languages: languages(),
+    origin: "https://example.service-now.com",
+    linkKey: { name: "question", element: "question_text", value: source },
+    rows: rows.map((row) => Object.assign({ name: "question", element: "question_text" }, row)),
+  });
+}
+
+test("the measured key table in these tests is the probe's whole result", () => {
+  const count = (table) => Object.values(table).reduce((sum, codes) => sum + codes.length, 0);
+  assert.strictEqual(count(MEASURED_FOLDS), 68);
+  assert.strictEqual(count(MEASURED_DISTINCT), 11);
+});
+
+test("a sys_translated key differing by an accent covers the language, not a false Missing", () => {
+  /* The shipped defect: the read returned this row, because the platform
+   * matched the query to it, and the engine's own comparison then dropped it
+   * without a word. French read Missing while the form rendered French. */
+  const row = catalogTextRow("Cafe", [
+    { value: "caf" + cp(0x00e9), label: "Cafeteria", language: "fr" },
+  ]);
+  assert.strictEqual(row.states.fr.state, "direct");
+  assert.strictEqual(row.states.fr.spellingVariantKey, true);
+  assert.strictEqual(row.states.fr.capitalisationVariantKey, undefined);
+  assert.strictEqual(row.states["fr-CA"].state, "fallback", "a covered language serves its fallbacks");
+  assert.strictEqual(row.evidence.spellingVariants.rowCount, 1);
+  assert.strictEqual(row.evidence.capitalisationVariants.rowCount, 0);
+  assert.strictEqual(row.evidence.unprovenVariants.rowCount, 0);
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 0);
+});
+
+test("every measured accent, the dotless i and the eszett cover the language", () => {
+  Object.keys(MEASURED_FOLDS).forEach((base) => {
+    MEASURED_FOLDS[base].forEach((code) => {
+      const row = catalogTextRow("Item " + base, [
+        { value: "item " + cp(code), label: "Translated", language: "fr" },
+      ]);
+      assert.strictEqual(row.states.fr.state, "direct", hex(code) + " is measured to fold to " + base);
+      assert.strictEqual(row.states.fr.spellingVariantKey, true, hex(code));
+      assert.strictEqual(row.evidence.unprovenVariants.rowCount, 0, hex(code));
+    });
+  });
+});
+
+test("an upper-case accented key folds through its lower-case form", () => {
+  const row = catalogTextRow("CAFE", [
+    { value: "CAF" + cp(0x00c9), label: "Cafeteria", language: "fr" },
+  ]);
+  assert.strictEqual(row.states.fr.state, "direct");
+  assert.strictEqual(row.states.fr.spellingVariantKey, true);
+});
+
+test("a letter measured to stay apart neither covers nor is reported as a near match", () => {
+  /* These rows can only arrive because another source on the same element
+   * asked for them. They are that source's translation, not this one's. */
+  Object.keys(MEASURED_DISTINCT).forEach((base) => {
+    MEASURED_DISTINCT[base].forEach((code) => {
+      const row = catalogTextRow("Item " + base, [
+        { value: "item " + cp(code), label: "Translated", language: "fr" },
+      ]);
+      assert.strictEqual(row.states.fr.state, "missing", hex(code) + " is measured distinct from " + base);
+      assert.strictEqual(row.evidence.spellingVariants.rowCount, 0, hex(code));
+      assert.strictEqual(row.evidence.unprovenVariants.rowCount, 0, hex(code));
+    });
+  });
+});
+
+test("the eszett folds to one s, never to two", () => {
+  const single = catalogTextRow("Mase", [{ value: "ma" + cp(0x00df) + "e", label: "x", language: "fr" }]);
+  assert.strictEqual(single.states.fr.state, "direct");
+  const double = catalogTextRow("Masse", [{ value: "ma" + cp(0x00df) + "e", label: "x", language: "fr" }]);
+  assert.strictEqual(double.states.fr.state, "missing");
+  assert.strictEqual(double.evidence.unprovenVariants.rowCount, 0);
+});
+
+test("a decomposed accent is kept apart, as measured", () => {
+  const row = catalogTextRow("Cafe", [
+    { value: "cafe" + cp(0x0301), label: "Cafeteria", language: "fr" },
+  ]);
+  assert.strictEqual(row.states.fr.state, "missing");
+  assert.strictEqual(row.evidence.spellingVariants.rowCount, 0);
+  assert.strictEqual(row.evidence.unprovenVariants.rowCount, 0);
+});
+
+test("a trailing space folds in either direction; the other measured whitespace does not", () => {
+  const storedWithSpace = catalogTextRow("Cafe", [{ value: "Cafe ", label: "x", language: "fr" }]);
+  assert.strictEqual(storedWithSpace.states.fr.state, "direct");
+  assert.strictEqual(storedWithSpace.states.fr.spellingVariantKey, true);
+  const sourceWithSpace = catalogTextRow("Cafe ", [{ value: "Cafe", label: "x", language: "fr" }]);
+  assert.strictEqual(sourceWithSpace.states.fr.state, "direct");
+
+  [
+    ["leading space", "Cafe au lait", " Cafe au lait"],
+    ["doubled internal space", "Cafe au lait", "Cafe  au lait"],
+    ["non-breaking space", "Cafe au lait", "Cafe" + NBSP + "au lait"],
+  ].forEach(([name, source, key]) => {
+    const row = catalogTextRow(source, [{ value: key, label: "x", language: "fr" }]);
+    assert.strictEqual(row.states.fr.state, "missing", name + " is measured not to fold");
+    assert.strictEqual(row.evidence.unprovenVariants.rowCount, 0, name);
+  });
+});
+
+test("an equivalence nobody measured is Unverified: named, never covered, never a gap", () => {
+  [
+    ["an accent outside the battery", "Cafe", "caf" + cp(0x1ebd)],
+    ["a caron outside the battery", "Cafe", "c" + cp(0x01ce) + "fe"],
+    ["a trailing tab", "Cafe", "Cafe" + TAB],
+    ["an internal tab", "Cafe au lait", "Cafe" + TAB + "au lait"],
+  ].forEach(([name, source, key]) => {
+    const row = catalogTextRow(source, [{ value: key, label: "x", language: "fr" }]);
+    assert.strictEqual(row.states.fr.state, "unverified", name);
+    assert.strictEqual(row.states.fr.unprovenVariantKey, true, name);
+    assert.strictEqual(row.states.fr.reason, "unproven key match", name);
+    assert.strictEqual(row.evidence.unprovenVariants.rowCount, 1, name);
+    assert.ok(!own(row.coverage.missing).includes("fr"), name + " is not counted as a gap");
+    assert.strictEqual(row.coverage.covered, 0, name + " is not counted as covered");
+    assert.strictEqual(row.links.newRecord.fr, undefined,
+      name + " offers no new record beside a row that may already render");
+    assert.ok(row.links.newRecord.de, name + ": a real gap in the same row still offers one");
+  });
+});
+
+test("an unproven row never displaces a row that covers the same language", () => {
+  const row = catalogTextRow("Cafe", [
+    { value: "Cafe", label: "Cafeteria", language: "fr" },
+    { value: "caf" + cp(0x1ebd), label: "Something else", language: "fr" },
+  ]);
+  assert.strictEqual(row.states.fr.state, "direct");
+  assert.strictEqual(row.states.fr.unprovenVariantKey, undefined);
+  assert.strictEqual(row.states.fr.spellingVariantKey, undefined);
+  assert.strictEqual(row.evidence.unprovenVariants.rowCount, 1, "still reported");
+});
+
+test("two rows the platform reads as one key are compared like duplicates", () => {
+  const differ = catalogTextRow("Cafe", [
+    { value: "Cafe", label: "Cafeteria", language: "fr" },
+    { value: "caf" + cp(0x00e9), label: "Brasserie", language: "fr" },
+  ]);
+  assert.strictEqual(differ.states.fr.state, "conflict", "the platform picks between them");
+  const agree = catalogTextRow("Cafe", [
+    { value: "Cafe", label: "Cafeteria", language: "fr" },
+    { value: "caf" + cp(0x00e9), label: "Cafeteria", language: "fr" },
+  ]);
+  assert.strictEqual(agree.states.fr.state, "direct");
+  assert.strictEqual(agree.states.fr.duplicateCount, 1);
+  assert.strictEqual(agree.states.fr.spellingVariantKey, undefined, "an exact row is present");
+});
+
+test("a row under another table with a folded key is an alternate registration", () => {
+  const row = catalogTextRow("Cafe", [
+    { name: "item_option_new", value: "caf" + cp(0x00e9), label: "Cafeteria", language: "fr" },
+  ]);
+  assert.strictEqual(row.states.fr.state, "missing");
+  assert.strictEqual(row.evidence.alternateRegistrations.rowCount, 1);
+});
+
+test("accent and spacing folds are not assumed on sys_ui_message, where only capitalisation was measured", () => {
+  const rows = [
+    { key: "caf" + cp(0x00e9), language: "fr", application: "" },
+    { key: "Cafe ", language: "de", application: "" },
+  ];
+  const direct = TL.analyzeStringRows({
+    element: "Cafe", aspect: "message", store: "sys_ui_message", keyField: "key",
+    presenceOnly: true, source: "Cafe", languages: languages(), rows,
+  });
+  assert.strictEqual(direct.states.fr.state, "unverified");
+  assert.strictEqual(direct.states.fr.unprovenVariantKey, true);
+  assert.strictEqual(direct.states.de.state, "unverified");
+  /* analyzeMessages groups the read's rows before analyzeStringRows rules on
+   * them; a grouping narrower than the rule drops these rows unseen. */
+  const analysed = TL.analyzeMessages(["Cafe"], rows, languages(), null, "");
+  assert.strictEqual(analysed[0].states.fr.state, "unverified");
+  assert.strictEqual(analysed[0].states.de.state, "unverified");
+  assert.strictEqual(analysed[0].evidence.unprovenVariants.rowCount, 2);
+});
+
+test("a store whose lookup was never probed gains no folding", () => {
+  const row = catalogTextRow("Cafe", [
+    { value: "caf" + cp(0x00e9), label: "Cafeteria", language: "fr" },
+  ], "sys_choice");
+  assert.strictEqual(row.states.fr.state, "missing");
+  assert.strictEqual(row.evidence.spellingVariants.rowCount, 0);
+  assert.strictEqual(row.evidence.unprovenVariants.rowCount, 0);
+  assert.strictEqual(row.evidence.nearDuplicates.rowCount, 0);
+});
+
 test("unavailable languages never lower a percentage", () => {
   const row = TL.analyzeStringRows({
     element: "title",
@@ -1286,6 +1517,35 @@ test("a catalog choice whose text cannot be queried is unverified, not unavailab
     !fixture.requests.some((request) => request.table === "sys_translated" && request.query.includes("Choice^A")),
     "the unexpressible text is never put into a query"
   );
+});
+
+test("a catalog question whose stored key carries an accent is scored covered end to end", async () => {
+  /* The read asks for the form's spelling and the server answers with the
+   * row it matched, accent and all. That row is what the form renders. */
+  const accented = "example t" + String.fromCodePoint(0x00f3) + "pic";
+  const fixture = catalogTransport({
+    answer(request) {
+      if (request.table === "sys_translated" && request.query.includes("element=question_text")) {
+        return [{
+          sys_id: "00000000000000000000000000000020", name: "question", element: "question_text",
+          value: accented, label: "Sujet", language: "fr",
+        }];
+      }
+      return undefined;
+    },
+  });
+  const result = await TL.run({
+    mode: "catalog", table: "sc_cat_item", catalogItemSysId: fixture.itemId, sysId: fixture.itemId,
+  }, fixture.transport);
+  const query = fixture.requests.find((request) =>
+    request.table === "sys_translated" && request.query.includes("element=question_text")).query;
+  assert.ok(query.includes("value=Example topic"), "the read asks for the form's own spelling");
+  const row = result.sections.find((section) => section.id === "values").rows
+    .find((item) => item.id === "catalog:" + fixture.variableId + ":question_text");
+  assert.strictEqual(row.states.fr.state, "direct");
+  assert.strictEqual(row.states.fr.spellingVariantKey, true);
+  assert.strictEqual(row.coverage.covered, 1);
+  assert.strictEqual(row.coverage.counted, 1);
 });
 
 /* Every link a result carries, decoded, so an encoded expression cannot hide

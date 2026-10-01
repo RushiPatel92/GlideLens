@@ -1347,6 +1347,90 @@ test("the report names a capitalisation variant as its own warning token", () =>
   assert.ok(!text.includes("near-duplicate"), "the two are not the same finding");
 });
 
+test("a key differing by accents or spacing reads as covered, marked on the chip and explained once", () => {
+  const harness = load();
+  openPanel(harness);
+  const row = makeRow({
+    store: "sys_translated",
+    states: {
+      fr: { state: "direct", direct: true },
+      de: { state: "direct", direct: true, spellingVariantKey: true },
+    },
+    coverage: { covered: 2, counted: 2, percent: 100, missing: [], unavailable: [] },
+    evidence: { spellingVariants: { rowCount: 1, languages: ["de"], inactiveLanguages: [] } },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [row])] }),
+  });
+  let shadow = harness.shadow();
+  click(buttonWithText(shadow, "Expand all"));
+  shadow = harness.shadow();
+  const text = shadow.textContent;
+  assert.ok(text.includes("different accents or spacing"), "the covering row's key is not the form's spelling");
+  assert.ok(text.includes("2/2"), "counted, not scored as a gap");
+  assert.ok(text.includes("1 differently accented or spaced key"), "the row carries an informational tag");
+  assert.ok(text.includes("measured to match those"), "the reason is stated in the row's evidence");
+  assert.ok(!text.includes("different capitalisation"), "not presented as a capitalisation note");
+});
+
+test("an unproven key match is Unverified on the chip, offers no new record, and says why", () => {
+  const harness = load();
+  openPanel(harness);
+  const row = makeRow({
+    store: "sys_translated",
+    states: {
+      fr: { state: "unverified", direct: false, reason: "unproven key match", unprovenVariantKey: true },
+      de: { state: "missing", direct: false, duplicateCount: 0 },
+    },
+    coverage: { covered: 0, counted: 1, percent: 0, missing: ["de"], unavailable: [] },
+    evidence: { unprovenVariants: { rowCount: 1, languages: ["fr"], inactiveLanguages: [] } },
+    links: {
+      list: ORIGIN + "/sys_translated_list.do",
+      newRecord: { de: ORIGIN + "/sys_translated.do?sys_id=-1" },
+    },
+  });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ sections: [makeSection("labels", "Field Labels", [row])] }),
+  });
+  let shadow = harness.shadow();
+  click(buttonWithText(shadow, "Expand all"));
+  shadow = harness.shadow();
+  const text = shadow.textContent;
+  assert.ok(text.includes("unconfirmed key match"), "the chip names the reason");
+  assert.ok(text.includes("1 unconfirmed key match"), "the row carries a flag");
+  assert.ok(text.includes("never counted as covered, never as missing"), "the evidence explains the state");
+  const chips = findAll(shadow, (node) => node.className && String(node.className).startsWith("chip "));
+  const unverified = chips.filter((node) => node.textContent.includes("unconfirmed key match"));
+  const missing = chips.filter((node) => node.textContent.includes("Missing"));
+  assert.ok(unverified.length, "the Unverified chip is drawn");
+  assert.ok(unverified.every((node) => node.tagName !== "BUTTON"),
+    "an Unverified chip is not a button, so it cannot create a row beside one that may render");
+  assert.ok(missing.length && missing.every((node) => node.tagName === "BUTTON"),
+    "the real gap in the same row still opens a new record");
+});
+
+test("the report names spelling and unproven key findings, and the unproven reason", () => {
+  const states = {
+    fr: { state: "unverified", direct: false, reason: "unproven key match", unprovenVariantKey: true },
+    de: { state: "direct", direct: true, spellingVariantKey: true },
+  };
+  const evidence = {
+    spellingVariants: { rowCount: 1, languages: ["de"], inactiveLanguages: [] },
+    unprovenVariants: { rowCount: 1, languages: ["fr"], inactiveLanguages: [] },
+  };
+  [load(), load({ withEngine: true })].forEach((harness, index) => {
+    const which = index ? "engine formatter" : "local formatter";
+    const text = harness.ui.formatResultsAsText(makeResult({
+      sections: [makeSection("labels", "Field Labels", [makeRow({ states, evidence })])],
+    }));
+    assert.ok(text.includes("spelling-variant"), which);
+    assert.ok(text.includes("unproven-variant"), which);
+    assert.ok(text.includes("unverified=fr (unproven key match)"), which);
+  });
+});
+
 test("the local report refuses a hostname-shaped element and an embedded sys_id", () => {
   /* The engine-absent formatter mirrors the engine's rule and must fail the
    * same two review vectors: a getMessage key that is a bare hostname, and a

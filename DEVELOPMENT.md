@@ -189,9 +189,13 @@ The suites cover:
 - `translation_lens.test.js` — the Translation Lens engine: storage routing by
   dictionary type, chunked query construction and the values it refuses,
   hierarchy walking with a cycle guard, language/base/fallback resolution, the
-  per-language state model, capitalisation-insensitive key matching for
-  `sys_translated` and exact matching everywhere else, near-duplicate and
-  capitalisation-variant detection,
+  per-language state model, string-key matching pinned to the measured
+  platform behaviour (capitalisation on `sys_translated` and
+  `sys_ui_message`, plus the 68 measured letter folds and the trailing space
+  on `sys_translated`, each covering, each measured-distinct letter not, and
+  anything only a wider suspect key matches Unverified rather than counted),
+  exact matching everywhere else, near-duplicate, capitalisation-variant and
+  spelling-variant detection,
   `getMessage` extraction, link and report construction, and that an empty
   translated-field source is Not applicable rather than Unverified. The section
   summaries are pinned both ways: a scoped summary re-counts the same rows over
