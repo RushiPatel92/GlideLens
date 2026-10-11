@@ -785,6 +785,12 @@
     return (entry.evidence && entry.evidence.capitalisationVariants) || null;
   }
 
+  /* The same store's other two key findings. Only analysed rows carry them,
+   * so only the evidence shape is read. */
+  function entryEvidence(entry, name) {
+    return (entry && entry.evidence && entry.evidence[name]) || null;
+  }
+
   /* Scoped, so the gaps filter cannot offer a row whose only gap is in a
    * language the reader has deselected. */
   function rowHasGap(row) {
@@ -1717,6 +1723,12 @@
     if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) {
       add("info", plural(evidence.capitalisationVariants.rowCount, "differently capitalised key"));
     }
+    if (evidence.spellingVariants && evidence.spellingVariants.rowCount) {
+      add("info", plural(evidence.spellingVariants.rowCount, "differently accented or spaced key"));
+    }
+    if (evidence.unprovenVariants && evidence.unprovenVariants.rowCount) {
+      add("flag", plural(evidence.unprovenVariants.rowCount, "unconfirmed key match", "unconfirmed key matches"));
+    }
     if (evidence.stranded && evidence.stranded.rowCount) {
       add("flag", plural(evidence.stranded.rowCount, "stranded row"));
     }
@@ -1757,6 +1769,12 @@
     if (entry && entry.capitalisationVariantKey === true) {
       words += " · different capitalisation";
     }
+    if (entry && entry.spellingVariantKey === true) {
+      words += " · different accents or spacing";
+    }
+    if (entry && entry.unprovenVariantKey === true) {
+      words += " · unconfirmed key match";
+    }
     return words;
   }
 
@@ -1768,6 +1786,12 @@
     }
     if (entry && entry.capitalisationVariantKey === true) {
       parts.push("Covered by a row whose key capitalises the source string differently. The platform matches the key regardless of capitalisation.");
+    }
+    if (entry && entry.spellingVariantKey === true) {
+      parts.push("Covered by a row whose key differs from the source string only by accents, ß written as s, a dotless ı or a trailing space. The platform matches those as the same key.");
+    }
+    if (entry && entry.unprovenVariantKey === true) {
+      parts.push("A row's key may be this source string spelled differently, but whether the platform matches the two has not been measured. Counted neither as covered nor as missing.");
     }
     if (kind === "unavailable") parts.push("The read did not complete, so this is unknown — not missing.");
     return parts.join(" — ");
@@ -1909,6 +1933,22 @@
         " the key regardless of capitalisation, so these count as covered; they are" +
         " listed because the key is not spelled the way this form spells it.");
     }
+    if (evidence.spellingVariants && evidence.spellingVariants.rowCount) {
+      evidenceLine(list, plural(evidence.spellingVariants.rowCount, "row") +
+        " differ from the source string in the key only by accents, ß written as s," +
+        " a dotless ı or a trailing space. The platform was measured to match those" +
+        " as the same key, so these count as covered; they are listed because the key" +
+        " is not spelled the way this form spells it.");
+    }
+    if (evidence.unprovenVariants && evidence.unprovenVariants.rowCount) {
+      evidenceLine(list, plural(evidence.unprovenVariants.rowCount, "row") +
+        " carry a key that may be this source string spelled differently" +
+        (languageList(evidence.unprovenVariants) ? " (" + languageList(evidence.unprovenVariants) + ")" : "") +
+        ", by an accent or a tab the platform has not been measured to match." +
+        " A language with only such a row is Unverified: never counted as covered," +
+        " never as missing. Open them before adding a row, or a second row may end up" +
+        " competing with them.");
+    }
     if (evidence.extras && evidence.extras.rowCount) {
       evidenceLine(list, plural(evidence.extras.rowCount, "extra row") +
         " exist outside the counted set" +
@@ -1986,6 +2026,15 @@
       const variants = entryCapitalisationVariants(entry);
       if (variants && variants.rowCount) {
         chips.appendChild(el("span", "tag info", plural(variants.rowCount, "differently capitalised key")));
+      }
+      const spelling = entryEvidence(entry, "spellingVariants");
+      if (spelling && spelling.rowCount) {
+        chips.appendChild(el("span", "tag info", plural(spelling.rowCount, "differently accented or spaced key")));
+      }
+      const unproven = entryEvidence(entry, "unprovenVariants");
+      if (unproven && unproven.rowCount) {
+        chips.appendChild(el("span", "tag flag",
+          plural(unproven.rowCount, "unconfirmed key match", "unconfirmed key matches")));
       }
       line.appendChild(chips);
       wrap.appendChild(line);
@@ -2611,6 +2660,8 @@
     const warnings = [];
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) warnings.push("near-duplicate");
     if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) warnings.push("capitalisation-variant");
+    if (evidence.spellingVariants && evidence.spellingVariants.rowCount) warnings.push("spelling-variant");
+    if (evidence.unprovenVariants && evidence.unprovenVariants.rowCount) warnings.push("unproven-variant");
     if (evidence.stranded && evidence.stranded.rowCount) warnings.push("stranded");
     if (evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) {
       warnings.push("alternate-registration");
@@ -2650,7 +2701,7 @@
   const REPORT_REASONS = new Set([
     "empty", "over-255", "encoded-query-separator", "javascript-expression",
     "dynamic choice source", "a choice key is not expressible", "choice text not expressible",
-    "storage unverified for type translated",
+    "storage unverified for type translated", "unproven key match",
   ]);
 
   function localReportReasons(reasons) {

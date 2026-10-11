@@ -27,6 +27,10 @@
    * sys_choice is deliberately absent: it is keyed by a stored choice value
    * rather than by a display string, and nothing here has tested it. */
   const CAPITALISATION_FOLDING_STORES = ["sys_translated", "sys_ui_message"];
+  /* The one store where folding beyond capitalisation was measured; see
+   * MEASURED_KEY_FOLDS. On sys_ui_message only capitalisation was. */
+  const SPELLING_FOLDING_STORES = ["sys_translated"];
+  const UNPROVEN_KEY_REASON = "unproven key match";
   const MAX_QUERY_LENGTH = 6000;
   const MAX_VALUE_CHUNK = 40;
   const MAX_MESSAGE_KEYS = 200;
@@ -538,6 +542,117 @@
     };
   }
 
+  /*
+   * What sys_translated's key lookup treats as one key beyond capitalisation.
+   * Measured 2026-09-09 and again 2026-10-01 on the PDI and the configured
+   * instance, identically, by re-querying real rows with variants of their own
+   * key and requiring the control row's own sys_id back
+   * (tooling/probe-sys-translated-fold-battery). The column holds its key
+   * lower-cased and its collation folds these 68 letters onto their base; the
+   * eszett folds to ONE s, not the "ss" Unicode case folding gives. A trailing
+   * space folds too, measured on the configured instance, where a stored key
+   * carries one.
+   *
+   * Measured NOT to fold, and so absent: ae, o with stroke, oe, eng, d with
+   * stroke, eth, l with stroke, t with stroke, Greek and Cyrillic o,
+   * full-width o, a decomposed accent, a leading space, a doubled internal
+   * space, a non-breaking space and a newline.
+   *
+   * This is a list of what was measured, not a rule to generalise. Translation
+   * Assistant folds every decomposable accent, because there a missed
+   * equivalence is a lock bypass and wider is the safe direction. Here a false
+   * equivalence manufactures coverage that nobody revisits, so only a measured
+   * fold may count.
+   */
+  const MEASURED_KEY_FOLDS = (() => {
+    const byBase = {
+      a: [0x00e0, 0x00e1, 0x00e2, 0x00e3, 0x00e4, 0x00e5, 0x0101, 0x0103, 0x0105],
+      e: [0x00e8, 0x00e9, 0x00ea, 0x00eb, 0x0113, 0x0117, 0x0119, 0x011b],
+      i: [0x00ec, 0x00ed, 0x00ee, 0x00ef, 0x0129, 0x012b, 0x012f, 0x0131],
+      o: [0x00f2, 0x00f3, 0x00f4, 0x00f5, 0x00f6, 0x014d, 0x0151],
+      u: [0x00f9, 0x00fa, 0x00fb, 0x00fc, 0x0169, 0x016b, 0x016f, 0x0171],
+      c: [0x00e7, 0x0107, 0x0109, 0x010d],
+      n: [0x00f1, 0x0144, 0x0146, 0x0148],
+      s: [0x015b, 0x015f, 0x0161, 0x00df],
+      y: [0x00fd, 0x00ff],
+      z: [0x017a, 0x017c, 0x017e],
+      d: [0x010f],
+      l: [0x013a, 0x013c, 0x013e],
+      g: [0x011d, 0x011f, 0x0121],
+      t: [0x0163, 0x0165],
+      r: [0x0155, 0x0159],
+    };
+    const folds = new Map();
+    Object.keys(byBase).forEach((base) => byBase[base].forEach((code) => folds.set(code, base)));
+    return folds;
+  })();
+
+  /* Both keys below are asked for every row once per source string on the
+   * surface, and this engine runs in the page, so they are remembered rather
+   * than re-derived. Without it a large catalog item spent more than twice as
+   * long in analysis, and the cost grows with sources times rows. */
+  const KEY_MEMO_LIMIT = 20000;
+  const measuredKeyMemo = new Map();
+  const suspectKeyMemo = new Map();
+
+  function remembered(memo, value, derive) {
+    let key = memo.get(value);
+    if (key === undefined) {
+      if (memo.size >= KEY_MEMO_LIMIT) memo.clear();
+      key = derive(value);
+      memo.set(value, key);
+    }
+    return key;
+  }
+
+  /* The key as the store's lookup compares it, as far as that was measured.
+   * toLowerCase, not toLocaleLowerCase: the platform's lookup does not follow
+   * the browser's locale, and a Turkish locale would lower "I" to a dotless i. */
+  function measuredKey(value, store) {
+    const text = String(value);
+    if (!SPELLING_FOLDING_STORES.includes(store)) return text.toLowerCase();
+    return remembered(measuredKeyMemo, text, foldMeasured);
+  }
+
+  function foldMeasured(text) {
+    let folded = "";
+    for (const character of text.toLowerCase()) {
+      folded += MEASURED_KEY_FOLDS.get(character.codePointAt(0)) || character;
+    }
+    return folded.replace(/ +$/, "");
+  }
+
+  /*
+   * The wider key, for what nobody has measured either way: an accented Latin,
+   * Greek or Cyrillic letter outside the battery, a trailing or internal tab,
+   * and on sys_ui_message everything beyond capitalisation. A row matching
+   * only under it may be what the platform renders, or another string's
+   * translation. Counting it would invent coverage, and calling the language
+   * Missing would invite a second row to compete with it, so the language is
+   * Unverified and the row is named. What the probe did settle stays out of
+   * it: no letter measured distinct decomposes, and a combining mark already
+   * standing on its own in the key is left alone, so a measured-distinct row is
+   * never called unproven. Kana and Hangul decompose too, but not into an
+   * accent, which is why the base letter's script is checked.
+   */
+  const ACCENTED_SCRIPT = /^[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}]$/u;
+  const COMBINING_MARKS = /^\p{Mn}+$/u;
+
+  function suspectKey(value) {
+    return remembered(suspectKeyMemo, String(value), foldSuspect);
+  }
+
+  function foldSuspect(text) {
+    let stripped = "";
+    for (const character of text) {
+      const decomposed = character.normalize("NFD");
+      const base = String.fromCodePoint(decomposed.codePointAt(0));
+      const marks = decomposed.slice(base.length);
+      stripped += marks && COMBINING_MARKS.test(marks) && ACCENTED_SCRIPT.test(base) ? base : character;
+    }
+    return measuredKey(stripped.replace(/\t+/g, " ").replace(/ +$/, ""), "sys_translated");
+  }
+
   function analyzeStringRows(options) {
     const opts = options || {};
     const languages = opts.languages;
@@ -566,30 +681,66 @@
      * these rows: an encoded `value=` or `key=` matches without regard to
      * capitalisation. So a key differing only in capitalisation covers the row.
      * It is still reported, because inconsistent keys are worth normalising,
-     * but as a capitalisation note rather than as a gap. */
+     * but as a capitalisation note rather than as a gap. On sys_translated the
+     * same holds for the accents and the trailing space in MEASURED_KEY_FOLDS:
+     * the read returns those rows too, and comparing them by capitalisation
+     * alone dropped them without a word, reporting Missing for a language the
+     * form renders. */
     const sourceKey = String(opts.source);
     const foldsCapitalisation = CAPITALISATION_FOLDING_STORES.includes(opts.store);
-    const onTable = (row) =>
-      !effectiveTable || fieldValue(row, tableField) === effectiveTable;
-    const keyMatches = (value) => value === sourceKey ||
-      (foldsCapitalisation && value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase());
-    const exact = all.filter((row) => onTable(row) && keyMatches(fieldValue(row, keyField)));
-    /* Computed for every store, including the presence-only ones. A message
-     * key scanned as "Supplier" against rows keyed "supplier" is the case
-     * that matters: the read returns those rows, because the platform matches
-     * the query without regard to capitalisation, and discarding them without
-     * a word left the panel reporting Missing beside a list button that opens
-     * the very rows it would not count. */
-    const variantRows = all.filter((row) => {
+    const sourceLower = sourceKey.toLowerCase();
+    const sameLetters = (value) => value.toLowerCase() === sourceLower;
+    const measuredSource = measuredKey(sourceKey, opts.store);
+    const suspectSource = foldsCapitalisation ? suspectKey(sourceKey) : "";
+    /* One pass, reading each row's key once. A catalog surface analyses the
+     * same read once per source string, so this loop runs sources times rows,
+     * in the page. */
+    const exact = [];
+    const variantRows = [];
+    const spellingVariants = [];
+    const unproven = [];
+    const alternateRows = [];
+    all.forEach((row) => {
       const value = fieldValue(row, keyField);
-      return onTable(row) && value !== sourceKey &&
-        value.toLocaleLowerCase() === sourceKey.toLocaleLowerCase();
+      const table = fieldValue(row, tableField);
+      const isExact = value === sourceKey;
+      const matches = isExact ||
+        (foldsCapitalisation && measuredKey(value, opts.store) === measuredSource);
+      if (effectiveTable && table !== effectiveTable) {
+        if (table && matches) alternateRows.push(row);
+        return;
+      }
+      if (matches) {
+        exact.push(row);
+        /* Counted, and named apart from capitalisation, because a reader
+         * searching the store for the form's spelling will not find these
+         * either. */
+        if (!isExact) (sameLetters(value) ? variantRows : spellingVariants).push(row);
+      } else if (!foldsCapitalisation) {
+        /* Computed for every store, including the presence-only ones. A
+         * message key scanned as "Supplier" against rows keyed "supplier" is
+         * the case that matters: the read returns those rows, because the
+         * platform matches the query without regard to capitalisation, and
+         * discarding them without a word left the panel reporting Missing
+         * beside a list button that opens the very rows it would not count. */
+        if (sameLetters(value)) variantRows.push(row);
+      } else if (suspectKey(value) === suspectSource) {
+        unproven.push(row);
+      }
     });
     const near = foldsCapitalisation ? [] : variantRows;
     const capitalisationVariants = foldsCapitalisation ? variantRows : [];
     const states = Object.create(null);
     ids.forEach((id) => {
       const forLanguage = exact.filter((row) => fieldValue(row, "language") === id);
+      /* Only when nothing measured covers the language: an unproven row beside
+       * a counted one is evidence, never a reason to stop counting. */
+      if (!forLanguage.length && unproven.some((row) => fieldValue(row, "language") === id)) {
+        states[id] = {
+          state: "unverified", direct: false, reason: UNPROVEN_KEY_REASON, unprovenVariantKey: true,
+        };
+        return;
+      }
       const state = atomState(forLanguage, {
         presenceOnly: Boolean(opts.presenceOnly),
         contentField: opts.contentField || "label",
@@ -597,21 +748,23 @@
       });
       /* The reader is owed the difference between a row they will find under
        * the key they searched for and one they will only find under a
-       * different capitalisation of it. */
+       * different capitalisation or accenting of it. */
       if (foldsCapitalisation && forLanguage.length &&
         forLanguage.every((row) => fieldValue(row, keyField) !== sourceKey)) {
-        state.capitalisationVariantKey = true;
+        if (forLanguage.some((row) => sameLetters(fieldValue(row, keyField)))) {
+          state.capitalisationVariantKey = true;
+        } else {
+          state.spellingVariantKey = true;
+        }
       }
       states[id] = state;
     });
     const withFallback = applyFallbacks(states, languages);
-    const alternateRows = all.filter((row) =>
-      effectiveTable && fieldValue(row, tableField) && fieldValue(row, tableField) !== effectiveTable &&
-      keyMatches(fieldValue(row, keyField))
-    );
     return makeRow(opts, withFallback, {
       nearDuplicates: summarizeEvidence(near, languages),
       capitalisationVariants: summarizeEvidence(capitalisationVariants, languages),
+      spellingVariants: summarizeEvidence(spellingVariants, languages),
+      unprovenVariants: summarizeEvidence(unproven, languages),
       alternateRegistrations: summarizeEvidence(alternateRows, languages),
       stranded: summarizeEvidence(opts.strandedRows || [], languages),
       extras: summarizeEvidence(exact.filter((row) => {
@@ -990,11 +1143,15 @@
        * analyzeStringRows rule on them. Filtering exactly here would drop the
        * rows that cover the key before anything could count them: the read
        * asks the platform for `key=`, which matches every capitalisation, and
-       * gs.getMessage resolves them all the same way. */
-      const folded = String(key).toLocaleLowerCase();
-      const forKey = (rows || []).filter(
-        (row) => fieldValue(row, "key").toLocaleLowerCase() === folded
-      );
+       * gs.getMessage resolves them all the same way. The grouping is as wide
+       * as the suspect key, too, so a row the rule would call unproven reaches
+       * the rule rather than vanishing here. */
+      const lowered = String(key).toLowerCase();
+      const suspect = suspectKey(key);
+      const forKey = (rows || []).filter((row) => {
+        const value = fieldValue(row, "key");
+        return value.toLowerCase() === lowered || suspectKey(value) === suspect;
+      });
       return analyzeStringRows({
         id: "message:" + key,
         element: key,
@@ -2098,6 +2255,8 @@
     const warnings = [];
     if (evidence.nearDuplicates && evidence.nearDuplicates.rowCount) warnings.push("near-duplicate");
     if (evidence.capitalisationVariants && evidence.capitalisationVariants.rowCount) warnings.push("capitalisation-variant");
+    if (evidence.spellingVariants && evidence.spellingVariants.rowCount) warnings.push("spelling-variant");
+    if (evidence.unprovenVariants && evidence.unprovenVariants.rowCount) warnings.push("unproven-variant");
     if (evidence.stranded && evidence.stranded.rowCount) warnings.push("stranded");
     if (evidence.scriptOverrides && evidence.scriptOverrides.rowCount) warnings.push("script-sets-text");
     if (evidence.alternateRegistrations && evidence.alternateRegistrations.rowCount) warnings.push("alternate-registration");
@@ -2112,7 +2271,7 @@
   const REPORT_REASONS = new Set([
     "empty", "over-255", "encoded-query-separator", "javascript-expression",
     "dynamic choice source", "a choice key is not expressible", "choice text not expressible",
-    "storage unverified for type translated",
+    "storage unverified for type translated", UNPROVEN_KEY_REASON,
   ]);
 
   function reportReasons(reasons) {

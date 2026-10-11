@@ -780,6 +780,27 @@ policies and checked in `sys_ui_message`. For every string-keyed text, a row
 found in the record-keyed store instead is reported as stranded, never
 counted.
 
+A string key is matched the way the store's own lookup matches it, as far as
+that was measured, and no further. Both `sys_translated` and `sys_ui_message`
+resolve a key regardless of capitalisation. `sys_translated` also folds 68
+accented letters onto their base letter, `ß` onto a single `s`, the dotless `ı`
+onto `i`, and a trailing space. That was measured on two instances by
+re-querying real rows with variants of their own key, and it is held as an
+explicit table in `MEASURED_KEY_FOLDS` rather than a Unicode rule. The read
+already returns these rows, because the query is subject to the same
+collation, so a covering row keyed differently is counted and marked
+"different capitalisation" or "different accents or spacing". A row that
+matches only under a wider suspect key is never counted. That covers an
+accented Latin, Greek or Cyrillic letter outside the measured table, a tab,
+and on `sys_ui_message` anything beyond capitalisation. A language with only
+such a row is Unverified with the reason `unproven key match`, which gives
+neither a count nor a create link, and the row is named. The direction is
+the opposite of Translation Assistant's. There a missed equivalence is a lock
+bypass, so it folds wide. Here a false one manufactures coverage nobody
+revisits, so only a measured fold counts. Letters measured distinct, such as
+`ø`, `ł`, `æ`, a decomposed accent, a leading or doubled space and a
+non-breaking space, are outside both keys.
+
 The **Hardcoded text** group is the complement of that scan, over the same
 script bodies and so at no extra read: the message scan asks whether a
 requested key is translated, this one asks whether a translation was ever
