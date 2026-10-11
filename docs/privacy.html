@@ -128,7 +128,7 @@ main.wrap { padding-top: 40px; }
 
   <p class="eyebrow">Privacy</p>
   <h1>What GlideLens does with your data</h1>
-  <p class="updated">Last updated 13 September 2026 · applies to GlideLens v0.11.1 and later</p>
+  <p class="updated">Last updated 9 October 2026 · applies to GlideLens v0.11.1 and later</p>
 
   <div class="tldr">
     <p><strong>There is no GlideLens server.</strong> No account, no telemetry, no
@@ -267,7 +267,8 @@ main.wrap { padding-top: 40px; }
 
   <p>It is a read-only tool with three deliberate exceptions, and it is worth
   being precise about the difference — because two of them change a page you
-  are looking at, and the third changes something on the instance.</p>
+  are looking at, and the third changes something on the instance: who your own
+  session is, which Prefill can also do when you confirm it.</p>
 
   <p><strong>It never writes to your ServiceNow records and never submits a
   form.</strong> Record search, code search, catalog insight, variable values,
@@ -278,6 +279,15 @@ main.wrap { padding-top: 40px; }
   you name into the form you are filling in, so you can review them and submit
   yourself. It fills the form; you decide what happens to it. Nothing is saved
   to the instance unless you submit it.</p>
+
+  <p>While you are impersonating someone, the account you are acting as often
+  cannot read another person's ticket. Prefill can then offer to switch your
+  session back to your own account, read the ticket, impersonate the same
+  person again and fill the form as them. <strong>It does this only after you
+  confirm it</strong>, in a step that names the person and the ticket and says
+  what will happen. It uses the same session change as Impersonate below, so
+  ServiceNow records both switches in its audit log, and for that moment your
+  other tabs on that instance act as you.</p>
 
   <p><strong>Translation Assistant fills unsaved translations on the
   Localization Framework comparison page in front of you</strong>, in the same
@@ -295,7 +305,8 @@ main.wrap { padding-top: 40px; }
   saving to you; a reload undoes them. This one asks the instance to make your
   session act as another user, so it takes effect on the instance and on every
   tab, and a reload does not undo it. It is the only server-changing thing
-  GlideLens does.</p>
+  GlideLens does, apart from Prefill's confirmed switch above, which uses this
+  same session change.</p>
 
   <p>What it does <em>not</em> do matters as much. It changes no user record and
   administers nothing — the only thing it alters is who your own session is

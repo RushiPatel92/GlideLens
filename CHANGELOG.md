@@ -10,6 +10,47 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## Unreleased
+
+### Added
+- **Variable Prefill while impersonating.** Prefill reads the source ticket as
+  whoever the session is, and an impersonated requester usually can't read
+  another person's ticket. Measured on two instances, an account without
+  `itil`, `sn_request_read`, `variable_reader` or `catalog_admin` is refused
+  every catalog-variable table. When that happens while you are impersonating,
+  Prefill now offers to switch your session back to your own account, read the
+  ticket, impersonate the same person again, and fill the form as them. It
+  does this only after you click **Switch, read and fill** on a confirmation
+  that names the person and the ticket, lists those steps, and says that
+  ServiceNow records both switches in its audit log. Enter can't confirm it.
+  The form is not reloaded, and its own scripts run as the person you are
+  impersonating, because the fill happens after the switch back. If the
+  switch back fails, nothing is filled and it says you are now yourself.
+  While it works, every message names its step ("Step 3 of 4 · Impersonating
+  … again") beside a spinner, so the slower steps never look stalled.
+
+### Changed
+- **Every Prefill run now ends on a message that stays.** A finished fill says
+  **Done** with a tick, what was filled, and that you can close the palette.
+  A run that could not fill says why. Either message stays until you close the
+  palette or run it again, rather than fading after two seconds, and one Esc
+  then closes the palette. Progress
+  messages show a spinner while the work goes on.
+
+### Fixed
+- Prefill no longer says **"No copyable variables found"** when the variables
+  were refused rather than absent. It no longer says **"No task found"** as if
+  a ticket you can't see did not exist. Each now says the account can't read
+  the ticket. That includes an account that can read a ticket's answers but
+  not the questions they belong to, such as one with only `variable_reader`,
+  which used to get "No copyable variables found" too. While impersonating, a
+  ticket the account can read only part of is offered the switch as well,
+  instead of a fill of just that part.
+- Prefill no longer says **"No copyable variables found"** when a read timed
+  out or failed on the server either. It says the read failed and to try
+  again. A fill that may be missing values because one table could not be read
+  now says so under **Done**.
+
 ## [0.16.0] - 2026-09-28
 
 ### Added

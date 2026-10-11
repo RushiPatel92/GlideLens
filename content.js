@@ -50,7 +50,7 @@ window.addEventListener("message", (event) => {
 
   if (msg.source === SNH_PREFILL_PROGRESS_SOURCE) {
     const progress = msg.message || "Filling portal form…";
-    if (window === window.top) showToast(progress, false, 6000);
+    if (window === window.top) showPrefillProgress(progress);
     /* The worker uses these as the liveness heartbeat for the fill it is
      * awaiting, so it has to hear from the top frame too — not only from a
      * sub-frame that needs its toast relayed. `relay` says which is which. */
@@ -300,7 +300,10 @@ async function snGetMany(table, query, fields, limit, options) {
     options: options || {},
   });
   if (!resp || !resp.ok) {
-    throw new Error((resp && resp.error) || "Couldn't read " + table);
+    const error = new Error((resp && resp.error) || "Couldn't read " + table);
+    // The HTTP status, when there was one: a 403 is a refusal, not a fault.
+    if (resp && typeof resp.status === "number") error.status = resp.status;
+    throw error;
   }
   return resp.result || [];
 }
@@ -345,6 +348,41 @@ function normalizeSourceInput(input) {
   return { kind: "number", value };
 }
 
+/*
+ * Whether a failed or empty read may be down to this account's access rather
+ * than the ticket, which is the only case switching the session could help.
+ * "refused": the Table API answered 403. "hidden": a lookup came back empty,
+ * because ACLs hide a row rather than refuse it, so a ticket that does not
+ * exist looks the same. Anything else -- a timeout, a server error, a mistake
+ * in what was typed -- is reported as itself.
+ */
+function prefillAccessError(message, access) {
+  const error = new Error(message);
+  error.access = access;
+  return error;
+}
+
+function prefillReadAccess(error) {
+  if (!error) return "";
+  if (error.access) return error.access;
+  return error.status === 403 ? "refused" : "";
+}
+
+/*
+ * A refusal that arrives as a 200: the answer rows are readable but every
+ * question they point at comes back nameless, because the account may read
+ * the answers and not the question definitions. Measured on a configured
+ * customer instance: variable_reader alone reads all of a case's
+ * question_answer rows and values, and gets a blank question.name on every
+ * one. Prefill matches by name, so those rows would otherwise vanish into "No
+ * copyable variables found". Only when every row is nameless: a few blank
+ * names are deleted questions, not access.
+ */
+function definitionsHidden(rows, idField, nameField) {
+  const linked = (rows || []).filter((row) => snFieldValue(row, idField));
+  return linked.length > 0 && linked.every((row) => !snFieldValue(row, nameField).trim());
+}
+
 async function resolveVariableSource(input) {
   const parsed = normalizeSourceInput(input);
   if (!parsed.value) throw new Error("Enter a ticket number or sys_id.");
@@ -380,7 +418,12 @@ async function resolveVariableSource(input) {
         requestItemId: null,
       };
     }
-    throw new Error("No task found for " + parsed.value + ".");
+    // ACLs hide a row rather than refusing it, so "missing" and "not yours to
+    // read" are the same empty answer here.
+    throw prefillAccessError(
+      "No task found for " + parsed.value + " that this account can read.",
+      "hidden"
+    );
   }
 
   const sysId = snFieldValue(task, "sys_id");
@@ -394,7 +437,8 @@ async function resolveVariableSource(input) {
   if (table === "sc_task") {
     const taskDetails = await snGetMany("sc_task", "sys_id=" + sysId, "request_item", 1);
     const requestItemId = snFieldValue(taskDetails[0], "request_item");
-    if (!requestItemId) throw new Error("Catalog task has no request item.");
+    // A field this account may not read comes back blank, like an empty one.
+    if (!requestItemId) throw prefillAccessError("Catalog task has no request item.", "hidden");
     return { mode: "catalog", sysId, table, number, requestItemId };
   }
 
@@ -417,7 +461,7 @@ async function resolveVariableSource(input) {
     if (ritms.length > 1) {
       throw new Error("REQ has " + ritms.length + " items. Paste a specific RITM.");
     }
-    throw new Error("REQ has no requested items.");
+    throw prefillAccessError("REQ has no requested items.", "hidden");
   }
 
   return { mode: "producer", sysId, table, number, requestItemId: null };
@@ -652,7 +696,12 @@ async function fetchCatalogVariables(requestItemId) {
     lookupTable: "sc_item_option.item_option_new.lookup_table",
     listTable: "sc_item_option.item_option_new.list_table",
   });
-  return { variables, skipped };
+  const refused = definitionsHidden(
+    rows,
+    "sc_item_option.item_option_new",
+    "sc_item_option.item_option_new.name"
+  );
+  return { variables, skipped, refused };
 }
 
 async function fetchProducerVariables(source) {
@@ -681,6 +730,8 @@ async function fetchProducerVariables(source) {
   const variables = new Map();
   let skipped = 0;
   let readAny = false;
+  let refused = false;
+  let failure = null;
   const queriesUsed = [];
 
   for (const query of queries) {
@@ -690,6 +741,7 @@ async function fetchProducerVariables(source) {
         excludeRefLinks: true,
       });
       if (!rows.length) continue;
+      if (definitionsHidden(rows, "question", "question.name")) refused = true;
       readAny = true;
       queriesUsed.push(query);
       skipped += addVariablesFromRows(variables, rows, {
@@ -705,10 +757,16 @@ async function fetchProducerVariables(source) {
         lookupTable: "question.lookup_table",
         listTable: "question.list_table",
       });
-    } catch (e) {}
+    } catch (e) {
+      // An impersonated requester is refused this table outright, which used
+      // to read as "No copyable variables found". Any other error is a read
+      // that failed, and is reported as one.
+      if (prefillReadAccess(e) === "refused") refused = true;
+      else if (!failure) failure = e;
+    }
   }
 
-  return { variables, skipped, readAny, queryUsed: queriesUsed.join(" | ") };
+  return { variables, skipped, readAny, refused, failure, queryUsed: queriesUsed.join(" | ") };
 }
 
 function isAttachmentVariable(variable) {
@@ -823,6 +881,8 @@ async function fetchMultiRowAnswerRows(parentIds) {
   const rows = [];
   const seen = new Set();
   const queries = [];
+  let refused = false;
+  let failure = null;
   const fields = [
     "sys_id",
     "parent_id",
@@ -850,6 +910,7 @@ async function fetchMultiRowAnswerRows(parentIds) {
         excludeRefLinks: true,
       });
       if (result.length) queries.push(query);
+      if (definitionsHidden(result, "item_option_new", "item_option_new.name")) refused = true;
       result.forEach((row) => {
         row.__queryParentId = parentId;
         const key =
@@ -865,10 +926,13 @@ async function fetchMultiRowAnswerRows(parentIds) {
         seen.add(key);
         rows.push(row);
       });
-    } catch (e) {}
+    } catch (e) {
+      if (prefillReadAccess(e) === "refused") refused = true;
+      else if (!failure) failure = e;
+    }
   }
 
-  return { rows, queryUsed: queries.join(" | ") };
+  return { rows, refused, failure, queryUsed: queries.join(" | ") };
 }
 
 function addMultiRowVariablesFromAnswerRows(target, rows, parentById) {
@@ -1056,15 +1120,25 @@ async function fetchSourceVariables(source, onProgress) {
   const variables = new Map();
   let skipped = 0;
   let hadReadError = false;
+  let readRefused = false;
+  let readFailure = null;
+  const noteReadError = (error) => {
+    if (prefillReadAccess(error) === "refused") readRefused = true;
+    else if (!readFailure) readFailure = error;
+  };
 
+  let catalogRead = false;
   if (source.mode === "catalog" && source.requestItemId) {
     try {
       if (onProgress) onProgress("Reading catalog variables…");
       const catalog = await fetchCatalogVariables(source.requestItemId);
       skipped += catalog.skipped;
+      if (catalog.refused) readRefused = true;
+      else catalogRead = true;
       catalog.variables.forEach((variable, name) => variables.set(name, variable));
     } catch (e) {
       hadReadError = true;
+      noteReadError(e);
     }
   }
 
@@ -1072,12 +1146,23 @@ async function fetchSourceVariables(source, onProgress) {
     if (onProgress) onProgress("Reading producer variables…");
     const producer = await fetchProducerVariables(source);
     skipped += producer.skipped;
+    // A request item's answers are the catalog read above. Measured on a
+    // configured customer instance, question_answer held no rows for request
+    // items at all, yet refuses itil, so once that read worked this one's
+    // refusal or failure says nothing about the ticket.
+    if (!catalogRead) {
+      if (producer.refused) readRefused = true;
+      if (producer.failure) noteReadError(producer.failure);
+    }
     if (producer.queryUsed) source.producerAnswerQuery = producer.queryUsed;
     producer.variables.forEach((variable, name) => {
       if (!variables.has(name)) variables.set(name, variable);
     });
   } catch (e) {
-    if (source.mode === "producer") hadReadError = true;
+    if (source.mode === "producer") {
+      hadReadError = true;
+      noteReadError(e);
+    }
   }
 
   try {
@@ -1085,13 +1170,21 @@ async function fetchSourceVariables(source, onProgress) {
     if (parents.ids.length) {
       if (onProgress) onProgress("Reading multi-row variable sets…");
       const mrvs = await fetchMultiRowAnswerRows(parents.ids);
+      if (mrvs.refused) readRefused = true;
+      if (mrvs.failure) noteReadError(mrvs.failure);
       if (mrvs.queryUsed) source.multiRowAnswerQuery = mrvs.queryUsed;
       addMultiRowVariablesFromAnswerRows(variables, mrvs.rows, parents.parentById);
     }
   } catch (e) {}
 
   if (!variables.size && hadReadError) {
-    throw new Error("Couldn't read variables. Check access to catalog variable tables.");
+    if (readRefused) {
+      throw prefillAccessError(
+        "Couldn't read variables. Check access to catalog variable tables.",
+        "refused"
+      );
+    }
+    throw new Error("Couldn't read variables: " + prefillErrorText(readFailure) + ". Try again.");
   }
 
   await applyVariableSetPlacementOrder(
@@ -1101,39 +1194,285 @@ async function fetchSourceVariables(source, onProgress) {
   );
   await resolveAttachmentDisplayValues(variables, onProgress);
 
-  return { variables: sortVariablesForFill(variables), skipped };
+  // readRefused: some variable table answered 403, so an empty result may be
+  // what this account is allowed to see rather than the ticket. readFailure:
+  // the first read that failed for any other reason, such as a timeout.
+  return { variables: sortVariablesForFill(variables), skipped, readRefused, readFailure };
 }
 
+async function readPrefillSource(value, onProgress) {
+  const source = await resolveVariableSource(value);
+  const sourceResult = await fetchSourceVariables(source, onProgress);
+  SNH.lastPrefillVariables = sourceResult.variables;
+  SNH.lastPrefillSource = {
+    input: value,
+    mode: source.mode,
+    sysId: source.sysId,
+    table: source.table,
+    number: source.number,
+    requestItemId: source.requestItemId,
+    producerAnswerQuery: source.producerAnswerQuery,
+    multiRowAnswerQuery: source.multiRowAnswerQuery,
+  };
+  return { source, sourceResult };
+}
+
+function prefillTicketLabel(value) {
+  return normalizeSourceInput(value).value || String(value || "").trim();
+}
+
+function noCopyableVariablesMessage(skipped) {
+  return "No copyable variables found" + (skipped ? " (" + skipped + " unsupported)" : "") + ".";
+}
+
+// Why a read that finished found nothing to copy.
+function emptyPrefillReadMessage(sourceResult, ticket) {
+  if (sourceResult.readRefused) return "This account can't read " + ticket + "'s variables.";
+  if (sourceResult.readFailure) {
+    return "Couldn't read " + ticket + "'s variables: " +
+      prefillErrorText(sourceResult.readFailure) + ". Try again.";
+  }
+  return noCopyableVariablesMessage(sourceResult.skipped);
+}
+
+function prefillErrorText(error) {
+  return String(error && error.message ? error.message : error);
+}
+
+/*
+ * The step a run is on. Every progress message carries it, including the
+ * fill's own messages relayed from the page, so a slow step still says where
+ * the run has got to.
+ */
+let prefillStep = "";
+
+/*
+ * One run at a time. The palette keeps its input open, so Enter can arrive
+ * mid-run, and a second run started during a session switch would read and
+ * fill as your own account.
+ */
+let prefillRunning = false;
+
+function refusePrefillWhileRunning() {
+  if (!prefillRunning) return false;
+  showPrefillProgress("Prefill is already running. Wait for it to finish.");
+  return true;
+}
+
+function showPrefillProgress(message) {
+  // A fill the worker stopped waiting for can still be typing into the page,
+  // and its late progress must not replace the message that ended the run.
+  if (!prefillRunning) return;
+  showToast((prefillStep ? prefillStep + " · " : "") + message, false, 0, { busy: true });
+}
+
+// A run's last word. It stays until the palette is closed or used again, so
+// the person can tell the run is over and it is safe to close.
+function finishPrefill(lines, isErr) {
+  prefillStep = "";
+  showToast(
+    lines.filter(Boolean).join("\n"),
+    Boolean(isErr),
+    0,
+    isErr ? { sticky: true } : { done: true }
+  );
+}
+
+const PREFILL_CLOSE_HINT = "You can close this (Esc) and review the form.";
+
 async function prefillPortalVariablesFromTicket(input) {
+  if (refusePrefillWhileRunning()) return;
   const value = String(input || "").trim();
+  clearPaletteConfirmation();
+  prefillStep = "";
   if (!value) {
     showToast("Enter a ticket number or sys_id", true);
     return;
   }
 
-  showToast("Reading variables…", false, 6000);
+  prefillRunning = true;
   try {
-    const source = await resolveVariableSource(value);
-    const sourceResult = await fetchSourceVariables(source, (message) => showToast(message, false, 6000));
-    const variables = sourceResult.variables;
-    SNH.lastPrefillVariables = variables;
-    SNH.lastPrefillSource = {
-      input: value,
-      mode: source.mode,
-      sysId: source.sysId,
-      table: source.table,
-      number: source.number,
-      requestItemId: source.requestItemId,
-      producerAnswerQuery: source.producerAnswerQuery,
-      multiRowAnswerQuery: source.multiRowAnswerQuery,
-    };
-    if (!variables.length) {
-      const suffix = sourceResult.skipped ? " (" + sourceResult.skipped + " unsupported)" : "";
-      showToast("No copyable variables found" + suffix, true);
+    showPrefillProgress("Reading variables…");
+    let read = null;
+    let readError = null;
+    try {
+      read = await readPrefillSource(value, showPrefillProgress);
+    } catch (error) {
+      readError = error;
+    }
+    if (read && read.sourceResult.variables.length) {
+      // Part of the ticket was refused. While impersonating, the switch reads
+      // all of it, which beats filling a part: measured, an itil requester
+      // was refused every answer but the two multi-row sets, and got "Done.
+      // Filled 2 of 2". Otherwise fill what was read, with a note.
+      if (read.sourceResult.readRefused && (await offerPrefillSessionSwitch(value, "partial"))) return;
+      await fillPrefillForm(read, {});
       return;
     }
 
-    showToast("Found " + variables.length + " variables. Filling portal form…", false, 6000);
+    // Nothing to copy. Only an answer about access is offered the switch: not
+    // a mistake in what was typed, a timeout or a server error, and not a read
+    // that was allowed and empty.
+    const access = readError
+      ? prefillReadAccess(readError)
+      : read.sourceResult.readRefused ? "refused" : "";
+    if (access && (await offerPrefillSessionSwitch(value, access))) return;
+    if (readError) throw readError;
+    finishPrefill([emptyPrefillReadMessage(read.sourceResult, prefillTicketLabel(value))], true);
+  } catch (error) {
+    finishPrefill([prefillErrorText(error)], true);
+  } finally {
+    prefillRunning = false;
+  }
+}
+
+/*
+ * An impersonated requester is usually refused every catalog-variable table,
+ * so the read has to be made as the real account. Prefill can do that by
+ * ending the impersonation, reading, and impersonating the same account again
+ * -- but that changes the session and writes to the instance's audit log, so
+ * it is only ever offered, and runs only from an explicit click.
+ *
+ * access is prefillReadAccess's answer: "refused" when a read was refused,
+ * "hidden" when the ticket did not come back, which may mean it does not exist,
+ * or "partial" when some variables were read and others refused.
+ *
+ * Returns true when the person has been told something: the offer, or why
+ * there can be none. False when the session is not impersonating, and for a
+ * partial read with no way home, which then fills what it could.
+ */
+async function offerPrefillSessionSwitch(value, access) {
+  let state = null;
+  try {
+    state = await chrome.runtime.sendMessage({ type: "SN_IMPERSONATE_STATE" });
+  } catch (e) {}
+  if (!state || !state.ok || state.isImpersonating !== true) return false;
+
+  const ticket = prefillTicketLabel(value);
+  const target = state.currentUserName || "";
+  const cannot = (who) =>
+    access === "hidden"
+      ? who + " can't see " + ticket + ", which may be hidden from them or may not exist"
+      : access === "partial"
+        ? who + " can't read all of " + ticket + "'s variables"
+        : who + " can't read " + ticket + "'s variables";
+  if (!target || !state.hasStopTarget) {
+    if (access === "partial") return false;
+    finishPrefill(
+      [
+        cannot(target || "The account you are impersonating") +
+          ", and GlideLens doesn't know which account to return you to.",
+        "Stop impersonating from the ServiceNow user menu to prefill from it.",
+      ],
+      true
+    );
+    return true;
+  }
+  return showPaletteConfirmation({
+    title: cannot(target) + ". To prefill, GlideLens will:",
+    steps: [
+      "switch your session back to your own account",
+      "read " + ticket,
+      "impersonate " + target + " again",
+      "fill this form as " + target,
+    ],
+    note:
+      "ServiceNow records both switches in its audit log, and other tabs on this " +
+      "instance act as you for a moment.",
+    confirmLabel: "Switch, read and fill",
+    onConfirm: () => prefillWithSessionSwitch(value, ticket, target),
+    onCancel: () => showToast("Nothing was switched.", false, 4000),
+  });
+}
+
+// A switch that went wrong leaves the session somewhere the person did not
+// choose, so its message must be seen even if the palette was closed meanwhile.
+function showSwitchFailure(text) {
+  if (!paletteToast) openPalette();
+  finishPrefill([text], true);
+}
+
+async function sendPrefillSwitch(message) {
+  try {
+    const resp = await chrome.runtime.sendMessage(message);
+    if (resp && resp.ok === true) return { ok: true };
+    if (resp && typeof resp.message === "string" && resp.message) {
+      return { ok: false, message: resp.message };
+    }
+  } catch (e) {}
+  return {
+    ok: false,
+    message:
+      "GlideLens could not confirm who you are now. Check the ServiceNow user menu. " +
+      "Nothing was filled.",
+  };
+}
+
+// Runs only from the confirmation's button. The fill happens after the second
+// switch, so the form's own scripts run as the impersonated account.
+async function prefillWithSessionSwitch(value, ticket, target) {
+  if (refusePrefillWhileRunning()) return;
+  prefillRunning = true;
+  try {
+    prefillStep = "Step 1 of 4";
+    showPrefillProgress("Switching back to your own account…");
+    const begin = await sendPrefillSwitch({ type: "PREFILL_SWAP_BEGIN", expectedTarget: target });
+    if (!begin.ok) {
+      showSwitchFailure(begin.message);
+      return;
+    }
+
+    let read = null;
+    let readError = null;
+    let end = null;
+    try {
+      prefillStep = "Step 2 of 4";
+      showPrefillProgress("Reading " + ticket + " as you…");
+      read = await readPrefillSource(value, showPrefillProgress);
+    } catch (error) {
+      readError = error;
+    } finally {
+      // Always switch back once the first switch has succeeded, whatever the
+      // read did. sendPrefillSwitch never throws.
+      prefillStep = "Step 3 of 4";
+      showPrefillProgress("Impersonating " + target + " again…");
+      end = await sendPrefillSwitch({ type: "PREFILL_SWAP_END" });
+    }
+    if (!end.ok) {
+      showSwitchFailure(end.message);
+      return;
+    }
+
+    const back = "Read " + ticket + " as you; you're impersonating " + target + " again.";
+    if (readError) {
+      finishPrefill([prefillErrorText(readError), back], true);
+      return;
+    }
+    if (!read.sourceResult.variables.length) {
+      finishPrefill([emptyPrefillReadMessage(read.sourceResult, ticket), back], true);
+      return;
+    }
+    prefillStep = "Step 4 of 4";
+    await fillPrefillForm(read, { filledAs: target, back });
+  } catch (error) {
+    showSwitchFailure(prefillErrorText(error));
+  } finally {
+    prefillRunning = false;
+  }
+}
+
+// Fills the form from a read that found variables, then reports.
+// context.filledAs names the impersonated account the form is filled as, and
+// context.back says how the session got back to it.
+async function fillPrefillForm(read, context) {
+  const ctx = context || {};
+  const variables = read.sourceResult.variables;
+  const sourceSkipped = read.sourceResult.skipped || 0;
+  try {
+    showPrefillProgress(
+      "Found " + variables.length + " variables. Filling " +
+        (ctx.filledAs ? "the form as " + ctx.filledAs : "the portal form") + "…"
+    );
     await new Promise((resolve) => setTimeout(resolve, 75));
     /*
      * The worker bounds the fill by inactivity, but nothing bounds this await
@@ -1162,25 +1501,37 @@ async function prefillPortalVariablesFromTicket(input) {
       throw new Error((resp && resp.error) || "Couldn't fill portal variables.");
     }
     if (!resp.foundForm) {
-      showToast("Open a catalog order form first", true);
+      finishPrefill(["Open a catalog order form first.", ctx.back], true);
       return;
     }
 
-    const skipped = (resp.skipped || 0) + (sourceResult.skipped || 0);
+    const skipped = (resp.skipped || 0) + sourceSkipped;
     const already = resp.alreadySet || 0;
     const unmatched = resp.unmatched || 0;
-    let message = "Filled " + (resp.filled || 0) + " of " + variables.length + " variables";
+    if (!resp.filled && unmatched === variables.length) {
+      finishPrefill(
+        ["No matching variables on this form (" + unmatched + " not found).", ctx.back],
+        true
+      );
+      return;
+    }
     const details = [];
     if (already) details.push(already + " already set");
     if (unmatched) details.push(unmatched + " not on this form");
     if (skipped) details.push(skipped + " skipped");
-    if (details.length) message += " (" + details.join(", ") + ")";
-    if (!resp.filled && unmatched === variables.length) {
-      message = "No matching variables on this form (" + unmatched + " not found)";
-    }
-    showToast(message);
+    const summary =
+      "Done. Filled " + (resp.filled || 0) + " of " + variables.length + " variables" +
+      (ctx.filledAs ? " as " + ctx.filledAs : "") +
+      (details.length ? " (" + details.join(", ") + ")" : "") + ".";
+    // Some tables answered and others did not: what was read is filled, but
+    // the form may lack values the ticket has.
+    const partial =
+      read.sourceResult.readRefused || read.sourceResult.readFailure
+        ? "Some of the ticket's variables couldn't be read, so check the form for gaps."
+        : "";
+    finishPrefill([summary, partial, ctx.back, PREFILL_CLOSE_HINT], false);
   } catch (error) {
-    showToast(String(error && error.message ? error.message : error), true);
+    finishPrefill([prefillErrorText(error), ctx.back], true);
   }
 }
 
@@ -5134,7 +5485,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg && msg.type === "PREFILL_PROGRESS") {
     const shown = window === window.top;
-    if (shown) showToast(msg.message || "Filling portal form…", false, 6000);
+    if (shown) showPrefillProgress(msg.message || "Filling portal form…");
     sendResponse({ ok: true, shown });
     return false;
   }
@@ -7111,11 +7462,36 @@ const PALETTE_CSS = `
   }
   #arg-input:focus{border-color:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb, var(--teal) 22%, transparent)}
   #arg-input::placeholder{color:var(--palette-placeholder)}
+  #palette-confirm{
+    padding:12px 16px 14px;border-top:1px solid var(--palette-border-subtle);
+    color:var(--palette-body);font-size:12px;line-height:1.45;
+  }
+  #palette-confirm-title{color:var(--palette-text);font-weight:650}
+  #palette-confirm ol{margin:6px 0 8px;padding-left:20px}
+  #palette-confirm .confirm-note{color:var(--palette-secondary)}
+  #palette-confirm .confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+  #palette-confirm button{
+    padding:6px 12px;border:1px solid var(--palette-border);border-radius:6px;
+    background:var(--palette-raised);color:var(--palette-text);font-size:12px;cursor:pointer;
+  }
+  #palette-confirm button.primary{
+    border-color:var(--teal);background:color-mix(in srgb, var(--teal) 18%, var(--palette-raised));
+  }
+  #palette-confirm button:focus{outline:2px solid var(--teal);outline-offset:2px}
   #toast{
-    display:none;padding:10px 16px;font-size:12px;
+    display:none;padding:10px 16px;font-size:12px;line-height:1.5;white-space:pre-line;
     border-top:1px solid var(--palette-border-subtle);color:#a8e6b8;
   }
   #toast.err{color:#ff9d9d}
+  #toast.busy{color:var(--palette-body)}
+  #toast.busy::before{
+    content:"";display:inline-block;width:10px;height:10px;margin-right:8px;vertical-align:-1px;
+    border:2px solid color-mix(in srgb, var(--teal) 28%, transparent);border-top-color:var(--teal);
+    border-radius:50%;animation:snh-toast-spin .8s linear infinite;
+  }
+  #toast.done::before{content:"✓";display:inline-block;margin-right:8px;font-weight:800;color:var(--teal)}
+  @keyframes snh-toast-spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){#toast.busy::before{animation:none}}
   #toast a{color:var(--teal);text-decoration:underline;cursor:pointer}
   #toast a:focus{outline:2px solid var(--teal);outline-offset:2px}
   #empty{padding:34px 16px;color:var(--palette-secondary);font-size:13px;text-align:center}
@@ -7156,15 +7532,37 @@ const PALETTE_CSS = `
   }
 `;
 
-function showToast(msg, isErr, durationMs) {
+/*
+ * options.busy: work in progress, shown with a spinner.
+ * options.done: a finished run, shown with a tick.
+ * Both stay until something replaces them, as does options.sticky: a spinner
+ * that vanished while the work went on, or a result gone before it was read,
+ * would leave the person guessing whether it is safe to close the palette.
+ * A done or sticky message is a run's last word, after which Esc in a
+ * command's input closes the palette (paletteShowsFinalMessage).
+ */
+function showToast(msg, isErr, durationMs, options) {
   if (!paletteToast) return;
+  const opts = options || {};
   paletteToast.textContent = msg;
-  paletteToast.className = isErr ? "err" : "";
+  paletteToast.className = [isErr ? "err" : "", opts.busy ? "busy" : "", opts.done ? "done" : ""]
+    .filter(Boolean)
+    .join(" ");
+  paletteToast.dataset.final = opts.done || opts.sticky ? "true" : "";
   paletteToast.style.display = "block";
   clearTimeout(showToast._t);
+  if (opts.busy || opts.done || opts.sticky) return;
   showToast._t = setTimeout(() => {
     if (paletteToast) paletteToast.style.display = "none";
   }, durationMs || 2200);
+}
+
+function paletteShowsFinalMessage() {
+  return Boolean(
+    paletteToast &&
+      paletteToast.dataset.final === "true" &&
+      paletteToast.style.display !== "none"
+  );
 }
 
 async function copyText(text) {
@@ -7460,13 +7858,103 @@ function showArgInput(cmd) {
       if (!cmd.keepOpen) closePalette();
     }
     if (e.key === "Escape") {
+      // A finished run's message says Esc closes the palette, so here it does,
+      // instead of going back to the command list.
+      if (paletteShowsFinalMessage()) {
+        e.preventDefault();
+        e.stopPropagation();
+        closePalette();
+        return;
+      }
       activeInputCmd = null;
+      clearPaletteConfirmation();
       if (row.isConnected) row.remove();
       if (paletteList) paletteList.style.display = "";
       if (paletteInput) paletteInput.focus();
     }
     e.stopPropagation();
   };
+}
+
+/*
+ * A step that changes something beyond the page, offered for an explicit
+ * click. Focus stays where it was, so Enter in the input never confirms it:
+ * only the button does, reached by mouse or by Tab. Returns false when the
+ * palette has closed and there is nowhere to ask, and then nothing runs.
+ */
+function showPaletteConfirmation({ title, steps, note, confirmLabel, onConfirm, onCancel }) {
+  clearPaletteConfirmation();
+  if (!paletteShadow) return false;
+  const box = paletteShadow.getElementById("box");
+  const toast = paletteShadow.getElementById("toast");
+  if (!box || !toast) return false;
+
+  const panel = document.createElement("div");
+  panel.id = "palette-confirm";
+  panel.setAttribute("role", "group");
+  panel.setAttribute("aria-labelledby", "palette-confirm-title");
+  panel.setAttribute("aria-live", "polite");
+  const heading = document.createElement("p");
+  heading.id = "palette-confirm-title";
+  heading.textContent = title;
+  panel.appendChild(heading);
+  if (steps && steps.length) {
+    const list = document.createElement("ol");
+    steps.forEach((step) => {
+      const item = document.createElement("li");
+      item.textContent = step;
+      list.appendChild(item);
+    });
+    panel.appendChild(list);
+  }
+  if (note) {
+    const noteEl = document.createElement("p");
+    noteEl.className = "confirm-note";
+    noteEl.textContent = note;
+    panel.appendChild(noteEl);
+  }
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "primary";
+  confirm.textContent = confirmLabel;
+  actions.appendChild(cancel);
+  actions.appendChild(confirm);
+  panel.appendChild(actions);
+
+  let settled = false;
+  const settle = (callback) => {
+    if (settled) return;
+    settled = true;
+    panel.remove();
+    // The clicked button went with the panel, which would drop focus onto the
+    // page, out of reach of the palette's Esc.
+    returnPaletteFocusToInput();
+    if (typeof callback === "function") callback();
+  };
+  confirm.addEventListener("click", () => settle(onConfirm));
+  cancel.addEventListener("click", () => settle(onCancel));
+
+  clearTimeout(showToast._t);
+  toast.style.display = "none";
+  box.insertBefore(panel, toast);
+  return true;
+}
+
+function clearPaletteConfirmation() {
+  const panel = paletteShadow && paletteShadow.getElementById("palette-confirm");
+  if (panel) panel.remove();
+}
+
+// Focus back where typing goes: the open command's input, else the search box.
+function returnPaletteFocusToInput() {
+  if (!paletteShadow) return;
+  const target = paletteShadow.getElementById("arg-input") || paletteInput;
+  if (target) target.focus();
 }
 
 function clampPalettePosition(box, left, top, dimensions) {
