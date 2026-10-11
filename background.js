@@ -318,6 +318,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   /* The page an abandoned fill was typing into is gone, which is what the
    * "reload the form" message asks for, so the tab can accept a fill again. */
   releasePrefillLock(tabId, null);
+  /* A prefill switch whose page is unloading will never be finished by it. */
+  prefillSwapByTab.delete(tabId);
   /* Likewise a Translation Assistant fill: the page it was writing into is
    * unloading, and the fresh page has none of that fill's content to revert. */
   releaseLfAssistantApplyLock(tabId, null);
@@ -400,6 +402,18 @@ function releasePrefillLock(tabId, op) {
 }
 
 function fillPortalVariablesInFrames(tabId, variables) {
+  /*
+   * Never while Prefill's session switch may have the session as your own
+   * account: the form's scripts would run as you. The switch's own fill is
+   * sent after the switch back, which has ended the switch by then.
+   */
+  if (prefillSwapByTab.has(tabId)) {
+    return Promise.resolve({
+      ok: false,
+      busy: true,
+      error: "Prefill is switching this session. Wait for it to finish.",
+    });
+  }
   /*
    * One fill per tab. The palette leaves its input open, so a second Enter can
    * arrive while the first fill is still typing into the form — two fills
@@ -780,6 +794,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   forgetFrameList(tabId);
   frameGenerationByTab.delete(tabId);
   releasePrefillLock(tabId, null);
+  prefillSwapByTab.delete(tabId);
   releaseLfAssistantApplyLock(tabId, null);
 });
 
@@ -6304,6 +6319,187 @@ async function readRecentImpersonations(tabId) {
   return { ok: true, sysIds };
 }
 
+/* ---------------------------------------------------------------------------
+   Variable Prefill's switch: read the source as yourself, then impersonate
+   again.
+
+   An impersonated requester usually cannot read another ticket's variables:
+   measured on the PDI and on a configured customer instance, an account
+   without itil, sn_request_read, variable_reader or catalog_admin is refused
+   question_answer, sc_item_option_mtom and the multi-row table outright. So
+   once the person has confirmed it in the palette, Prefill ends the
+   impersonation, reads, and impersonates the same account again before it
+   fills anything. Both switches run on the page's own token, which stays
+   valid across them, so the form is never reloaded (measured on both
+   instances).
+
+   Both accounts are held here, never taken from content code: BEGIN accepts
+   only the name the confirmation showed, as a check, and END accepts nothing.
+   Every step proceeds only on a positive answer about who the session now is,
+   asked of the server, because page globals such as NOW.user_name were
+   rendered at load and do not follow a switch made without a reload. Nothing
+   is ever sent twice, as everywhere else in this block.
+   --------------------------------------------------------------------------- */
+const prefillSwapByTab = new Map();
+
+/* MAIN world. The session's current user ID, from the server. Empty for an
+ * account the endpoint will not describe (an external one, on the PDI). */
+async function sessionUserNameInPage() {
+  const headers = { Accept: "application/json" };
+  try {
+    if (typeof g_ck !== "undefined" && g_ck) headers["X-UserToken"] = g_ck;
+  } catch (e) {}
+  try {
+    const res = await fetch(location.origin + "/api/now/ui/user/current_user", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers,
+    });
+    if (!res.ok) return "";
+    const body = await res.json();
+    const name = body && body.result && body.result.user_name;
+    return typeof name === "string" ? name : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+/* Who the session is now, as far as the server will say: a user ID (or "")
+ * and the impersonation flag (or null when unknown). */
+async function readSessionNow(tabId) {
+  let userName = "";
+  try {
+    const frameId = await discoverTokenFrame(tabId);
+    const results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] },
+        world: "MAIN",
+        func: sessionUserNameInPage,
+      }),
+      IMPERSONATE_SHELL_TIMEOUT_MS,
+      "read session user"
+    );
+    const value = (results || []).map((entry) => entry && entry.result).find((entry) => entry);
+    if (validImpersonationUserName(value)) userName = value;
+  } catch (error) {}
+  const shell = await readImpersonationStateFromShell(tabId);
+  return { userName, isImpersonating: shell ? shell.isImpersonating : null };
+}
+
+function sameUserName(left, right) {
+  return Boolean(left && right) && String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function prefillSwapRefusal(code, message) {
+  return { ok: false, code, message };
+}
+
+async function beginPrefillSwap(tabId, origin, expectedTarget) {
+  if (prefillSwapByTab.has(tabId)) {
+    return prefillSwapRefusal("busy", "A prefill is already switching this session. Wait for it to finish.");
+  }
+  /* Held from before the first await, so a second BEGIN cannot pass the check
+   * above as well, and no fill starts while this one may be switching. Kept
+   * only once the session has switched; END then owns it. */
+  const swap = { origin, original: "", target: "", switched: false, ending: false };
+  prefillSwapByTab.set(tabId, swap);
+  try {
+    const state = await readImpersonationState(tabId, origin);
+    if (!state || !state.isImpersonating) {
+      return prefillSwapRefusal(
+        "not-impersonating",
+        "This session is not impersonating anyone now, so nothing was switched. Run Variable Prefill again."
+      );
+    }
+    const original = await storedImpersonationOriginal(origin);
+    if (!original) {
+      return prefillSwapRefusal(
+        "no-way-home",
+        "GlideLens doesn't know which account to return you to, so nothing was switched. " +
+          "Stop impersonating from the ServiceNow user menu, then run Variable Prefill."
+      );
+    }
+    const now = await readSessionNow(tabId);
+    const target = now.userName || state.currentUserName || "";
+    if (!validImpersonationUserName(target) || sameUserName(target, original)) {
+      return prefillSwapRefusal(
+        "no-target",
+        "GlideLens couldn't confirm who you are impersonating, so nothing was switched."
+      );
+    }
+    if (!sameUserName(target, expectedTarget)) {
+      return prefillSwapRefusal(
+        "changed",
+        "This session is no longer impersonating " + expectedTarget + ", so nothing was switched."
+      );
+    }
+
+    swap.original = original;
+    swap.target = target;
+    /* Stop's own route, including its dialog fallback for an account the
+     * endpoint refuses to end from. */
+    const stop = await stopImpersonation(tabId, origin);
+    const after = await readSessionNow(tabId);
+    if (after.isImpersonating === false && (!after.userName || sameUserName(after.userName, original))) {
+      swap.switched = true;
+      return { ok: true, code: "ok" };
+    }
+    if (after.isImpersonating === true) {
+      return prefillSwapRefusal(
+        stop.ok ? "unconfirmed" : stop.code,
+        "ServiceNow did not switch your session back, so nothing changed: you are still impersonating " +
+          target + "."
+      );
+    }
+    return prefillSwapRefusal(
+      "indeterminate",
+      "GlideLens could not confirm whether your session switched. Check the ServiceNow user menu. " +
+        "Nothing was filled."
+    );
+  } finally {
+    if (!swap.switched && prefillSwapByTab.get(tabId) === swap) prefillSwapByTab.delete(tabId);
+  }
+}
+
+async function endPrefillSwap(tabId, origin) {
+  const swap = prefillSwapByTab.get(tabId);
+  /* A switch-back with no finished switch to end, from another page, or sent
+   * twice sends nothing, and leaves a real switch for its own page to end. */
+  if (!swap || !swap.switched || swap.origin !== origin || swap.ending) {
+    return prefillSwapRefusal(
+      "lost",
+      "GlideLens lost track of the switch. Check the ServiceNow user menu. Nothing was filled."
+    );
+  }
+  /* One attempt only, whatever happens next. The entry stays until the attempt
+   * has settled, so no fill can start while the session may still be yours. */
+  swap.ending = true;
+  try {
+    const outcome = await runImpersonation(tabId, swap.target);
+    const after = await readSessionNow(tabId);
+    if (after.isImpersonating === true && (!after.userName || sameUserName(after.userName, swap.target))) {
+      /* Stop forgot the way home when it succeeded; this impersonation's own
+       * response cannot supply it, because it started from no impersonation. */
+      await rememberImpersonationOriginal(origin, swap.original);
+      return { ok: true, code: "ok", target: swap.target };
+    }
+    if (after.isImpersonating === false) {
+      return prefillSwapRefusal(
+        outcome.ok ? "unconfirmed" : outcome.code,
+        "ServiceNow did not impersonate " + swap.target + " again, so you are now yourself. " +
+          "Nothing was filled."
+      );
+    }
+    return prefillSwapRefusal(
+      "indeterminate",
+      "GlideLens could not confirm that you are impersonating " + swap.target +
+        " again. Check the ServiceNow user menu. Nothing was filled."
+    );
+  } finally {
+    if (prefillSwapByTab.get(tabId) === swap) prefillSwapByTab.delete(tabId);
+  }
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 // Keep the destination beside the ServiceNow tab that initiated the command,
 // rather than appending it to the end of whichever window is currently active.
@@ -6467,12 +6663,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, result: ok.result || [] });
         return;
       }
-      const error = results.find((item) => !item.ok);
-      sendResponse({
+      /* The status goes back with the error: Prefill tells a 403, the
+       * session's own refusal, from a timeout or a server error. Every frame
+       * shares that session, so one frame's 403 speaks for them all. */
+      const error =
+        results.find((item) => !item.ok && item.status === 403) ||
+        results.find((item) => !item.ok);
+      const reply = {
         ok: false,
         error:
           (error && error.error) || noResultError(failures, "read " + request.table),
-      });
+      };
+      if (error && typeof error.status === "number") reply.status = error.status;
+      sendResponse(reply);
     }).catch((error) => {
       sendResponse({ ok: false, error: String(error) });
     });
@@ -6726,6 +6929,51 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     fillPortalVariablesInFrames(sender.tab.id, variables)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: errorText(error) }));
+    return true;
+  }
+  /* Prefill's switch, sent only after the person confirmed it in the palette.
+   * BEGIN reads one field, the name that confirmation showed, and only to
+   * check it; END reads none. Both accounts are the worker's own. */
+  if (msg && msg.type === "PREFILL_SWAP_BEGIN" && sender.tab) {
+    const tabId = sender.tab.id;
+    if (prefillOpByTab.has(tabId)) {
+      sendResponse({
+        ok: false,
+        code: "busy",
+        message: "A prefill is already running on this form. Wait for it to finish.",
+      });
+      return true;
+    }
+    beginPrefillSwap(
+      tabId,
+      impersonationOrigin(sender),
+      typeof msg.expectedTarget === "string" ? msg.expectedTarget : ""
+    )
+      .then(sendResponse)
+      .catch(() => {
+        /* beginPrefillSwap has already dropped a switch that did not finish. */
+        sendResponse({
+          ok: false,
+          code: "indeterminate",
+          message:
+            "GlideLens could not confirm whether your session switched. " +
+            "Check the ServiceNow user menu. Nothing was filled.",
+        });
+      });
+    return true;
+  }
+  if (msg && msg.type === "PREFILL_SWAP_END" && sender.tab) {
+    endPrefillSwap(sender.tab.id, impersonationOrigin(sender))
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse({
+          ok: false,
+          code: "indeterminate",
+          message:
+            "GlideLens could not confirm who you are now. " +
+            "Check the ServiceNow user menu. Nothing was filled.",
+        })
+      );
     return true;
   }
   if (msg && msg.type === "GET_PORTAL_VARIABLE_DEBUG" && sender.tab) {

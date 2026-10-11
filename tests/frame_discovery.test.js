@@ -74,17 +74,24 @@ function loadSharedFrameHelpers(options) {
     );
 
   /* The navigation listener also releases the Translation Assistant's fill
-   * lock, which lives with that feature further down the file. */
+   * lock and drops any half-finished Prefill session switch, both of which
+   * live with their features further down the file. */
   const factory = new Function(
     "chrome",
     "fillPortalVariables",
     "releaseLfAssistantApplyLock",
+    "prefillSwapByTab",
     block +
       "\nreturn { registerContentFrame, discoverContentFrames, injectInFrame, " +
       "injectInDiscoveredFrames, readFromPageFrames, forgetFrameList, " +
       "fillPortalVariablesInFrames, notePrefillActivity, prefillOpByTab };"
   );
-  api = factory(chrome, function fill() {}, function releaseAssistantLock() {});
+  api = factory(
+    chrome,
+    function fill() {},
+    function releaseAssistantLock() {},
+    opts.prefillSwaps || new Map()
+  );
   return {
     api,
     calls,
@@ -538,6 +545,26 @@ test("a second prefill on the same tab is refused while the first runs", async (
 
   const stalled = await first;
   assert.strictEqual(stalled.stillRunning, true);
+});
+
+/*
+ * Between Prefill's two session switches the session is the real account, so
+ * a fill then would run the form's scripts as that account.
+ */
+test("no fill starts while a Prefill session switch holds the tab", async () => {
+  const prefillSwaps = new Map([[41, { switched: true }]]);
+  const { api, calls } = loadSharedFrameHelpers({ frameIds: [0], prefillSwaps });
+
+  const outcome = await api.fillPortalVariablesInFrames(41, ["a"]);
+
+  assert.strictEqual(outcome.ok, false);
+  assert.strictEqual(outcome.busy, true);
+  assert.match(outcome.error, /switching this session/);
+  assert.strictEqual(calls.length, 0, "nothing was discovered or injected");
+  assert.strictEqual(api.prefillOpByTab.has(41), false);
+
+  prefillSwaps.delete(41);
+  assert.strictEqual((await api.fillPortalVariablesInFrames(41, ["a"])).ok, true);
 });
 
 test("a fill on another tab is not blocked by one already running", async () => {

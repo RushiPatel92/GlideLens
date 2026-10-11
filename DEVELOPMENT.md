@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
 ```
 
 The suites cover:
@@ -102,6 +102,25 @@ The suites cover:
   frames without hanging on helper frames.
 - `prefill_settle.test.js` — installation and removal of GlideAjax settle
   tracking around catalog-variable prefill.
+- `prefill_impersonation.test.js` — Prefill while impersonating. The worker's
+  real impersonation block against a simulated server: a confirmed switch reads
+  as you and puts the same impersonation back with one request per switch, the
+  original account never reaches content code, the server's answer about who
+  the session is beats the page's stale one, the dialog fallback, a refused
+  switch back that is never re-sent, concurrent or stray BEGIN/END messages
+  that send nothing, and the routes reading one checked field. The command
+  against a simulated instance: the switch is offered only for a 403, a hidden
+  ticket, answers whose questions are all unreadable, or a partial refusal
+  while impersonating — never for a timeout, a server error, a few deleted
+  questions, or `question_answer`'s refusal on a request item whose own
+  answers were read —
+  nothing switches before the click, the order is switch, read, switch back,
+  fill, a second run during the switch is refused, late progress cannot
+  replace a run's last message, and every failure fills nothing — including a
+  failed switch back with the palette closed. On a minimal fake DOM: clicking
+  either confirmation button returns focus to the input, and Esc there closes
+  the palette once a run's last message is showing. `frame_discovery.test.js` adds
+  that no fill starts while a switch holds the tab.
 - `variable_values_native.test.js` — classic RITM identity before/after reads,
   Workspace-aware embedded-classic selection, exact `variables.<name>` classic
   reads and same-snapshot page timezone, record-producer `question_answer`

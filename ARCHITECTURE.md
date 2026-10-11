@@ -247,7 +247,9 @@ copying. `record_search_ui.js` is deliberately **not** injected: a generic
 table picker and read-only record actions do not belong in a flow that changes
 the session.
 
-**This is the only write in the extension.** Everything else is a GET on the
+**This is the only write in the extension**, together with Variable Prefill's
+confirmed session switch, which reuses this block's Start and Stop (see
+*Prefill while impersonating* below). Everything else is a GET on the
 token-bearing-frame path. What this changes is the operator's ServiceNow
 session on the instance — not a record, and not something a reload undoes.
 
@@ -303,6 +305,9 @@ no request body
 → 201 Created
 {"result":{"user":"<original>","impersonatedUser":"<now>"}}
 ```
+
+A configured customer instance answers the same request with **200** rather
+than 201, so success is any 2xx (`res.ok`), never one status code.
 
 It is keyed by **`user_name`**, not by a sys_id, and needs no body at all. The
 username is `encodeURIComponent`-ed because ServiceNow user IDs are commonly
@@ -1495,6 +1500,77 @@ Keep these invariants:
   time to start asynchronous work.
 - Never reintroduce variable-name matching. If necessary, tune the settle
   window or learn timing from retries without retaining customer vocabulary.
+
+### Prefill while impersonating
+
+Prefill reads its source ticket as whoever the session is. Measured on the PDI
+and on a configured customer instance, an impersonated requester without `itil`,
+`sn_request_read`, `variable_reader` or `catalog_admin` is refused the
+catalog-variable tables outright: a request item's row is hidden as well, while
+a producer-backed record's row stays visible but `question_answer` and
+`sc_multi_row_question_answer` answer 403. No read inside that session can
+recover the values.
+
+So when a read is refused while impersonating, Prefill **offers** to end the
+impersonation, read as the real account, impersonate the same account again,
+and only then fill. Both switches run on the page's own `g_ck`, which stays
+valid across them on both instances, so the form is never reloaded.
+
+- **It runs only from an explicit click** on the palette's confirmation, which
+  names the account and the ticket, lists the four steps, and says that
+  ServiceNow records both switches in its audit log. Focus stays in the input,
+  so Enter there re-runs the read instead of confirming.
+- **One run at a time.** Enter while a run is going is refused with a message,
+  not queued, and the worker refuses `FILL_PORTAL_VARIABLES` for a tab whose
+  switch is in progress, from BEGIN's first await until END has settled.
+  Either alone would let a second run fill the form as the real account.
+- **Only an answer about access is offered the switch**, tagged by
+  `prefillReadAccess`: a **403** from a task or variable read (`SN_TABLE_GET`
+  now returns the HTTP status with its error, preferring any frame's 403), a
+  ticket lookup that came back empty, since ACLs hide a row rather than refuse
+  it, or answer rows whose questions are **all** nameless
+  (`definitionsHidden`). The last is a refusal that arrives as a 200: measured
+  on the customer instance, `variable_reader` alone reads every
+  `question_answer` and multi-row row and value but gets a blank
+  `question.name` / `item_option_new.name` on each, because the definitions
+  are not readable. A few nameless rows among named ones are deleted questions
+  and are skipped as before. The empty case's confirmation says the ticket may
+  not exist. A timeout,
+  a server error or a mistake in what was typed is reported as itself, and a
+  read that was allowed but empty is not a refusal. The producer and multi-row
+  reads report a refused query instead of swallowing it, which is what used to
+  surface as "No copyable variables found". **A partial refusal is offered the
+  switch too** ("can't read all of …"): measured, an itil requester was refused
+  every case answer but could read the two multi-row sets, and used to get
+  "Done. Filled 2 of 2". Not impersonating, or with no way home, a partial read
+  fills what it read and says the form may have gaps. For a request-item
+  source, a refused or failed `question_answer` read is ignored once the
+  request item's own answers (`sc_item_option_mtom`) were read: on the
+  customer instance that table held no rows for request items at all, yet
+  refuses itil, which put a false "gaps" note on every itil requester's fill.
+  The impersonation state is asked only after an access answer, because on a
+  portal it costs a request.
+- **The worker holds both accounts.** `PREFILL_SWAP_BEGIN` takes only the
+  name the confirmation showed, as a check, and `PREFILL_SWAP_END` takes
+  nothing. Neither is an `SN_IMPERSONATE_*` route, and the original account
+  never crosses back to content code. BEGIN reuses Stop, including its dialog
+  fallback; END reuses `runImpersonation` and restores the stored way home,
+  which Stop forgot on success.
+- **Each step proceeds only on a positive answer from the server** about who
+  the session now is: `/api/now/ui/user/current_user` plus the session
+  header's impersonation flag. Page globals such as `NOW.user_name` were
+  rendered at load and do not follow a switch made without a reload. Each
+  switch is sent once and never retried.
+- **The fill happens after the second switch**, so the form's own scripts run
+  as the impersonated account. If that switch fails, nothing is filled and the
+  message says you are now yourself. Failure messages reopen the palette if it
+  was closed in the meantime.
+- **A reload or a closed tab between the switches cannot be reported.** The
+  worker drops the switch with the page, and the page's content script goes
+  with it, so the session stays as the real account with no GlideLens message;
+  the reloaded page's own header shows who you are. Stop's way home was
+  correctly forgotten when the first switch succeeded, so nothing stale is left
+  behind.
 
 ## Debug Timeline
 
