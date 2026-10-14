@@ -13,6 +13,19 @@ reconstructed version by version.
 ## Unreleased
 
 ### Added
+- **Variable Prefill from another instance.** Prefill can now read a ticket on
+  one instance and fill the same catalog item on another, in any direction —
+  a sandbox ticket onto DEV, for example. The other instance must be open and
+  signed in in this browser; the ticket doesn't need to be open there. Choose
+  it under the new **Read from** list, or paste the ticket's link, which always
+  names its own instance. GlideLens reads through that tab's own session and
+  stores no credentials. Before filling, every referenced record is looked up
+  on the instance you are filling: a reference that isn't there is left empty
+  and named instead of being filled with an id that points nowhere, a list
+  keeps only the records found, a multi-row set has only the missing cells
+  cleared, and attachments are never copied. The summary counts what was held
+  back as "not filled" and the notes name it. Impersonating on the form's
+  instance needs no session switch.
 - **Variable Prefill while impersonating.** Prefill reads the source ticket as
   whoever the session is, and an impersonated requester usually can't read
   another person's ticket. Measured on two instances, an account without
@@ -50,6 +63,15 @@ reconstructed version by version.
   out or failed on the server either. It says the read failed and to try
   again. A fill that may be missing values because one table could not be read
   now says so under **Done**.
+- **A ticket link from another instance no longer reads this instance's
+  record.** Prefill used to keep only the link's sys_id, so pasting another
+  instance's link read the record with the same sys_id here — after a clone,
+  a copy that may have changed since — or ended in "No copyable variables
+  found". The link now names the instance it is read from, and a link to a
+  host other than `*.service-now.com` is refused.
+- **Prefill no longer picks the first of two tickets with the same number.**
+  It says two records have that number and asks for the ticket's link, and it
+  uses a row only once its number is the one typed.
 - **Translation Lens no longer reports Missing for a translation the form
   shows.** `sys_translated` is keyed by the source text, and the platform
   matches that key more loosely than by capitalisation alone: an accented

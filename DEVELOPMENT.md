@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
 ```
 
 The suites cover:
@@ -121,6 +121,32 @@ The suites cover:
   either confirmation button returns focus to the input, and Esc there closes
   the palette once a run's last message is showing. `frame_discovery.test.js` adds
   that no fill starts while a switch holds the tab.
+- `prefill_cross_instance.test.js` — Prefill from another instance. Parsing:
+  a link names its own instance and wins over Read from, a link's sys_id is
+  taken from Workspace, classic, `nav_to` and portal routes, and a non-SN,
+  `http:` or credentialed link is refused; a ticket not found here is never
+  looked for elsewhere, and two records with one number are refused. The
+  worker's real routes against simulated tabs: origin and sender validation,
+  the incognito rule, origins only in the Read from list, skipped discarded
+  and token-less tabs, active-then-recent ordering with at most three tries,
+  frame 0 only, `undefined` as no receiver, a failed send before the first
+  heartbeat trying the next tab and after it not, the progress relay, the
+  inactivity bound and ceiling, the reply allowlist (multi-row sets pass, a
+  wrong type refuses, unknown fields drop, oversized replies refuse), one
+  read per tab, the switch refusal, and the impersonation read only after an
+  access answer. The shared reader: `expectedOrigin` and `requireToken` refuse
+  before any fetch, a non-JSON body is a failure, a thrown fetch still throws,
+  and `SN_TABLE_GET` prefers this instance's failure over another origin's.
+  The export: a token and this origin on every read, a heartbeat before the
+  first read, no Prefill state touched, its listener removed on failure, and
+  answering only the extension from the top frame. The preparation: found,
+  missing, refused and tableless references, chunking at 100, list subsets,
+  lookups, attachments and multi-row cells. The run: counts that add up to the
+  number read, neutral notes, no value or sys_id in any message, every
+  refusal's wording, and no session switch offered or made. On a minimal fake
+  DOM: Read from under the input, the hint in both states, a pasted link moving
+  the select, Tab and Shift+Tab through the trap, Esc and Enter on the select,
+  and finished lines drawn as text by kind.
 - `variable_values_native.test.js` — classic RITM identity before/after reads,
   Workspace-aware embedded-classic selection, exact `variables.<name>` classic
   reads and same-snapshot page timezone, record-producer `question_answer`

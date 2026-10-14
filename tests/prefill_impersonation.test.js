@@ -510,7 +510,7 @@ function loadCommand(page) {
     /* The real 15-minute backstop would hold the test process open. */
     500,
     () => null,
-    { href: ORIGIN + "/sp?id=sc_cat_item&sys_id=" + ITEM_ID },
+    { href: ORIGIN + "/sp?id=sc_cat_item&sys_id=" + ITEM_ID, origin: ORIGIN, hostname: "example.service-now.com" },
     { querySelector: () => null },
     (options) => {
       page.confirmations.push(options);
@@ -745,8 +745,9 @@ test("every message during the switch names its step and spins, and the last one
   assert.deepStrictEqual(Array.from(new Set(steps)), [1, 2, 3, 4], "in order, none skipped");
   assert.ok(during.some((t) => t.text === "Step 3 of 4 · Impersonating abel.tuter again…"));
   assert.ok(during.some((t) => t.text === "Step 4 of 4 · Found 2 variables. Filling the form as abel.tuter…"));
-  assert.deepStrictEqual(page.toastStates[page.toastStates.length - 1], { done: true },
-    "the result stays until the palette is closed");
+  const last = page.toastStates[page.toastStates.length - 1];
+  assert.strictEqual(last.done, true, "the result stays until the palette is closed");
+  assert.ok(!last.busy && !last.sticky);
 });
 
 test("a run that ends in a problem leaves its message up too", async () => {
@@ -938,7 +939,7 @@ for (const label of ["Switch, read and fill", "Cancel"]) {
   test("after " + label + " is clicked, focus is back in the input, where Esc reaches the palette", () => {
     const dom = fakePalette();
     const ui = loadPaletteUi(dom, () => {});
-    ui.showArgInput({ inputLabel: "Source ticket or sys_id" });
+    ui.showArgInput({ inputLabel: "Source ticket, sys_id or link" });
     const input = dom.root.getElementById("arg-input");
     assert.strictEqual(dom.active(), input);
 
@@ -967,7 +968,7 @@ test("Esc in the input closes the palette once a run has ended, and goes back a 
   let closed = 0;
   const ui = loadPaletteUi(dom, () => { closed += 1; });
 
-  ui.showArgInput({ inputLabel: "Source ticket or sys_id" });
+  ui.showArgInput({ inputLabel: "Source ticket, sys_id or link" });
   ui.showToast("Step 2 of 4 · Reading SCASE0001 as you…", false, 0, { busy: true });
   dom.root.getElementById("arg-input").onkeydown(escapeKey());
   assert.strictEqual(closed, 0, "mid-run, Esc goes back to the command list as before");
@@ -976,7 +977,7 @@ test("Esc in the input closes the palette once a run has ended, and goes back a 
 
   for (const options of [{ done: true }, { sticky: true }]) {
     closed = 0;
-    ui.showArgInput({ inputLabel: "Source ticket or sys_id" });
+    ui.showArgInput({ inputLabel: "Source ticket, sys_id or link" });
     ui.showToast("Done. Filled 2 of 2 variables.", Boolean(options.sticky), 0, options);
     dom.root.getElementById("arg-input").onkeydown(escapeKey());
     assert.strictEqual(closed, 1, "a run's last message: " + JSON.stringify(options));
