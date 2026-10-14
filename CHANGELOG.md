@@ -10,7 +10,7 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
-## Unreleased
+## [0.17.0] - 2026-10-14
 
 ### Added
 - **Variable Prefill from another instance.** Prefill can now read a ticket on
@@ -1214,6 +1214,7 @@ The feature set as of the first recorded version:
   values (incl. hidden and variable-set variables), copy variable debug info.
 - Record tools: copy sys_id, open playbook executions, open customer updates.
 
+[0.17.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.17.0
 [0.16.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.16.0
 [0.15.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.15.0
 [0.14.0]: https://github.com/RushiPatel92/GlideLens/releases/tag/v0.14.0
