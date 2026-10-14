@@ -1593,6 +1593,153 @@ valid across them on both instances, so the form is never reloaded.
   correctly forgotten when the first switch succeeded, so nothing stale is left
   behind.
 
+### Prefill from another instance
+
+Prefill can read a ticket on one instance and fill the catalog form open on
+another — sandbox to DEV, TEST to DEV, or any other pairing. The extension
+holds no list of hosts and no naming pattern: the other instance must be open,
+and signed in, in a tab of the same browser profile, and the person names it.
+
+**Why the read runs in a tab on that instance.** Every Table API read is a
+MAIN-world `fetch` that takes `X-UserToken` from the page's `g_ck`, and the
+token belongs to a page of that instance; there is no other way to get one.
+Stored credentials would make GlideLens a credential store, a worker `fetch`
+gets the cookie but not the token, and a hidden tab would land on a sign-in
+page. So the worker finds an open tab on the source origin and asks **that
+tab's own top-frame content script** to make the read Prefill already makes at
+home (`resolveVariableSource`, then `fetchSourceVariables`), on that tab's
+session. Every rule Prefill has proven comes along with no second copy: access
+tagging, `definitionsHidden`, the request-item `question_answer` exemption,
+multi-row grouping and frame discovery.
+
+**Why not a proxy.** Adding a host or tab to `SN_TABLE_GET` would let content
+on one instance name a table and query for the worker to run on another — the
+"read anything elsewhere" shape the Impersonate routes refuse. A page-wide
+"source host" flag would be worse: another command reading meanwhile would be
+sent to the wrong instance. The routes are feature routes instead:
+
+| Where | Message | Carries |
+| --- | --- | --- |
+| worker | `PREFILL_SOURCE_INSTANCES` | nothing in; origins only out, never tab ids or titles |
+| worker | `PREFILL_REMOTE_READ` | an origin and a ticket identifier in; the variable list out |
+| source tab, frame 0 | `PREFILL_EXPORT_SOURCE` | the ticket identifier and a worker-made request id, from the extension only |
+| worker | `PREFILL_REMOTE_PROGRESS` | progress from that source tab's top frame, relayed to the form's top frame |
+
+- **Frame 0 only.** The read is sent with `{ frameId: 0 }`, because a
+  broadcast would run it once per frame, and the export answers only when
+  `window === window.top` and the sender is the extension itself. The export
+  calls the readers directly, not `readPrefillSource`, so it never touches
+  `prefillRunning`, `SNH.lastPrefill*`, the palette or a toast: a Prefill the
+  person runs in that tab is unaffected.
+- **Choosing the tab.** `tabs.query` returns each tab's `url` without the
+  `tabs` permission, because the host permission covers it (measured in
+  Chromium 151 and Edge 155). Only tabs in the sender's own browsing context
+  count: with GlideLens allowed in incognito the worker sees both kinds of
+  window, and a normal and an incognito window must never exchange values.
+  Discarded tabs are skipped (discarding gives a tab a new id, so none is kept
+  past one read), and so is a tab with no `g_ck` in any frame: the instance's
+  favicon URL matches the pattern and even runs the content script. A signed-out
+  login page does have a `g_ck`, and is kept. Active in any window comes
+  first, then `lastAccessed`, at most three attempts.
+- **One rule for a tab that never answered.** The export sends a heartbeat the
+  moment it starts. A failed send, or a reply that is not an object, before
+  that heartbeat means nothing there was listening — a message no listener
+  answers resolves `undefined`, it does not reject — and the next tab is tried.
+  After it, the source changed under the read, and no other tab is tried. The
+  error's wording is never read: it differs across Chrome and Edge.
+- **Bounded by inactivity, which is safe only because it is a read.** The
+  export beats after every `snGetMany` completes, through a small listener set
+  on `snGetMany` rather than a parameter threaded through every reader. 45 s
+  without a heartbeat sits above one read's 30 s frame ceiling; 180 s bounds
+  the whole read. Abandoning a read changes nothing. Do not copy this bound
+  onto anything that writes: the fill's own watchdog says "it may still be
+  running" for exactly that reason. Progress is throttled to one message per
+  250 ms.
+- **The reply is rebuilt from an allowlist.** At most 5 million characters and
+  1,000 variables; each variable's known fields are type-checked, including a
+  multi-row set's `columns` and `columnMeta`. A known field of the wrong type
+  refuses the reply as `malformed`; an unknown field is dropped, so a harmless
+  addition on one side cannot break the feature.
+- **Never during a switch.** A read is refused while any `prefillSwapByTab`
+  entry is switching the session on the source origin, and there is one read
+  per form tab, released on settle, navigation and close.
+- **Never another tab's session.** After an access answer only, the worker reads
+  the source tab's impersonation state so the refusal can say "you're
+  impersonating someone there". It never offers or runs `PREFILL_SWAP_*` for a
+  remote read: that would change a session the person isn't looking at. A form
+  tab that is itself impersonating needs no switch at all, because the read
+  runs on the other tab's session and the fill as the impersonated account.
+
+**Naming the source.** The palette's Read from select lists the other origins
+open in this browser, defaulting to this instance every time it opens. A
+pasted link names its own instance and always wins over the select, which is
+moved to match as soon as the link is in the input. That fixed a real bug:
+`normalizeSourceInput` kept a link's sys_id and dropped its origin, so another
+instance's link read **this** instance's record with the same sys_id — after a
+clone, a copy that may have changed since, otherwise "No copyable variables
+found". A ticket not found locally never falls back to another instance:
+after a clone both continue the same number counter, so one number names a
+different ticket on each. For the same reason a number lookup now refuses two
+records with one number instead of taking the first, and checks that the
+returned `number` is the one typed, since an invalid query field is silently
+ignored.
+
+**Fill order belongs to the form.** `orderVariablesForFill` — variable-set
+placement from this page's `io_set_item`, then `sortVariablesForFill` — runs on
+the form's tab after the read. In the source tab, `currentCatalogItemDefinitionSysId`
+would describe whatever page that tab shows.
+
+**Values that don't travel.** The fill trusts sys_ids: `g_form.setValue(key,
+id)` takes any id and counts as filled, and the select2 fallback types the same
+id, so a reference missing on the target would be submitted as a reference to
+nothing. `prepareCrossInstanceVariables` looks up every sys_id-valued answer on
+the form's instance, as that tab's session, with one `sys_idIN` read per
+referenced table, `sys_id` only, chunked at 100 (about 400 ids answered 414):
+
+- a reference, or a lookup holding a 32-hex value, is filled only if its record
+  comes back; otherwise it is left empty and named. The table comes from
+  `referenceTable`, which already folds `reference`, `lookup_table` and
+  `list_table`;
+- a list collector keeps the ids found and drops the rest;
+- a multi-row cell is checked by its **column's** type from `columnMeta`, which
+  the multi-row read now keeps from the fields it already requests; a missing
+  cell is cleared and the rest of the set filled;
+- an attachment is never filled: its `sys_attachment` id cannot exist there.
+  That includes an attachment column inside a multi-row set, which does occur
+  (a bank account set with two of them was measured); such a cell is cleared
+  and named as an attachment, not as a missing record;
+- a 403, a timeout or a blank referenced table is "couldn't check", and is left
+  empty too, because an unchecked id is how a dangling reference gets submitted.
+
+A text variable that happens to hold a sys_id is copied as it is; its type says
+nothing, and guessing from the value would damage real text. The summary's
+denominator is the number **read**, with what was held back counted as "not
+filled". No message ever shows a value or a sys_id — a ticket named by a link
+is "the linked ticket" until the read answers with its number — and a finished
+message draws its notes as plain text, not in the success colour.
+
+**Three guards in the shared reader.** `tableApiGetInPage` serves every caller,
+and each guard only turns a throw or a wrong-frame answer into a clear refusal:
+
+- `options.expectedOrigin` refuses, before fetching, a frame on another origin:
+  a source tab can embed one, and `readFromPageFrames` would otherwise take its
+  answer for the source's. When nothing succeeds, `SN_TABLE_GET` now prefers
+  this instance's 403, then any HTTP answer, then any other same-origin failure,
+  and only then a `wrongOrigin` refusal.
+- `options.requireToken` never sends a request without `X-UserToken`. A
+  token-less request is answered `WWW-Authenticate: Basic`, and the browser
+  raises its own sign-in dialog and holds the fetch until someone dismisses it
+  (seen in Edge). With any token, even a dead one, the 401 carries `none`. The
+  export sets both options on every read; same-instance callers set neither.
+- A body that is not JSON is a failure (`nonJson`), never a throw. A `fetch`
+  that throws still surfaces as a frame failure.
+
+Signed out is measured, not guessed: a read sent with a token to a signed-out
+session answered **401 with JSON** ("User is not authenticated") on both a
+basic-auth and an SSO instance, never HTML or a redirect, and a login page has
+a `g_ck`. The export therefore classifies a 401 to a read sent with a token as
+signed out.
+
 ## Debug Timeline
 
 Debug Timeline is a best-effort, single-page interaction recorder for public

@@ -291,14 +291,23 @@ async function snGet(table, query, fields) {
 }
 
 async function snGetMany(table, query, fields, limit, options) {
-  const resp = await chrome.runtime.sendMessage({
-    type: "SN_TABLE_GET",
-    table,
-    query,
-    fields,
-    limit: limit || 200,
-    options: options || {},
-  });
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      type: "SN_TABLE_GET",
+      table,
+      query,
+      fields,
+      limit: limit || 200,
+      options: options || {},
+    });
+  } finally {
+    snGetManyListeners.forEach((listener) => {
+      try {
+        listener(table);
+      } catch (e) {}
+    });
+  }
   if (!resp || !resp.ok) {
     const error = new Error((resp && resp.error) || "Couldn't read " + table);
     // The HTTP status, when there was one: a 403 is a refusal, not a fault.
@@ -307,6 +316,15 @@ async function snGetMany(table, query, fields, limit, options) {
   }
   return resp.result || [];
 }
+
+/*
+ * Told each time a read finishes, whatever its answer. Prefill's export uses
+ * this as the heartbeat for a read another tab is waiting on, so no reader has
+ * to be threaded with a callback. An unrelated read finishing meanwhile only
+ * extends that wait, which its own ceiling still bounds; nothing is routed by
+ * it.
+ */
+const snGetManyListeners = new Set();
 
 function snFieldValue(row, field) {
   const raw = row && row[field];
@@ -349,6 +367,79 @@ function normalizeSourceInput(input) {
 }
 
 /*
+ * Which instance a Prefill run reads, and what it asks that instance for.
+ *
+ * A link names its own instance and always wins over the Read from choice. A
+ * pasted link used to keep only its sys_id and read THIS instance's record
+ * with that id: after a clone, a copy that may have changed since, and
+ * otherwise a misleading "No copyable variables found". Anything else is read
+ * where Read from says, which is this instance unless the person chose
+ * another. A ticket not found here never falls back to another instance:
+ * after a clone both continue the same number counter, so one number names a
+ * different ticket on each.
+ *
+ * The rule for a ServiceNow origin is the worker's own: https, a
+ * *.service-now.com host, no credentials. Custom domains are outside the
+ * extension's host permissions.
+ */
+const PREFILL_SN_HOST = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.service-now\.com$/i;
+const PREFILL_ONLY_SERVICENOW = "GlideLens can only read from *.service-now.com instances.";
+
+// The first absolute link in the text: { origin, href }, { refused } for one
+// GlideLens may not read, or null when there is none.
+function prefillLinkIn(text) {
+  const match = String(text || "").match(/https?:\/\/[^\s"'<>]+/i);
+  if (!match) return null;
+  try {
+    const url = new URL(match[0]);
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      !PREFILL_SN_HOST.test(url.hostname)
+    ) {
+      return { refused: true };
+    }
+    return { origin: url.origin, href: match[0] };
+  } catch (e) {
+    return { refused: true };
+  }
+}
+
+/*
+ * Returns { origin, remote, input, label } or { origin, error }. `input` is
+ * what the instance that reads is sent: on this instance, exactly what was
+ * typed, as before; elsewhere, a link's sys_id or the typed text. `label`
+ * names a remote ticket in messages before the read answers: never a sys_id.
+ */
+function parsePrefillSource(input, chosenOrigin) {
+  const text = String(input || "").trim();
+  const here = location.origin;
+  const link = prefillLinkIn(text);
+  if (link && link.refused) return { origin: "", error: PREFILL_ONLY_SERVICENOW };
+  if (link) {
+    if (link.origin === here) return { origin: here, remote: false, input: text };
+    const sysId = sysIdFromText(link.href);
+    if (!sysId) {
+      return {
+        origin: link.origin,
+        error: "That link doesn't open a ticket. Paste the ticket's own link, or type its number.",
+      };
+    }
+    return { origin: link.origin, remote: true, input: sysId.toLowerCase(), label: "the linked ticket" };
+  }
+  const origin = chosenOrigin && chosenOrigin !== here ? chosenOrigin : here;
+  if (origin === here) return { origin: here, remote: false, input: text };
+  const typed = normalizeSourceInput(text);
+  return {
+    origin,
+    remote: true,
+    input: text,
+    label: typed.kind === "sys_id" ? "that record" : typed.value,
+  };
+}
+
+/*
  * Whether a failed or empty read may be down to this account's access rather
  * than the ticket, which is the only case switching the session could help.
  * "refused": the Table API answered 403. "hidden": a lookup came back empty,
@@ -383,7 +474,26 @@ function definitionsHidden(rows, idField, nameField) {
   return linked.length > 0 && linked.every((row) => !snFieldValue(row, nameField).trim());
 }
 
-async function resolveVariableSource(input) {
+/*
+ * The options every read of one Prefill source carries. Empty for a read in
+ * the tab the person is using; a read exported to another instance's tab adds
+ * expectedOrigin and requireToken (see exportPrefillSource). `base` is the
+ * read's own options, such as displayAll.
+ */
+function prefillReadOptions(readOptions, base) {
+  return Object.assign({}, base || {}, readOptions || {});
+}
+
+// The instance's short name for messages: its subdomain, never a full URL.
+function prefillInstanceLabel(origin) {
+  try {
+    return new URL(origin).hostname.split(".")[0] || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+async function resolveVariableSource(input, readOptions) {
   const parsed = normalizeSourceInput(input);
   if (!parsed.value) throw new Error("Enter a ticket number or sys_id.");
 
@@ -395,13 +505,34 @@ async function resolveVariableSource(input) {
     "task",
     taskQuery,
     "sys_id,number,sys_class_name",
-    2
+    2,
+    prefillReadOptions(readOptions)
   );
-  const task = taskRows[0];
+  /*
+   * A row is used only once it is shown to be the one asked for: the platform
+   * silently ignores a query on a field it doesn't know, and answers with any
+   * rows at all. Two different records with one number are refused rather
+   * than settled by taking the first, which used to fill from whichever the
+   * instance happened to list first.
+   */
+  const matching = taskRows.filter((row) =>
+    parsed.kind === "sys_id"
+      ? snFieldValue(row, "sys_id").toLowerCase() === parsed.value
+      : snFieldValue(row, "number").trim().toLowerCase() === parsed.value.toLowerCase()
+  );
+  if (new Set(matching.map((row) => snFieldValue(row, "sys_id").toLowerCase())).size > 1) {
+    const error = new Error(
+      "Two records have number " + parsed.value + " on " +
+        prefillInstanceLabel(location.origin) + ". Paste the ticket's link instead."
+    );
+    error.code = "ambiguous";
+    throw error;
+  }
+  const task = matching[0];
 
   if (!task) {
     if (parsed.kind === "sys_id") {
-      const catalogItem = await resolveCatalogItemDefinition(parsed.value);
+      const catalogItem = await resolveCatalogItemDefinition(parsed.value, readOptions);
       if (catalogItem) {
         const itemName = catalogItem.name ? " (" + catalogItem.name + ")" : "";
         throw new Error(
@@ -420,10 +551,12 @@ async function resolveVariableSource(input) {
     }
     // ACLs hide a row rather than refusing it, so "missing" and "not yours to
     // read" are the same empty answer here.
-    throw prefillAccessError(
+    const notFound = prefillAccessError(
       "No task found for " + parsed.value + " that this account can read.",
       "hidden"
     );
+    notFound.notFound = true;
+    throw notFound;
   }
 
   const sysId = snFieldValue(task, "sys_id");
@@ -435,7 +568,13 @@ async function resolveVariableSource(input) {
   }
 
   if (table === "sc_task") {
-    const taskDetails = await snGetMany("sc_task", "sys_id=" + sysId, "request_item", 1);
+    const taskDetails = await snGetMany(
+      "sc_task",
+      "sys_id=" + sysId,
+      "request_item",
+      1,
+      prefillReadOptions(readOptions)
+    );
     const requestItemId = snFieldValue(taskDetails[0], "request_item");
     // A field this account may not read comes back blank, like an empty one.
     if (!requestItemId) throw prefillAccessError("Catalog task has no request item.", "hidden");
@@ -447,7 +586,8 @@ async function resolveVariableSource(input) {
       "sc_req_item",
       "request=" + sysId,
       "sys_id,number",
-      10
+      10,
+      prefillReadOptions(readOptions)
     );
     if (ritms.length === 1) {
       return {
@@ -467,7 +607,7 @@ async function resolveVariableSource(input) {
   return { mode: "producer", sysId, table, number, requestItemId: null };
 }
 
-async function resolveCatalogItemDefinition(sysId) {
+async function resolveCatalogItemDefinition(sysId, readOptions) {
   const tables = ["sc_cat_item_producer", "sc_cat_item"];
   for (const table of tables) {
     try {
@@ -476,7 +616,7 @@ async function resolveCatalogItemDefinition(sysId) {
         "sys_id=" + sysId,
         "sys_id,name,sys_class_name",
         1,
-        { displayAll: true, excludeRefLinks: true }
+        prefillReadOptions(readOptions, { displayAll: true, excludeRefLinks: true })
       );
       if (rows.length) {
         return {
@@ -662,7 +802,7 @@ function addVariablesFromRows(target, rows, mapping) {
   return skipped;
 }
 
-async function fetchCatalogVariables(requestItemId) {
+async function fetchCatalogVariables(requestItemId, readOptions) {
   const rows = await snGetMany(
     "sc_item_option_mtom",
     "request_item=" + requestItemId,
@@ -680,7 +820,7 @@ async function fetchCatalogVariables(requestItemId) {
       "sc_item_option.item_option_new.list_table",
     ].join(","),
     300,
-    { displayAll: true, excludeRefLinks: true }
+    prefillReadOptions(readOptions, { displayAll: true, excludeRefLinks: true })
   );
   const variables = new Map();
   const skipped = addVariablesFromRows(variables, rows, {
@@ -704,7 +844,7 @@ async function fetchCatalogVariables(requestItemId) {
   return { variables, skipped, refused };
 }
 
-async function fetchProducerVariables(source) {
+async function fetchProducerVariables(source, readOptions) {
   const sysId = typeof source === "string" ? source : source && source.sysId;
   const table = typeof source === "object" && source ? source.table : "";
   const fields = [
@@ -736,10 +876,13 @@ async function fetchProducerVariables(source) {
 
   for (const query of queries) {
     try {
-      const rows = await snGetMany("question_answer", query, fields, 300, {
-        displayAll: true,
-        excludeRefLinks: true,
-      });
+      const rows = await snGetMany(
+        "question_answer",
+        query,
+        fields,
+        300,
+        prefillReadOptions(readOptions, { displayAll: true, excludeRefLinks: true })
+      );
       if (!rows.length) continue;
       if (definitionsHidden(rows, "question", "question.name")) refused = true;
       readAny = true;
@@ -808,7 +951,7 @@ function splitMaybeSysIdList(value) {
     .filter(Boolean);
 }
 
-async function resolveAttachmentDisplayValues(variables, onProgress) {
+async function resolveAttachmentDisplayValues(variables, onProgress, readOptions) {
   const attachmentVariables = Array.from(variables.values()).filter(
     (variable) => isAttachmentVariable(variable) && splitSysIdList(variable.value).length > 0
   );
@@ -830,7 +973,7 @@ async function resolveAttachmentDisplayValues(variables, onProgress) {
       ids.length === 1 ? "sys_id=" + ids[0] : "sys_idIN" + ids.join(","),
       "sys_id,file_name,content_type,size_bytes,table_name,table_sys_id",
       ids.length,
-      { displayAll: true, excludeRefLinks: true }
+      prefillReadOptions(readOptions, { displayAll: true, excludeRefLinks: true })
     );
     const byId = {};
     rows.forEach((row) => {
@@ -877,7 +1020,7 @@ function candidateMultiRowParents(source, variables) {
   return { ids, parentById };
 }
 
-async function fetchMultiRowAnswerRows(parentIds) {
+async function fetchMultiRowAnswerRows(parentIds, readOptions) {
   const rows = [];
   const seen = new Set();
   const queries = [];
@@ -905,10 +1048,13 @@ async function fetchMultiRowAnswerRows(parentIds) {
   for (const parentId of parentIds) {
     const query = "parent_id=" + parentId;
     try {
-      const result = await snGetMany("sc_multi_row_question_answer", query, fields, 1000, {
-        displayAll: true,
-        excludeRefLinks: true,
-      });
+      const result = await snGetMany(
+        "sc_multi_row_question_answer",
+        query,
+        fields,
+        1000,
+        prefillReadOptions(readOptions, { displayAll: true, excludeRefLinks: true })
+      );
       if (result.length) queries.push(query);
       if (definitionsHidden(result, "item_option_new", "item_option_new.name")) refused = true;
       result.forEach((row) => {
@@ -988,6 +1134,21 @@ function addMultiRowVariablesFromAnswerRows(target, rows, parentById) {
     const displayRows = orderedIndexes.map((rowIndex) => displayRowsByIndex[rowIndex]);
     if (!valueRows.length) return;
 
+    // Each column's question type and referenced tables, so a copy to another
+    // instance can check a reference cell by its column. Nothing new is read:
+    // these fields were already requested with the answers.
+    const columnMeta = {};
+    answerRows.forEach((row) => {
+      const column = snFieldValue(row, "item_option_new.name") || snFieldValue(row, "item_option_new");
+      if (!column || Object.prototype.hasOwnProperty.call(columnMeta, column)) return;
+      columnMeta[column] = {
+        type: snFieldValue(row, "item_option_new.type"),
+        reference: snFieldValue(row, "item_option_new.reference"),
+        lookupTable: snFieldValue(row, "item_option_new.lookup_table"),
+        listTable: snFieldValue(row, "item_option_new.list_table"),
+      };
+    });
+
     target.set(name, {
       name,
       label: (parent && parent.label) || setLabel,
@@ -1007,6 +1168,7 @@ function addMultiRowVariablesFromAnswerRows(target, rows, parentById) {
             .filter(Boolean)
         )
       ),
+      columnMeta,
       sourceIndex: parent && Number.isFinite(parent.sourceIndex) ? parent.sourceIndex : target.size,
     });
   });
@@ -1116,7 +1278,12 @@ function sortVariablesForFill(variables) {
   });
 }
 
-async function fetchSourceVariables(source, onProgress) {
+/*
+ * Reads the ticket's variables, unordered. The order to fill them in belongs
+ * to the form being filled (orderVariablesForFill), which may be on another
+ * instance from this read.
+ */
+async function fetchSourceVariables(source, onProgress, readOptions) {
   const variables = new Map();
   let skipped = 0;
   let hadReadError = false;
@@ -1131,7 +1298,7 @@ async function fetchSourceVariables(source, onProgress) {
   if (source.mode === "catalog" && source.requestItemId) {
     try {
       if (onProgress) onProgress("Reading catalog variables…");
-      const catalog = await fetchCatalogVariables(source.requestItemId);
+      const catalog = await fetchCatalogVariables(source.requestItemId, readOptions);
       skipped += catalog.skipped;
       if (catalog.refused) readRefused = true;
       else catalogRead = true;
@@ -1144,7 +1311,7 @@ async function fetchSourceVariables(source, onProgress) {
 
   try {
     if (onProgress) onProgress("Reading producer variables…");
-    const producer = await fetchProducerVariables(source);
+    const producer = await fetchProducerVariables(source, readOptions);
     skipped += producer.skipped;
     // A request item's answers are the catalog read above. Measured on a
     // configured customer instance, question_answer held no rows for request
@@ -1169,7 +1336,7 @@ async function fetchSourceVariables(source, onProgress) {
     const parents = candidateMultiRowParents(source, variables);
     if (parents.ids.length) {
       if (onProgress) onProgress("Reading multi-row variable sets…");
-      const mrvs = await fetchMultiRowAnswerRows(parents.ids);
+      const mrvs = await fetchMultiRowAnswerRows(parents.ids, readOptions);
       if (mrvs.refused) readRefused = true;
       if (mrvs.failure) noteReadError(mrvs.failure);
       if (mrvs.queryUsed) source.multiRowAnswerQuery = mrvs.queryUsed;
@@ -1187,25 +1354,36 @@ async function fetchSourceVariables(source, onProgress) {
     throw new Error("Couldn't read variables: " + prefillErrorText(readFailure) + ". Try again.");
   }
 
+  await resolveAttachmentDisplayValues(variables, onProgress, readOptions);
+
+  // readRefused: some variable table answered 403, so an empty result may be
+  // what this account is allowed to see rather than the ticket. readFailure:
+  // the first read that failed for any other reason, such as a timeout.
+  return { variables: Array.from(variables.values()), skipped, readRefused, readFailure };
+}
+
+/*
+ * Fill order for THIS page's form: variable-set placement from this page's
+ * catalog item, then each variable's own order. It runs where the form is,
+ * after the read, because a read made in another instance's tab would
+ * otherwise take its placement from whatever page that tab shows.
+ */
+async function orderVariablesForFill(variables, onProgress) {
   await applyVariableSetPlacementOrder(
     variables,
     currentCatalogItemDefinitionSysId(),
     onProgress
   );
-  await resolveAttachmentDisplayValues(variables, onProgress);
-
-  // readRefused: some variable table answered 403, so an empty result may be
-  // what this account is allowed to see rather than the ticket. readFailure:
-  // the first read that failed for any other reason, such as a timeout.
-  return { variables: sortVariablesForFill(variables), skipped, readRefused, readFailure };
+  return sortVariablesForFill(variables);
 }
 
-async function readPrefillSource(value, onProgress) {
-  const source = await resolveVariableSource(value);
-  const sourceResult = await fetchSourceVariables(source, onProgress);
-  SNH.lastPrefillVariables = sourceResult.variables;
+// What the debug copy reports about the last read. `origin` says which
+// instance it was read from.
+function rememberPrefillSource(value, origin, source, variables) {
+  SNH.lastPrefillVariables = variables;
   SNH.lastPrefillSource = {
     input: value,
+    origin,
     mode: source.mode,
     sysId: source.sysId,
     table: source.table,
@@ -1214,7 +1392,299 @@ async function readPrefillSource(value, onProgress) {
     producerAnswerQuery: source.producerAnswerQuery,
     multiRowAnswerQuery: source.multiRowAnswerQuery,
   };
+}
+
+async function readPrefillSource(value, onProgress) {
+  const source = await resolveVariableSource(value);
+  const sourceResult = await fetchSourceVariables(source, onProgress);
+  sourceResult.variables = await orderVariablesForFill(sourceResult.variables, onProgress);
+  rememberPrefillSource(value, location.origin, source, sourceResult.variables);
   return { source, sourceResult };
+}
+
+/*
+ * Values that don't travel between instances, for a read from another one.
+ *
+ * The fill trusts sys_ids: a reference is set with g_form.setValue(key, id),
+ * which takes any id and counts as filled, so a record missing here would be
+ * submitted as a reference to nothing. Every sys_id-valued answer is therefore
+ * looked up here first, as this tab's session -- impersonated or not -- and is
+ * filled only when its record comes back. A clone shares sys_ids, so a record
+ * found is the same logical record. One not found is left empty and named:
+ * an ACL hides a row rather than refusing it, and the form would refuse it the
+ * same way. A table that can't be read, or a reference with no table, is
+ * left empty too, as "couldn't check": an unchecked id is exactly how a
+ * dangling reference gets submitted.
+ *
+ * A text variable that happens to hold a sys_id is copied as it is: its type
+ * says nothing, and guessing from the value would damage real text.
+ */
+const PREFILL_CHECK_CHUNK = 100; // About 400 ids in one GET answered 414.
+const PREFILL_NOTE_NAMES = 5;
+const PREFILL_TABLE_NAME = /^[a-z][a-z0-9_]*$/i;
+
+function prefillReferenceKind(type) {
+  const normalized = normalizeVariableType(type);
+  if (normalized === "8" || normalized === "reference") return "reference";
+  if (normalized === "21" || normalized === "list_collector" || normalized === "glide_list") return "list";
+  if (
+    normalized === "18" ||
+    normalized === "22" ||
+    normalized === "lookup_select_box" ||
+    normalized === "lookup_multiple_choice"
+  ) {
+    return "lookup";
+  }
+  if (isAttachmentVariableType(normalized)) return "attachment";
+  return "";
+}
+
+// A multi-row column's referenced table, which columnMeta keeps apart by kind.
+function prefillColumnTable(meta, kind) {
+  if (kind === "reference") return meta.reference;
+  if (kind === "list") return meta.listTable;
+  if (kind === "lookup") return meta.lookupTable;
+  return "";
+}
+
+function parsePrefillRows(text) {
+  try {
+    const rows = JSON.parse(String(text || ""));
+    return Array.isArray(rows) ? rows : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Every sys_id a cell names, with the table it must be found in. A lookup
+// holds free text or a sys_id; only the latter is checked.
+function prefillCellIds(kind, cell) {
+  const value = String(cell == null ? "" : cell).trim();
+  if (kind === "reference" || kind === "lookup") return isSysId(value) ? [value.toLowerCase()] : [];
+  if (kind === "list") return splitSysIdList(value).map((id) => id.toLowerCase());
+  return [];
+}
+
+// Every non-empty cell of a multi-row set whose column holds a reference, a
+// list, a lookup or an attachment, by the column's own type.
+function forEachMultiRowCell(rows, columnMeta, visit) {
+  const meta = columnMeta || {};
+  (rows || []).forEach((row, index) => {
+    if (!row || typeof row !== "object") return;
+    Object.keys(row).forEach((column) => {
+      if (!Object.prototype.hasOwnProperty.call(meta, column)) return;
+      const columnInfo = meta[column] || {};
+      const kind = prefillReferenceKind(columnInfo.type);
+      if (!kind || String(row[column] == null ? "" : row[column]).trim() === "") return;
+      visit(row, index, column, kind, prefillColumnTable(columnInfo, kind) || "");
+    });
+  });
+}
+
+async function checkPrefillRecordsHere(idsByTable) {
+  const found = new Map();
+  for (const [table, ids] of idsByTable) {
+    if (!PREFILL_TABLE_NAME.test(table)) continue;
+    const list = Array.from(ids);
+    const hits = new Set();
+    try {
+      for (let start = 0; start < list.length; start += PREFILL_CHECK_CHUNK) {
+        const chunk = list.slice(start, start + PREFILL_CHECK_CHUNK);
+        // This instance's frames only: a frame embedded from another
+        // instance would answer "found" for a record that isn't here.
+        const rows = await snGetMany(table, "sys_idIN" + chunk.join(","), "sys_id", chunk.length, {
+          expectedOrigin: location.origin,
+        });
+        rows.forEach((row) => {
+          const id = snFieldValue(row, "sys_id").toLowerCase();
+          if (chunk.indexOf(id) >= 0) hits.add(id);
+        });
+      }
+      found.set(table, hits);
+    } catch (e) {
+      /* A 403 or a timeout: every id in this table stays unchecked. */
+    }
+  }
+  // "found", "missing", or "unchecked" when the table couldn't be read.
+  return (table, id) => {
+    const hits = found.get(String(table || "").trim());
+    if (!hits) return "unchecked";
+    return hits.has(id) ? "found" : "missing";
+  };
+}
+
+function prefillNameList(names) {
+  const shown = names.slice(0, PREFILL_NOTE_NAMES).join(", ");
+  const more = names.length - PREFILL_NOTE_NAMES;
+  return shown + (more > 0 ? " (+" + more + " more)" : "");
+}
+
+function prefillCellCount(count) {
+  return count + (count === 1 ? " cell" : " cells");
+}
+
+/*
+ * Returns { variables, withheld, notes }: what may be filled, how many
+ * variables were held back whole, and one line per kind of thing held back,
+ * naming variables by label only -- never a value or a sys_id, so a palette
+ * screenshot pasted into a ticket carries no record data.
+ */
+async function prepareCrossInstanceVariables(variables, onProgress) {
+  const idsByTable = new Map();
+  const want = (table, ids) => {
+    const key = String(table || "").trim();
+    if (!ids.length) return;
+    if (!idsByTable.has(key)) idsByTable.set(key, new Set());
+    ids.forEach((id) => idsByTable.get(key).add(id));
+  };
+  variables.forEach((variable) => {
+    if (isMultiRowVariableSet(variable)) {
+      forEachMultiRowCell(
+        parsePrefillRows(variable.value),
+        variable.columnMeta,
+        (row, index, column, kind, table) => want(table, prefillCellIds(kind, row[column]))
+      );
+      return;
+    }
+    const kind = prefillReferenceKind(variable.type);
+    if (kind && kind !== "attachment") want(variable.referenceTable, prefillCellIds(kind, variable.value));
+  });
+
+  let verdict = () => "unchecked";
+  if (idsByTable.size) {
+    if (onProgress) onProgress("Checking referenced records on this instance…");
+    verdict = await checkPrefillRecordsHere(idsByTable);
+  }
+
+  const kept = [];
+  const missing = [];
+  const unchecked = [];
+  const attachments = [];
+  const partialLists = [];
+  const cellNotes = [];
+  variables.forEach((variable) => {
+    const name = variable.label || variable.name;
+    if (isMultiRowVariableSet(variable)) {
+      const rows = parsePrefillRows(variable.value);
+      const displayRows = parsePrefillRows(variable.displayValue);
+      let missingCells = 0;
+      let uncheckedCells = 0;
+      let attachmentCells = 0;
+      const clearCell = (row, index, column) => {
+        row[column] = "";
+        if (displayRows && displayRows[index] && typeof displayRows[index] === "object") {
+          displayRows[index][column] = "";
+        }
+      };
+      forEachMultiRowCell(rows, variable.columnMeta, (row, index, column, kind, table) => {
+        /* A multi-row set can hold attachment questions (measured: a bank
+         * account set with two of them), and attachments are never copied. A
+         * list cell with any id missing is cleared whole, so that "left
+         * empty" stays true of every cell it counts. */
+        if (kind === "attachment") {
+          attachmentCells += 1;
+          clearCell(row, index, column);
+          return;
+        }
+        const outcomes = prefillCellIds(kind, row[column]).map((id) => verdict(table, id));
+        if (outcomes.every((outcome) => outcome === "found")) return;
+        if (outcomes.indexOf("unchecked") >= 0) uncheckedCells += 1;
+        else missingCells += 1;
+        clearCell(row, index, column);
+      });
+      if (!missingCells && !uncheckedCells && !attachmentCells) {
+        kept.push(variable);
+        return;
+      }
+      kept.push(Object.assign({}, variable, {
+        value: JSON.stringify(rows),
+        displayValue: displayRows ? JSON.stringify(displayRows) : variable.displayValue,
+      }));
+      if (missingCells) {
+        cellNotes.push(
+          name + ": " + prefillCellCount(missingCells) + " left empty, because " +
+            (missingCells === 1 ? "its record isn't" : "their records aren't") + " on this instance."
+        );
+      }
+      if (uncheckedCells) {
+        cellNotes.push(
+          name + ": " + prefillCellCount(uncheckedCells) + " left empty, because GlideLens couldn't check " +
+            (uncheckedCells === 1 ? "its record" : "their records") + " here."
+        );
+      }
+      if (attachmentCells) {
+        cellNotes.push(
+          name + ": " + attachmentCells + (attachmentCells === 1 ? " attachment" : " attachments") +
+            " left empty, because attachments aren't copied between instances."
+        );
+      }
+      return;
+    }
+
+    const kind = prefillReferenceKind(variable.type);
+    if (kind === "attachment") {
+      attachments.push(name);
+      return;
+    }
+    if (kind === "list") {
+      const items = splitMaybeSysIdList(variable.value);
+      const outcomes = items.map((item) =>
+        isSysId(item) ? verdict(variable.referenceTable, item.toLowerCase()) : "found"
+      );
+      if (outcomes.indexOf("unchecked") >= 0) {
+        unchecked.push(name);
+        return;
+      }
+      const keptItems = items.filter((item, index) => outcomes[index] === "found");
+      if (!keptItems.length) {
+        missing.push(name);
+        return;
+      }
+      if (keptItems.length === items.length) {
+        kept.push(variable);
+        return;
+      }
+      // The fill pairs list items with display items by position, so both
+      // carry the kept ids: a stored list's display value is the ids anyway.
+      const value = keptItems.join(",");
+      kept.push(Object.assign({}, variable, { value, displayValue: value }));
+      partialLists.push(
+        name + ": kept " + keptItems.length + " of " + items.length + "; the rest aren't on this instance."
+      );
+      return;
+    }
+    const ids = kind ? prefillCellIds(kind, variable.value) : [];
+    if (ids.length) {
+      const outcome = verdict(variable.referenceTable, ids[0]);
+      if (outcome === "found") kept.push(variable);
+      else (outcome === "missing" ? missing : unchecked).push(name);
+      return;
+    }
+    kept.push(variable);
+  });
+
+  const notes = [];
+  if (missing.length) {
+    notes.push(
+      "Not filled, because the record isn't on this instance or this account can't see it: " +
+        prefillNameList(missing) + "."
+    );
+  }
+  if (unchecked.length) {
+    notes.push(
+      "Not filled, because GlideLens couldn't check the record here: " + prefillNameList(unchecked) + "."
+    );
+  }
+  partialLists.forEach((note) => notes.push(note));
+  if (attachments.length) {
+    notes.push("Attachments aren't copied between instances: " + prefillNameList(attachments) + ".");
+  }
+  cellNotes.forEach((note) => notes.push(note));
+  return {
+    variables: kept,
+    withheld: missing.length + unchecked.length + attachments.length,
+    notes,
+  };
 }
 
 function prefillTicketLabel(value) {
@@ -1266,27 +1736,64 @@ function showPrefillProgress(message) {
   showToast((prefillStep ? prefillStep + " · " : "") + message, false, 0, { busy: true });
 }
 
-// A run's last word. It stays until the palette is closed or used again, so
-// the person can tell the run is over and it is safe to close.
+/*
+ * A run's last word. It stays until the palette is closed or used again, so
+ * the person can tell the run is over and it is safe to close.
+ *
+ * A finished run's lines are drawn by kind: the summary keeps the success
+ * colour and its tick, a note is plain text, and the close hint is muted, so
+ * "Not filled…" never reads as a success. A line is a string (the summary) or
+ * one of prefillNote/prefillHint. An error is one colour throughout, as ever.
+ */
 function finishPrefill(lines, isErr) {
   prefillStep = "";
+  const shown = lines
+    .filter(Boolean)
+    .map((line) => (typeof line === "string" ? { text: line, kind: "" } : line))
+    .filter((line) => line.text);
   showToast(
-    lines.filter(Boolean).join("\n"),
+    shown.map((line) => line.text).join("\n"),
     Boolean(isErr),
     0,
-    isErr ? { sticky: true } : { done: true }
+    isErr ? { sticky: true } : { done: true, lines: shown }
   );
 }
 
-const PREFILL_CLOSE_HINT = "You can close this (Esc) and review the form.";
+function prefillNote(text) {
+  return text ? { text, kind: "note" } : null;
+}
 
-async function prefillPortalVariablesFromTicket(input) {
+function prefillHint(text) {
+  return text ? { text, kind: "hint" } : null;
+}
+
+const PREFILL_CLOSE_HINT = "You can close this (Esc) and review the form.";
+const PREFILL_OTHER_INSTANCE_HINT = "Is it on another instance? Choose it under Read from.";
+
+/*
+ * `picker` is the Read from control, or null where there is none:
+ * { chosenOrigin(), show(origin), othersOpen() }.
+ */
+async function prefillPortalVariablesFromTicket(input, picker) {
   if (refusePrefillWhileRunning()) return;
   const value = String(input || "").trim();
   clearPaletteConfirmation();
   prefillStep = "";
   if (!value) {
     showToast("Enter a ticket number or sys_id", true);
+    return;
+  }
+
+  const where = parsePrefillSource(value, picker ? picker.chosenOrigin() : "");
+  // The screen never contradicts the run: a link moves Read from to its own
+  // instance, whatever was chosen there.
+  if (picker && where.origin) picker.show(where.origin);
+  if (where.error) {
+    finishPrefill([where.error], true);
+    return;
+  }
+  if (where.remote) {
+    await prefillFromOtherInstance(value, where);
     return;
   }
 
@@ -1320,8 +1827,153 @@ async function prefillPortalVariablesFromTicket(input) {
     if (readError) throw readError;
     finishPrefill([emptyPrefillReadMessage(read.sourceResult, prefillTicketLabel(value))], true);
   } catch (error) {
+    // Never a fallback to another instance, only a pointer to the choice.
+    const elsewhere = error && error.notFound && picker && picker.othersOpen();
+    finishPrefill([prefillErrorText(error), elsewhere ? PREFILL_OTHER_INSTANCE_HINT : ""], true);
+  } finally {
+    prefillRunning = false;
+  }
+}
+
+/*
+ * Reads the ticket through a tab open on another instance (the worker's
+ * PREFILL_REMOTE_READ), checks what it read against this instance, and fills.
+ * The session switch is never offered here: the read runs on the other tab's
+ * own session, and switching a session the person isn't looking at is not
+ * GlideLens's to do.
+ */
+const PREFILL_REMOTE_REPLY_CEILING_MS = 240000;
+
+function prefillCapitalise(text) {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+function remotePrefillAccessLine(reply) {
+  return reply && reply.sourceImpersonating
+    ? "You're impersonating someone there: stop that in its tab, then try again."
+    : "";
+}
+
+// Why a read from another instance came back with nothing to fill.
+function remotePrefillProblem(reply, origin, ticket) {
+  const instance = prefillInstanceLabel(origin);
+  const code = reply && reply.code;
+  const join = (first, second) => (second ? first + " " + second : first);
+  if (code === "not-open") {
+    let host = origin;
+    try {
+      host = new URL(origin).hostname;
+    } catch (e) {}
+    return host + " isn't open in this browser. Open it in a tab, sign in, then try again.";
+  }
+  if (code === "asleep") return "Your " + instance + " tab is asleep. Click it once, then try again.";
+  if (code === "no-receiver") {
+    return "GlideLens isn't running in your " + instance + " tab yet. Reload that tab, then try again.";
+  }
+  if (code === "signed-out") return "You're not signed in to " + instance + ". Sign in there, then try again.";
+  if (code === "switching") {
+    return "Prefill is switching your session on " + instance + " in another tab. Wait for it to finish.";
+  }
+  if (code === "hidden") {
+    return join(
+      prefillCapitalise(ticket) + " wasn't found on " + instance + ", or your session there can't see it.",
+      remotePrefillAccessLine(reply)
+    );
+  }
+  if (code === "refused") {
+    return join(
+      "Your session on " + instance + " can't read " + ticket + "'s variables.",
+      remotePrefillAccessLine(reply)
+    );
+  }
+  if (code === "ambiguous") {
+    return "Two records have number " + ticket + " on " + instance + ". Paste the ticket's link instead.";
+  }
+  if (code === "timeout") return "Reading from " + instance + " timed out. Try again.";
+  if (code === "source-changed") {
+    return "Your " + instance + " tab changed while GlideLens was reading it. Try again.";
+  }
+  if (code === "busy") return "Prefill is already running. Wait for it to finish.";
+  if (code === "read-error" && reply.message) return reply.message;
+  return "GlideLens couldn't read " + ticket + " from " + instance + ". Try again.";
+}
+
+async function prefillFromOtherInstance(value, where) {
+  const instance = prefillInstanceLabel(where.origin);
+  let ticket = where.label;
+  prefillRunning = true;
+  try {
+    showPrefillProgress("Reading " + ticket + " from " + instance + "…");
+    // The other tab's own progress arrives under this, relayed by the worker.
+    prefillStep = "From " + instance;
+    /* The worker bounds the read itself. This only catches a reply that
+     * never arrives, if the worker is torn down mid-read. */
+    let backstop = null;
+    const reply = await Promise.race([
+      chrome.runtime.sendMessage({ type: "PREFILL_REMOTE_READ", origin: where.origin, input: where.input }),
+      new Promise((resolve) => {
+        backstop = setTimeout(() => resolve({ ok: false, code: "timeout" }), PREFILL_REMOTE_REPLY_CEILING_MS);
+      }),
+    ]).finally(() => clearTimeout(backstop));
+    prefillStep = "";
+    if (!reply || reply.ok !== true || !Array.isArray(reply.variables)) {
+      finishPrefill([remotePrefillProblem(reply, where.origin, ticket)], true);
+      return;
+    }
+    const source = reply.source || {};
+    if (source.number) ticket = source.number;
+    const read = {
+      source,
+      sourceResult: {
+        variables: reply.variables,
+        skipped: reply.skipped || 0,
+        readRefused: Boolean(reply.readRefused),
+        readFailure: reply.readFailure || null,
+      },
+    };
+    if (!reply.variables.length) {
+      const problem = read.sourceResult.readRefused
+        ? remotePrefillProblem(Object.assign({}, reply, { code: "refused" }), where.origin, ticket)
+        : read.sourceResult.readFailure
+          ? "Couldn't read " + ticket + "'s variables on " + instance + ": " +
+            prefillErrorText(read.sourceResult.readFailure) + ". Try again."
+          : noCopyableVariablesMessage(read.sourceResult.skipped);
+      finishPrefill([problem], true);
+      return;
+    }
+
+    const prepared = await prepareCrossInstanceVariables(reply.variables, showPrefillProgress);
+    const variables = await orderVariablesForFill(prepared.variables, showPrefillProgress);
+    rememberPrefillSource(value, where.origin, source, variables);
+    if (!variables.length) {
+      finishPrefill(
+        ["Nothing from " + ticket + " can be filled on this instance."].concat(prepared.notes),
+        true
+      );
+      return;
+    }
+    read.sourceResult.variables = variables;
+    await fillPrefillForm(read, {
+      from: ticket + " on " + instance,
+      totalRead: reply.variables.length,
+      withheld: prepared.withheld,
+      withheldNotes: prepared.notes,
+      notes: read.sourceResult.readRefused
+        ? [remotePrefillAccessLine(reply)].concat(prepared.notes)
+        : prepared.notes,
+      /* Measured: a sandbox session impersonating a requester read only the
+       * multi-row sets, under names the form doesn't use, and the run said
+       * just "No matching variables on this form". */
+      partialRefusal: [
+        "Your session on " + instance + " can't read all of " + ticket +
+          "'s variables, and what it read isn't on this form.",
+        remotePrefillAccessLine(reply),
+      ].filter(Boolean).join(" "),
+    });
+  } catch (error) {
     finishPrefill([prefillErrorText(error)], true);
   } finally {
+    prefillStep = "";
     prefillRunning = false;
   }
 }
@@ -1461,9 +2113,16 @@ async function prefillWithSessionSwitch(value, ticket, target) {
   }
 }
 
-// Fills the form from a read that found variables, then reports.
-// context.filledAs names the impersonated account the form is filled as, and
-// context.back says how the session got back to it.
+/*
+ * Fills the form from a read that found variables, then reports.
+ * context.filledAs names the impersonated account the form is filled as, and
+ * context.back says how the session got back to it. From another instance:
+ * context.from names the source ("<ticket> on <instance>"), totalRead is how
+ * many variables were read, withheld how many of those were held back,
+ * withheldNotes say what was held back and why, notes are every note for the
+ * Done message, and partialRefusal is what to say instead of "No matching
+ * variables" when a part-refused read matched nothing.
+ */
 async function fillPrefillForm(read, context) {
   const ctx = context || {};
   const variables = read.sourceResult.variables;
@@ -1509,8 +2168,17 @@ async function fillPrefillForm(read, context) {
     const already = resp.alreadySet || 0;
     const unmatched = resp.unmatched || 0;
     if (!resp.filled && unmatched === variables.length) {
+      // Part of the ticket was refused and none of the rest is on this form:
+      // the refusal is the likelier reason, so it is what the person is told.
+      // What was held back before the fill is said either way: otherwise "1 not
+      // found" would hide that others were never sent.
+      if (read.sourceResult.readRefused && ctx.partialRefusal) {
+        finishPrefill([ctx.partialRefusal, ctx.back].concat(ctx.withheldNotes || []), true);
+        return;
+      }
       finishPrefill(
-        ["No matching variables on this form (" + unmatched + " not found).", ctx.back],
+        ["No matching variables on this form (" + unmatched + " not found).", ctx.back]
+          .concat(ctx.withheldNotes || []),
         true
       );
       return;
@@ -1519,8 +2187,13 @@ async function fillPrefillForm(read, context) {
     if (already) details.push(already + " already set");
     if (unmatched) details.push(unmatched + " not on this form");
     if (skipped) details.push(skipped + " skipped");
+    if (ctx.withheld) details.push(ctx.withheld + " not filled");
+    // The denominator is what was read. Variables held back never reach the
+    // fill, and counting only what was sent would quietly shrink it.
+    const total = Number.isFinite(ctx.totalRead) ? ctx.totalRead : variables.length;
     const summary =
-      "Done. Filled " + (resp.filled || 0) + " of " + variables.length + " variables" +
+      "Done. Filled " + (resp.filled || 0) + " of " + total + " variables" +
+      (ctx.from ? " from " + ctx.from : "") +
       (ctx.filledAs ? " as " + ctx.filledAs : "") +
       (details.length ? " (" + details.join(", ") + ")" : "") + ".";
     // Some tables answered and others did not: what was read is filled, but
@@ -1529,9 +2202,98 @@ async function fillPrefillForm(read, context) {
       read.sourceResult.readRefused || read.sourceResult.readFailure
         ? "Some of the ticket's variables couldn't be read, so check the form for gaps."
         : "";
-    finishPrefill([summary, partial, ctx.back, PREFILL_CLOSE_HINT], false);
+    finishPrefill(
+      [summary, prefillNote(partial), prefillNote(ctx.back)]
+        .concat((ctx.notes || []).map(prefillNote))
+        .concat(prefillHint(PREFILL_CLOSE_HINT)),
+      false
+    );
   } catch (error) {
     finishPrefill([prefillErrorText(error), ctx.back], true);
+  }
+}
+
+/*
+ * The source tab's half of a read from another instance. The worker asks this
+ * tab's top frame, because only a page of this instance holds its token; the
+ * read is the one Prefill makes at home, on this tab's session.
+ *
+ * It calls the readers directly rather than readPrefillSource, and touches no
+ * Prefill state, palette or toast here, so a Prefill the person is running in
+ * this tab is unaffected. Every read must stay on this instance and must carry
+ * a token: a token-less request raises the browser's own sign-in dialog.
+ */
+const PREFILL_EXPORT_PROGRESS_MS = 250;
+
+// An Error does not survive messaging; these four fields drive every message.
+function serialisePrefillError(error) {
+  if (!error) return null;
+  const out = { message: prefillErrorText(error) };
+  if (error.access) out.access = String(error.access);
+  if (typeof error.status === "number") out.status = error.status;
+  if (error.code) out.code = String(error.code);
+  return out;
+}
+
+async function exportPrefillSource(msg) {
+  const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
+  const input = typeof msg.input === "string" ? msg.input : "";
+  let lastSentAt = 0;
+  let pendingText = "";
+  let timer = null;
+  const send = () => {
+    const payload = { type: "PREFILL_REMOTE_PROGRESS", requestId };
+    if (pendingText) payload.message = pendingText;
+    pendingText = "";
+    lastSentAt = Date.now();
+    chrome.runtime.sendMessage(payload).catch(() => {});
+  };
+  /* At most one message per 250 ms. A step's text waits its turn rather than
+   * being dropped, and a heartbeat with no text rides on the same message: the
+   * worker counts any of them as the read being alive. */
+  const report = (text) => {
+    if (text) pendingText = text;
+    if (timer) return;
+    const wait = lastSentAt + PREFILL_EXPORT_PROGRESS_MS - Date.now();
+    if (wait <= 0) {
+      send();
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      send();
+    }, wait);
+  };
+  const heartbeat = () => report("");
+
+  // Started, before the first read: the worker tells "nothing was listening"
+  // from "the tab changed under the read" by whether this arrived.
+  send();
+  snGetManyListeners.add(heartbeat);
+  const readOptions = { expectedOrigin: location.origin, requireToken: true };
+  try {
+    const source = await resolveVariableSource(input, readOptions);
+    const result = await fetchSourceVariables(source, report, readOptions);
+    if (!result.variables.length && result.readFailure && result.readFailure.status === 401) {
+      return { ok: false, error: { message: "Not signed in", status: 401, code: "signed-out" } };
+    }
+    return {
+      ok: true,
+      variables: result.variables,
+      skipped: result.skipped,
+      readRefused: result.readRefused,
+      readFailure: serialisePrefillError(result.readFailure),
+      source: { mode: source.mode || "", number: source.number || "", table: source.table || "" },
+    };
+  } catch (error) {
+    const out = serialisePrefillError(error);
+    // Every read here carried a token, so a 401 is the session, not the token:
+    // measured, a signed-out tab answers 401 with JSON, never a login page.
+    if (error && error.status === 401) out.code = "signed-out";
+    return { ok: false, error: out };
+  } finally {
+    snGetManyListeners.delete(heartbeat);
+    clearTimeout(timer);
   }
 }
 
@@ -5457,12 +6219,25 @@ async function openCurrentRecordPlaybookExecutions() {
 }
 
 /*
- * Every branch here answers synchronously, so this listener must not return
- * true. `return true` means "a reply is coming later, hold the channel open",
- * and for the branches that never reply it left the sender's promise unsettled
- * until Chrome tore the port down. Answer in each branch, return false once.
+ * Every branch here but one answers synchronously, so this listener must not
+ * return true for them. `return true` means "a reply is coming later, hold the
+ * channel open", and for the branches that never reply it left the sender's
+ * promise unsettled until Chrome tore the port down. Answer in each branch,
+ * return false once. PREFILL_EXPORT_SOURCE is the one asynchronous branch, and
+ * it always replies.
  */
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === "PREFILL_EXPORT_SOURCE") {
+    // Only the worker may ask, and only the top frame answers: a frame can be
+    // from another instance, and one read per tab is what the worker awaits.
+    if (window !== window.top || !sender || sender.tab || sender.id !== chrome.runtime.id) {
+      return false;
+    }
+    exportPrefillSource(msg).then(sendResponse, (error) =>
+      sendResponse({ ok: false, error: serialisePrefillError(error) })
+    );
+    return true;
+  }
   if (msg && msg.type === "TOGGLE_PALETTE") {
     // Only the top frame owns the palette to avoid duplicate overlays. Every
     // frame still answers, so the sender is never left waiting on a port.
@@ -5682,14 +6457,18 @@ function buildCommands() {
     {
       id: "prefill-variables",
       label: "Variable Prefill",
-      description: "Copy catalog-variable values from another ticket…",
-      keywords: ["variable", "prefill", "copy", "ritm", "sctask", "req", "catalog", "portal", "clone"],
+      description: "Copy catalog-variable values from another ticket, on this or another open instance…",
+      keywords: [
+        "variable", "prefill", "copy", "ritm", "sctask", "req", "catalog", "portal", "clone",
+        "instance", "case",
+      ],
       group: "Catalog",
       input: true,
-      inputLabel: "Source ticket or sys_id",
-      placeholder: "RITM/SCTASK/REQ/task number or submitted record sys_id",
+      inputLabel: "Source ticket, sys_id or link",
+      placeholder: "RITM/SCTASK/REQ/case number, sys_id, or a ticket link",
       keepOpen: true,
-      run: prefillPortalVariablesFromTicket,
+      argExtras: (context) => mountPrefillSourcePicker(context),
+      run: (value) => prefillPortalVariablesFromTicket(value, prefillSourcePicker()),
     },
     // "Copy portal variable debug info" was unlisted in 0.10.0. It reports the
     // last prefill run's internals, which is a diagnostic for developing that
@@ -7462,6 +8241,13 @@ const PALETTE_CSS = `
   }
   #arg-input:focus{border-color:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb, var(--teal) 22%, transparent)}
   #arg-input::placeholder{color:var(--palette-placeholder)}
+  #arg-source{
+    width:100%;background:var(--palette-input);border:1px solid var(--palette-border);border-radius:7px;outline:none;
+    color:var(--palette-text);font-size:13px;padding:9px 10px;color-scheme:dark;
+  }
+  #arg-source:focus{border-color:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb, var(--teal) 22%, transparent)}
+  .cmd-input-row [hidden]{display:none}
+  .cmd-input-hint{color:var(--palette-muted);font-size:11px;line-height:1.45}
   #palette-confirm{
     padding:12px 16px 14px;border-top:1px solid var(--palette-border-subtle);
     color:var(--palette-body);font-size:12px;line-height:1.45;
@@ -7490,6 +8276,8 @@ const PALETTE_CSS = `
     border-radius:50%;animation:snh-toast-spin .8s linear infinite;
   }
   #toast.done::before{content:"✓";display:inline-block;margin-right:8px;font-weight:800;color:var(--teal)}
+  #toast .toast-note{color:var(--palette-body)}
+  #toast .toast-hint{color:var(--palette-muted)}
   @keyframes snh-toast-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion:reduce){#toast.busy::before{animation:none}}
   #toast a{color:var(--teal);text-decoration:underline;cursor:pointer}
@@ -7540,11 +8328,25 @@ const PALETTE_CSS = `
  * would leave the person guessing whether it is safe to close the palette.
  * A done or sticky message is a run's last word, after which Esc in a
  * command's input closes the palette (paletteShowsFinalMessage).
+ * options.lines: [{ text, kind }] draws each line in its own span, so a kind
+ * can set its colour. Every line is set as text: labels in them come from the
+ * instance.
  */
 function showToast(msg, isErr, durationMs, options) {
   if (!paletteToast) return;
   const opts = options || {};
-  paletteToast.textContent = msg;
+  if (Array.isArray(opts.lines) && opts.lines.length) {
+    paletteToast.textContent = "";
+    opts.lines.forEach((line, index) => {
+      const span = document.createElement("span");
+      if (line.kind) span.className = "toast-" + line.kind;
+      // #toast keeps white-space:pre-line, so this newline is the line break.
+      span.textContent = (index ? "\n" : "") + line.text;
+      paletteToast.appendChild(span);
+    });
+  } else {
+    paletteToast.textContent = msg;
+  }
   paletteToast.className = [isErr ? "err" : "", opts.busy ? "busy" : "", opts.done ? "done" : ""]
     .filter(Boolean)
     .join(" ");
@@ -7846,6 +8648,28 @@ function showArgInput(cmd) {
 
   argInput.value = "";
   argInput.focus();
+  /*
+   * Esc in any control of the row goes back to the command list, or closes
+   * the palette once a run has ended. Each control stops its own Esc, because
+   * the box closes the whole palette on any Esc that reaches it. Tab is let
+   * through to the box's focus trap, so it moves between the row's controls
+   * and wraps instead of leaving the palette.
+   */
+  const leaveArgInput = (e) => {
+    e.stopPropagation();
+    // A finished run's message says Esc closes the palette, so here it does,
+    // instead of going back to the command list.
+    if (paletteShowsFinalMessage()) {
+      e.preventDefault();
+      closePalette();
+      return;
+    }
+    activeInputCmd = null;
+    clearPaletteConfirmation();
+    if (row.isConnected) row.remove();
+    if (paletteList) paletteList.style.display = "";
+    if (paletteInput) paletteInput.focus();
+  };
   argInput.onkeydown = (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -7858,22 +8682,27 @@ function showArgInput(cmd) {
       if (!cmd.keepOpen) closePalette();
     }
     if (e.key === "Escape") {
-      // A finished run's message says Esc closes the palette, so here it does,
-      // instead of going back to the command list.
-      if (paletteShowsFinalMessage()) {
-        e.preventDefault();
-        e.stopPropagation();
-        closePalette();
-        return;
-      }
-      activeInputCmd = null;
-      clearPaletteConfirmation();
-      if (row.isConnected) row.remove();
-      if (paletteList) paletteList.style.display = "";
-      if (paletteInput) paletteInput.focus();
+      leaveArgInput(e);
+      return;
     }
-    e.stopPropagation();
+    if (e.key !== "Tab") e.stopPropagation();
   };
+  // A command's own controls under the input. Only the input runs: Enter in
+  // any other control does nothing.
+  if (typeof cmd.argExtras === "function") {
+    cmd.argExtras({
+      row,
+      input: argInput,
+      keydown: (e) => {
+        if (e.key === "Escape") {
+          leaveArgInput(e);
+          return;
+        }
+        if (e.key === "Enter") e.preventDefault();
+        if (e.key !== "Tab") e.stopPropagation();
+      },
+    });
+  }
 }
 
 /*
@@ -7955,6 +8784,103 @@ function returnPaletteFocusToInput() {
   if (!paletteShadow) return;
   const target = paletteShadow.getElementById("arg-input") || paletteInput;
   if (target) target.focus();
+}
+
+/*
+ * Variable Prefill's "Read from": this instance, or another ServiceNow
+ * instance open in this browser, from the worker's PREFILL_SOURCE_INSTANCES.
+ * It shows only when another instance is open, and nothing is remembered
+ * between openings: each opening starts on this instance, while repeated runs
+ * from one opening keep the choice. The prerequisite is explained in the hint
+ * under it before anyone needs to know it.
+ */
+const PREFILL_SOURCE_HINT_OTHERS =
+  "Lists the instances open in this browser. To add one, open it in a tab, sign in, then reopen Variable Prefill.";
+const PREFILL_SOURCE_HINT_NONE =
+  "To copy from another instance, open it in a tab and sign in, then reopen Variable Prefill.";
+
+function prefillSourceHasOption(select, origin) {
+  return Array.from(select.options || []).some((option) => option.value === origin);
+}
+
+function mountPrefillSourcePicker({ row, input, keydown }) {
+  const here = location.origin;
+  const label = document.createElement("label");
+  label.className = "cmd-input-label";
+  label.htmlFor = "arg-source";
+  label.textContent = "Read from";
+  const select = document.createElement("select");
+  select.id = "arg-source";
+  const own = document.createElement("option");
+  own.value = here;
+  own.textContent = "This instance (" + prefillInstanceLabel(here) + ")";
+  select.appendChild(own);
+  select.value = here;
+  select.onkeydown = keydown;
+  label.hidden = true;
+  select.hidden = true;
+  const hint = document.createElement("div");
+  hint.id = "arg-hint";
+  hint.className = "cmd-input-hint";
+  hint.textContent = PREFILL_SOURCE_HINT_NONE;
+  row.appendChild(label);
+  row.appendChild(select);
+  row.appendChild(hint);
+
+  /* A link shows the instance it will be read from as soon as it is in the
+   * input. Only a link to an instance in the list moves it, and text that is
+   * not a link leaves the person's own choice alone. The run parses again
+   * and decides, so this is only ever a convenience. */
+  const followLink = () => {
+    const link = prefillLinkIn(input.value);
+    if (link && !link.refused && prefillSourceHasOption(select, link.origin)) select.value = link.origin;
+  };
+  input.addEventListener("input", followLink);
+
+  // A page left open across an extension reload throws here, synchronously;
+  // the row then simply stays on this instance.
+  let request;
+  try {
+    request = Promise.resolve(chrome.runtime.sendMessage({ type: "PREFILL_SOURCE_INSTANCES" }));
+  } catch (e) {
+    return;
+  }
+  request
+    .then((resp) => {
+      if (!select.isConnected || !resp || resp.ok !== true || !Array.isArray(resp.origins)) return;
+      const others = resp.origins.filter(
+        (entry) => entry && typeof entry.origin === "string" && entry.origin !== here
+      );
+      if (!others.length) return;
+      others.forEach((entry) => {
+        const option = document.createElement("option");
+        option.value = entry.origin;
+        option.textContent = String(entry.label || prefillInstanceLabel(entry.origin));
+        try {
+          option.title = new URL(entry.origin).hostname;
+        } catch (e) {}
+        select.appendChild(option);
+      });
+      label.hidden = false;
+      select.hidden = false;
+      hint.textContent = PREFILL_SOURCE_HINT_OTHERS;
+      followLink();
+    })
+    .catch(() => {});
+}
+
+// The run's view of Read from, or null when the palette has none.
+function prefillSourcePicker() {
+  const select = paletteShadow && paletteShadow.getElementById("arg-source");
+  if (!select) return null;
+  return {
+    // Until the list arrives, the select is hidden and the run is local.
+    chosenOrigin: () => (select.hidden ? "" : select.value),
+    show: (origin) => {
+      if (prefillSourceHasOption(select, origin)) select.value = origin;
+    },
+    othersOpen: () => !select.hidden && Array.from(select.options || []).length > 1,
+  };
 }
 
 function clampPalettePosition(box, left, top, dimensions) {
@@ -8087,7 +9013,9 @@ function makePaletteDraggable(box, handle) {
 function trapPaletteFocus(event) {
   if (event.key !== "Tab" || !paletteShadow) return;
   const focusable = Array.from(
-    paletteShadow.querySelectorAll('input:not([disabled]),button:not([disabled]),[tabindex]:not([tabindex="-1"])')
+    paletteShadow.querySelectorAll(
+      'input:not([disabled]),select:not([disabled]),button:not([disabled]),[tabindex]:not([tabindex="-1"])'
+    )
   ).filter((element) => !element.hidden);
   if (!focusable.length) return;
 

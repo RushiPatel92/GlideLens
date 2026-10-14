@@ -304,10 +304,30 @@ matching records.
 
 | Command | Description |
 | --- | --- |
-| Variable Prefill | *Copy catalog-variable values from another ticket…* Enter a RITM/SCTASK/REQ/task number (or submitted-record sys_id) to prefill portal catalog variables from that ticket. While impersonating someone who can't read that ticket, it offers to switch your session back to you, read it, impersonate them again and fill the form as them. It does that only when you confirm, and ServiceNow records both switches in its audit log. |
+| Variable Prefill | *Copy catalog-variable values from another ticket, on this or another open instance…* Enter a RITM/SCTASK/REQ/case number, a submitted-record sys_id, or the ticket's link to prefill portal catalog variables from that ticket. The ticket can be on another instance: see *Prefill from another instance* below. While impersonating someone who can't read a ticket on this instance, it offers to switch your session back to you, read it, impersonate them again and fill the form as them. It does that only when you confirm, and ServiceNow records both switches in its audit log. |
 | Variable Values | *Inspect current catalog-variable values.* On a classic RITM or record-producer target, compares metadata-allowlisted stored values with exact `variables.<name>` live `g_form` values; identity and the page timezone are captured with the form, secrets are never fetched, and each multi-row set is compared row by row. On a verified Workspace record — a Service Operations Workspace request item, or a supplier case or supplier task in Source-to-Pay Workspace — compares a narrower, independently verified set of raw component values, multi-row sets included, after route, record, form, read-permission, and value-shape checks; partial and stored-only states say explicitly what was not compared. A multi-row set holding a column whose representation is not verified — a date column on any surface, or a column type that surface has not seen the set render raw — is listed with its stored rows and named as uncompared rather than reported as a difference. Set rows render as a table — one line per row, one column per variable — and where a comparison ran, a changed cell reads stored → live; copied output keeps the raw row array. Each supported surface has its own verified type list, so none of them inherits another's, and every other Workspace experience and table remains unsupported. On a Service Portal ordering form, keeps the best-effort live-value view with variable-set and hidden/visible filters. |
 | Catalog Logic | *Inspect catalog client scripts and UI policies.* Read-only panel listing the catalog client scripts and catalog UI policies bound to the current item or its variable sets — type (onLoad/onChange/…), watched variable, active state, and which views they run on. Group onChange scripts by the variable they watch, see a ⚠ hint on rows that won't fire while ordering the item (inactive, or RITM/Task views only), and open the whole set as a platform list. Click a row to open the record. Nothing here runs or edits the logic. |
 | Variable Insight | *Show or hide per-variable insight icons.* A per-variable icon on a Service Portal catalog form. Clicking an icon opens the Catalog Logic panel scoped to that one variable — the onChange scripts watching it and the UI policy actions targeting it (hides / mandatory / read-only / sets value) — with **Show all** to clear the scope. Also bound to `Alt`+double-click on the form. |
+
+**Prefill from another instance.** Variable Prefill can read a ticket on one
+instance and fill the same catalog item on another — a sandbox ticket onto DEV,
+for example. The other instance must be open in a tab of this browser profile,
+and signed in; the ticket itself doesn't need to be open there. Name the source
+in either of two ways:
+
+- choose the instance under **Read from**, which lists the instances open in
+  this browser, and type the ticket's number or sys_id; or
+- paste the ticket's link, which always names its own instance.
+
+GlideLens reads the ticket through that tab's own session, in the same way it
+reads the instance you are on, and stores no credentials. Before filling, it
+looks up every referenced record on the instance you are filling: a reference
+whose record isn't there is left empty and named, rather than filled with an id
+that points nowhere, a list keeps only the records found, and attachments are
+never copied. If you are impersonating on the form's instance, no session switch
+is needed: the read uses the other tab's session, and the form is filled as the
+person you are impersonating. Check your organisation's rules before copying
+production data into a non-production form.
 
 **Navigate**
 

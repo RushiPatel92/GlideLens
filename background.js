@@ -90,15 +90,34 @@ function extractSysId() {
   return fromText(location.href);
 }
 
+/*
+ * Two opt-in guards, both set by a Prefill read exported to another instance's
+ * tab, and both answered before anything is fetched:
+ *
+ *   - expectedOrigin: that tab can embed a frame from a different instance,
+ *     whose answer would otherwise be taken for the source's.
+ *   - requireToken: a request WITHOUT X-UserToken is answered with
+ *     `WWW-Authenticate: Basic`, and the browser then raises its own sign-in
+ *     dialog and holds the fetch until someone dismisses it (measured in Edge).
+ *     With any token, even a dead one, the 401 carries `none` and no dialog.
+ *
+ * A body that is not JSON is a failure for every caller, never a throw. A
+ * fetch that throws (a network error, or a redirect to an identity provider
+ * that CORS blocks) is left to throw: it surfaces as a frame failure, as before.
+ */
 async function tableApiGetInPage(request) {
+  const options = request.options || {};
+  if (options.expectedOrigin && options.expectedOrigin !== location.origin) {
+    return { ok: false, status: 0, wrongOrigin: true, error: "wrong origin" };
+  }
   const params = new URLSearchParams();
   params.set("sysparm_query", request.query || "");
   if (request.fields) params.set("sysparm_fields", request.fields);
   params.set("sysparm_limit", String(request.limit || 200));
-  if (request.options && request.options.displayAll) {
+  if (options.displayAll) {
     params.set("sysparm_display_value", "all");
   }
-  if (request.options && request.options.excludeRefLinks) {
+  if (options.excludeRefLinks) {
     params.set("sysparm_exclude_reference_link", "true");
   }
 
@@ -112,6 +131,14 @@ async function tableApiGetInPage(request) {
   try {
     if (typeof g_ck !== "undefined" && g_ck) headers["X-UserToken"] = g_ck;
   } catch (e) {}
+  if (options.requireToken && !headers["X-UserToken"]) {
+    return {
+      ok: false,
+      status: 0,
+      noToken: true,
+      error: "No ServiceNow session token reading " + request.table,
+    };
+  }
 
   const res = await fetch(url, {
     credentials: "same-origin",
@@ -124,7 +151,17 @@ async function tableApiGetInPage(request) {
       error: "HTTP " + res.status + " reading " + request.table,
     };
   }
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    return {
+      ok: false,
+      status: res.status,
+      nonJson: true,
+      error: "Unreadable answer reading " + request.table,
+    };
+  }
   return { ok: true, result: (data && data.result) || [] };
 }
 
@@ -320,6 +357,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   releasePrefillLock(tabId, null);
   /* A prefill switch whose page is unloading will never be finished by it. */
   prefillSwapByTab.delete(tabId);
+  /* Nor will a read from another instance this page was waiting on. */
+  prefillRemoteByTab.delete(tabId);
   /* Likewise a Translation Assistant fill: the page it was writing into is
    * unloading, and the fresh page has none of that fill's content to revert. */
   releaseLfAssistantApplyLock(tabId, null);
@@ -371,6 +410,13 @@ const PREFILL_STALLED = { stalled: true };
  * the forever-hang this whole change removes.
  */
 const prefillOpByTab = new Map();
+
+/*
+ * One read from another instance per form tab (PREFILL_REMOTE_READ). Released
+ * when the read settles, or when the form's tab navigates or closes: a read
+ * changes nothing, so a page that has gone may simply start another.
+ */
+const prefillRemoteByTab = new Map();
 
 function notePrefillActivity(tabId) {
   const op = prefillOpByTab.get(tabId);
@@ -795,6 +841,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   frameGenerationByTab.delete(tabId);
   releasePrefillLock(tabId, null);
   prefillSwapByTab.delete(tabId);
+  prefillRemoteByTab.delete(tabId);
   releaseLfAssistantApplyLock(tabId, null);
 });
 
@@ -6500,6 +6547,407 @@ async function endPrefillSwap(tabId, origin) {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Prefill from another instance.
+
+   The form is on one instance and the ticket on another. A Table API read
+   needs the page token of the instance it reads, and the only way to get one
+   for that instance is to run code in a page of it. So the read is run by
+   GlideLens's own content script in a tab the person already has open there,
+   on that tab's session: the same read Prefill makes at home, with no second
+   copy of its rules.
+
+   These routes are a feature route, never a proxy. In goes a ticket
+   identifier and nothing else; out comes the variable list. Nothing from
+   content code names a table, query or tab, and the source tab answers only a
+   message from the extension itself.
+   --------------------------------------------------------------------------- */
+const PREFILL_REMOTE_IDLE_MS = 45000;
+const PREFILL_REMOTE_CEILING_MS = 180000;
+const PREFILL_REMOTE_TICK_MS = 1000;
+const PREFILL_REMOTE_MAX_ATTEMPTS = 3;
+const PREFILL_REMOTE_MAX_CANDIDATES = 8;
+const PREFILL_REMOTE_MAX_INPUT = 2000;
+const PREFILL_REMOTE_MAX_REPLY_CHARS = 5 * 1024 * 1024;
+const PREFILL_REMOTE_MAX_VARIABLES = 1000;
+const PREFILL_REMOTE_MAX_PROGRESS = 200;
+const PREFILL_REMOTE_MAX_MESSAGE = 500;
+
+/* One entry per message sent to a source tab, keyed by the id the worker gave
+ * it. Its progress, and only its source tab's, keeps it alive. */
+const prefillRemoteByRequest = new Map();
+let prefillRemoteSequence = 0;
+
+function senderServiceNowOrigin(sender) {
+  return (
+    serviceNowOrigin(sender && sender.origin) ||
+    serviceNowOrigin(sender && sender.tab && sender.tab.url)
+  );
+}
+
+function prefillInstanceName(origin) {
+  try {
+    return new URL(origin).hostname.split(".")[0] || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+/* ServiceNow tabs in the sender's own browsing context. With GlideLens allowed
+ * in incognito, the worker sees both kinds of window, and a normal window and
+ * an incognito one must never exchange values. tabs.query returns each tab's
+ * url without the "tabs" permission, because the host permission covers it
+ * (measured in Chromium 151 and Edge 155). */
+async function prefillServiceNowTabs(sender, pattern) {
+  const tabs = await chrome.tabs.query({ url: pattern || "https://*.service-now.com/*" });
+  const incognito = Boolean(sender && sender.tab && sender.tab.incognito);
+  return (tabs || []).filter(
+    (tab) => tab && Boolean(tab.incognito) === incognito && serviceNowOrigin(tab.url)
+  );
+}
+
+/* Origins only: no tab ids and no titles cross to content code. */
+async function prefillSourceInstances(sender) {
+  const own = senderServiceNowOrigin(sender);
+  const origins = new Set();
+  (await prefillServiceNowTabs(sender)).forEach((tab) => {
+    const origin = serviceNowOrigin(tab.url);
+    if (origin && origin !== own) origins.add(origin);
+  });
+  return {
+    ok: true,
+    origins: Array.from(origins)
+      .sort()
+      .map((origin) => ({ origin, label: prefillInstanceName(origin) })),
+  };
+}
+
+/* A tab active in any window first, then the most recently used (Chrome 121+
+ * supplies lastAccessed), then query order. The sender's own window does not
+ * help: its active tab is the form. */
+function orderPrefillSourceTabs(tabs) {
+  return tabs
+    .map((tab, index) => ({ tab, index }))
+    .sort((a, b) => {
+      if (Boolean(a.tab.active) !== Boolean(b.tab.active)) return a.tab.active ? -1 : 1;
+      const usedA = Number(a.tab.lastAccessed) || 0;
+      const usedB = Number(b.tab.lastAccessed) || 0;
+      if (usedA !== usedB) return usedB - usedA;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.tab);
+}
+
+/* A file or image URL on the instance (its favicon, say) matches the URL
+ * pattern and even runs the content script, but is not a ServiceNow page and
+ * has no g_ck. A signed-out login page does have one, and is kept: its read
+ * then answers "signed out". */
+async function tabHasTokenFrame(tabId) {
+  try {
+    const frameIds = await discoverContentFrames(tabId, "prefill source");
+    const probes = await Promise.all(frameIds.map((frameId) => probeTokenFrame(tabId, frameId)));
+    return probes.some((probe) => probe && probe.hasToken);
+  } catch (error) {
+    return false;
+  }
+}
+
+/*
+ * Bounded by inactivity rather than a fixed time: the source sends a heartbeat
+ * when it starts and after every Table API read, and each read may take up to
+ * the 30 s frame ceiling, so 45 s of silence means stuck.
+ *
+ * Abandoning a READ is harmless, because it changes nothing. Do not copy this
+ * bound onto anything that writes: the fill's own watchdog says "it may still
+ * be running" for exactly that reason.
+ */
+function prefillRemoteWatchdog(attempt) {
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (attempt.done) return;
+      const now = Date.now();
+      if (
+        now - attempt.lastActivityAt > PREFILL_REMOTE_IDLE_MS ||
+        now - attempt.startedAt > PREFILL_REMOTE_CEILING_MS
+      ) {
+        resolve({ timedOut: true });
+        return;
+      }
+      setTimeout(tick, PREFILL_REMOTE_TICK_MS);
+    };
+    setTimeout(tick, PREFILL_REMOTE_TICK_MS);
+  });
+}
+
+/* Frame 0 only: a broadcast would run the read once per frame. Resolves
+ * { value } for a reply, { rejected } for a failed send, or { timedOut }, plus
+ * whether the source was heard from first. */
+function forwardPrefillExport(op, tabId) {
+  const requestId = "prefill-remote:" + Date.now() + ":" + ++prefillRemoteSequence;
+  const attempt = {
+    tabId,
+    targetTabId: op.targetTabId,
+    startedAt: op.startedAt,
+    lastActivityAt: Date.now(),
+    heard: false,
+    done: false,
+  };
+  prefillRemoteByRequest.set(requestId, attempt);
+  const reply = chrome.tabs
+    .sendMessage(tabId, { type: "PREFILL_EXPORT_SOURCE", input: op.input, requestId }, { frameId: 0 })
+    .then(
+      (value) => ({ value }),
+      () => ({ rejected: true })
+    );
+  return Promise.race([reply, prefillRemoteWatchdog(attempt)]).then((outcome) => {
+    attempt.done = true;
+    prefillRemoteByRequest.delete(requestId);
+    return Object.assign({ heard: attempt.heard }, outcome);
+  });
+}
+
+/* Progress, and the heartbeat it carries, from the source tab of a read in
+ * flight. Anything else is dropped. */
+function notePrefillRemoteProgress(msg, sender) {
+  const attempt = typeof msg.requestId === "string" ? prefillRemoteByRequest.get(msg.requestId) : null;
+  if (!attempt || attempt.done) return;
+  if (!sender.tab || sender.tab.id !== attempt.tabId || sender.frameId !== 0) return;
+  attempt.heard = true;
+  attempt.lastActivityAt = Date.now();
+  if (typeof msg.message === "string" && msg.message) {
+    sendToTab(
+      attempt.targetTabId,
+      { type: "PREFILL_PROGRESS", message: msg.message.slice(0, PREFILL_REMOTE_MAX_PROGRESS) },
+      { frameId: 0 }
+    );
+  }
+}
+
+function isPlainRecord(value) {
+  return Object.prototype.toString.call(value) === "[object Object]";
+}
+
+const PREFILL_VARIABLE_STRING_FIELDS = [
+  "name",
+  "label",
+  "type",
+  "value",
+  "displayValue",
+  "sourceSysId",
+  "questionId",
+  "variableSet",
+  "referenceTable",
+];
+const PREFILL_VARIABLE_NUMBER_FIELDS = ["order", "sourceIndex", "rowCount"];
+const PREFILL_COLUMN_META_FIELDS = ["type", "reference", "lookupTable", "listTable"];
+const PREFILL_ATTACHMENT_FIELDS = ["sysId", "fileName", "contentType", "sizeBytes", "tableName", "tableSysId"];
+
+/* Copies the named string fields of a record. null and absent are the same;
+ * any other type is a refusal. */
+function checkedStringFields(input, fields) {
+  if (!isPlainRecord(input)) return null;
+  const out = {};
+  for (const field of fields) {
+    const value = input[field];
+    if (value == null) continue;
+    if (typeof value !== "string") return null;
+    out[field] = value;
+  }
+  return out;
+}
+
+/* One variable against its known fields. A known field of the wrong type
+ * refuses it; an unknown field is dropped, so a harmless addition on one side
+ * cannot break the feature. */
+function checkedPrefillVariable(input) {
+  const out = checkedStringFields(input, PREFILL_VARIABLE_STRING_FIELDS);
+  if (!out) return null;
+  for (const field of PREFILL_VARIABLE_NUMBER_FIELDS) {
+    const value = input[field];
+    if (value == null) continue;
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    out[field] = value;
+  }
+  if (input.orderKnown != null) {
+    if (typeof input.orderKnown !== "boolean") return null;
+    out.orderKnown = input.orderKnown;
+  }
+  if (input.columns != null) {
+    if (!Array.isArray(input.columns) || input.columns.some((column) => typeof column !== "string")) {
+      return null;
+    }
+    out.columns = input.columns.slice();
+  }
+  if (input.columnMeta != null) {
+    if (!isPlainRecord(input.columnMeta)) return null;
+    out.columnMeta = {};
+    for (const column of Object.keys(input.columnMeta)) {
+      const meta = checkedStringFields(input.columnMeta[column], PREFILL_COLUMN_META_FIELDS);
+      if (!meta) return null;
+      if (column !== "__proto__") out.columnMeta[column] = meta;
+    }
+  }
+  if (input.attachments != null) {
+    if (!Array.isArray(input.attachments)) return null;
+    out.attachments = [];
+    for (const attachment of input.attachments) {
+      const checked = checkedStringFields(attachment, PREFILL_ATTACHMENT_FIELDS);
+      if (!checked) return null;
+      out.attachments.push(checked);
+    }
+  }
+  return out;
+}
+
+/* The export's reply, rebuilt from an allowlist, or null for a malformed one. */
+function checkedPrefillExport(reply) {
+  let size = 0;
+  try {
+    size = JSON.stringify(reply).length;
+  } catch (error) {
+    return null;
+  }
+  if (size > PREFILL_REMOTE_MAX_REPLY_CHARS) return null;
+  if (!Array.isArray(reply.variables) || reply.variables.length > PREFILL_REMOTE_MAX_VARIABLES) {
+    return null;
+  }
+  const variables = [];
+  for (const variable of reply.variables) {
+    const checked = checkedPrefillVariable(variable);
+    if (!checked) return null;
+    variables.push(checked);
+  }
+  const out = { ok: true, variables, skipped: 0, readRefused: false, readFailure: null, source: {} };
+  if (reply.skipped != null) {
+    if (typeof reply.skipped !== "number" || !Number.isFinite(reply.skipped)) return null;
+    out.skipped = reply.skipped;
+  }
+  if (reply.readRefused != null) {
+    if (typeof reply.readRefused !== "boolean") return null;
+    out.readRefused = reply.readRefused;
+  }
+  if (reply.readFailure != null) {
+    const failure = checkedStringFields(reply.readFailure, ["message", "access", "code"]);
+    if (!failure) return null;
+    if (reply.readFailure.status != null) {
+      if (typeof reply.readFailure.status !== "number") return null;
+      failure.status = reply.readFailure.status;
+    }
+    if (failure.message) failure.message = failure.message.slice(0, PREFILL_REMOTE_MAX_MESSAGE);
+    out.readFailure = failure;
+  }
+  if (reply.source != null) {
+    const source = checkedStringFields(reply.source, ["mode", "number", "table"]);
+    if (!source) return null;
+    out.source = source;
+  }
+  return out;
+}
+
+/* Only after an access answer, so a refusal can say the session there is
+ * impersonating someone. Prefill never offers to switch another tab's
+ * session: that would change a session the person isn't looking at. */
+async function prefillSourceImpersonating(tabId, origin) {
+  try {
+    const state = await readImpersonationState(tabId, origin);
+    return Boolean(state && state.isImpersonating === true);
+  } catch (error) {
+    return false;
+  }
+}
+
+async function settlePrefillExport(reply, tabId, origin) {
+  if (reply.ok === true) {
+    const checked = checkedPrefillExport(reply);
+    if (!checked) return { ok: false, code: "malformed" };
+    checked.sourceImpersonating = checked.readRefused
+      ? await prefillSourceImpersonating(tabId, origin)
+      : false;
+    return checked;
+  }
+  const error = isPlainRecord(reply.error) ? reply.error : {};
+  const access = error.access === "refused" || error.access === "hidden" ? error.access : "";
+  const code =
+    error.code === "signed-out" || error.code === "ambiguous" ? error.code : access || "read-error";
+  const out = { ok: false, code };
+  if (typeof error.status === "number" && Number.isFinite(error.status)) out.status = error.status;
+  if (access) {
+    out.access = access;
+    out.sourceImpersonating = await prefillSourceImpersonating(tabId, origin);
+  }
+  if (code === "read-error" && typeof error.message === "string") {
+    out.message = error.message.slice(0, PREFILL_REMOTE_MAX_MESSAGE);
+  }
+  return out;
+}
+
+async function runPrefillRemoteRead(op, sender, origin) {
+  const tabs = orderPrefillSourceTabs(
+    (await prefillServiceNowTabs(sender, origin + "/*")).filter(
+      (tab) => serviceNowOrigin(tab.url) === origin && tab.id !== op.targetTabId
+    )
+  );
+  if (!tabs.length) return { ok: false, code: "not-open" };
+  /* Discarding gives a tab a new id (measured), so no source tab id is kept
+   * beyond this one read. */
+  const awake = tabs.filter((tab) => !tab.discarded);
+  let attempts = 0;
+  for (const tab of awake.slice(0, PREFILL_REMOTE_MAX_CANDIDATES)) {
+    if (attempts >= PREFILL_REMOTE_MAX_ATTEMPTS) break;
+    if (!(await tabHasTokenFrame(tab.id))) continue;
+    attempts += 1;
+    const outcome = await forwardPrefillExport(op, tab.id);
+    if (outcome.timedOut) return { ok: false, code: "timeout" };
+    /*
+     * One rule for a tab that never answered: a send that failed, or a reply
+     * that is not an object, before the source's first heartbeat means
+     * nothing there was listening (a message no listener answers resolves
+     * undefined; it does not reject). Try the next tab. The error's wording
+     * is never consulted, because it differs across Chrome and Edge. After a
+     * heartbeat, the source tab changed under the read: no other tab is tried.
+     */
+    if (outcome.rejected || !isPlainRecord(outcome.value)) {
+      if (!outcome.heard) continue;
+      return { ok: false, code: "source-changed" };
+    }
+    return settlePrefillExport(outcome.value, tab.id, origin);
+  }
+  if (attempts) return { ok: false, code: "no-receiver" };
+  return { ok: false, code: awake.length < tabs.length ? "asleep" : "not-open" };
+}
+
+async function readPrefillFromOtherInstance(msg, sender) {
+  const own = senderServiceNowOrigin(sender);
+  const origin = serviceNowOrigin(msg.origin);
+  if (
+    !sender.tab ||
+    sender.frameId !== 0 ||
+    !own ||
+    !origin ||
+    origin !== msg.origin ||
+    origin === own ||
+    typeof msg.input !== "string" ||
+    !msg.input.trim() ||
+    msg.input.length > PREFILL_REMOTE_MAX_INPUT
+  ) {
+    return { ok: false, code: "invalid" };
+  }
+  /* The account on that instance is mid-switch, and a read made now would be
+   * made as whoever the switch has left it. */
+  for (const swap of prefillSwapByTab.values()) {
+    if (swap && swap.origin === origin) return { ok: false, code: "switching" };
+  }
+  const targetTabId = sender.tab.id;
+  if (prefillRemoteByTab.has(targetTabId)) return { ok: false, code: "busy" };
+  const op = { input: msg.input, targetTabId, startedAt: Date.now() };
+  prefillRemoteByTab.set(targetTabId, op);
+  try {
+    return await runPrefillRemoteRead(op, sender, origin);
+  } finally {
+    if (prefillRemoteByTab.get(targetTabId) === op) prefillRemoteByTab.delete(targetTabId);
+  }
+}
+
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
 // Keep the destination beside the ServiceNow tab that initiated the command,
 // rather than appending it to the end of whichever window is currently active.
@@ -6665,9 +7113,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       /* The status goes back with the error: Prefill tells a 403, the
        * session's own refusal, from a timeout or a server error. Every frame
-       * shares that session, so one frame's 403 speaks for them all. */
+       * shares that session, so one frame's 403 speaks for them all. A frame
+       * on another instance speaks for none of them, so its refusal is the
+       * last resort, behind any real answer from this instance. */
+      const sameInstance = results.filter((item) => !item.ok && !item.wrongOrigin);
       const error =
-        results.find((item) => !item.ok && item.status === 403) ||
+        sameInstance.find((item) => item.status === 403) ||
+        sameInstance.find((item) => item.status > 0) ||
+        sameInstance[0] ||
         results.find((item) => !item.ok);
       const reply = {
         ok: false,
@@ -6988,6 +7441,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: false, error: String(error) });
     });
     return true;
+  }
+  /* Prefill from another instance. The list takes nothing and returns origins
+   * only; the read takes an origin and a ticket identifier, and nothing that
+   * could name a table, query or tab. */
+  if (msg && msg.type === "PREFILL_SOURCE_INSTANCES" && sender.tab) {
+    if (sender.frameId !== 0) {
+      sendResponse({ ok: false, origins: [] });
+      return false;
+    }
+    prefillSourceInstances(sender)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, origins: [] }));
+    return true;
+  }
+  if (msg && msg.type === "PREFILL_REMOTE_READ" && sender.tab) {
+    readPrefillFromOtherInstance({ origin: msg.origin, input: msg.input }, sender)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, code: "failed" }));
+    return true;
+  }
+  if (msg && msg.type === "PREFILL_REMOTE_PROGRESS" && sender.tab) {
+    notePrefillRemoteProgress({ requestId: msg.requestId, message: msg.message }, sender);
   }
   if (msg && msg.type === "MAP_PORTAL_VARIABLES" && sender.tab) {
     readFromPageFrames(

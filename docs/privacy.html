@@ -128,7 +128,7 @@ main.wrap { padding-top: 40px; }
 
   <p class="eyebrow">Privacy</p>
   <h1>What GlideLens does with your data</h1>
-  <p class="updated">Last updated 9 October 2026 · applies to GlideLens v0.11.1 and later</p>
+  <p class="updated">Last updated 14 October 2026 · applies to GlideLens v0.11.1 and later</p>
 
   <div class="tldr">
     <p><strong>There is no GlideLens server.</strong> No account, no telemetry, no
@@ -144,7 +144,9 @@ main.wrap { padding-top: 40px; }
 
   <p>All of this is processed on your device, in your browser, while you are
   using the feature that needs it. None of it is transmitted anywhere except
-  back to the ServiceNow instance it came from.</p>
+  back to the ServiceNow instance it came from — or, when you ask Variable
+  Prefill to copy a ticket from another instance you have open, to the
+  instance whose form you are filling, as described below.</p>
 
   <div class="scroll-x">
   <table>
@@ -237,10 +239,13 @@ main.wrap { padding-top: 40px; }
   <h2>What leaves your device</h2>
 
   <p><strong>Nothing, other than requests to the ServiceNow instance you are
-  already signed in to.</strong> The extension makes network requests to exactly
-  one place: the origin of the ServiceNow tab you are on. It has permission to
-  reach <code>https://*.service-now.com/*</code> and nothing else, so it could
-  not contact a third party even if it tried to.</p>
+  already signed in to.</strong> The extension makes network requests to the
+  origin of the ServiceNow tab you are on. When you ask Variable Prefill to read
+  a ticket from another instance, GlideLens reads it through a tab you already
+  have open on that instance, with that tab's own session, in the same way. It
+  never signs in anywhere itself. It has permission to reach
+  <code>https://*.service-now.com/*</code> and nothing else, so it could not
+  contact a third party even if it tried to.</p>
 
   <p>There is no analytics, no crash reporting, no usage counter, no A/B testing
   and no remote configuration. The extension contains no remotely-loaded code:
@@ -277,8 +282,12 @@ main.wrap { padding-top: 40px; }
   <p><strong>Prefill changes unsaved fields on the catalog form in front of
   you</strong>, which is the entire point of it — it copies values from a ticket
   you name into the form you are filling in, so you can review them and submit
-  yourself. It fills the form; you decide what happens to it. Nothing is saved
-  to the instance unless you submit it.</p>
+  yourself. The ticket can be on this instance or on another instance you name
+  and have open; in that case GlideLens first looks up the records the values
+  refer to on the instance you are filling, and leaves out any it cannot find
+  there. It fills the form; you decide what happens to it. Nothing is saved
+  to the instance unless you submit it. Check your organisation's rules before
+  copying production data into a non-production form.</p>
 
   <p>While you are impersonating someone, the account you are acting as often
   cannot read another person's ticket. Prefill can then offer to switch your
