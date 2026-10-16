@@ -237,6 +237,112 @@ does not replay the broader server prefilter or open a Workspace route.
 Table metadata caches only in page memory. A newer search or a closed panel
 invalidates older work so stale results cannot replace the current search.
 
+### Starred tables
+
+A user can star a table, and a starred table remembers its search fields.
+These are **user data, not a cache**: there is no expiry, and nothing writes
+them except starring, unstarring, or changing a starred table's fields.
+Opening the panel and selecting a favourite write nothing, and there is no
+automatic "recent tables" list — that would be the search history the panel
+promises not to keep.
+
+- **Storage.** One `chrome.storage.local` key per instance,
+  `snhRecordLensFavorites:<origin>`, holding at most 20 tables. Never
+  `storage.sync`, which would send customer table names to the browser vendor.
+- **The worker owns every operation**, through `RECORD_LENS_FAVORITES` with an
+  `op` of `list`, `star`, `unstar`, `fields` or `filterFields`. A favourite
+  remembers filter field *names*, never values: a value is a record
+  identifier, and no key of the stored shape could carry one. The Code Search cache lock
+  serialises writes, not read-modify-write, and a star adds to what is stored,
+  so a tab sending its finished list could overwrite another tab's star. Each
+  operation is therefore applied to the stored value inside the worker's own
+  lock, the cap is checked against what is stored, and every answer carries
+  the resulting list so each open panel converges.
+- **The instance comes from the sender**, as `OPEN_URL` derives it, never from
+  the message; a message carrying any key its operation does not list is
+  refused. Values are refused rather than coerced.
+- **At most 100 instances.** Only a first star on a new instance can cross
+  that; the instance changed longest ago is dropped and the panel says so
+  without naming it, since another customer's hostname must not appear on
+  screen.
+
+In the table combobox, favourites are real `role="option"` rows on every
+path that opens the menu on an empty box, ranked first and once among live
+results. While a lookup runs, only favourites matching the text remain
+options, so Enter can never take a stale one; the active option is kept by
+name when results arrive. The star control is its own grid cell beside the
+selected table, never inside the ellipsis-clipped summary, enabled only once
+the table has resolved live.
+
+A remembered field is only a name until its own row in the bounded candidate
+read confirms it — never the optional 250-row read, which can degrade to an
+empty list and is cached. With no row it is reported as gone and dropped at the
+next save; if the candidate window came back full it is unverifiable, defaults
+apply, and nothing is saved for that favourite until the panel is reopened, so
+a passing failure is never persisted as a loss. The remembered list is part of
+the metadata cache key, and a search passes the same list so it verifies
+against the same read.
+
+### Value filters
+
+Up to three exact `field=value` conditions on reference and choice fields,
+AND-ed, one per field. Impersonate's attribute filter is the model, but it is
+deliberately **not shared**: Impersonate only ever filters `sys_user`, and two
+of its shortcuts are wrong on a generic table. So the generic version lives in
+`record_search.js`, Impersonate is unchanged, and the combobox builder is
+copied into `record_search_ui.js` (`FEATURE-BLUEPRINT.md` §13.4).
+
+- **Fields come from their own dictionary read**, `nameIN<chain>^active=true`
+  with `choice`, `choice_table`, `choice_field` and `reference.name`, never
+  from the optional 250-row read that degrades to an empty list. The nearest
+  definition decides. A reference needs a named table; a choice needs a
+  string or **integer** type (State, Priority) with a choice list, where
+  `"none"` counts as none. Sensitive names and types are never offered. A full
+  read says "more fields exist than were read"; a timeout is an error.
+- **A reference's display column** follows the order verified on the PDI: the
+  nearest `display_override` row in `sys_dictionary_override` (a flag with no
+  paired value, so its `element` is the column), else the nearest
+  `display=true` row, else `name` only when the hierarchy defines `name` —
+  the platform's own fallback for `sys_user`, `sys_user_group` and `cmdb_ci`
+  — else none, and the picker takes a pasted sys_id. Never `number` or any
+  other guess. When an override disagrees with the walk, the walk's column is
+  shown as a hint, because which one renders could not be observed. A wrong
+  column costs labels only: the condition is `field=<sys_id>` either way.
+  Impersonate's resolver checks only the table itself and then assumes `name`.
+- **Choices come from the table being searched.** The source is decided by
+  Translation Lens's resolution — a `choice_table` redirect, else the nearest
+  table on the chain with any `sys_choice` row for the element — **before** a
+  language is chosen, from one-row existence reads per chain table in any
+  language. Deciding after a language filter would let a parent's translation
+  outrank a child table's own list, and a single capped all-language read can
+  be crowded out on an instance with many languages. Incident's `state` is
+  inherited from Task but its choices are not; Impersonate reads the defining
+  table, which would offer Task's states on an Incident list. Labels are then
+  read from the source in the instance language (`glide.sys.language`),
+  falling back to English when that has none.
+- **Complete value lists are cached per panel** (`createFilterValueLoader`),
+  so typing narrows them locally rather than re-reading on every pause; a
+  capped list, a pasted sys_id and a table with no display column always go
+  back to the instance.
+- **Values that cannot be filtered correctly are never offered**: anything
+  naming `javascript:`, a `^` or newline, empty or over 255 characters, the
+  `NULL_OVERRIDE` sentinel, `null` in any case (the platform's keyword for
+  "is empty"), and whitespace at either end (its round trip could not be
+  observed). `=`, `,`, `<` and `!` round-trip exactly.
+- **More than 300 values** turns a reference picker into a type-ahead that
+  narrows on the server, never a truncated list presented as complete. The
+  reference qualifier is ignored, and the picker says so.
+- **The builder binds every filter to the discovered list** and asserts that
+  filters precede the text chain, because `^OR` binds to what precedes it.
+- **Every returned row is re-verified against every filter**, sys_id compared
+  in lower case and a choice as the exact string. A filter field that reads
+  back blank on every row is an access answer, not "no matches"; the same
+  holds for a reference picker whose display column reads back blank.
+- **Filter-only results keep the server's order**, `ORDERBYDESCsys_updated_on`
+  when that field is verified in the bounded candidate read, else
+  `ORDERBYsys_id`, and the status names the order used. The relevance sort
+  needs a term, and applied without one it would alphabetise.
+
 ## Impersonate
 
 `impersonate.js` (a DOM-free engine exporting `globalThis.SNImpersonate`) and

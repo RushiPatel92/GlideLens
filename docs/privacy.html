@@ -128,7 +128,7 @@ main.wrap { padding-top: 40px; }
 
   <p class="eyebrow">Privacy</p>
   <h1>What GlideLens does with your data</h1>
-  <p class="updated">Last updated 14 October 2026 · applies to GlideLens v0.11.1 and later</p>
+  <p class="updated">Last updated 15 October 2026 · applies to GlideLens v0.11.1 and later</p>
 
   <div class="tldr">
     <p><strong>There is no GlideLens server.</strong> No account, no telemetry, no
@@ -211,7 +211,7 @@ main.wrap { padding-top: 40px; }
 
   <h2>What is stored on your device</h2>
 
-  <p>GlideLens uses your browser's local extension storage for exactly three
+  <p>GlideLens uses your browser's local extension storage for exactly four
   things. All of it stays on your machine, and all of it disappears when you
   uninstall the extension.</p>
 
@@ -222,9 +222,17 @@ main.wrap { padding-top: 40px; }
     days so a search does not re-check it every time.</li>
     <li><strong>A per-instance record of which fields exist</strong> on the
     tables code search reads, cached the same way.</li>
+    <li><strong>The tables you starred in Record Lens</strong>, per instance —
+    each table's name and label, the names of the fields you search and filter
+    it by, and when you starred and last changed it. Only tables you star
+    yourself are kept. They are never expired on a timer, and unstarring
+    removes them; only if you starred tables on more than 100 instances would
+    the list changed longest ago be dropped to make room, and Record Lens says
+    so when it happens. No search term, filter value or result is stored with
+    them.</li>
   </ul>
 
-  <p>The last two hold configuration metadata — names of tables and columns —
+  <p>The last three hold configuration metadata — names of tables and columns —
   not the contents of any record. Nothing else is persisted: everything else
   GlideLens reads lives in memory while a panel is open and is gone when you
   close it.</p>
@@ -354,7 +362,7 @@ main.wrap { padding-top: 40px; }
         <td>Reading page globals like <code>g_form</code>, and injecting the code
         search panels only when you first use them</td></tr>
     <tr><td><code>storage</code></td>
-        <td>The three local items listed above</td></tr>
+        <td>The four local items listed above</td></tr>
     <tr><td><code>clipboardWrite</code></td>
         <td>"Copy sys_id", "Copy list" and copying a Debug Timeline trace — only
         when you click them</td></tr>

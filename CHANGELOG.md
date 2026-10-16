@@ -10,6 +10,38 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## Unreleased
+
+### Added
+- **Value filters in Record Lens.** Narrow a search by up to three exact
+  values on reference and choice fields — Assignment group, Caller, State,
+  Priority — with text, with an exact `sys_id`, or on their own, when results
+  come newest first. Reference values are listed by the referenced table's
+  display value, including one inherited from a parent table; choice values
+  come from the table you are searching, so Incident's State offers Incident's
+  states, not Task's. A list too long to show becomes a type-ahead. Every
+  returned row is checked against every filter, and a filter field you cannot
+  read is reported as an access problem rather than as no matches. A starred
+  table remembers which fields you filter it by, never the values.
+- **Starred tables in Record Lens.** Select a table and press **Star** beside
+  it, and Record Lens lists it as soon as it opens, before you type, and ranks
+  it first when your text matches. A starred table remembers the fields you
+  search it by; changing them on a starred table saves the change, and the
+  status line says so. Every remembered field is still checked against the live
+  dictionary, and one that no longer exists is named and dropped rather than
+  searched. Favourites are kept per instance and only on this device, up to 20
+  per instance, and a starred table that can no longer be read can be
+  unstarred from its error.
+
+### Changed
+- **Privacy.** Local storage now holds a fourth item: the tables you starred in
+  Record Lens and the names of their search and filter fields. The privacy
+  page, README and store listing say so. Nothing new leaves your device.
+
+### Fixed
+- **Record Lens table menu.** While a table lookup was running, Enter could
+  select an option from the previous list that was no longer on screen.
+
 ## [0.17.0] - 2026-10-14
 
 ### Added

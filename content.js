@@ -7439,16 +7439,48 @@ async function openRecordSearch() {
     return operation(isStale);
   };
 
+  /* Starred tables live in the worker, keyed by this tab's own instance; the
+   * worker derives the instance from the sender, so none is sent. Reading the
+   * list writes nothing. */
+  const favoriteOp = (payload) => chrome.runtime.sendMessage(
+    Object.assign({ type: "RECORD_LENS_FAVORITES" }, payload)
+  );
+  let favorites = [];
+  let favoritesUnavailable = false;
+  try {
+    const listed = await favoriteOp({ op: "list" });
+    if (listed && listed.ok && Array.isArray(listed.tables)) favorites = listed.tables;
+    else favoritesUnavailable = true;
+  } catch (_) {
+    favoritesUnavailable = true;
+  }
+  /* One per panel: complete value lists are narrowed locally, and dropped
+   * when the panel is opened again. */
+  const filterValues = engine.createFilterValueLoader((table, field, term) =>
+    engine.loadFilterValues(table, field, { origin: location.origin, term }));
+
   ui.open({
     initialTable,
+    favorites,
+    favoritesUnavailable,
+    onFavoriteOp: favoriteOp,
     onCancel: () => recordSearchSession.cancel(),
     onFindTables: (input) => runCurrent(() => engine.findTables(input)),
-    onResolveTable: (table) => runCurrent((isStale) => engine.resolveTableInfo(table, {
+    onResolveTable: (table, options) => runCurrent((isStale) => engine.resolveTableInfo(table, {
       origin: location.origin,
       shouldStop: isStale,
+      rememberedFields: options && options.rememberedFields,
     })),
+    /* Filter lookups are not session-tracked: they are read while choosing,
+     * never alongside a search (the pickers are busy during one), and the
+     * panel discards an answer for a table it no longer shows. */
+    onFilterFields: (table) => engine.resolveFilterFields(table, { origin: location.origin }),
+    onFilterValues: filterValues,
     onSearch: async (input) => {
-      const parsed = engine.parseSearch(input && input.table, input && input.term);
+      const filters = input && Array.isArray(input.filters) ? input.filters : [];
+      const parsed = engine.parseSearch(input && input.table, input && input.term, {
+        allowEmptyTerm: filters.length > 0,
+      });
       if (!parsed.ok) {
         const error = new Error(parsed.error);
         error.code = parsed.code || "validation";
@@ -7458,6 +7490,8 @@ async function openRecordSearch() {
         origin: location.origin,
         shouldStop: isStale,
         fields: input && input.fields,
+        rememberedFields: input && input.rememberedFields,
+        filters,
       }));
     },
   });

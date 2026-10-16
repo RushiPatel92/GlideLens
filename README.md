@@ -19,7 +19,10 @@ walkthrough.
   helpers, and toggles — short labels with a description beside each one, both
   searchable, keyboard-driven, and with one command favouritable to the top.
 - **Record Lens**: read-only record search by table, using verified summary
-  fields or an exact `sys_id` without downloading whole records.
+  fields or an exact `sys_id` without downloading whole records, narrowed by up
+  to three exact filters on reference and choice fields. Star the tables you
+  use on an instance to have them, and their search and filter fields, ready
+  when it opens.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
 - **Translation Lens**: a read-only report of which translations a form or
@@ -257,7 +260,7 @@ retry that source when it reports **Capped**.
 | --- | --- |
 | sys_id | *Copy the current record sys_id.* Copies it to the clipboard. |
 | Translation Assistant | *Prepare and fill translations.* Listed only on the Localization Framework comparison page of a catalog item or record producer (**Edit Translations** on the item, in ad-hoc mode). Step 1 downloads one JSON file holding the item's untranslated, unlocked text — its fields and the `getMessage` messages in its scripts — with its own instructions for the AI tool of your choice; rich text goes out as HTML and is filled back through the page's own editor with the source's tags kept exactly, so only its words change; the panel names what it left out and why (already translated, rich text whose markup or editor it cannot handle, a message that looks like a key rather than text, a text shared with a locked field), and which texts are shared instance-wide, including every script message, which changes for every script using the same key. Step 2 takes the tool's reply, pasted or uploaded, and fills the page: every row that still passes the checks is written into the page's own unsaved model, and the panel then lists each row it did not fill with the reason, offers **Fill anyway** for a placeholder mismatch and **Overwrite** for a field you changed on the page since the draft, and keeps the old text of every translation a fill replaced. Nothing is saved until you press the page's own **Publish**; reloading the page discards every fill. GlideLens never contacts an AI service: the file leaves your browser only when you upload it somewhere. |
-| Record Lens | *Search verified records across readable tables* Find a table by label or technical name, choose live dictionary-verified fields, then search text or an exact `sys_id`. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
+| Record Lens | *Search verified records across readable tables* Find a table by label or technical name, or pick one you starred, choose live dictionary-verified fields, then search text or an exact `sys_id`, filter by up to three reference or choice values, or both. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
 | Playbooks | *Open playbook executions for this record* Opens Process Automation playbook executions for the current record. |
 | Playbook Updates | *Open captured updates for this playbook activity.* Listed only on a playbook (process definition) page; opens the related `sys_update_xml` customer updates. |
 | Customer Updates | *Open captured customer updates by sys_id…* Enter a record sys_id or ServiceNow URL to open its customer updates. |
@@ -285,6 +288,29 @@ dictionary; other tables use safe display and summary fallbacks. Up to six can
 be selected. Sensitive value/body fields are never selected automatically,
 HTML/script types are excluded, and the System Properties preset never selects
 `value`.
+
+**Filters.** Press **Add filter** to narrow a search by an exact value — up to
+three, all of which must match. Pick a field, then a value: reference fields
+(Assignment group, Caller, Configuration item…) list the referenced table's
+records by their display value, and choice fields (State, Priority, Category…)
+list the choices of the table you are searching, not the table the field was
+defined on. A reference list too long to show becomes a type-ahead that
+searches the whole referenced table. Filters work with text, with an exact `sys_id`, or on their own;
+on their own, results come newest first. The reference qualifier a form would
+apply is ignored, and the picker says so. Every returned row is checked against
+every filter before it is shown, and a filter field the session cannot read is
+reported as an access problem, never as "no matches".
+
+**Starred tables.** Select a table and press **Star** beside it. Starred tables
+are listed as soon as Record Lens opens, before you type anything, and come
+first when what you type matches them. Each one remembers the fields you
+search it by and the fields you filter it by, never the values: change them on
+a starred table and the change is saved, and the status line says so. Favourites are kept per instance, so one customer's tables
+never show up on another's, and only on this device. Up to 20 per instance. A
+remembered field is still checked against the live dictionary every time; one
+that no longer exists is named and dropped rather than searched. A starred
+table that can no longer be read shows its error with the star still pressed,
+so you can unstar it there.
 
 Text searches send a safe fragment to ServiceNow and verify the complete term
 again in the returned summary values before showing a row. At most 20 results
@@ -399,9 +425,10 @@ message flow, and feature invariants.
 There is no GlideLens server, no account and no telemetry. Everything the
 extension reads is processed in your browser and goes no further than the
 ServiceNow instance it came from — it can only reach `*.service-now.com`, so it
-could not contact a third party if it tried. Three small things are cached in
-local extension storage: your pinned palette command, and two per-instance maps
-of what code search can reach. Translation Assistant is the one feature that
+could not contact a third party if it tried. Four small things are kept in
+local extension storage: your pinned palette command, two per-instance maps of
+what code search can reach, and the Record Lens tables you starred on each
+instance with the names of their search and filter fields. Translation Assistant is the one feature that
 produces something meant to leave your browser: a JSON file of a catalog
 item's field text, which you upload to an AI tool of your own choosing. GlideLens
 does not upload it and does not talk to any AI service.
