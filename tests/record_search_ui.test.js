@@ -102,6 +102,17 @@ function matchesSelector(node, selector) {
 function createDom() {
   let activeElement = null;
 
+  /* As in a browser, detaching the focused node, or anything around it,
+   * drops focus to nowhere. */
+  function dropFocusWithin(node) {
+    for (let current = activeElement; current; current = current.parentNode) {
+      if (current === node) {
+        activeElement = null;
+        return;
+      }
+    }
+  }
+
   class TextNode {
     constructor(value) {
       this.tagName = "#text";
@@ -142,6 +153,13 @@ function createDom() {
       if (this._disabled && activeElement === this) activeElement = null;
     }
     get childNodes() { return this.children; }
+    /* Connected once it reaches the document, through a shadow root's host. */
+    get isConnected() {
+      for (let node = this; node; node = node.parentNode || node.host || null) {
+        if (node === document.documentElement) return true;
+      }
+      return false;
+    }
     get hidden() { return this._hidden; }
     set hidden(value) {
       this._hidden = Boolean(value);
@@ -170,7 +188,10 @@ function createDom() {
         .join("");
     }
     set textContent(value) {
-      this.children.forEach((child) => { child.parentNode = null; });
+      this.children.forEach((child) => {
+        dropFocusWithin(child);
+        child.parentNode = null;
+      });
       this.children = [];
       this._text = value == null ? "" : String(value);
     }
@@ -188,6 +209,7 @@ function createDom() {
     removeChild(node) {
       const index = this.children.indexOf(node);
       if (index >= 0) this.children.splice(index, 1);
+      dropFocusWithin(node);
       node.parentNode = null;
       return node;
     }
@@ -218,6 +240,8 @@ function createDom() {
       return shadow;
     }
     focus() {
+      /* Focusing a detached node does nothing in Chrome. */
+      if (!this.isConnected) return;
       this.focused += 1;
       activeElement = this;
       (this.handlers.focus || []).slice().forEach((handler) => handler({ target: this }));
@@ -1610,6 +1634,99 @@ test("clearing a value or removing a complete row asks again; the last one gone 
   await settle();
   assert.strictEqual(searches.length, 4);
   assert.strictEqual(status(shadow), "Ready · Example incident (incident)", "clearing the value does the same");
+});
+
+/* ------------------------------------------------------------------ *
+ * Review findings (B1, S3, S4)
+ * ------------------------------------------------------------------ */
+
+const searchAnswer = { stale: false, table: "incident", tableLabel: "Incident", results: [], filters: [] };
+
+test("a starred table chosen under typed text is searched once its filter rows are back", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = openPanel(harness, filterOptions({
+    favorites: [{ name: "incident", label: "Incident", fields: [], filterFields: ["state"] }],
+    onSearch: async (input) => { searches.push(input.term); return searchAnswer; },
+  }));
+  termInput(shadow).value = "INC0010001";
+  options(shadow)[0].fire("click");
+  await settle();
+  assert.deepStrictEqual(searches, ["INC0010001"]);
+  assert.match(status(shadow), /1 filter row has no value yet/, "the restored row is counted");
+});
+
+test("a starred table whose filter field is gone keeps the warning on screen and still saves", async () => {
+  const harness = load();
+  const favorites = [{ name: "incident", label: "Incident", fields: [], filterFields: ["state", "u_gone"] }];
+  const worker = favoriteWorker(favorites);
+  const searches = [];
+  const shadow = openPanel(harness, filterOptions({
+    favorites,
+    onFavoriteOp: worker.op,
+    onSearch: async (input) => { searches.push(input.term); return searchAnswer; },
+  }));
+  termInput(shadow).value = "INC0010001";
+  options(shadow)[0].fire("click");
+  await settle();
+  assert.deepStrictEqual(searches, [], "the warning is read first");
+  assert.match(status(shadow), /filter fields no longer offered: u_gone/);
+
+  byId(shadow, "snh-rs-filter-1-field").parentNode.querySelector(".combo-clear").fire("click");
+  await settle();
+  assert.ok(worker.calls.some((call) => call.op === "filterFields"),
+    "the favourite still saves: nothing was held back unannounced");
+});
+
+test("focus on a result row a search replaced goes to the text box, not the page", async () => {
+  const harness = load();
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "incident", label: "Incident" }],
+    onSearch: async (input) => ({ stale: false, table: "incident", results: [rowFor("incident", input.term)] }),
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  await typeTerm(harness, "alpha");
+  const input = termInput(shadow);
+  input.value = "alphabet";
+  input.fire("input");
+  const row = shadow.querySelector(".row");
+  row.focus();
+  assert.strictEqual(harness.dom.document.activeElement, row);
+  harness.runTimers();
+  await settle();
+  assert.deepStrictEqual(resultTitles(shadow), ["alphabet"]);
+  assert.strictEqual(harness.dom.document.activeElement, input);
+});
+
+test("clearing a filter field on a starred table leaves the status to the search it starts", async () => {
+  const harness = load();
+  const calls = [];
+  const shadow = openPanel(harness, filterOptions({
+    favorites: [{ name: "incident", label: "Incident", fields: [], filterFields: ["state", "assignment_group"] }],
+    onSearch: () => {
+      const pending = deferred();
+      calls.push(pending);
+      return pending.promise;
+    },
+  }));
+  options(shadow)[0].fire("click");
+  await settle();
+  for (const [id, label] of [["snh-rs-filter-1-value", "New"], ["snh-rs-filter-2-value", "Example group"]]) {
+    byId(shadow, id).fire("focus");
+    await settle();
+    await pick(shadow, id, label);
+    calls[calls.length - 1].resolve(searchAnswer);
+    await settle();
+  }
+  assert.strictEqual(calls.length, 2);
+
+  byId(shadow, "snh-rs-filter-1-field").parentNode.querySelector(".combo-clear").fire("click");
+  await settle();
+  assert.strictEqual(calls.length, 3);
+  assert.match(status(shadow), /^Searching with 1 filter/, "the save's note does not replace the spinner");
+  calls[2].resolve(searchAnswer);
+  await settle();
 });
 
 test("focus a search took goes back to the picker that had it, without reopening its list", async () => {

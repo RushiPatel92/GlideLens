@@ -231,6 +231,51 @@ test("typing a staging table's own technical name keeps it first, still tagged",
   ]);
 });
 
+/* Review S1: a table labelled with its own name ranks as an exact label, so
+ * the exact-name rule cannot key off the name's own rank. */
+test("a staging table labelled with its own name stays first when that name is typed", async () => {
+  const results = await RS.findTables("u_imp_example", {
+    get: async (request) => isStagingRead(request)
+      ? [{ name: "u_imp_example" }]
+      : [
+        { name: "u_imp_example", label: "" },
+        { name: "u_imp_example_history", label: "Example history" },
+      ],
+  });
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["u_imp_example", true],
+    ["u_imp_example_history", false],
+  ]);
+});
+
+/* Review S2: a full staging window is an arbitrary slice, so the candidates on
+ * screen are asked about by name, once. */
+test("a full staging window is checked again by name for the candidates on screen", async () => {
+  const requests = [];
+  const full = Array.from({ length: RS.TABLE_LOOKUP_CANDIDATE_LIMIT * 2 }, (_, index) =>
+    ({ name: "u_imp_other_" + index }));
+  const results = await RS.findTables("u_imp", {
+    get: async (request) => {
+      requests.push(request);
+      if (isStagingRead(request)) {
+        return request.query.includes("^nameIN") ? [{ name: "u_imp_payment" }] : full;
+      }
+      return [
+        { name: "u_imp_payment", label: "Imported payment" },
+        { name: "u_imp_notes", label: "Import notes" },
+      ];
+    },
+  });
+  const followUps = requests.filter((request) => isStagingRead(request) && request.query.includes("^nameIN"));
+  assert.deepStrictEqual(followUps.map((request) => [request.query, request.limit]), [
+    ["super_class.name=sys_import_set_row^nameINu_imp_payment,u_imp_notes", 2],
+  ]);
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["u_imp_notes", false],
+    ["u_imp_payment", true],
+  ]);
+});
+
 test("a failed staging read loses only the tags", async () => {
   const results = await RS.findTables("example payment", {
     get: async (request) => {

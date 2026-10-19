@@ -688,10 +688,11 @@
         lastResult = null;
         updateListButton();
         /* A field alone is half a condition, so a pick opens its values. A
-         * clear asks again only if a whole condition went with it. */
+         * clear asks again only if a whole condition went with it -- after
+         * the save, as removing a row does, so the search owns the status. */
         if (how === "pick") row.value.focusAndOpen();
-        else if (how === "clear") searchIfChanged();
         if (how !== "edit") saveFavoriteFilterFields();
+        if (how === "clear") searchIfChanged();
       },
     });
     row.value = createCombo({
@@ -1132,10 +1133,8 @@
       }
       setStatus(readyText, readyKind, false);
       shadow.querySelector("[data-input='term']").focus();
-      /* A table chosen under text already typed is a finished question. A
-       * warning on the ready line is left on screen to be read instead. */
-      if (termValue() && !readyKind) searchIfChanged();
-      else renderReady();
+      renderReady();
+      let restoreWarned = false;
       const rememberedFilters = favorite ? favorite.filterFields.slice() : [];
       if (rememberedFilters.length && onFilterFields) {
         /* Saves asked for while this restores wait for it, so a partial set
@@ -1150,13 +1149,10 @@
         const deferredSave = filterSaveDeferred;
         filterSaveDeferred = false;
         if (!restored || !shadow) return;
+        restoreWarned = /could not|not restored|no longer/.test(restored.note);
         const statusFree = sequence === requestSequence;
         if (statusFree && restored.note) {
-          setStatus(
-            readyText + restored.note,
-            readyKind || (/could not|not restored|no longer/.test(restored.note) ? "validation" : ""),
-            false
-          );
+          setStatus(readyText + restored.note, readyKind || (restoreWarned ? "validation" : ""), false);
         } else if (!statusFree && restored.missing.length) {
           /* A search owns the status line now, so a field found gone was
            * never announced. It is kept rather than dropped unseen. */
@@ -1169,6 +1165,16 @@
             ? " · dropped, no longer offered: " + restored.missing.join(", ") : "");
         }
       }
+      /*
+       * A table chosen under text already typed is a finished question,
+       * asked once its remembered filter rows are back. Asking earlier took
+       * the status line from the restore, so a filter field found gone was
+       * never announced and the favourite stopped saving (review B1). A
+       * warning, from the fields or the filters, is left on screen to be read
+       * instead. Enter pressed meanwhile asked the same question, which
+       * searchIfChanged does not ask twice.
+       */
+      if (termValue() && !readyKind && !restoreWarned) searchIfChanged();
     } catch (error) {
       if (!shadow || sequence !== requestSequence) return;
       tableInfo = null;
@@ -1796,17 +1802,22 @@
 
   /* A search disables every control but the text box, and a disabled
    * control loses focus. Only an orphaned focus is put back, quietly, so no
-   * list reopens. */
+   * list reopens. A control the search replaced or removed -- a result row,
+   * a filter row a table change dropped -- hands focus to the text box
+   * instead, since focusing a detached node would leave it on the page. */
   function restoreFocus(node) {
-    if (!shadow || !node || node.disabled || node.hidden || shadow.activeElement) return;
+    if (!shadow || !node || shadow.activeElement) return;
+    const target = node.isConnected === false || node.disabled || node.hidden
+      ? shadow.querySelector("[data-input='term']")
+      : node;
     const owner = Object.keys(combos).map((key) => combos[key])
-      .find((combo) => combo && combo.input === node);
+      .find((combo) => combo && combo.input === target);
     if (owner) {
       owner.focusQuietly();
       return;
     }
     quietFocus = true;
-    try { node.focus(); } finally { quietFocus = false; }
+    try { target.focus(); } finally { quietFocus = false; }
   }
 
   /* Counted rather than tied to the winning sequence: a read superseded by a

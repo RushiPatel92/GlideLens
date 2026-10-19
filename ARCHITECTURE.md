@@ -191,13 +191,20 @@ merged, verified, relevance-ranked, and the scrollable combobox returns at most
 A returned suggestion must also contain that anchor in its label or name, so an
 ignored server condition cannot populate the combobox with unrelated tables.
 A third read runs alongside the other two and is allowed to fail. It names the
-candidates whose `super_class.name` is `sys_import_set_row`. The menu tags
+candidates whose `super_class.name` is `sys_import_set_row`. Its window holds
+100 rows. When it comes back full, it is an arbitrary slice, so one follow-up
+`nameIN` read asks about the untagged candidates on screen. The menu tags
 those import set staging tables, and lists them after the other matches unless
-their exact technical name was typed. A staging table can carry the exact label
+their exact technical name was typed. That rule compares the name directly,
+because a table labelled with its own name ranks as an exact label first. A
+staging table can carry the exact label
 of the table its rows are loaded into, and is usually empty once they are. A
 user searching one by that label sees no results and concludes Record Lens is
 broken. The resolved hierarchy sets the same flag on a chosen table, and the
-field summary and an empty result both name it.
+field summary and an empty result both name it. The two flags differ, and that
+is accepted. The menu tags only direct children of `sys_import_set_row`.
+Starred tables carry no flag, so they are untagged in the menu. The chosen
+table's flag covers any descendant.
 A table parsed conservatively from the current URL can be offered initially,
 but it still has to resolve through live metadata before use. Workspace opening
 and workspace discovery are intentionally outside this feature.
@@ -381,9 +388,12 @@ below), applied to a generic table:
   on screen. So does text with no field selected. Emptying the last criterion
   goes back to the table's ready state. A **table change** clears the results
   at once (`resetResults`). The owner reported that switching tables left the
-  old table's records on screen. A table whose ready line carries a warning,
-  such as remembered fields that are gone, is not searched automatically, so
-  the warning stays on screen to be read.
+  old table's records on screen. A starred table chosen under typed text is
+  asked only after its remembered filter rows are restored. Asking earlier
+  took the status line from the restore, so a filter field found gone was
+  never announced, and the favourite stopped saving. A warning on the ready
+  line, from the fields or the filters, is not searched past, so it stays on
+  screen to be read.
 - **One search at a time.** This is where Record Lens departs from
   Impersonate. Any table can be searched, a LIKE read on a large one can take
   seconds, and a superseded read still runs on the instance. A question asked
@@ -393,7 +403,19 @@ below), applied to a generic table:
 - **Busy.** A search disables every control except the text box and its ✕, as
   in Impersonate. A focus orphaned by a disabled control is handed back after
   the last read, quietly, so neither a filter picker nor the table menu
-  reopens.
+  reopens. A control the search replaced or removed hands focus to the text
+  box instead. That covers a result row, or a filter row a table change
+  dropped. Focusing a detached node would leave focus on the page behind the
+  panel.
+- **A withdrawal during a read looks idle. That is a deliberate choice.**
+  Suppose the text is cut too short while a read is out. The status shows what
+  is needed, without a spinner, and the other controls unlock when that read
+  returns. A spinner beside "Enter at least 3 characters" would read as if that
+  text were being searched.
+- **The search owns the status line over a save.** On a starred table, a
+  filter change saves before it searches, so the save's note is not shown. A
+  search-field change shows its "Saved…" note until the pause's search
+  replaces it.
 
 ## Impersonate
 

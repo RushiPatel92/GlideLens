@@ -329,6 +329,7 @@
      * AND (name OR label). Optional: a failed read loses only the tags. */
     const stagingQuery = "super_class.name=" + IMPORT_SET_ROW_TABLE +
       "^nameLIKE" + needles.name.toLowerCase() + "^ORlabelLIKE" + needles.label;
+    const stagingLimit = TABLE_LOOKUP_CANDIDATE_LIMIT * 2;
     const [labelRows, nameRows, stagingRows] = await Promise.all([
       /* ServiceNow stores user-facing table labels as documentation records.
        * Fall back to sys_db_object.label only when those rows are unreadable. */
@@ -346,18 +347,36 @@
         table: "sys_db_object",
         query: stagingQuery,
         fields: "name",
-        limit: TABLE_LOOKUP_CANDIDATE_LIMIT * 2,
+        limit: stagingLimit,
         options: { excludeRefLinks: true },
       }).catch(() => []),
     ]);
     const staging = new Set(stagingRows.map((row) => rawValue(row && row.name).trim().toLowerCase()));
+    /* A full staging window is an arbitrary slice, and could miss the very
+     * candidates on screen. Those are then asked about by name, once. */
+    if (stagingRows.length >= stagingLimit) {
+      const unchecked = Array.from(new Set(labelRows.concat(nameRows)
+        .map(normalizeTableRow)
+        .filter((item) => item && !staging.has(item.name))
+        .map((item) => item.name)));
+      if (unchecked.length) {
+        const more = await getRows(get, {
+          table: "sys_db_object",
+          query: "super_class.name=" + IMPORT_SET_ROW_TABLE + "^nameIN" + unchecked.join(","),
+          fields: "name",
+          limit: unchecked.length,
+          options: { excludeRefLinks: true },
+        }).catch(() => []);
+        more.forEach((row) => staging.add(rawValue(row && row.name).trim().toLowerCase()));
+      }
+    }
     const seen = new Set();
     const nameNeedle = needles.name.toLowerCase();
     const labelNeedle = needles.label.toLowerCase();
     /* A staging table is listed after the tables people mean, unless its own
-     * technical name was typed, which is asking for it. */
-    const stagingRank = (item) =>
-      item.staging && tableSuggestionRank(item, needles) !== 1 ? 1 : 0;
+     * technical name was typed, which is asking for it. Compared directly: a
+     * table labelled with its own name ranks as an exact label first. */
+    const stagingRank = (item) => (item.staging && item.name !== nameNeedle ? 1 : 0);
     const matches = labelRows.concat(nameRows)
       .map(normalizeTableRow)
       .filter((item) => item && (
