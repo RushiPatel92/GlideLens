@@ -111,7 +111,18 @@ The suites cover:
   search; an access error and a capped list are shown as such; a table change
   removes the rows; a starred table restores its filter fields with empty
   values, names one that is gone, and never saves over ones it could not
-  verify.
+  verify. The Table and Text ✕ buttons: shown only with text. During a search
+  the Table ✕ is inert and the Text ✕ stays live. The Table ✕ drops the selection, its filters and a lookup it
+  overtook, then shows the starred tables. Copy confirmation is on the pressed
+  button and restores its label, and a blocked copy says so there too.
+  Searching as the question changes: a table change clears the results, and
+  text already typed searches the new table unless its ready line warns. A
+  typing pause and a field change search, while an unchanged question does
+  not. A short term withdraws the answer neutrally, and an emptied one returns
+  to ready. A value pick or clear, a field clear and a row removal search. One
+  search runs at a time, and only the latest waiting question is asked, with
+  the outdated answer never shown. Focus returns to the picker without
+  reopening its list.
 - `command_palette.test.js` — the pure palette model: label/description
   matching, relevance ranking (every built-in command must rank first for its
   own exact label, and groups must stay contiguous),
@@ -625,7 +636,8 @@ its location cannot be found, ask instead of guessing.
 
 Previously verified assumptions include the `cat_item`/`catalog_item` split,
 the `IO:` prefix on `catalog_ui_policy_action.catalog_variable`,
-`super_class.name` dot-walking to a string, the two-hop
+`super_class.name` dot-walking to a string (also as a query condition:
+`super_class.name=sys_import_set_row` returns only staging tables), the two-hop
 `sc_item_option.item_option_new.*` chain, and the defining-table inheritance
 walk. Record Lens uses bounded technical-name reads on `sys_db_object` and
 table-level `sys_documentation` rows for user-facing labels. It also confirmed that

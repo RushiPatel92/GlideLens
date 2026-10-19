@@ -190,6 +190,14 @@ merged, verified, relevance-ranked, and the scrollable combobox returns at most
 50; the feature never downloads the full table catalog.
 A returned suggestion must also contain that anchor in its label or name, so an
 ignored server condition cannot populate the combobox with unrelated tables.
+A third read runs alongside the other two and is allowed to fail. It names the
+candidates whose `super_class.name` is `sys_import_set_row`. The menu tags
+those import set staging tables, and lists them after the other matches unless
+their exact technical name was typed. A staging table can carry the exact label
+of the table its rows are loaded into, and is usually empty once they are. A
+user searching one by that label sees no results and concludes Record Lens is
+broken. The resolved hierarchy sets the same flag on a chosen table, and the
+field summary and an empty result both name it.
 A table parsed conservatively from the current URL can be offered initially,
 but it still has to resolve through live metadata before use. Workspace opening
 and workspace discovery are intentionally outside this feature.
@@ -230,9 +238,19 @@ Verified record results sort by match quality (exact value, prefix, word-start,
 then contains), followed by the first displayed field and `sys_id`. The results
 status names this order so it is not mistaken for an instance-defined sort.
 
-Result rows provide form opening plus Copy sys_id and Copy URL actions. The
-panel can open only the verified result sys_ids as a normal platform list; it
-does not replay the broader server prefilter or open a Workspace route.
+Result rows provide form opening plus Copy sys_id and Copy URL actions. A copy
+is confirmed on the pressed button (✓ Copied or Copy failed, for two seconds)
+as well as on the status line. The status line alone was reported as easy to
+miss, because it sits above the results. The panel can open only the verified
+result sys_ids as a normal platform list; it does not replay the broader server
+prefilter or open a Workspace route.
+
+The Table and Text or sys_id boxes carry the filter pickers' ✕. While a search
+runs, the Table ✕ is inert and the Text ✕ stays live, as the text box does.
+Clearing the table is `clearTableSelection` plus a cancelled
+lookup. It shows the starred tables, or the opening prompt when there are
+none. It never runs the empty-box lookup that hand deletion triggers, which
+would ask for two characters.
 
 Table metadata caches only in page memory. A newer search or a closed panel
 invalidates older work so stale results cannot replace the current search.
@@ -342,6 +360,40 @@ copied into `record_search_ui.js` (`FEATURE-BLUEPRINT.md` §13.4).
   when that field is verified in the bounded candidate read, else
   `ORDERBYsys_id`, and the status names the order used. The relevance sort
   needs a term, and applied without one it would alphabetise.
+
+### Searching as the question changes
+
+Record Lens searched only on Enter or Search until the owner asked for
+Impersonate's behaviour. The rules are Impersonate's (see its picker rules
+below), applied to a generic table:
+
+- **What asks.** Picking or clearing a filter value, clearing a field that
+  carried a value, removing a complete row, the text ✕, and choosing a table
+  under text already typed all ask at once. Typing and search-field changes
+  wait for a **500 ms** pause. Picking a filter field opens its values instead,
+  because a field alone is half a condition. Enter and Search always ask,
+  changed or not; every other trigger is skipped when the question matches the
+  one last asked. A question is the table, the trimmed term, the sorted fields
+  and the complete filter rows. The fields count even without text, because
+  they choose the values each row shows.
+- **Withdrawing.** The term is judged by the engine's own `parseSearch`. A term
+  too short to anchor says what is needed, neutrally, and withdraws the answer
+  on screen. So does text with no field selected. Emptying the last criterion
+  goes back to the table's ready state. A **table change** clears the results
+  at once (`resetResults`). The owner reported that switching tables left the
+  old table's records on screen. A table whose ready line carries a warning,
+  such as remembered fields that are gone, is not searched automatically, so
+  the warning stays on screen to be read.
+- **One search at a time.** This is where Record Lens departs from
+  Impersonate. Any table can be searched, a LIKE read on a large one can take
+  seconds, and a superseded read still runs on the instance. A question asked
+  while a read is out drops that read's answer and waits for it. Only the
+  latest waiting question is asked. In-flight reads are counted, not tied to
+  the winning sequence, so a superseded one still releases the controls.
+- **Busy.** A search disables every control except the text box and its ✕, as
+  in Impersonate. A focus orphaned by a disabled control is handed back after
+  the last read, quietly, so neither a filter picker nor the table menu
+  reopens.
 
 ## Impersonate
 

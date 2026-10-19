@@ -271,7 +271,9 @@ Choose **Record Lens** and type part of a table label or technical name. The
 bounded combobox scrolls up to 50 matching tables without loading the whole
 table catalog: user-facing labels come from table-level `sys_documentation` rows
 and technical names from `sys_db_object`, each with its own candidate window so
-one cannot crowd out the other.
+one cannot crowd out the other. Import set staging tables are tagged and listed
+after the other matches. A staging table often has the same label as the table
+its data is loaded into, and is usually empty once that load has run.
 
 When the current URL safely identifies a table, GlideLens offers it as the
 starting selection — including on a classic `*_list.do` list page, where the
@@ -311,6 +313,11 @@ remembered field is still checked against the live dictionary every time; one
 that no longer exists is named and dropped rather than searched. A starred
 table that can no longer be read shows its error with the star still pressed,
 so you can unstar it there.
+
+The results update as you go. A search runs when typing pauses, when you pick
+or clear a filter value, and when you change the search fields, one search at a
+time. Enter or **Search** searches at once. Switching tables clears the
+previous table's results.
 
 Text searches send a safe fragment to ServiceNow and verify the complete term
 again in the returned summary values before showing a row. At most 20 results

@@ -1107,6 +1107,44 @@ test("clearing typed text that never became a choice asks nothing", async () => 
 const menuFor = (shadow, key) => byClass(shadow, "menu").find((menu) =>
   menu.id === "snh-imp-" + key + "-menu");
 
+test("Enter while a list is looking up never picks an option from the list it replaced", async () => {
+  /* Found in review: "Looking…" cleared the option buttons but kept the
+   * options behind them, so Enter picked one that was no longer shown. */
+  const harness = load();
+  const searches = [];
+  const staleId = sysId();
+  const freshId = sysId();
+  let release = null;
+  pickerPanel(harness, searches, {
+    onFindRoles: (input) => input === "other"
+      ? new Promise((resolve) => { release = resolve; })
+      : Promise.resolve({ options: [{ label: "stale_role", value: staleId }] }),
+  });
+  const shadow = harness.shadow();
+  const roleInput = comboInput(shadow, "role");
+  roleInput.fire("keydown", { key: "ArrowDown" });
+  await tick();
+  assert.ok(harness.text().includes("stale_role"), "the first list is on screen");
+
+  roleInput.value = "other";
+  roleInput.fire("input", {});
+  harness.runTimers();
+  await tick();
+  assert.ok(harness.text().includes("Looking…"));
+  roleInput.fire("keydown", { key: "Enter" });
+  await tick();
+  assert.ok(!searches.some((request) => request.roleSysId === staleId),
+    "the replaced list's option was picked");
+  assert.strictEqual(roleInput.value, "other", "the typed text is left alone");
+
+  release({ options: [{ label: "fresh_role", value: freshId }] });
+  await tick();
+  roleInput.fire("keydown", { key: "Enter" });
+  await tick();
+  assert.strictEqual(searches.length, 1);
+  assert.strictEqual(searches[0].roleSysId, freshId, "the list that arrived is pickable");
+});
+
 test("deleting a chosen role by hand clears it as the button does", async () => {
   /* Reported: backspacing a role away left the list of its holders on
    * screen, and opened "No matching roles." for text that asked nothing. */

@@ -443,6 +443,10 @@
     async function lookup() {
       if (state.disabled || !config.load) return;
       const sequence = ++state.sequence;
+      /* The list on screen is replaced by "Looking…", so its options go with
+       * it: Enter must not pick an option that is no longer shown. */
+      state.options = [];
+      state.activeIndex = -1;
       renderOptions("Looking…");
       try {
         const found = await config.load(input.value);
