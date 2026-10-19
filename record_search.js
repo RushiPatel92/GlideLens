@@ -22,6 +22,10 @@
   const FIELD_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
   const SYS_ID_PATTERN = /^[0-9a-f]{32}$/i;
   const ANCHOR_SAFE_RUN = /[A-Za-z0-9_]+/g;
+  /* Import set staging tables extend this one. A staging table can carry the
+   * exact label of the table its rows are loaded into, and is usually emptied
+   * once they are, so it is named wherever it can be mistaken for that one. */
+  const IMPORT_SET_ROW_TABLE = "sys_import_set_row";
 
   /* Presets are preferences only. A field is usable only after a live
    * sys_dictionary row confirms it on the selected table hierarchy. */
@@ -320,7 +324,13 @@
      * client-side verification and ranking. */
     const labelQuery =
       "elementISEMPTY^labelLIKE" + needles.label + "^ORDERBYlabel^ORDERBYname";
-    const [labelRows, nameRows] = await Promise.all([
+    /* Which candidates are staging tables, read alongside rather than after,
+     * so the lookup is no slower. `^OR` binds to its neighbour only: staging
+     * AND (name OR label). Optional: a failed read loses only the tags. */
+    const stagingQuery = "super_class.name=" + IMPORT_SET_ROW_TABLE +
+      "^nameLIKE" + needles.name.toLowerCase() + "^ORlabelLIKE" + needles.label;
+    const stagingLimit = TABLE_LOOKUP_CANDIDATE_LIMIT * 2;
+    const [labelRows, nameRows, stagingRows] = await Promise.all([
       /* ServiceNow stores user-facing table labels as documentation records.
        * Fall back to sys_db_object.label only when those rows are unreadable. */
       request("sys_documentation", labelQuery).catch(() =>
@@ -333,10 +343,40 @@
         "sys_db_object",
         "nameLIKE" + needles.name.toLowerCase() + "^ORDERBYname^ORDERBYlabel"
       ),
+      getRows(get, {
+        table: "sys_db_object",
+        query: stagingQuery,
+        fields: "name",
+        limit: stagingLimit,
+        options: { excludeRefLinks: true },
+      }).catch(() => []),
     ]);
+    const staging = new Set(stagingRows.map((row) => rawValue(row && row.name).trim().toLowerCase()));
+    /* A full staging window is an arbitrary slice, and could miss the very
+     * candidates on screen. Those are then asked about by name, once. */
+    if (stagingRows.length >= stagingLimit) {
+      const unchecked = Array.from(new Set(labelRows.concat(nameRows)
+        .map(normalizeTableRow)
+        .filter((item) => item && !staging.has(item.name))
+        .map((item) => item.name)));
+      if (unchecked.length) {
+        const more = await getRows(get, {
+          table: "sys_db_object",
+          query: "super_class.name=" + IMPORT_SET_ROW_TABLE + "^nameIN" + unchecked.join(","),
+          fields: "name",
+          limit: unchecked.length,
+          options: { excludeRefLinks: true },
+        }).catch(() => []);
+        more.forEach((row) => staging.add(rawValue(row && row.name).trim().toLowerCase()));
+      }
+    }
     const seen = new Set();
     const nameNeedle = needles.name.toLowerCase();
     const labelNeedle = needles.label.toLowerCase();
+    /* A staging table is listed after the tables people mean, unless its own
+     * technical name was typed, which is asking for it. Compared directly: a
+     * table labelled with its own name ranks as an exact label first. */
+    const stagingRank = (item) => (item.staging && item.name !== nameNeedle ? 1 : 0);
     const matches = labelRows.concat(nameRows)
       .map(normalizeTableRow)
       .filter((item) => item && (
@@ -344,7 +384,9 @@
         item.label.toLowerCase().includes(labelNeedle)
       ))
       .filter((item) => !seen.has(item.name) && seen.add(item.name))
+      .map((item) => (staging.has(item.name) ? Object.assign(item, { staging: true }) : item))
       .sort((a, b) =>
+        stagingRank(a) - stagingRank(b) ||
         tableSuggestionRank(a, needles) - tableSuggestionRank(b, needles) ||
         a.label.length - b.label.length ||
         a.label.localeCompare(b.label) ||
@@ -589,11 +631,13 @@
     if (!opts.noCache && tableInfoCache.has(cacheKey)) return tableInfoCache.get(cacheKey);
     const hierarchy = await resolveHierarchy(safeTable, get, shouldStop);
     if (!hierarchy.length) throw createError("cancelled", "Record Search was cancelled.");
+    const staging = hierarchy.some((item) => item.name === IMPORT_SET_ROW_TABLE);
     if (shouldStop && shouldStop()) {
       return {
         table: safeTable,
         label: hierarchy[0].label,
         hierarchy: hierarchy.map((item) => item.name),
+        staging,
         fields: [],
         defaultFields: [],
         remembered: emptyRemembered(),
@@ -606,6 +650,7 @@
       table: safeTable,
       label: hierarchy[0].label,
       hierarchy: hierarchy.map((item) => item.name),
+      staging,
       fields,
       defaultFields: chooseDefaultFields(safeTable, hierarchy, fields),
       remembered: read.remembered,
@@ -1252,6 +1297,8 @@
       table: tableInfo.table,
       tableLabel: tableInfo.label,
       term: parsed.term,
+      bySysId: Boolean(parsed.isSysId),
+      staging: Boolean(tableInfo.staging),
       fields: selectedFields,
       availableFields: tableInfo.fields,
       results,

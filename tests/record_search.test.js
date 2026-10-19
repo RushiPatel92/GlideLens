@@ -58,11 +58,17 @@ test("table lookup requires a safe bounded anchor", () => {
   assert.strictEqual(RS.extractTableLookupAnchor("^^sys^db"), "sys");
 });
 
+/* The lookup's third read names the candidates that are import set staging
+ * tables. Fakes that answer every read alike must answer this one apart. */
+const isStagingRead = (request) =>
+  request.table === "sys_db_object" && request.query.startsWith("super_class.name=");
+
 test("table suggestions query a bounded match set and return label plus technical name", async () => {
   const requests = [];
   const results = await RS.findTables("incident^active=true", {
     get: async (request) => {
       requests.push(request);
+      if (isStagingRead(request)) return [];
       return [
         { name: "incident", label: "Incident" },
         { name: "incident_task", label: "Incident Task" },
@@ -72,18 +78,17 @@ test("table suggestions query a bounded match set and return label plus technica
       ];
     },
   });
-  assert.strictEqual(requests.length, 2);
+  assert.strictEqual(requests.length, 3);
   requests.forEach((request) => {
-    assert.strictEqual(request.limit, RS.TABLE_LOOKUP_CANDIDATE_LIMIT);
+    assert.strictEqual(request.limit, isStagingRead(request)
+      ? RS.TABLE_LOOKUP_CANDIDATE_LIMIT * 2
+      : RS.TABLE_LOOKUP_CANDIDATE_LIMIT);
     assert.ok(!request.query.includes("=true"));
   });
   assert.deepStrictEqual(requests.map((request) => [request.table, request.query]), [
     ["sys_documentation", "elementISEMPTY^labelLIKEincident^ORDERBYlabel^ORDERBYname"],
     ["sys_db_object", "nameLIKEincident^ORDERBYname^ORDERBYlabel"],
-  ]);
-  assert.deepStrictEqual(requests.map((request) => request.query), [
-    "elementISEMPTY^labelLIKEincident^ORDERBYlabel^ORDERBYname",
-    "nameLIKEincident^ORDERBYname^ORDERBYlabel",
+    ["sys_db_object", "super_class.name=sys_import_set_row^nameLIKEincident^ORlabelLIKEincident"],
   ]);
   assert.deepStrictEqual(own(results).map((item) => [item.label, item.name]), [
     ["Incident", "incident"],
@@ -127,6 +132,7 @@ test("multi-word table lookup searches the complete label phrase and technical n
   const results = await RS.findTables("Supplier case", {
     get: async (request) => {
       requests.push(request);
+      if (isStagingRead(request)) return [];
       return [
         { name: "sn_slm_case", label: "Supplier Case" },
         { name: "sn_supplier_item", label: "Unrelated supplier item" },
@@ -136,6 +142,7 @@ test("multi-word table lookup searches the complete label phrase and technical n
   assert.deepStrictEqual(requests.map((request) => [request.table, request.query]), [
     ["sys_documentation", "elementISEMPTY^labelLIKESupplier case^ORDERBYlabel^ORDERBYname"],
     ["sys_db_object", "nameLIKEsupplier_case^ORDERBYname^ORDERBYlabel"],
+    ["sys_db_object", "super_class.name=sys_import_set_row^nameLIKEsupplier_case^ORlabelLIKESupplier case"],
   ]);
   assert.deepStrictEqual(own(results).map((item) => item.name), ["sn_slm_case"]);
 });
@@ -146,6 +153,7 @@ test("separate candidate windows keep a label match ahead of crowded technical m
       if (request.table === "sys_documentation") {
         return [{ name: "sn_slm_case", label: "Supplier Case" }];
       }
+      if (isStagingRead(request)) return [];
       return Array.from({ length: request.limit }, (_, index) => ({
         name: "sn_supplier_example_" + String(index).padStart(2, "0"),
         label: "Example table " + index,
@@ -159,7 +167,7 @@ test("separate candidate windows keep a label match ahead of crowded technical m
 test("technical-name lookup recovers a documentation-backed table omitted by label search", async () => {
   const results = await RS.findTables("Case", {
     get: async (request) => {
-      if (request.table === "sys_documentation") return [];
+      if (request.table === "sys_documentation" || isStagingRead(request)) return [];
       assert.strictEqual(request.query, "nameLIKEcase^ORDERBYname^ORDERBYlabel");
       return [{ name: "sn_slm_case", label: "Supplier Case" }];
     },
@@ -169,7 +177,7 @@ test("technical-name lookup recovers a documentation-backed table omitted by lab
 
 test("table suggestions show up to fifty verified matches", async () => {
   const results = await RS.findTables("match", {
-    get: async (request) => Array.from(
+    get: async (request) => isStagingRead(request) ? [] : Array.from(
       { length: request.limit },
       (_, index) => ({
         name: "x_example_" + String(index).padStart(2, "0") + "_match",
@@ -180,6 +188,138 @@ test("table suggestions show up to fifty verified matches", async () => {
   assert.strictEqual(results.length, RS.TABLE_SUGGESTION_LIMIT);
   assert.ok(results.every((item) => item.name.includes("match")));
   assert.strictEqual(results.truncated, true);
+});
+
+test("an import set staging table is tagged and listed after the table people mean", async () => {
+  /* Reported: a staging table carried its target's exact label, so it was
+   * listed first, searched, and read as Record Lens not working. */
+  const requests = [];
+  const results = await RS.findTables("example payment", {
+    get: async (request) => {
+      requests.push(request);
+      if (isStagingRead(request)) {
+        return [{ name: "x_stage_example_payment" }, { name: "x_stage_not_a_candidate" }];
+      }
+      return [
+        { name: "x_stage_example_payment", label: "Example Payment" },
+        { name: "x_fin_example_payment", label: "Example Payment Information" },
+      ];
+    },
+  });
+  const staging = requests.find(isStagingRead);
+  assert.strictEqual(staging.query,
+    "super_class.name=sys_import_set_row^nameLIKEexample_payment^ORlabelLIKEexample payment");
+  assert.strictEqual(staging.fields, "name");
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["x_fin_example_payment", false],
+    ["x_stage_example_payment", true],
+  ]);
+});
+
+test("typing a staging table's own technical name keeps it first, still tagged", async () => {
+  const results = await RS.findTables("x_stage_example_payment", {
+    get: async (request) => isStagingRead(request)
+      ? [{ name: "x_stage_example_payment" }]
+      : [
+        { name: "x_stage_example_payment", label: "Example Payment" },
+        { name: "x_stage_example_payment_info", label: "Example Payment Information" },
+      ],
+  });
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["x_stage_example_payment", true],
+    ["x_stage_example_payment_info", false],
+  ]);
+});
+
+/* Review S1: a table labelled with its own name ranks as an exact label, so
+ * the exact-name rule cannot key off the name's own rank. */
+test("a staging table labelled with its own name stays first when that name is typed", async () => {
+  const results = await RS.findTables("u_imp_example", {
+    get: async (request) => isStagingRead(request)
+      ? [{ name: "u_imp_example" }]
+      : [
+        { name: "u_imp_example", label: "" },
+        { name: "u_imp_example_history", label: "Example history" },
+      ],
+  });
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["u_imp_example", true],
+    ["u_imp_example_history", false],
+  ]);
+});
+
+/* Review S2: a full staging window is an arbitrary slice, so the candidates on
+ * screen are asked about by name, once. */
+test("a full staging window is checked again by name for the candidates on screen", async () => {
+  const requests = [];
+  const full = Array.from({ length: RS.TABLE_LOOKUP_CANDIDATE_LIMIT * 2 }, (_, index) =>
+    ({ name: "u_imp_other_" + index }));
+  const results = await RS.findTables("u_imp", {
+    get: async (request) => {
+      requests.push(request);
+      if (isStagingRead(request)) {
+        return request.query.includes("^nameIN") ? [{ name: "u_imp_payment" }] : full;
+      }
+      return [
+        { name: "u_imp_payment", label: "Imported payment" },
+        { name: "u_imp_notes", label: "Import notes" },
+      ];
+    },
+  });
+  const followUps = requests.filter((request) => isStagingRead(request) && request.query.includes("^nameIN"));
+  assert.deepStrictEqual(followUps.map((request) => [request.query, request.limit]), [
+    ["super_class.name=sys_import_set_row^nameINu_imp_payment,u_imp_notes", 2],
+  ]);
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["u_imp_notes", false],
+    ["u_imp_payment", true],
+  ]);
+});
+
+test("a failed staging read loses only the tags", async () => {
+  const results = await RS.findTables("example payment", {
+    get: async (request) => {
+      if (isStagingRead(request)) throw new Error("HTTP 403 reading sys_db_object");
+      return [{ name: "x_stage_example_payment", label: "Example Payment" }];
+    },
+  });
+  assert.deepStrictEqual(own(results).map((item) => [item.name, Boolean(item.staging)]), [
+    ["x_stage_example_payment", false],
+  ]);
+});
+
+test("a table under sys_import_set_row is staging, through to a sys_id search's result", async () => {
+  const table = "x_stage_example_payment";
+  const get = async (request) => {
+    if (request.table === "sys_db_object") {
+      const name = request.query.slice("name=".length);
+      return [{
+        name,
+        label: name === table ? "Example Payment" : "Example parent",
+        "super_class.name": name === table ? "sys_import_set_row" : "",
+      }];
+    }
+    if (request.table === "sys_dictionary") {
+      return [{ name: table, element: "u_code", column_label: "Code", internal_type: "string", display: "true" }];
+    }
+    return [];
+  };
+  const info = await RS.resolveTableInfo(table, { get, noCache: true });
+  assert.deepStrictEqual(own(info.hierarchy), [table, "sys_import_set_row"]);
+  assert.strictEqual(info.staging, true);
+  const plain = await RS.resolveTableInfo("x_example_plain", { get, noCache: true });
+  assert.strictEqual(plain.staging, false);
+
+  const result = await RS.runSearch(RS.parseSearch(table, "0123456789abcdef0123456789abcdef"), {
+    get, origin: "https://example.service-now.com/staging",
+  });
+  assert.strictEqual(result.results.length, 0);
+  assert.strictEqual(result.bySysId, true);
+  assert.strictEqual(result.staging, true);
+  const byText = await RS.runSearch(RS.parseSearch(table, "example"), {
+    get, origin: "https://example.service-now.com/staging",
+  });
+  assert.strictEqual(byText.bySysId, false);
 });
 
 test("exact sys_id input is recognized without a text anchor", () => {

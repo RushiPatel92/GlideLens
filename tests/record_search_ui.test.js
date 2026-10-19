@@ -102,6 +102,17 @@ function matchesSelector(node, selector) {
 function createDom() {
   let activeElement = null;
 
+  /* As in a browser, detaching the focused node, or anything around it,
+   * drops focus to nowhere. */
+  function dropFocusWithin(node) {
+    for (let current = activeElement; current; current = current.parentNode) {
+      if (current === node) {
+        activeElement = null;
+        return;
+      }
+    }
+  }
+
   class TextNode {
     constructor(value) {
       this.tagName = "#text";
@@ -128,6 +139,7 @@ function createDom() {
       this.checked = false;
       this.tabIndex = -1;
       this.shadowRoot = null;
+      this.style = {};
       this.focused = 0;
       this._hidden = false;
       this._disabled = false;
@@ -139,6 +151,14 @@ function createDom() {
     set disabled(value) {
       this._disabled = Boolean(value);
       if (this._disabled && activeElement === this) activeElement = null;
+    }
+    get childNodes() { return this.children; }
+    /* Connected once it reaches the document, through a shadow root's host. */
+    get isConnected() {
+      for (let node = this; node; node = node.parentNode || node.host || null) {
+        if (node === document.documentElement) return true;
+      }
+      return false;
     }
     get hidden() { return this._hidden; }
     set hidden(value) {
@@ -168,7 +188,10 @@ function createDom() {
         .join("");
     }
     set textContent(value) {
-      this.children.forEach((child) => { child.parentNode = null; });
+      this.children.forEach((child) => {
+        dropFocusWithin(child);
+        child.parentNode = null;
+      });
       this.children = [];
       this._text = value == null ? "" : String(value);
     }
@@ -186,6 +209,7 @@ function createDom() {
     removeChild(node) {
       const index = this.children.indexOf(node);
       if (index >= 0) this.children.splice(index, 1);
+      dropFocusWithin(node);
       node.parentNode = null;
       return node;
     }
@@ -216,11 +240,14 @@ function createDom() {
       return shadow;
     }
     focus() {
+      /* Focusing a detached node does nothing in Chrome. */
+      if (!this.isConnected) return;
       this.focused += 1;
       activeElement = this;
       (this.handlers.focus || []).slice().forEach((handler) => handler({ target: this }));
     }
     scrollIntoView() {}
+    select() {}
     querySelectorAll(selector) {
       const out = [];
       const visit = (node) => {
@@ -313,6 +340,9 @@ function createDom() {
     documentElement: new El("html"),
     body: new El("body"),
     get activeElement() { return activeElement; },
+    /* There is no clipboard here, so the panel's fallback copy fails, as a
+     * blocked one does in a browser. */
+    execCommand: () => false,
   };
   const windowObject = {
     addEventListener(type, handler) {
@@ -372,6 +402,7 @@ function load() {
   return {
     ui: sandbox.SNRecordSearchUI,
     dom,
+    navigator: sandbox.navigator,
     runTimers() {
       timers.forEach((timer) => {
         if (!timer.cancelled && !timer.done) {
@@ -640,6 +671,32 @@ test("live results arrive behind the favourites, each once, with the active opti
   assert.deepStrictEqual(names, ["u_example_one", "u_example_two", "u_example_archive"]);
   assert.strictEqual(tableInput(shadow).getAttribute("aria-activedescendant"), "snh-rs-table-option-1");
   assert.match(status(shadow), /3 matching tables · 2 starred, listed first/);
+});
+
+test("an import set staging table is tagged in the menu and in the summary once chosen", async () => {
+  const harness = load();
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [
+      { name: "x_fin_example_payment", label: "Example Payment Information" },
+      { name: "x_stage_example_payment", label: "Example Payment", staging: true },
+    ],
+    onResolveTable: async (name) => Object.assign(tableInfo(name, { label: "Example Payment" }), {
+      staging: name === "x_stage_example_payment",
+    }),
+  });
+  await type(harness, shadow, "example payment");
+  await settle();
+  const tags = options(shadow).map((option) => {
+    const tag = option.querySelector(".table-tag");
+    return tag ? tag.textContent : "";
+  });
+  assert.deepStrictEqual(tags, ["", "import set staging"]);
+
+  key(tableInput(shadow), "ArrowDown");
+  key(tableInput(shadow), "Enter");
+  await settle();
+  assert.match(q(shadow, ".field-summary").textContent,
+    /^Example Payment \(x_stage_example_payment\) · import set staging table · Searching:/);
 });
 
 /* ------------------------------------------------------------------ *
@@ -945,7 +1002,7 @@ test("a field already used in one row is not offered in another, and a value wai
   assert.strictEqual(value.getAttribute("placeholder"), "choose a field first");
 });
 
-test("picking a field opens its values; a search sends only complete rows and names the rest", async () => {
+test("picking a field opens its values, a value searches at once, and Enter names the empty row", async () => {
   const harness = load();
   const searches = [];
   const shadow = await openOnTable(harness, {
@@ -960,14 +1017,18 @@ test("picking a field opens its values; a search sends only complete rows and na
   await pick(shadow, "snh-rs-filter-1-field", "State");
   assert.strictEqual(byId(shadow, "snh-rs-filter-1-value-menu").hidden, false, "the values open by themselves");
   assert.match(byId(shadow, "snh-rs-filter-1-value-menu").textContent, /Labels in the instance language/);
+  assert.strictEqual(searches.length, 0, "a field alone is half a condition");
   await pick(shadow, "snh-rs-filter-1-value", "In Progress");
+  assert.strictEqual(searches.length, 1, "the value pick searched");
+  assert.strictEqual(searches[0].term, "");
+  assert.deepStrictEqual(searches[0].filters, [{ field: "state", value: "2" }]);
   await addRow(shadow);
+  assert.strictEqual(searches.length, 1, "an empty row changes no question");
 
   q(shadow, ".form").fire("submit");
   await settle();
-  assert.strictEqual(searches.length, 1);
-  assert.strictEqual(searches[0].term, "");
-  assert.deepStrictEqual(searches[0].filters, [{ field: "state", value: "2" }]);
+  assert.strictEqual(searches.length, 2, "Enter always asks");
+  assert.deepStrictEqual(searches[1].filters, [{ field: "state", value: "2" }]);
   assert.match(status(shadow), /1 filter · sorted by most recently updated · 1 filter row has no value yet/);
   assert.match(q(shadow, ".rows").textContent, /No verified matches for these filters/);
 });
@@ -1186,4 +1247,498 @@ test("starring a table saves its current filter fields", async () => {
   starButton(shadow).fire("click");
   await settle();
   assert.deepStrictEqual(worker.calls[0].filterFields, ["state"]);
+});
+
+/* ------------------------------------------------------------------ *
+ * Empty results
+ * ------------------------------------------------------------------ */
+
+async function emptySearch(term, answer) {
+  const harness = load();
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "x_example_payment", label: "Example Payment" }],
+    onSearch: async (input) => Object.assign({
+      stale: false, table: input.table, tableLabel: "Example Payment", results: [], filters: [],
+    }, answer),
+  });
+  await chooseLiveTable(harness, shadow, "x_example_payment");
+  await settle();
+  q(shadow, "[data-input='term']").value = term;
+  q(shadow, ".form").fire("submit");
+  await settle();
+  return q(shadow, ".rows").querySelector(".empty").textContent;
+}
+
+test("an empty sys_id search says the record is not in that table, not that fields missed", async () => {
+  const text = await emptySearch("0123456789abcdef0123456789abcdef", { bySysId: true });
+  assert.match(text, /^No record with this sys_id in Example Payment\./);
+  assert.match(text, /only in its record's own table or a parent of it/);
+  assert.ok(!/selected fields/.test(text), "a sys_id search uses no fields");
+  assert.ok(!/staging/.test(text));
+});
+
+test("an empty search on a staging table says where the records probably are", async () => {
+  const bySysId = await emptySearch("0123456789abcdef0123456789abcdef", { bySysId: true, staging: true });
+  assert.match(bySysId, /This is an import set staging table\./);
+  assert.match(bySysId, /may be in the table they were loaded into/);
+  const byText = await emptySearch("example", { bySysId: false, staging: true });
+  assert.match(byText, /^No verified matches in the selected fields\./);
+  assert.match(byText, /This is an import set staging table\./);
+});
+
+test("an empty text search on an ordinary table reads as before", async () => {
+  const text = await emptySearch("example", { bySysId: false });
+  assert.strictEqual(text, "No verified matches in the selected fields." +
+    "Try another term, select different verified fields, or use an exact sys_id.");
+});
+
+/* ------------------------------------------------------------------ *
+ * Clearing the Table and Text boxes
+ * ------------------------------------------------------------------ */
+
+const clearButton = (shadow, which) => q(shadow, "[data-clear='" + which + "']");
+
+test("the Table ✕ empties the box and its selection, then shows the starred tables", async () => {
+  const harness = load();
+  const shadow = openPanel(harness, filterOptions({ favorites: FAVORITES }));
+  assert.strictEqual(clearButton(shadow, "table").hidden, true, "nothing to clear yet");
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  await addRow(shadow);
+  const clear = clearButton(shadow, "table");
+  assert.strictEqual(clear.hidden, false);
+  assert.strictEqual(clear.getAttribute("aria-label"), "Clear table");
+  assert.strictEqual(clear.fire("mousedown").defaultPrevented, true, "a press keeps focus in the box");
+
+  clear.fire("click");
+  assert.strictEqual(tableInput(shadow).value, "");
+  assert.strictEqual(clear.hidden, true);
+  assert.strictEqual(harness.dom.document.activeElement, tableInput(shadow));
+  assert.strictEqual(q(shadow, ".filters").hidden, true, "the table's filters go with it");
+  assert.strictEqual(shadow.querySelectorAll(".filter-row").length, 0);
+  assert.strictEqual(q(shadow, ".fields-button").textContent, "0 fields");
+  assert.strictEqual(menu(shadow).hidden, false);
+  assert.strictEqual(options(shadow).length, 2);
+  assert.ok(options(shadow).every((option) => option.textContent.includes("starred")));
+  assert.match(status(shadow), /Your starred tables/);
+});
+
+test("with no favourites a clear asks for nothing, and a lookup it overtook is dropped", async () => {
+  const harness = load();
+  const pending = deferred();
+  const lookups = [];
+  const shadow = openPanel(harness, {
+    onFindTables: (value) => { lookups.push(value); return pending.promise; },
+  });
+  await type(harness, shadow, "inc");
+  assert.deepStrictEqual(lookups, ["inc"]);
+  const input = tableInput(shadow);
+  input.value = "incid";
+  input.fire("input");
+  clearButton(shadow, "table").fire("click");
+  harness.runTimers();
+  assert.deepStrictEqual(lookups, ["inc"], "the debounced lookup never runs");
+  pending.resolve([{ name: "incident", label: "Incident" }]);
+  await settle();
+  assert.strictEqual(menu(shadow).hidden, true, "the overtaken answer is not shown");
+  assert.strictEqual(options(shadow).length, 0);
+  assert.strictEqual(status(shadow), "Search for a table to begin.");
+});
+
+test("the Text ✕ stays live during a search and withdraws its answer; the Table ✕ waits", async () => {
+  const harness = load();
+  const searching = deferred();
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "incident", label: "Incident" }],
+    onSearch: () => searching.promise,
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  const term = q(shadow, "[data-input='term']");
+  const clear = clearButton(shadow, "term");
+  assert.strictEqual(clear.hidden, true);
+  term.value = "INC0010001";
+  term.fire("input");
+  assert.strictEqual(clear.hidden, false);
+  assert.strictEqual(clear.getAttribute("aria-label"), "Clear text or sys_id");
+
+  q(shadow, ".form").fire("submit");
+  await tick();
+  assert.strictEqual(term.disabled, false, "the text box stays live");
+  assert.strictEqual(clear.disabled, false);
+  assert.strictEqual(clearButton(shadow, "table").disabled, true);
+  clearButton(shadow, "table").fire("click");
+  assert.strictEqual(tableInput(shadow).value, "incident", "the table is not cleared under a search");
+
+  clear.fire("click");
+  assert.strictEqual(term.value, "");
+  assert.strictEqual(clear.hidden, true);
+  assert.strictEqual(harness.dom.document.activeElement, term);
+  assert.strictEqual(status(shadow), "Ready · Example incident (incident)");
+  searching.resolve({ stale: false, table: "incident", tableLabel: "Incident", results: [
+    { table: "incident", sysId: "0123456789abcdef0123456789abcdef", title: "INC0010001", values: [] },
+  ] });
+  await settle();
+  assert.strictEqual(shadow.querySelectorAll(".row").length, 0, "the answer to the cleared text is dropped");
+  assert.match(q(shadow, ".rows").textContent, /^Search Example incident\./);
+  assert.strictEqual(clearButton(shadow, "table").disabled, false, "the controls are released");
+});
+
+/* ------------------------------------------------------------------ *
+ * Copy confirmation
+ * ------------------------------------------------------------------ */
+
+const RESULT_SYS_ID = "0123456789abcdef0123456789abcdef";
+
+async function searchedRow(harness) {
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "incident", label: "Incident" }],
+    onSearch: async () => ({ stale: false, table: "incident", tableLabel: "Incident", results: [
+      { table: "incident", sysId: RESULT_SYS_ID, title: "INC0010001", values: [] },
+    ] }),
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  q(shadow, "[data-input='term']").value = "INC0010001";
+  q(shadow, ".form").fire("submit");
+  await settle();
+  assert.match(status(shadow), /^1 verified record in Incident/);
+  return shadow;
+}
+
+const resultAction = (shadow, label) => shadow.querySelectorAll(".result-action")
+  .find((button) => button.textContent === label);
+
+test("a copy is confirmed on the button pressed, which then reads as before", async () => {
+  const harness = load();
+  const copied = [];
+  harness.navigator.clipboard = { writeText: async (text) => { copied.push(text); } };
+  const shadow = await searchedRow(harness);
+  const copySysId = resultAction(shadow, "Copy sys_id");
+  copySysId.fire("click");
+  await settle();
+  assert.deepStrictEqual(copied, [RESULT_SYS_ID]);
+  assert.strictEqual(copySysId.textContent, "✓ Copied");
+  assert.strictEqual(copySysId.className, "result-action copied");
+  assert.strictEqual(copySysId.querySelector("span").getAttribute("aria-hidden"), "true",
+    "the tick is not read out");
+  assert.strictEqual(status(shadow), "sys_id copied to the clipboard.", "the status line still announces it");
+
+  /* A second press restarts the confirmation, and the label still comes back. */
+  copySysId.fire("click");
+  await settle();
+  harness.runTimers();
+  assert.strictEqual(copySysId.textContent, "Copy sys_id");
+  assert.strictEqual(copySysId.className, "result-action");
+
+  const copyUrl = resultAction(shadow, "Copy URL");
+  copyUrl.fire("click");
+  await settle();
+  assert.strictEqual(copied[2], "https://example.service-now.com/incident.do?sys_id=" + RESULT_SYS_ID);
+  assert.strictEqual(copyUrl.textContent, "✓ Copied");
+  assert.strictEqual(copySysId.textContent, "Copy sys_id", "only the pressed button changes");
+});
+
+test("a blocked copy says so on the button as well as on the status line", async () => {
+  const harness = load();
+  harness.navigator.clipboard = { writeText: async () => { throw new Error("blocked"); } };
+  const shadow = await searchedRow(harness);
+  const copySysId = resultAction(shadow, "Copy sys_id");
+  copySysId.fire("click");
+  await settle();
+  assert.strictEqual(copySysId.textContent, "Copy failed");
+  assert.strictEqual(copySysId.className, "result-action copy-failed");
+  assert.match(status(shadow), /Clipboard access was blocked/);
+  assert.strictEqual(harness.dom.document.body.children.length, 0, "the fallback leaves nothing behind");
+  harness.runTimers();
+  assert.strictEqual(copySysId.textContent, "Copy sys_id");
+});
+
+/* ------------------------------------------------------------------ *
+ * Searching as the question changes
+ * ------------------------------------------------------------------ */
+
+function rowFor(table, title) {
+  return { table, sysId: RESULT_SYS_ID, title, values: [] };
+}
+
+const resultTitles = (shadow) => shadow.querySelectorAll(".row .title").map((node) => node.textContent);
+const termInput = (shadow) => q(shadow, "[data-input='term']");
+
+async function typeTerm(harness, value) {
+  const input = termInput(harness.shadow());
+  input.value = value;
+  input.fire("input");
+  harness.runTimers();
+  await settle();
+}
+
+test("switching tables clears the results, and text already typed searches the new table", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = openPanel(harness, {
+    onFindTables: async (value) => [{ name: value, label: value }],
+    onSearch: async (input) => {
+      searches.push(input.table);
+      return { stale: false, table: input.table, tableLabel: input.table, results: [rowFor(input.table, input.table + " row")] };
+    },
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  termInput(shadow).value = "INC0010001";
+  q(shadow, ".form").fire("submit");
+  await settle();
+  assert.deepStrictEqual(resultTitles(shadow), ["incident row"]);
+
+  await type(harness, shadow, "problem");
+  assert.deepStrictEqual(resultTitles(shadow), [], "the old table's records are gone at once");
+  assert.match(q(shadow, ".rows").textContent, /^Find a record/);
+  assert.strictEqual(q(shadow, "[data-action='open-list']").disabled, true);
+
+  await settle();
+  key(tableInput(shadow), "Enter");
+  await settle();
+  assert.deepStrictEqual(searches, ["incident", "problem"]);
+  assert.deepStrictEqual(resultTitles(shadow), ["problem row"]);
+});
+
+test("a table whose ready line carries a warning is not searched until asked", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = openPanel(harness, {
+    favorites: [{ name: "u_example_table", label: "Example table", fields: ["u_gone"] }],
+    onResolveTable: async (name) => tableInfo(name, {
+      remembered: { requested: ["u_gone"], verified: [], absent: ["u_gone"], unverifiable: [] },
+    }),
+    onSearch: async (input) => { searches.push(input); return { stale: false, table: input.table, results: [] }; },
+  });
+  termInput(shadow).value = "INC0010001";
+  options(shadow)[0].fire("click");
+  await settle();
+  assert.deepStrictEqual(searches, []);
+  assert.match(status(shadow), /no longer on this table: u_gone/);
+});
+
+test("a pause in typing searches; a short term says what is needed and withdraws the answer", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "incident", label: "Incident" }],
+    onSearch: async (input) => {
+      searches.push({ term: input.term, fields: JSON.parse(JSON.stringify(input.fields)) });
+      return { stale: false, table: "incident", tableLabel: "Incident", results: [rowFor("incident", input.term)] };
+    },
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  const input = termInput(shadow);
+  input.value = "INC001";
+  input.fire("input");
+  await settle();
+  assert.deepStrictEqual(searches, [], "nothing before the pause");
+  harness.runTimers();
+  await settle();
+  assert.deepStrictEqual(searches.map((search) => search.term), ["INC001"]);
+  assert.deepStrictEqual(resultTitles(shadow), ["INC001"]);
+
+  await typeTerm(harness, "INC001 ");
+  assert.strictEqual(searches.length, 1, "a pause that changed nothing asks nothing");
+
+  toggleField(shadow, "short_description");
+  await settle();
+  assert.strictEqual(searches.length, 1, "a field change waits for the pause too");
+  harness.runTimers();
+  await settle();
+  assert.deepStrictEqual(searches[1].fields, ["number", "short_description"]);
+
+  await typeTerm(harness, "IN");
+  assert.strictEqual(searches.length, 2);
+  assert.strictEqual(status(shadow), "Enter at least 3 consecutive letters, numbers, or underscores.");
+  assert.strictEqual(q(shadow, ".status").className, "status", "said neutrally, not as an error");
+  assert.deepStrictEqual(resultTitles(shadow), [], "the longer term's answer is withdrawn");
+  assert.match(q(shadow, ".rows").textContent, /^Keep typing to search\./);
+  assert.strictEqual(q(shadow, "[data-action='open-list']").disabled, true);
+
+  await typeTerm(harness, "");
+  assert.strictEqual(status(shadow), "Ready · Example incident (incident)");
+  assert.match(q(shadow, ".rows").textContent, /^Search Example incident\./);
+  assert.strictEqual(searches.length, 2);
+});
+
+test("one search at a time: text typed during a search waits, and only the latest is asked", async () => {
+  const harness = load();
+  const calls = [];
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "incident", label: "Incident" }],
+    onSearch: (input) => {
+      const pending = deferred();
+      calls.push({ term: input.term, pending });
+      return pending.promise;
+    },
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  await typeTerm(harness, "alpha");
+  await typeTerm(harness, "bravo");
+  await typeTerm(harness, "charlie");
+  assert.deepStrictEqual(calls.map((call) => call.term), ["alpha"], "the others wait");
+  assert.strictEqual(termInput(shadow).disabled, false);
+
+  calls[0].pending.resolve({ stale: false, table: "incident", results: [rowFor("incident", "alpha")] });
+  await settle();
+  assert.deepStrictEqual(calls.map((call) => call.term), ["alpha", "charlie"], "only the latest is asked");
+  assert.deepStrictEqual(resultTitles(shadow), [], "the outdated answer is never shown");
+  assert.strictEqual(q(shadow, ".search-btn").disabled, true, "still busy for the next one");
+
+  calls[1].pending.resolve({ stale: false, table: "incident", results: [rowFor("incident", "charlie")] });
+  await settle();
+  assert.deepStrictEqual(resultTitles(shadow), ["charlie"]);
+  assert.strictEqual(q(shadow, ".search-btn").disabled, false);
+});
+
+test("clearing a value or removing a complete row asks again; the last one gone returns to ready", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = await openOnTable(harness, {
+    onSearch: async (input) => {
+      searches.push(JSON.parse(JSON.stringify(input.filters.map((filter) => filter.field))));
+      return { stale: false, table: "incident", tableLabel: "Incident", results: [], filters: [] };
+    },
+  });
+  await addRow(shadow);
+  await pick(shadow, "snh-rs-filter-1-field", "State");
+  await pick(shadow, "snh-rs-filter-1-value", "New");
+  await addRow(shadow);
+  await pick(shadow, "snh-rs-filter-2-field", "Assignment group");
+  await pick(shadow, "snh-rs-filter-2-value", "Example group");
+  assert.deepStrictEqual(searches, [["state"], ["state", "assignment_group"]]);
+
+  shadow.querySelectorAll(".filter-remove")[1].fire("click");
+  await settle();
+  assert.deepStrictEqual(searches[2], ["state"], "removing a complete row asks again");
+
+  /* Clearing the field takes its value with it: the last condition is gone. */
+  const field = byId(shadow, "snh-rs-filter-1-field");
+  field.parentNode.querySelector(".combo-clear").fire("click");
+  await settle();
+  assert.strictEqual(searches.length, 3, "with nothing left there is nothing to ask");
+  assert.strictEqual(status(shadow), "Ready · Example incident (incident)");
+  assert.match(q(shadow, ".rows").textContent, /^Search Example incident\./);
+
+  field.fire("focus");
+  await settle();
+  await pick(shadow, "snh-rs-filter-1-field", "State");
+  await pick(shadow, "snh-rs-filter-1-value", "New");
+  assert.deepStrictEqual(searches[3], ["state"]);
+  byId(shadow, "snh-rs-filter-1-value").parentNode.querySelector(".combo-clear").fire("click");
+  await settle();
+  assert.strictEqual(searches.length, 4);
+  assert.strictEqual(status(shadow), "Ready · Example incident (incident)", "clearing the value does the same");
+});
+
+/* ------------------------------------------------------------------ *
+ * Review findings (B1, S3, S4)
+ * ------------------------------------------------------------------ */
+
+const searchAnswer = { stale: false, table: "incident", tableLabel: "Incident", results: [], filters: [] };
+
+test("a starred table chosen under typed text is searched once its filter rows are back", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = openPanel(harness, filterOptions({
+    favorites: [{ name: "incident", label: "Incident", fields: [], filterFields: ["state"] }],
+    onSearch: async (input) => { searches.push(input.term); return searchAnswer; },
+  }));
+  termInput(shadow).value = "INC0010001";
+  options(shadow)[0].fire("click");
+  await settle();
+  assert.deepStrictEqual(searches, ["INC0010001"]);
+  assert.match(status(shadow), /1 filter row has no value yet/, "the restored row is counted");
+});
+
+test("a starred table whose filter field is gone keeps the warning on screen and still saves", async () => {
+  const harness = load();
+  const favorites = [{ name: "incident", label: "Incident", fields: [], filterFields: ["state", "u_gone"] }];
+  const worker = favoriteWorker(favorites);
+  const searches = [];
+  const shadow = openPanel(harness, filterOptions({
+    favorites,
+    onFavoriteOp: worker.op,
+    onSearch: async (input) => { searches.push(input.term); return searchAnswer; },
+  }));
+  termInput(shadow).value = "INC0010001";
+  options(shadow)[0].fire("click");
+  await settle();
+  assert.deepStrictEqual(searches, [], "the warning is read first");
+  assert.match(status(shadow), /filter fields no longer offered: u_gone/);
+
+  byId(shadow, "snh-rs-filter-1-field").parentNode.querySelector(".combo-clear").fire("click");
+  await settle();
+  assert.ok(worker.calls.some((call) => call.op === "filterFields"),
+    "the favourite still saves: nothing was held back unannounced");
+});
+
+test("focus on a result row a search replaced goes to the text box, not the page", async () => {
+  const harness = load();
+  const shadow = openPanel(harness, {
+    onFindTables: async () => [{ name: "incident", label: "Incident" }],
+    onSearch: async (input) => ({ stale: false, table: "incident", results: [rowFor("incident", input.term)] }),
+  });
+  await chooseLiveTable(harness, shadow, "incident");
+  await settle();
+  await typeTerm(harness, "alpha");
+  const input = termInput(shadow);
+  input.value = "alphabet";
+  input.fire("input");
+  const row = shadow.querySelector(".row");
+  row.focus();
+  assert.strictEqual(harness.dom.document.activeElement, row);
+  harness.runTimers();
+  await settle();
+  assert.deepStrictEqual(resultTitles(shadow), ["alphabet"]);
+  assert.strictEqual(harness.dom.document.activeElement, input);
+});
+
+test("clearing a filter field on a starred table leaves the status to the search it starts", async () => {
+  const harness = load();
+  const calls = [];
+  const shadow = openPanel(harness, filterOptions({
+    favorites: [{ name: "incident", label: "Incident", fields: [], filterFields: ["state", "assignment_group"] }],
+    onSearch: () => {
+      const pending = deferred();
+      calls.push(pending);
+      return pending.promise;
+    },
+  }));
+  options(shadow)[0].fire("click");
+  await settle();
+  for (const [id, label] of [["snh-rs-filter-1-value", "New"], ["snh-rs-filter-2-value", "Example group"]]) {
+    byId(shadow, id).fire("focus");
+    await settle();
+    await pick(shadow, id, label);
+    calls[calls.length - 1].resolve(searchAnswer);
+    await settle();
+  }
+  assert.strictEqual(calls.length, 2);
+
+  byId(shadow, "snh-rs-filter-1-field").parentNode.querySelector(".combo-clear").fire("click");
+  await settle();
+  assert.strictEqual(calls.length, 3);
+  assert.match(status(shadow), /^Searching with 1 filter/, "the save's note does not replace the spinner");
+  calls[2].resolve(searchAnswer);
+  await settle();
+});
+
+test("focus a search took goes back to the picker that had it, without reopening its list", async () => {
+  const harness = load();
+  const shadow = await openOnTable(harness);
+  await addRow(shadow);
+  await pick(shadow, "snh-rs-filter-1-field", "State");
+  const value = byId(shadow, "snh-rs-filter-1-value");
+  assert.strictEqual(harness.dom.document.activeElement, value);
+  key(value, "Enter");
+  await settle();
+  assert.strictEqual(value.disabled, false);
+  assert.strictEqual(harness.dom.document.activeElement, value);
+  assert.strictEqual(byId(shadow, "snh-rs-filter-1-value-menu").hidden, true);
 });

@@ -32,15 +32,44 @@ reconstructed version by version.
   searched. Favourites are kept per instance and only on this device, up to 20
   per instance, and a starred table that can no longer be read can be
   unstarred from its error.
+- **Clear buttons in Record Lens.** The Table and Text or sys_id boxes now
+  have the ✕ that the filter pickers and Impersonate already have. Clearing
+  the table also clears its fields and filters, and lists your starred tables
+  again.
 
 ### Changed
+- **Record Lens searches as you go.** As in Impersonate, the results update
+  when typing pauses for half a second, when you pick or clear a filter value,
+  when you remove a filter, and when you change the search fields. Enter and
+  Search still search at once. If the text is too short to search, the panel
+  says what it needs and removes the old results. Only one search runs at a
+  time. A change made during a search waits for it to finish, and then only
+  the latest one is searched.
+- **Record Lens copy confirmation.** Copy sys_id and Copy URL now confirm on
+  the button you pressed, which reads ✓ Copied (or Copy failed) for two
+  seconds. Before, the only confirmation was on the status line above the
+  results, where it was easy to miss.
 - **Privacy.** Local storage now holds a fourth item: the tables you starred in
   Record Lens and the names of their search and filter fields. The privacy
   page, README and store listing say so. Nothing new leaves your device.
 
 ### Fixed
+- **Record Lens kept another table's results.** After you switched tables,
+  the previous table's records stayed on screen. They are now cleared as soon
+  as the table changes, and text you already typed searches the new table.
 - **Record Lens table menu.** While a table lookup was running, Enter could
   select an option from the previous list that was no longer on screen.
+- **Record Lens import set staging tables.** A staging table can have the same
+  label as the table its rows are loaded into, and it was listed first. It is
+  usually empty, so searching it looked like Record Lens not working. Staging
+  tables are now tagged and listed after the other matches. A chosen staging
+  table is also named in the field summary and in an empty result.
+- **Record Lens empty sys_id search.** An empty sys_id search said no selected
+  field matched, although a sys_id search uses no fields. It now says that no
+  record with that sys_id is in the table.
+- **Impersonate pickers.** While a role, group or attribute list was looking
+  up, Enter could pick an option from the previous list, which was no longer
+  on screen.
 
 ## [0.17.0] - 2026-10-14
 

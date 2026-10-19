@@ -46,6 +46,17 @@
   let selectedFields = new Set();
   let lastResult = null;
   let searchBusy = false;
+  /* As in Impersonate, a pause in typing, a filter value or a field change
+   * asks the controls' question once it differs from the one last asked. */
+  const AUTO_SEARCH_DELAY_MS = 500;
+  let searchTimer = null;
+  let lastRequestKey = "";
+  /* Whether the results area shows the table's ready state, not an answer. */
+  let atReady = true;
+  let searchesInFlight = 0;
+  let searchQueued = false;
+  let searchFocus = null;
+  let quietFocus = false;
 
   /* [hidden] is restated first and wins: the user-agent rule loses to any
    * author `display`, and the filter area is display:flex. */
@@ -91,6 +102,8 @@
       white-space:normal}
     .menu-message{padding:11px;color:#9999b1;font-size:11px;line-height:1.4}
     .table-star{color:var(--pink);margin-right:5px}
+    .table-tag{display:inline-block;margin-left:6px;padding:0 5px;border:1px solid #6d5b34;
+      border-radius:4px;color:#e2b864;font-size:10px;font-weight:600;line-height:1.5}
     .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
       clip:rect(0,0,0,0);white-space:nowrap;border:0}
     .search-btn,.toolbar button,.fields-button,.star-btn,.result-action{border:1px solid #5b5b86;
@@ -113,6 +126,7 @@
       background:transparent;color:var(--muted);padding:4px 7px;border-radius:5px;font-size:12px;
       line-height:1;cursor:pointer}
     .combo-clear:hover:not(:disabled),.combo-clear:focus-visible{color:#fff;background:#2d2d48;outline:none}
+    .clearable{position:relative;display:block}.combo input,.clearable input{padding-right:34px}
     .menu{position:absolute;left:0;right:0;top:calc(100% + 5px);z-index:6;max-height:270px;
       overflow:auto;background:#171724;border:1px solid #565681;border-radius:8px;
       box-shadow:0 16px 38px rgba(0,0,0,.55);padding:5px}
@@ -161,6 +175,8 @@
     .value-label{color:#75758e}.row-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
     .result-action{padding:4px 8px;background:#30314f;font-size:10px}
     .result-action:hover{background:#45466e;color:#fff}
+    .result-action.copied{background:#173d3a;border-color:var(--teal);color:#c4f7f1;font-weight:650}
+    .result-action.copy-failed{background:#4a2330;border-color:#ef9b9b;color:#ffd9d9;font-weight:650}
     .toolbar{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid #2e2e4e;
       background:#20203a}.toolbar-note{flex:1;color:#85859d;font-size:11px}
     .toolbar button:hover:not(:disabled){background:#4a4b78;color:#fff}
@@ -244,8 +260,8 @@
    * allows a shared panel base only once two new panels prove its API. Each
    * instance registers under its own key and leaving compares against that
    * key, so every filter row gives its two pickers unique ids and keys.
-   * Unlike Impersonate, a pick never searches: Record Lens searches on
-   * Search, as it always has.
+   * As in Impersonate, picking or clearing a value searches at once, and
+   * picking a field opens its values instead.
    */
   function createCombo(config) {
     const state = {
@@ -520,6 +536,7 @@
       get selected() { return state.selected; },
       get isOpen() { return state.open; },
       closeMenu: () => setOpen(false),
+      focusQuietly,
       clearSelection,
       /* Binds an option without announcing a pick: a remembered field is
        * restored, not chosen. */
@@ -670,8 +687,12 @@
         row.value.setBlocked(!option, "choose a field first");
         lastResult = null;
         updateListButton();
+        /* A field alone is half a condition, so a pick opens its values. A
+         * clear asks again only if a whole condition went with it -- after
+         * the save, as removing a row does, so the search owns the status. */
         if (how === "pick") row.value.focusAndOpen();
         if (how !== "edit") saveFavoriteFilterFields();
+        if (how === "clear") searchIfChanged();
       },
     });
     row.value = createCombo({
@@ -683,9 +704,10 @@
       emptyMessage: "No values are available for that field.",
       loadOnFocus: true,
       load: (text) => loadFilterValueOptions(row, text),
-      onSelect: () => {
+      onSelect: (option, how) => {
         lastResult = null;
         updateListButton();
+        if (how !== "edit") searchIfChanged();
       },
     });
     row.remove = el("button", "filter-remove", "✕");
@@ -727,6 +749,7 @@
     updateListButton();
     shadow.querySelector(".add-filter").focus();
     if (hadField) saveFavoriteFilterFields();
+    searchIfChanged();
   }
 
   function clearFilterRows() {
@@ -864,6 +887,16 @@
         announced.textContent = ", starred";
         label.appendChild(announced);
       }
+      if (option.staging) {
+        const separator = document.createElement("span");
+        separator.className = "sr-only";
+        separator.textContent = ", ";
+        const tag = document.createElement("span");
+        tag.className = "table-tag";
+        tag.textContent = "import set staging";
+        label.appendChild(separator);
+        label.appendChild(tag);
+      }
       const name = document.createElement("span");
       name.className = "table-name";
       name.textContent = option.name;
@@ -929,6 +962,50 @@
     clearFilterRows();
     renderFieldControl();
     updateListButton();
+    refreshClearButtons();
+    resetResults();
+  }
+
+  /* The Table and Text boxes get the filter pickers' ✕, shown whenever there
+   * is something to clear. The text box stays live during a search, and so
+   * does its ✕. */
+  function refreshClearButtons() {
+    if (!shadow) return;
+    shadow.querySelectorAll("[data-clear]").forEach((button) => {
+      const input = shadow.querySelector("[data-input='" + button.dataset.clear + "']");
+      setHidden(button, !input.value);
+      setDisabled(button, searchBusy && button.dataset.clear !== "term");
+    });
+  }
+
+  /* Deleting the text by hand runs a lookup on the empty box, which asks for
+   * two characters. A clear is deliberate, so it asks nothing: it shows the
+   * starred tables, or the opening prompt when there are none. */
+  function clearTableByUser() {
+    if (!shadow || searchBusy) return;
+    const input = shadow.querySelector("[data-input='table']");
+    clearTimeout(lookupTimer);
+    lookupSequence += 1;
+    input.value = "";
+    clearTableSelection();
+    tableOptions = [];
+    activeTableIndex = -1;
+    shadow.querySelector(".table-menu").textContent = "";
+    setTableMenu(false);
+    input.focus();
+    /* Focus shows them only when it moves, and the box may already have had it. */
+    if (favorites.length) showFavoriteTables();
+    else setStatus("Search for a table to begin.", "", false);
+  }
+
+  /* A finished question, like clearing a picker, so it is asked at once. */
+  function clearTermByUser() {
+    if (!shadow) return;
+    const input = shadow.querySelector("[data-input='term']");
+    input.value = "";
+    refreshClearButtons();
+    input.focus();
+    searchIfChanged();
   }
 
   /* Matching favourites, in stored order, then live results. */
@@ -1003,9 +1080,11 @@
     lastResult = null;
     clearFilterRows();
     shadow.querySelector("[data-input='table']").value = option.name;
+    refreshClearButtons();
     setTableMenu(false);
     renderFieldControl();
     updateListButton();
+    resetResults();
     const sequence = ++requestSequence;
     /* A favourite's remembered fields are only names. Each one must be
      * confirmed by its own live dictionary row before it is applied. */
@@ -1054,6 +1133,8 @@
       }
       setStatus(readyText, readyKind, false);
       shadow.querySelector("[data-input='term']").focus();
+      renderReady();
+      let restoreWarned = false;
       const rememberedFilters = favorite ? favorite.filterFields.slice() : [];
       if (rememberedFilters.length && onFilterFields) {
         /* Saves asked for while this restores wait for it, so a partial set
@@ -1068,13 +1149,10 @@
         const deferredSave = filterSaveDeferred;
         filterSaveDeferred = false;
         if (!restored || !shadow) return;
+        restoreWarned = /could not|not restored|no longer/.test(restored.note);
         const statusFree = sequence === requestSequence;
         if (statusFree && restored.note) {
-          setStatus(
-            readyText + restored.note,
-            readyKind || (/could not|not restored|no longer/.test(restored.note) ? "validation" : ""),
-            false
-          );
+          setStatus(readyText + restored.note, readyKind || (restoreWarned ? "validation" : ""), false);
         } else if (!statusFree && restored.missing.length) {
           /* A search owns the status line now, so a field found gone was
            * never announced. It is kept rather than dropped unseen. */
@@ -1087,6 +1165,16 @@
             ? " · dropped, no longer offered: " + restored.missing.join(", ") : "");
         }
       }
+      /*
+       * A table chosen under text already typed is a finished question,
+       * asked once its remembered filter rows are back. Asking earlier took
+       * the status line from the restore, so a filter field found gone was
+       * never announced and the favourite stopped saving (review B1). A
+       * warning, from the fields or the filters, is left on screen to be read
+       * instead. Enter pressed meanwhile asked the same question, which
+       * searchIfChanged does not ask twice.
+       */
+      if (termValue() && !readyKind && !restoreWarned) searchIfChanged();
     } catch (error) {
       if (!shadow || sequence !== requestSequence) return;
       tableInfo = null;
@@ -1292,7 +1380,8 @@
     }
     const table = document.createElement("span");
     table.className = "selected-table";
-    table.textContent = (selectedTable.label || selectedTable.name) + " (" + selectedTable.name + ") · ";
+    table.textContent = (selectedTable.label || selectedTable.name) + " (" + selectedTable.name + ") · " +
+      (tableInfo && tableInfo.staging ? "import set staging table · " : "");
     const fieldsText = document.createElement("strong");
     fieldsText.textContent = chosen.length
       ? "Searching: " + chosen.map((field) => field.label + " [" + field.name + "]").join(", ")
@@ -1350,6 +1439,7 @@
         updateFieldSummary();
         updateListButton();
         saveFavoriteFields();
+        scheduleSearch();
       });
       menu.appendChild(label);
     });
@@ -1384,11 +1474,43 @@
     }
   }
 
-  async function copyResult(value, label) {
+  /*
+   * Reported: the status line sits above the results, away from the button,
+   * so a copy read as having done nothing. The pressed button answers for
+   * itself, the way Translation Lens confirms its copy; the status line still
+   * carries the announcement. Its width is held so the row does not shift.
+   */
+  const COPY_FLASH_MS = 2000;
+  function flashResultAction(button, copied) {
+    if (!button) return;
+    if (button.flashRestore === undefined) button.flashRestore = button.textContent;
+    if (!button.flashTimer && button.style && button.offsetWidth) {
+      button.style.minWidth = button.offsetWidth + "px";
+    }
+    button.textContent = "";
+    if (copied) {
+      const tick = el("span", null, "✓ ");
+      tick.setAttribute("aria-hidden", "true");
+      button.appendChild(tick);
+    }
+    button.appendChild(document.createTextNode(copied ? "Copied" : "Copy failed"));
+    button.className = "result-action " + (copied ? "copied" : "copy-failed");
+    clearTimeout(button.flashTimer);
+    button.flashTimer = setTimeout(() => {
+      button.flashTimer = null;
+      button.textContent = button.flashRestore;
+      button.className = "result-action";
+      if (button.style) button.style.minWidth = "";
+    }, COPY_FLASH_MS);
+  }
+
+  async function copyResult(value, label, button) {
     try {
       await copyText(value);
+      flashResultAction(button, true);
       setStatus(label + " copied to the clipboard.", "", false);
     } catch (error) {
+      flashResultAction(button, false);
       setStatus("Clipboard access was blocked. Try again from the active page.", "access", false);
     }
   }
@@ -1414,7 +1536,7 @@
     button.textContent = label;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      action();
+      action(button);
     });
     container.appendChild(button);
   }
@@ -1430,8 +1552,10 @@
   function setSearchBusy(busy) {
     if (!shadow) return;
     searchBusy = Boolean(busy);
+    /* As in Impersonate, the text box stays live: locking it would swallow
+     * the keystrokes after a pause, and the next question waits its turn. */
     shadow.querySelectorAll("[data-input]").forEach((input) => {
-      input.disabled = searchBusy;
+      input.disabled = searchBusy && input.dataset.input !== "term";
     });
     shadow.querySelector(".search-btn").disabled = searchBusy;
     shadow.querySelectorAll(".field-option input").forEach((input) => {
@@ -1439,6 +1563,7 @@
     });
     Object.keys(combos).forEach((key) => combos[key].setBusy(searchBusy));
     filterRows.forEach((row) => setDisabled(row.remove, searchBusy));
+    refreshClearButtons();
     updateFieldSummary();
   }
 
@@ -1475,11 +1600,26 @@
       false
     );
     if (!results.length) {
+      /* Reported: an empty staging table that shared its target's label read
+       * as Record Lens not working, and a sys_id search was told about fields
+       * it never used. */
+      const stagingHint = result.staging
+        ? " This is an import set staging table. Its rows are usually removed once they are" +
+          " loaded, so the records may be in the table they were loaded into."
+        : "";
+      if (result.bySysId && !filterCount) {
+        renderEmpty(
+          "No record with this sys_id in " + (result.tableLabel || result.table) + ".",
+          "A sys_id is found only in its record's own table or a parent of it, and only if" +
+            " you can read that record." + stagingHint
+        );
+        return;
+      }
       renderEmpty(
         filterCount ? "No verified matches for these filters." : "No verified matches in the selected fields.",
-        filterCount
+        (filterCount
           ? "Try another value, remove a filter, or change the text."
-          : "Try another term, select different verified fields, or use an exact sys_id."
+          : "Try another term, select different verified fields, or use an exact sys_id.") + stagingHint
       );
       return;
     }
@@ -1539,31 +1679,178 @@
       const actions = document.createElement("div");
       actions.className = "row-actions";
       addResultAction(actions, "Open record", () => openRecord(resultRow));
-      addResultAction(actions, "Copy sys_id", () => copyResult(resultRow.sysId, "sys_id"));
-      addResultAction(actions, "Copy URL", () => copyResult(resultUrl(resultRow), "Record URL"));
+      addResultAction(actions, "Copy sys_id", (button) => copyResult(resultRow.sysId, "sys_id", button));
+      addResultAction(actions, "Copy URL", (button) => copyResult(resultUrl(resultRow), "Record URL", button));
       row.appendChild(actions);
       rows.appendChild(row);
     });
   }
 
+  /* ------------------------------------------------------------------ *
+   * Asking the question
+   * ------------------------------------------------------------------ */
+
+  function termValue() {
+    return shadow ? shadow.querySelector("[data-input='term']").value.trim() : "";
+  }
+
+  /* Only complete rows are part of the question. */
+  function completeFilters() {
+    return filterRows
+      .filter((row) => row.field.selected && row.value.selected)
+      .map((row) => ({ field: row.field.selected.value, value: row.value.selected.value }));
+  }
+
+  /* Trimmed, as the engine trims it. The fields count even for a sys_id or
+   * filter-only search, because they choose the values each row shows. */
+  function currentRequestKey() {
+    return JSON.stringify([
+      selectedTable ? selectedTable.name : "",
+      termValue(),
+      Array.from(selectedFields).sort(),
+      completeFilters().map((filter) => [filter.field, filter.value]),
+    ]);
+  }
+
+  function renderReady() {
+    if (!tableInfo) {
+      renderEmpty(
+        "Find a record without loading a full table list.",
+        favorites.length
+          ? "Choose a starred table, or type two characters to query a bounded set of matching table labels and names."
+          : "Type two characters to query a bounded set of matching table labels and names."
+      );
+      return;
+    }
+    renderEmpty(
+      "Search " + (tableInfo.label || tableInfo.table) + ".",
+      "Type text or an exact sys_id, or choose a filter value. The results update as you go."
+    );
+  }
+
+  /* Reported: switching tables left the old table's records on screen. A
+   * table change starts over, and nothing asked of the old table is kept. */
+  function resetResults() {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+    searchQueued = false;
+    lastRequestKey = "";
+    atReady = true;
+    renderReady();
+  }
+
+  /* Results answer one question. When the controls stop asking it, the
+   * answer is withdrawn rather than left under a different question, and a
+   * read still out for it is dropped. The caller renders the rows. */
+  function withdrawResults(message, kind) {
+    requestSequence += 1;
+    searchQueued = false;
+    lastRequestKey = "";
+    lastResult = null;
+    atReady = false;
+    updateListButton();
+    setStatus(message, kind, false);
+  }
+
+  function showReady() {
+    withdrawResults(
+      "Ready · " + (selectedTable.label || selectedTable.name) + " (" + selectedTable.name + ")", ""
+    );
+    atReady = true;
+    renderReady();
+  }
+
+  function scheduleSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(searchIfChanged, AUTO_SEARCH_DELAY_MS);
+  }
+
+  /*
+   * The automatic search, after a pause in typing, a filter value, a field
+   * change or a clear. The term is judged by the engine's own parseSearch, so
+   * a pause mid-word says what is needed instead of drawing the validation
+   * error that Enter would. A question already asked is not asked again;
+   * Enter and Search always ask.
+   */
+  function searchIfChanged() {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+    if (!shadow || !selectedTable || !tableInfo) return;
+    const term = termValue();
+    const filters = completeFilters();
+    if (!term && !filters.length) {
+      if (!atReady) showReady();
+      return;
+    }
+    if (term) {
+      const parsed = engine().parseSearch(selectedTable.name, term);
+      if (!parsed.ok) {
+        withdrawResults(parsed.error, "");
+        renderEmpty("Keep typing to search.",
+          filters.length ? "Or clear the text to search by the filters alone." : "");
+        return;
+      }
+      if (!parsed.isSysId && !selectedFields.size) {
+        withdrawResults("Select at least one verified field for a text search.", "validation");
+        renderEmpty("No fields are selected.", "Choose fields to search this text, or use an exact sys_id.");
+        return;
+      }
+    }
+    if (currentRequestKey() === lastRequestKey) return;
+    submit();
+  }
+
+  /* A search disables every control but the text box, and a disabled
+   * control loses focus. Only an orphaned focus is put back, quietly, so no
+   * list reopens. A control the search replaced or removed -- a result row,
+   * a filter row a table change dropped -- hands focus to the text box
+   * instead, since focusing a detached node would leave it on the page. */
+  function restoreFocus(node) {
+    if (!shadow || !node || shadow.activeElement) return;
+    const target = node.isConnected === false || node.disabled || node.hidden
+      ? shadow.querySelector("[data-input='term']")
+      : node;
+    const owner = Object.keys(combos).map((key) => combos[key])
+      .find((combo) => combo && combo.input === target);
+    if (owner) {
+      owner.focusQuietly();
+      return;
+    }
+    quietFocus = true;
+    try { target.focus(); } finally { quietFocus = false; }
+  }
+
+  /* Counted rather than tied to the winning sequence: a read superseded by a
+   * newer question must still release the controls. */
+  function finishSearch() {
+    searchesInFlight = Math.max(0, searchesInFlight - 1);
+    if (searchesInFlight || !shadow) return;
+    setSearchBusy(false);
+    if (searchQueued) {
+      searchQueued = false;
+      searchIfChanged();
+      if (searchesInFlight) return;
+    }
+    restoreFocus(searchFocus);
+    searchFocus = null;
+  }
+
   async function submit() {
     if (!shadow || !onSearch) return;
-    const termInput = shadow.querySelector("[data-input='term']");
+    /* Asking now makes a pending pause redundant. */
+    clearTimeout(searchTimer);
+    searchTimer = null;
     if (!selectedTable || !tableInfo) {
       setStatus("Choose a verified table before searching.", "validation", false);
       return;
     }
-    const term = termInput.value.trim();
+    const term = termValue();
     const isSysId = /^[0-9a-f]{32}$/i.test(term);
     /* Only complete rows are applied. The rest are counted on the status
      * line, never dropped silently -- with remembered filter fields, an
      * empty row is routine, so the wording stays neutral. */
-    const complete = filterRows.filter((row) => row.field.selected && row.value.selected);
-    const pendingRows = filterRows.length - complete.length;
-    const filters = complete.map((row) => ({
-      field: row.field.selected.value,
-      value: row.value.selected.value,
-    }));
+    const filters = completeFilters();
+    const pendingRows = filterRows.length - filters.length;
     if (!term && !filters.length) {
       setStatus(
         pendingRows
@@ -1578,7 +1865,24 @@
       setStatus("Select at least one verified field for a text search.", "validation", false);
       return;
     }
+    /*
+     * One search at a time. Any table can be searched, some are large enough
+     * for a LIKE read to take seconds, and a superseded read still runs on
+     * the instance. A question asked meanwhile waits for the read out, whose
+     * answer is dropped, and only the latest waiting question is asked.
+     */
+    if (searchesInFlight) {
+      searchQueued = true;
+      lastRequestKey = "";
+      requestSequence += 1;
+      return;
+    }
+    const owner = host;
     const sequence = ++requestSequence;
+    lastRequestKey = currentRequestKey();
+    atReady = false;
+    if (!searchFocus) searchFocus = shadow.activeElement || null;
+    searchesInFlight += 1;
     setSearchBusy(true);
     lastResult = null;
     updateListButton();
@@ -1609,11 +1913,13 @@
       renderResults(result, pendingRows);
     } catch (error) {
       if (sequence !== requestSequence) return;
+      /* A failed question is not an answered one: the next change asks again. */
+      lastRequestKey = "";
       const message = String(error && error.message ? error.message : error);
       setStatus(message, errorKind(error), false);
       renderEmpty("The search could not run.", message);
     } finally {
-      if (sequence === requestSequence && shadow) setSearchBusy(false);
+      if (owner === host) finishSearch();
     }
   }
 
@@ -1631,6 +1937,13 @@
     requestSequence += 1;
     lookupSequence += 1;
     clearTimeout(lookupTimer);
+    clearTimeout(searchTimer);
+    searchTimer = null;
+    lastRequestKey = "";
+    atReady = true;
+    searchesInFlight = 0;
+    searchQueued = false;
+    searchFocus = null;
     if (onCancel) onCancel();
     Object.keys(combos).forEach((key) => combos[key].destroy());
     filterRows = [];
@@ -1699,12 +2012,16 @@
                   <input data-input="table" role="combobox" aria-autocomplete="list"
                     aria-controls="snh-rs-table-menu" aria-expanded="false"
                     placeholder="Search table label or name" autocomplete="off" spellcheck="false">
+                  <button class="combo-clear" type="button" data-clear="table" aria-label="Clear table" hidden>✕</button>
                   <span class="table-menu" id="snh-rs-table-menu" role="listbox" hidden></span>
                 </span>
               </label>
               <label>Text or sys_id
-                <input data-input="term" placeholder="number, name, email, or exact sys_id · optional with a filter"
-                  autocomplete="off" spellcheck="false">
+                <span class="clearable">
+                  <input data-input="term" placeholder="number, name, email, or exact sys_id · optional with a filter"
+                    autocomplete="off" spellcheck="false">
+                  <button class="combo-clear" type="button" data-clear="term" aria-label="Clear text or sys_id" hidden>✕</button>
+                </span>
               </label>
               <button class="search-btn" type="submit">Search</button>
             </div>
@@ -1734,20 +2051,27 @@
       </div>`;
 
     renderFieldControl();
-    renderEmpty(
-      "Find a record without loading a full table list.",
-      favorites.length
-        ? "Choose a starred table, or type two characters to query a bounded set of matching table labels and names."
-        : "Type two characters to query a bounded set of matching table labels and names."
-    );
+    renderReady();
     const tableInput = shadow.querySelector("[data-input='table']");
     tableInput.addEventListener("input", () => {
       if (!selectedTable || tableInput.value.trim() !== selectedTable.name) {
         clearTableSelection();
       }
+      refreshClearButtons();
       scheduleTableLookup();
     });
-    tableInput.addEventListener("focus", () => openTableMenu(false));
+    /* Searches when typing pauses; Enter and Search still ask at once. */
+    shadow.querySelector("[data-input='term']").addEventListener("input", () => {
+      refreshClearButtons();
+      scheduleSearch();
+    });
+    /* A press keeps focus in the box, as the filter pickers' ✕ does. */
+    shadow.querySelectorAll("[data-clear]").forEach((button) => {
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+      button.addEventListener("click", button.dataset.clear === "table" ? clearTableByUser : clearTermByUser);
+    });
+    /* Focus handed back after a search must not reopen the menu. */
+    tableInput.addEventListener("focus", () => { if (!quietFocus) openTableMenu(false); });
     tableInput.addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
