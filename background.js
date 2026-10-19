@@ -5644,6 +5644,263 @@ async function writeCodeSearchCacheEntry(key, entry, now) {
   });
 }
 
+/*
+ * Record Lens starred tables.
+ *
+ * These are user data, not a cache: nothing expires them, and nothing writes
+ * them except the user starring a table, unstarring one, or changing a starred
+ * table's fields. The worker owns the write for the same reason it owns the
+ * Code Search caches -- storage is shared by every tab -- but the Code Search
+ * lock serialises writes, not read-modify-write. A star adds to what is
+ * stored, so a tab that sent its finished list could overwrite another tab's
+ * star. Each message is therefore one operation, applied to the stored value
+ * inside the lock.
+ *
+ * The instance is the sender's, never the message's, as OPEN_URL derives it:
+ * a content script can only ever touch its own instance's favourites. The
+ * name patterns are the ones record_search.js enforces.
+ */
+
+const RL_FAVORITES_PREFIX = "snhRecordLensFavorites:";
+const RL_FAVORITES_VERSION = 1;
+const RL_MAX_FAVORITES = 20;
+const RL_MAX_FAVORITE_INSTANCES = 100;
+const RL_MAX_FAVORITE_FIELDS = 6;
+const RL_MAX_FAVORITE_FILTER_FIELDS = 3;
+const RL_MAX_NAME_LENGTH = 80;
+const RL_MAX_LABEL_LENGTH = 120;
+const RL_MAX_FAVORITE_ENTRY_BYTES = 2000;
+const RL_TABLE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
+const RL_FIELD_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
+/* filterFields holds field NAMES only. A filter value is a record identifier
+ * and is never stored, so no key could carry one. */
+const RL_FAVORITE_ENTRY_KEYS = ["name", "label", "fields", "filterFields", "starredAt"];
+const RL_FAVORITE_MESSAGE_KEYS = {
+  list: ["type", "op"],
+  star: ["type", "op", "name", "label", "fields", "filterFields"],
+  unstar: ["type", "op", "name"],
+  fields: ["type", "op", "name", "fields"],
+  filterFields: ["type", "op", "name", "filterFields"],
+};
+
+function recordLensFavoritesKey(sender) {
+  if (!sender || !sender.tab) return "";
+  const origin =
+    serviceNowOrigin(sender.origin) || serviceNowOrigin(sender.tab.url);
+  return origin ? RL_FAVORITES_PREFIX + origin : "";
+}
+
+function isRecordLensTableName(value) {
+  return (
+    typeof value === "string" &&
+    value.length <= RL_MAX_NAME_LENGTH &&
+    RL_TABLE_NAME_PATTERN.test(value)
+  );
+}
+
+/* Refuse, never coerce: a value that is not exactly a favourite's shape is a
+ * bug or a hostile message, and storing a repaired guess would hide either. */
+function recordLensFieldListProblem(fields, max) {
+  if (!Array.isArray(fields)) return "fields must be a list";
+  if (fields.length > (max || RL_MAX_FAVORITE_FIELDS)) return "too many fields";
+  const seen = new Set();
+  for (const field of fields) {
+    if (typeof field !== "string") return "field names must be strings";
+    if (field.length > RL_MAX_NAME_LENGTH || !RL_FIELD_NAME_PATTERN.test(field)) {
+      return "unsafe field name";
+    }
+    if (seen.has(field)) return "duplicate field";
+    seen.add(field);
+  }
+  return "";
+}
+
+function recordLensFavoriteEntryProblem(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "bad entry";
+  if (Object.keys(entry).some((key) => RL_FAVORITE_ENTRY_KEYS.indexOf(key) < 0)) {
+    return "unexpected key";
+  }
+  if (!isRecordLensTableName(entry.name)) return "unsafe table name";
+  if (typeof entry.label !== "string" || entry.label.length > RL_MAX_LABEL_LENGTH) {
+    return "bad label";
+  }
+  const fieldProblem = recordLensFieldListProblem(entry.fields);
+  if (fieldProblem) return fieldProblem;
+  /* Optional, so a favourite stored before filters existed stays valid. */
+  if (Object.prototype.hasOwnProperty.call(entry, "filterFields")) {
+    const filterProblem = recordLensFieldListProblem(entry.filterFields, RL_MAX_FAVORITE_FILTER_FIELDS);
+    if (filterProblem) return "filter " + filterProblem;
+  }
+  if (typeof entry.starredAt !== "number" || !isFinite(entry.starredAt)) {
+    return "bad timestamp";
+  }
+  if (JSON.stringify(entry).length > RL_MAX_FAVORITE_ENTRY_BYTES) return "entry too large";
+  return "";
+}
+
+/* Only this worker writes the stored value, and only after validation, so an
+ * entry that fails here came from somewhere else. It is left out, not
+ * repaired. */
+function readRecordLensFavorites(value) {
+  const tables = [];
+  if (!value || typeof value !== "object" || !Array.isArray(value.tables)) return tables;
+  const seen = new Set();
+  value.tables.forEach((entry) => {
+    if (tables.length >= RL_MAX_FAVORITES) return;
+    if (recordLensFavoriteEntryProblem(entry) || seen.has(entry.name)) return;
+    seen.add(entry.name);
+    tables.push({
+      name: entry.name,
+      label: entry.label,
+      fields: entry.fields.slice(),
+      filterFields: Array.isArray(entry.filterFields) ? entry.filterFields.slice() : [],
+      starredAt: entry.starredAt,
+    });
+  });
+  return tables;
+}
+
+/* Pure: the stored value, the message and the time in; the answer out, with
+ * the value to store when `changed`. A null value means remove the key, so an
+ * instance with no favourites left does not count towards the ceiling. The
+ * cap is checked against what is stored, not against what the panel last
+ * saw. */
+function applyRecordLensFavoriteOp(storedValue, msg, now) {
+  const invalid = (error) => ({ ok: false, code: "invalid", error });
+  const op = msg && typeof msg.op === "string" ? msg.op : "";
+  const allowed = Object.prototype.hasOwnProperty.call(RL_FAVORITE_MESSAGE_KEYS, op)
+    ? RL_FAVORITE_MESSAGE_KEYS[op]
+    : null;
+  if (!allowed) return invalid("unknown operation");
+  if (Object.keys(msg).some((key) => allowed.indexOf(key) < 0)) {
+    return invalid("unexpected message key");
+  }
+  const tables = readRecordLensFavorites(storedValue);
+  if (op === "list") return { ok: true, changed: false, tables };
+  if (!isRecordLensTableName(msg.name)) return invalid("unsafe table name");
+
+  const index = tables.findIndex((entry) => entry.name === msg.name);
+  const next = tables.slice();
+  if (op === "star") {
+    const keepFilters = index >= 0 ? tables[index].filterFields : [];
+    const entry = {
+      name: msg.name,
+      label: msg.label,
+      fields: msg.fields,
+      filterFields: Object.prototype.hasOwnProperty.call(msg, "filterFields")
+        ? msg.filterFields
+        : keepFilters,
+      starredAt: index >= 0 ? tables[index].starredAt : now,
+    };
+    const problem = recordLensFavoriteEntryProblem(entry);
+    if (problem) return invalid(problem);
+    entry.fields = entry.fields.slice();
+    entry.filterFields = entry.filterFields.slice();
+    if (index >= 0) {
+      next[index] = entry;
+    } else if (tables.length >= RL_MAX_FAVORITES) {
+      return { ok: false, code: "cap", limit: RL_MAX_FAVORITES, tables };
+    } else {
+      next.push(entry);
+    }
+  } else if (op === "unstar") {
+    if (index < 0) return { ok: true, changed: false, tables };
+    next.splice(index, 1);
+  } else if (op === "fields") {
+    if (index < 0) return { ok: false, code: "not-starred", tables };
+    const problem = recordLensFieldListProblem(msg.fields);
+    if (problem) return invalid(problem);
+    next[index] = Object.assign({}, tables[index], { fields: msg.fields.slice() });
+  } else {
+    if (index < 0) return { ok: false, code: "not-starred", tables };
+    const problem = recordLensFieldListProblem(msg.filterFields, RL_MAX_FAVORITE_FILTER_FIELDS);
+    if (problem) return invalid("filter " + problem);
+    next[index] = Object.assign({}, tables[index], { filterFields: msg.filterFields.slice() });
+  }
+  return {
+    ok: true,
+    changed: true,
+    tables: next,
+    value: next.length
+      ? { version: RL_FAVORITES_VERSION, updatedAt: now, tables: next }
+      : null,
+  };
+}
+
+/* Pure: the other instances to drop so that adding `key` keeps at most
+ * `maxInstances`. Only a first star on a new instance can cross it, and the
+ * instance changed longest ago goes first. No real user should reach it; the
+ * panel says so when one does. */
+function planRecordLensFavoriteCeiling(stored, key, maxInstances) {
+  const cap =
+    typeof maxInstances === "number" && maxInstances >= 1
+      ? maxInstances
+      : RL_MAX_FAVORITE_INSTANCES;
+  const others = Object.keys(stored || {})
+    .filter((candidate) => candidate.indexOf(RL_FAVORITES_PREFIX) === 0 && candidate !== key)
+    .map((candidate) => {
+      const value = stored[candidate];
+      return {
+        key: candidate,
+        updatedAt: value && typeof value.updatedAt === "number" ? value.updatedAt : 0,
+      };
+    })
+    .sort((a, b) => a.updatedAt - b.updatedAt || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const excess = others.length + 1 - cap;
+  return excess > 0 ? others.slice(0, excess).map((item) => item.key) : [];
+}
+
+let recordLensFavoritesQueue = Promise.resolve();
+
+function withRecordLensFavoritesLock(task) {
+  const run = recordLensFavoritesQueue.then(task, task);
+  recordLensFavoritesQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/* Every operation, a list included, is get -> apply -> set inside the lock,
+ * and every answer carries the resulting list so each open panel converges on
+ * what is stored. */
+async function handleRecordLensFavorites(msg, sender, now) {
+  const key = recordLensFavoritesKey(sender);
+  if (!key) return { ok: false, code: "invalid", error: "not a ServiceNow tab" };
+  const time = typeof now === "number" ? now : Date.now();
+  return withRecordLensFavoritesLock(async () => {
+    try {
+      const existing = (await chrome.storage.local.get(key))[key];
+      const result = applyRecordLensFavoriteOp(existing, msg, time);
+      if (!result.ok) {
+        return {
+          ok: false,
+          code: result.code,
+          error: result.error || "",
+          limit: result.limit || 0,
+          tables: result.tables || [],
+        };
+      }
+      let evicted = 0;
+      if (result.changed && !result.value) {
+        await chrome.storage.local.remove(key);
+      } else if (result.changed) {
+        if (existing === undefined) {
+          const drop = planRecordLensFavoriteCeiling(await chrome.storage.local.get(null), key);
+          if (drop.length) {
+            await chrome.storage.local.remove(drop);
+            evicted = drop.length;
+          }
+        }
+        await chrome.storage.local.set({ [key]: result.value });
+      }
+      return { ok: true, tables: result.tables, evicted };
+    } catch (error) {
+      return { ok: false, code: "storage", error: String((error && error.message) || error) };
+    }
+  });
+}
+
 function openUrlTabOptions(url, sender) {
   const options = { url, active: true };
   const sourceTab = sender && sender.tab;
@@ -6958,6 +7215,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "CODE_SEARCH_CACHE_SET" && sender.tab) {
     writeCodeSearchCacheEntry(msg.key, msg.entry).then(sendResponse, () =>
       sendResponse({ ok: false, error: "cache write failed" })
+    );
+    return true;
+  }
+  if (msg && msg.type === "RECORD_LENS_FAVORITES") {
+    handleRecordLensFavorites(msg, sender).then(sendResponse, () =>
+      sendResponse({ ok: false, code: "storage", error: "starred tables unavailable" })
     );
     return true;
   }

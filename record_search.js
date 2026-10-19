@@ -17,6 +17,7 @@
   const MAX_HIERARCHY_DEPTH = 20;
   const MAX_SEARCH_FIELDS = 6;
   const MAX_DICTIONARY_FIELDS = 250;
+  const DICTIONARY_CANDIDATE_LIMIT = 100;
   const TABLE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
   const FIELD_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
   const SYS_ID_PATTERN = /^[0-9a-f]{32}$/i;
@@ -51,6 +52,26 @@
   const SENSITIVE_AUTO_FIELD_PATTERN =
     /(^|_)(value|body|html|content|script|password|passwd|secret|token|credential|api_key)($|_)/i;
   const tableInfoCache = new Map();
+
+  /* Value filters. A filter is always an exact `field=value` on a reference
+   * or choice field the live dictionary offers, never a LIKE. */
+  const MAX_FILTERS = 3;
+  const FILTER_VALUE_LIMIT = 300;
+  const FILTER_FIELD_READ_LIMIT = 1000;
+  const CHOICE_READ_LIMIT = 1000;
+  const ORDER_FIELD = "sys_updated_on";
+  const LANGUAGE_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+  const CHOICE_STRING_TYPES = new Set(["string", "translated_field", "translated_text"]);
+  /* State, Priority, Impact and Urgency are integer choice fields, and they are
+   * the filters people most want. Their values read back as the same string
+   * sys_choice.value holds. */
+  const CHOICE_INTEGER_TYPES = new Set(["integer"]);
+  /* sys_choice ships an active row whose value is this sentinel and whose
+   * label is a raw javascript: expression. */
+  const CHOICE_SENTINEL_VALUES = new Set(["NULL_OVERRIDE"]);
+  const filterFieldCache = new Map();
+  const displayColumnCache = new Map();
+  const languageCache = new Map();
 
   function createError(code, message, status) {
     const error = new Error(message);
@@ -114,7 +135,9 @@
     return { label: anchor, name: anchor };
   }
 
-  function parseSearch(tableInput, termInput) {
+  /* `allowEmptyTerm` is for a search carried by its filters alone. Text stays
+   * optional only then; a search with neither is refused as before. */
+  function parseSearch(tableInput, termInput, options) {
     const table = String(tableInput == null ? "" : tableInput).trim().toLowerCase();
     const term = String(termInput == null ? "" : termInput).trim();
     if (!table || !TABLE_NAME_PATTERN.test(table)) {
@@ -125,6 +148,9 @@
       };
     }
     if (!term) {
+      if (options && options.allowEmptyTerm) {
+        return { ok: true, table, term: "", isSysId: false, anchor: "", filterOnly: true };
+      }
       return { ok: false, code: "validation", error: "Enter text or a sys_id to find." };
     }
     const isSysId = SYS_ID_PATTERN.test(term);
@@ -332,6 +358,48 @@
     return suggestions;
   }
 
+  /* Starred tables come from the worker, which validated them on write. They
+   * are still only candidates: selecting one resolves it live like any other.
+   * An empty box lists them all; typed text matches them exactly as a live
+   * suggestion is matched, through the same needles. */
+  function favoriteMatches(favorites, input) {
+    const list = (Array.isArray(favorites) ? favorites : []).filter((item) =>
+      item && typeof item.name === "string" && TABLE_NAME_PATTERN.test(item.name)
+    );
+    const text = String(input == null ? "" : input).trim();
+    if (!text) return list.slice();
+    const needles = tableLookupNeedles(text);
+    if (!needles) return [];
+    const nameNeedle = needles.name.toLowerCase();
+    const labelNeedle = needles.label.toLowerCase();
+    return list.filter((item) =>
+      item.name.includes(nameNeedle) ||
+      String(item.label || "").toLowerCase().includes(labelNeedle)
+    );
+  }
+
+  /* Matching favourites first, in their stored order, then live results with
+   * any favourite removed, so a table never appears twice and a favourite's
+   * position does not move when the live results arrive. The active option is
+   * kept by name rather than reset to the top. */
+  function mergeFavoritesIntoOptions(favorites, lookupResults, input, activeName) {
+    const starred = favoriteMatches(favorites, input).map((item) => ({
+      name: item.name,
+      label: String(item.label || "") || item.name,
+      starred: true,
+    }));
+    const starredNames = new Set(starred.map((item) => item.name));
+    const live = (Array.isArray(lookupResults) ? lookupResults : [])
+      .filter((item) => item && !starredNames.has(item.name));
+    const options = starred.concat(live);
+    options.truncated = Boolean(lookupResults && lookupResults.truncated);
+    const found = activeName ? options.findIndex((item) => item.name === activeName) : -1;
+    return {
+      options,
+      activeIndex: found >= 0 ? found : (options.length ? 0 : -1),
+    };
+  }
+
   async function readTableRow(table, get) {
     const rows = await getRows(get, {
       table: "sys_db_object",
@@ -402,11 +470,28 @@
     return Array.from(new Set(result));
   }
 
-  async function discoverFields(hierarchy, get) {
+  function safeFieldNames(names) {
+    if (!Array.isArray(names)) return [];
+    return Array.from(new Set(names.filter((name) =>
+      typeof name === "string" && FIELD_NAME_PATTERN.test(name)
+    ))).slice(0, MAX_SEARCH_FIELDS);
+  }
+
+  function emptyRemembered() {
+    return { requested: [], verified: [], absent: [], unverifiable: [] };
+  }
+
+  async function readDictionaryFields(hierarchy, get, rememberedFields) {
     const names = hierarchy.map((item) => item.name);
     const hierarchyRank = new Map(names.map((name, index) => [name, index]));
     const base = "nameIN" + names.join(",");
-    const candidates = presetCandidatesForHierarchy(hierarchy);
+    const remembered = safeFieldNames(rememberedFields);
+    /* The ordering column for filter-only results is verified here, in the
+     * bounded read, so that order never depends on whether the capped
+     * optional read happened to reach it. */
+    const candidates = Array.from(new Set(
+      presetCandidatesForHierarchy(hierarchy).concat(remembered, [ORDER_FIELD])
+    ));
     const request = (query, limit, timeoutMs) => getRows(get, {
       table: "sys_dictionary",
       query,
@@ -417,7 +502,10 @@
     });
     const [displayRows, candidateRows, allRows] = await Promise.all([
       request(base + "^display=true^active=true", 100),
-      request(base + "^elementIN" + candidates.join(",") + "^active=true", 100),
+      request(
+        base + "^elementIN" + candidates.join(",") + "^active=true",
+        DICTIONARY_CANDIDATE_LIMIT
+      ),
       request(
         base + "^active=true^elementISNOTEMPTY^ORDERBYcolumn_label",
         MAX_DICTIONARY_FIELDS,
@@ -433,7 +521,7 @@
       if (!previous || field.display || field.rank < previous.rank) byName.set(field.name, field);
     });
     const priority = new Map(GENERIC_FIELD_PRIORITY.map((name, index) => [name, index]));
-    return Array.from(byName.values()).sort((a, b) => {
+    const fields = Array.from(byName.values()).sort((a, b) => {
       if (a.display !== b.display) return a.display ? -1 : 1;
       const priorityA = priority.get(a.name) ?? 999;
       const priorityB = priority.get(b.name) ?? 999;
@@ -441,6 +529,32 @@
       if (a.rank !== b.rank) return a.rank - b.rank;
       return a.label.localeCompare(b.label) || a.name.localeCompare(b.name);
     });
+    /* A remembered field is confirmed only by its own row in the bounded
+     * candidate read, never by the optional read that can degrade to []. A
+     * full candidate window could have cut its row off, so a field missing
+     * from one is unverifiable rather than gone. */
+    const confirmed = new Set(candidateRows
+      .map((row) => normalizeDictionaryField(row, hierarchyRank))
+      .filter(Boolean)
+      .map((field) => field.name));
+    const windowFull = candidateRows.length >= DICTIONARY_CANDIDATE_LIMIT;
+    const missing = remembered.filter((name) => !confirmed.has(name));
+    const orderField = candidateRows.some((row) => rawValue(row && row.element) === ORDER_FIELD)
+      ? ORDER_FIELD : "";
+    return {
+      fields,
+      orderField,
+      remembered: {
+        requested: remembered,
+        verified: remembered.filter((name) => confirmed.has(name)),
+        absent: windowFull ? [] : missing,
+        unverifiable: windowFull ? missing : [],
+      },
+    };
+  }
+
+  async function discoverFields(hierarchy, get) {
+    return (await readDictionaryFields(hierarchy, get)).fields;
   }
 
   function chooseDefaultFields(table, hierarchy, fields) {
@@ -467,7 +581,11 @@
     const get = opts.get || defaultTransport;
     const shouldStop = opts.shouldStop || null;
     const safeTable = assertSafeTable(table);
-    const cacheKey = String(opts.origin || "") + "|" + safeTable;
+    /* A favourite's remembered fields join the candidate read, so they are
+     * part of what was read and therefore part of the key. A search on that
+     * table passes the same list and verifies against the same read. */
+    const remembered = safeFieldNames(opts.rememberedFields);
+    const cacheKey = String(opts.origin || "") + "|" + safeTable + "|" + remembered.join(",");
     if (!opts.noCache && tableInfoCache.has(cacheKey)) return tableInfoCache.get(cacheKey);
     const hierarchy = await resolveHierarchy(safeTable, get, shouldStop);
     if (!hierarchy.length) throw createError("cancelled", "Record Search was cancelled.");
@@ -478,15 +596,20 @@
         hierarchy: hierarchy.map((item) => item.name),
         fields: [],
         defaultFields: [],
+        remembered: emptyRemembered(),
+        orderField: "",
       };
     }
-    const fields = await discoverFields(hierarchy, get);
+    const read = await readDictionaryFields(hierarchy, get, remembered);
+    const fields = read.fields;
     const info = {
       table: safeTable,
       label: hierarchy[0].label,
       hierarchy: hierarchy.map((item) => item.name),
       fields,
       defaultFields: chooseDefaultFields(safeTable, hierarchy, fields),
+      remembered: read.remembered,
+      orderField: read.orderField,
     };
     if (!opts.noCache) tableInfoCache.set(cacheKey, info);
     return info;
@@ -506,6 +629,476 @@
       throw createError("schema", "The selected fields no longer match the live dictionary.");
     }
     return verified;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Value filters
+   * ------------------------------------------------------------------ */
+
+  function isTrue(value) {
+    const text = rawValue(value).trim().toLowerCase();
+    return text === "true" || text === "1";
+  }
+
+  /* Translation Lens's rule, copied: "none" is no choice list, as are 0 and
+   * false. Impersonate's looser test counts "none" as one. */
+  function choiceEnabled(row) {
+    const value = rawValue(row && row.choice).trim().toLowerCase();
+    return Boolean(value && !["0", "false", "none"].includes(value));
+  }
+
+  /*
+   * One field per element, the nearest definition winning, and only the two
+   * shapes whose values can be offered as a verified list: a reference with
+   * a named table, or a string or integer field with a choice list.
+   * Sensitive names and types are never offered.
+   */
+  function filterFieldsFrom(rows, hierarchyNames) {
+    const rank = new Map((hierarchyNames || []).map((name, index) => [name, index]));
+    const nearest = new Map();
+    (rows || []).forEach((row) => {
+      const name = rawValue(row && row.element);
+      if (!FIELD_NAME_PATTERN.test(name)) return;
+      const position = rank.get(rawValue(row.name).toLowerCase()) ?? 999;
+      const previous = nearest.get(name);
+      if (!previous || position < previous.position) nearest.set(name, { row, position });
+    });
+    const fields = [];
+    nearest.forEach(({ row, position }, name) => {
+      const type = rawValue(row.internal_type).toLowerCase();
+      if (isSensitiveAutoField(name, type)) return;
+      const label = displayValue(row.column_label).trim() || name;
+      const definingTable = rawValue(row.name).toLowerCase();
+      if (type === "reference") {
+        const reference = rawValue(row["reference.name"]).trim().toLowerCase();
+        if (!TABLE_NAME_PATTERN.test(reference)) return;
+        fields.push({ name, label, type, kind: "reference", reference, definingTable, rank: position });
+        return;
+      }
+      if ((CHOICE_STRING_TYPES.has(type) || CHOICE_INTEGER_TYPES.has(type)) && choiceEnabled(row)) {
+        fields.push({
+          name,
+          label,
+          type,
+          kind: "choice",
+          choiceTable: rawValue(row.choice_table).trim().toLowerCase(),
+          choiceField: rawValue(row.choice_field).trim(),
+          definingTable,
+          rank: position,
+        });
+      }
+    });
+    return fields.sort((a, b) => a.label.localeCompare(b.label) || a.name.localeCompare(b.name));
+  }
+
+  /* A dedicated read, never the optional all-fields read that degrades to an
+   * empty list: a timeout here is an error, not "no fields". */
+  async function resolveFilterFields(table, options) {
+    const opts = options || {};
+    const get = opts.get || defaultTransport;
+    const shouldStop = opts.shouldStop || null;
+    const safeTable = assertSafeTable(table);
+    const cacheKey = String(opts.origin || "") + "|" + safeTable;
+    if (!opts.noCache && filterFieldCache.has(cacheKey)) return filterFieldCache.get(cacheKey);
+    const hierarchy = (await resolveHierarchy(safeTable, get, shouldStop)).map((item) => item.name);
+    if (!hierarchy.length) throw createError("cancelled", "Record Search was cancelled.");
+    const rows = await getRows(get, {
+      table: "sys_dictionary",
+      query: "nameIN" + hierarchy.join(",") + "^active=true^elementISNOTEMPTY^ORDERBYelement",
+      fields: "name,element,column_label,internal_type,choice,choice_table,choice_field,reference.name",
+      limit: FILTER_FIELD_READ_LIMIT + 1,
+      options: { displayAll: true, excludeRefLinks: true },
+    });
+    const info = {
+      table: safeTable,
+      hierarchy,
+      fields: filterFieldsFrom(rows.slice(0, FILTER_FIELD_READ_LIMIT), hierarchy),
+      truncated: rows.length > FILTER_FIELD_READ_LIMIT,
+    };
+    if (!opts.noCache) filterFieldCache.set(cacheKey, info);
+    return info;
+  }
+
+  function nearestElement(rows, rank, predicate) {
+    let best = null;
+    (rows || []).forEach((row) => {
+      const element = rawValue(row && row.element);
+      if (!FIELD_NAME_PATTERN.test(element) || (predicate && !predicate(row))) return;
+      const position = rank.get(rawValue(row.name).toLowerCase()) ?? 999;
+      if (!best || position < best.position) best = { element, position };
+    });
+    return best ? best.element : "";
+  }
+
+  /*
+   * The referenced table's display column, in the order verified on the PDI:
+   *   1. the nearest display_override row on its hierarchy;
+   *   2. else the nearest display=true dictionary row;
+   *   3. else `name`, but only when the hierarchy defines a `name` field --
+   *      the platform's own fallback, which sys_user, sys_user_group and
+   *      cmdb_ci all rely on;
+   *   4. else none, and the picker takes a pasted sys_id.
+   * Which column the platform renders when an override disagrees with the
+   * walk was not observable, so the walk's column comes back as a hint. A
+   * wrong column costs labels only: the condition is field=<sys_id>.
+   */
+  async function resolveDisplayColumn(table, options) {
+    const opts = options || {};
+    const get = opts.get || defaultTransport;
+    const shouldStop = opts.shouldStop || null;
+    const safeTable = assertSafeTable(table);
+    const cacheKey = String(opts.origin || "") + "|" + safeTable;
+    if (!opts.noCache && displayColumnCache.has(cacheKey)) return displayColumnCache.get(cacheKey);
+    const hierarchy = (await resolveHierarchy(safeTable, get, shouldStop)).map((item) => item.name);
+    if (!hierarchy.length) throw createError("cancelled", "Record Search was cancelled.");
+    const rank = new Map(hierarchy.map((name, index) => [name, index]));
+    const chain = "nameIN" + hierarchy.join(",");
+    let overrideUnread = false;
+    const [overrideRows, dictionaryRows] = await Promise.all([
+      getRows(get, {
+        table: "sys_dictionary_override",
+        query: chain + "^display_override=true",
+        fields: "name,element",
+        limit: 50,
+        options: { displayAll: true, excludeRefLinks: true },
+      }).catch(() => { overrideUnread = true; return []; }),
+      /* `^OR` binds to its neighbour only: active AND (display OR name). */
+      getRows(get, {
+        table: "sys_dictionary",
+        query: chain + "^active=true^display=true^ORelement=name",
+        fields: "name,element,display",
+        limit: 100,
+        options: { displayAll: true, excludeRefLinks: true },
+      }),
+    ]);
+    const override = nearestElement(overrideRows, rank);
+    const displayRow = nearestElement(dictionaryRows, rank, (row) => isTrue(row.display));
+    const hasName = dictionaryRows.some((row) => rawValue(row && row.element) === "name");
+    const walk = displayRow || (hasName ? "name" : "");
+    const info = {
+      table: safeTable,
+      column: override || walk,
+      hint: override && walk && override !== walk ? walk : "",
+      source: override ? "override" : displayRow ? "display" : walk ? "name" : "none",
+      overrideUnread,
+    };
+    if (!opts.noCache) displayColumnCache.set(cacheKey, info);
+    return info;
+  }
+
+  /*
+   * A value that was chosen, never typed, still has to be checked. Beyond
+   * Impersonate's rules: `null` in any case is the platform's keyword for
+   * "is empty", so a literal null value can never be filtered correctly; and
+   * whitespace at either end could not be observed to round-trip.
+   */
+  function queryValueProblem(value) {
+    const raw = String(value == null ? "" : value);
+    if (/javascript\s*:/i.test(raw)) return "the instance would run this value as a script";
+    if (!raw || !raw.trim()) return "this value is empty";
+    if (raw.length > 255) return "this value is too long for a filter";
+    if (/[\^\r\n]/.test(raw)) return "a filter cannot express this value";
+    return "";
+  }
+
+  function choiceValueProblem(value) {
+    const raw = String(value == null ? "" : value);
+    const problem = queryValueProblem(raw);
+    if (problem) return problem;
+    if (CHOICE_SENTINEL_VALUES.has(raw)) return "this is a platform placeholder, not a real value";
+    if (/^null$/i.test(raw)) return "the instance reads this value as empty";
+    if (raw !== raw.trim()) return "a value with spaces at either end cannot be matched exactly";
+    return "";
+  }
+
+  /* Copied from Translation Lens's verified order, adapted to this file's
+   * case-sensitive field pattern: an explicit choice_table redirect first,
+   * else the concrete table, else ancestors nearest first. The rows must
+   * already have been read chain-wide. */
+  function resolveChoiceSource(field, chain, rows) {
+    const choiceField = (field && field.choiceField) || (field && field.name) || "";
+    if (field && field.choiceTable && TABLE_NAME_PATTERN.test(field.choiceTable) &&
+      FIELD_NAME_PATTERN.test(choiceField)) {
+      return { table: field.choiceTable, field: choiceField, redirected: true };
+    }
+    for (const table of chain || []) {
+      if ((rows || []).some((row) =>
+        rawValue(row && row.name).toLowerCase() === table && rawValue(row.element) === field.name
+      )) {
+        return { table, field: field.name, redirected: false };
+      }
+    }
+    return { table: "", field: field ? field.name : "", redirected: false };
+  }
+
+  /* A dependent choice can repeat a label under another parent, so options
+   * are de-duplicated by value and always show the raw value as a hint. */
+  function choiceOptionsFrom(rows) {
+    const seen = new Set();
+    const values = [];
+    (rows || []).forEach((row) => {
+      const value = rawValue(row && row.value);
+      const label = displayValue(row && row.label).trim();
+      if (isTrue(row && row.inactive) || choiceValueProblem(value)) return;
+      if (/javascript\s*:/i.test(label) || seen.has(value)) return;
+      seen.add(value);
+      values.push({ value, label: label || value, hint: value });
+    });
+    return values.sort((a, b) => a.label.localeCompare(b.label) || a.value.localeCompare(b.value));
+  }
+
+  function referenceOptionsFrom(rows, column, hintColumn) {
+    const seen = new Set();
+    const values = [];
+    (rows || []).forEach((row) => {
+      const sysId = rawValue(row && row.sys_id).toLowerCase();
+      if (!SYS_ID_PATTERN.test(sysId) || seen.has(sysId)) return;
+      const label = displayValue(row[column]).trim();
+      if (!label) return;
+      seen.add(sysId);
+      const hint = hintColumn ? displayValue(row[hintColumn]).trim() : "";
+      values.push({ value: sysId, label, hint: hint && hint !== label ? hintColumn + ": " + hint : "" });
+    });
+    return values;
+  }
+
+  async function resolveLanguage(options) {
+    const opts = options || {};
+    const get = opts.get || defaultTransport;
+    const cacheKey = String(opts.origin || "");
+    if (!opts.noCache && languageCache.has(cacheKey)) return languageCache.get(cacheKey);
+    let language = "en";
+    try {
+      const rows = await getRows(get, {
+        table: "sys_properties",
+        query: "name=glide.sys.language",
+        fields: "name,value",
+        limit: 1,
+        timeoutMs: OPTIONAL_DICTIONARY_TIMEOUT_MS,
+      });
+      const value = rawValue(rows[0] && rows[0].value).trim();
+      if (LANGUAGE_PATTERN.test(value)) language = value;
+    } catch (error) {
+      /* Unreadable is not an error: English is the platform default, and the
+       * list is still scoped to one language. */
+    }
+    if (!opts.noCache) languageCache.set(cacheKey, language);
+    return language;
+  }
+
+  async function loadReferenceValues(field, opts) {
+    const get = opts.get || defaultTransport;
+    const display = await resolveDisplayColumn(field.reference, opts);
+    const table = assertSafeTable(field.reference);
+    const qualifierNote = "All records in " + table + ", not the form's filtered list.";
+    const term = String(opts.term == null ? "" : opts.term).trim();
+    const pastedId = SYS_ID_PATTERN.test(term) ? term.toLowerCase() : "";
+    if (!display.column) {
+      return {
+        kind: "reference",
+        table,
+        values: pastedId ? [{ value: pastedId, label: pastedId, hint: "pasted sys_id" }] : [],
+        truncated: false,
+        noDisplayColumn: true,
+        note: "No display column is verified for " + table + ", so paste a record's sys_id.",
+      };
+    }
+    const column = assertSafeField(display.column);
+    const hintColumn = display.hint ? assertSafeField(display.hint) : "";
+    /* Past the cap the list becomes a type-ahead that narrows on the server;
+     * filtering the first page locally would only search what happened to
+     * fit. A pasted sys_id is looked up directly. */
+    const anchor = pastedId ? "" : (term ? extractAnchor(term) : null);
+    const query = pastedId
+      ? "sys_id=" + pastedId
+      : (anchor ? column + "LIKE" + assertSafeAnchor(anchor) + "^" : "") + "ORDERBY" + column;
+    const rows = await getRows(get, {
+      table,
+      query,
+      fields: ["sys_id", column].concat(hintColumn ? [hintColumn] : []).join(","),
+      limit: FILTER_VALUE_LIMIT + 1,
+      options: { displayAll: true, excludeRefLinks: true },
+    });
+    /* Rows came back and none has a label: an access answer, not an empty
+     * table. */
+    if (rows.length && rows.every((row) => !displayValue(row && row[column]).trim())) {
+      throw createError(
+        "access",
+        "The display column of " + table + " could not be read, so its records cannot be listed."
+      );
+    }
+    const values = narrowFilterValues({
+      kind: "reference",
+      values: referenceOptionsFrom(rows.slice(0, FILTER_VALUE_LIMIT), column, hintColumn),
+    }, pastedId ? "" : term).values;
+    return {
+      kind: "reference",
+      table,
+      values,
+      truncated: rows.length > FILTER_VALUE_LIMIT,
+      searched: Boolean(anchor || pastedId),
+      displayColumn: column,
+      hintColumn,
+      note: (pastedId && !values.length ? "No record with that sys_id in " + table + ". " : "") +
+        qualifierNote + (display.overrideUnread
+          ? " Display overrides could not be read, so labels use the dictionary's display column."
+          : ""),
+    };
+  }
+
+  /* The one narrowing rule for a loaded value list, used by both loaders and
+   * by the panel's cache of complete lists: a reference matches on its
+   * label, a choice on its label or raw value. */
+  function narrowFilterValues(result, term) {
+    const needle = String(term == null ? "" : term).trim().toLowerCase();
+    if (!result || !needle) return result;
+    return Object.assign({}, result, {
+      values: (result.values || []).filter((item) =>
+        item.label.toLowerCase().includes(needle) ||
+        (result.kind === "choice" && item.value.toLowerCase().includes(needle))),
+    });
+  }
+
+  /*
+   * The source is decided as Translation Lens decides it -- a choice_table
+   * redirect, else the nearest table on the chain with ANY row for the
+   * element, in any language -- before a language is chosen. Choosing the
+   * language first would let a parent's translation outrank the concrete
+   * table's own list. One row per table is enough to know, so a large
+   * multilingual list cannot crowd the answer out of a capped read.
+   */
+  async function loadChoiceValues(field, hierarchy, opts) {
+    const get = opts.get || defaultTransport;
+    const name = assertSafeField(field.name);
+    const request = (query, limit) => getRows(get, {
+      table: "sys_choice",
+      query,
+      fields: "name,element,value,label,language,inactive,dependent_value",
+      limit,
+      options: { displayAll: true, excludeRefLinks: true },
+    });
+    const redirect = field.choiceTable && TABLE_NAME_PATTERN.test(field.choiceTable) &&
+      FIELD_NAME_PATTERN.test(field.choiceField || name);
+    const probeRows = redirect ? [] : [].concat(...await Promise.all(hierarchy.map((table) =>
+      request("name=" + assertSafeTable(table) + "^element=" + name, 1))));
+    const source = resolveChoiceSource(field, hierarchy, probeRows);
+    if (!source.table) {
+      return { kind: "choice", values: [], truncated: false, language: "",
+        note: "No choice values are defined for this field." };
+    }
+    const language = await resolveLanguage(opts);
+    const read = (lang) => request(
+      "name=" + assertSafeTable(source.table) + "^element=" + assertSafeField(source.field) +
+        "^language=" + lang,
+      CHOICE_READ_LIMIT + 1
+    );
+    let used = language;
+    let rows = await read(language);
+    if (!rows.length && language !== "en") {
+      used = "en";
+      rows = await read("en");
+    }
+    const values = narrowFilterValues({ kind: "choice", values: choiceOptionsFrom(rows) }, opts.term).values;
+    const dependent = rows.some((row) => rawValue(row.dependent_value).trim());
+    return {
+      kind: "choice",
+      values: values.slice(0, FILTER_VALUE_LIMIT),
+      truncated: rows.length > CHOICE_READ_LIMIT || values.length > FILTER_VALUE_LIMIT,
+      language: used,
+      source,
+      note: (rows.length ? "Labels in the instance language (" + used + ")"
+        : "No choice labels in " + language + (language === "en" ? "" : " or en")) +
+        (dependent ? " · not narrowed by the field this one depends on" : "") + ".",
+    };
+  }
+
+  /* Complete lists are kept per table and field for one panel, so typing
+   * narrows them here instead of re-reading the instance on every pause. A
+   * capped list, a pasted sys_id and a table with no verified display
+   * column always go back to the instance. */
+  function createFilterValueLoader(load) {
+    const complete = new Map();
+    return async (table, field, term) => {
+      const key = String(table) + "|" + String(field);
+      const text = String(term == null ? "" : term).trim();
+      if (complete.has(key) && !SYS_ID_PATTERN.test(text)) {
+        return narrowFilterValues(complete.get(key), text);
+      }
+      const loaded = await load(table, field, text);
+      if (!text && loaded && !loaded.truncated && !loaded.noDisplayColumn) complete.set(key, loaded);
+      return loaded;
+    };
+  }
+
+  /* The field must be one the live filter-field list offers: that binding is
+   * what keeps a referenced table out of a query unless the dictionary named
+   * it for a field the picker shows. */
+  async function loadFilterValues(table, fieldName, options) {
+    const opts = options || {};
+    const filterInfo = await resolveFilterFields(table, opts);
+    const field = filterInfo.fields.find((item) => item.name === fieldName);
+    if (!field) throw createError("schema", "That field is not one the filter offers.");
+    return field.kind === "reference"
+      ? loadReferenceValues(field, opts)
+      : loadChoiceValues(field, filterInfo.hierarchy, opts);
+  }
+
+  /* Exact conditions, AND-ed, one per field, bound to the discovered list in
+   * the builder itself rather than only in the panel. */
+  function filterConditions(filters, filterInfo) {
+    const list = Array.isArray(filters) ? filters : [];
+    if (list.length > MAX_FILTERS) {
+      throw createError("validation", "Use no more than three filters.");
+    }
+    const offered = new Map(((filterInfo && filterInfo.fields) || []).map((item) => [item.name, item]));
+    const seen = new Set();
+    return list.map((filter) => {
+      const name = assertSafeField(filter && filter.field);
+      const field = offered.get(name);
+      if (!field) {
+        throw createError("schema", "That filter field is not one the live dictionary offers.");
+      }
+      if (seen.has(name)) throw createError("validation", "Each field can be filtered once.");
+      seen.add(name);
+      const value = String(filter.value == null ? "" : filter.value);
+      if (field.kind === "reference") {
+        if (!SYS_ID_PATTERN.test(value)) {
+          throw createError("validation", "A reference filter needs a record's sys_id.");
+        }
+        return { field, value: value.toLowerCase(), clause: name + "=" + value.toLowerCase() };
+      }
+      const problem = choiceValueProblem(value);
+      if (problem) throw createError("validation", "That value cannot be used as a filter: " + problem + ".");
+      return { field, value, clause: name + "=" + value };
+    });
+  }
+
+  /* Filters first, then at most one chain. `^OR` binds to what precedes it,
+   * so the order is asserted rather than assumed: a later edit must not be
+   * able to slip a filter in after the text chain. */
+  function composeQuery(parts) {
+    let chainSeen = false;
+    (parts || []).forEach((part) => {
+      if (part.kind === "chain") {
+        if (chainSeen) throw createError("validation", "A search has one text condition.");
+        chainSeen = true;
+      } else if (part.kind === "filter") {
+        if (chainSeen) throw createError("validation", "Filters must precede the text condition.");
+        if (/[\^\r\n]/.test(part.clause)) throw createError("validation", "A filter is one condition.");
+      } else {
+        throw createError("validation", "Unknown query part.");
+      }
+    });
+    return (parts || []).map((part) => part.clause).join("^");
+  }
+
+  function verifyFilters(row, conditions) {
+    return (conditions || []).every((condition) => {
+      const actual = rawValue(row && row[condition.field.name]);
+      return condition.field.kind === "reference"
+        ? actual.toLowerCase() === condition.value
+        : actual === condition.value;
+    });
   }
 
   function verifyRow(row, fields, term) {
@@ -562,11 +1155,12 @@
     const opts = options || {};
     const get = opts.get || defaultTransport;
     const shouldStop = opts.shouldStop || (() => false);
+    const rememberedFields = opts.rememberedFields;
     let tableInfo;
     if (parsed.isSysId) {
       try {
         tableInfo = await resolveTableInfo(parsed.table, {
-          get, origin: opts.origin, shouldStop,
+          get, origin: opts.origin, shouldStop, rememberedFields,
         });
       } catch (error) {
         if (shouldStop()) return { stale: true, results: [] };
@@ -576,41 +1170,80 @@
           hierarchy: [parsed.table],
           fields: [],
           defaultFields: [],
+          remembered: emptyRemembered(),
         };
       }
     } else {
       tableInfo = await resolveTableInfo(parsed.table, {
-        get, origin: opts.origin, shouldStop,
+        get, origin: opts.origin, shouldStop, rememberedFields,
       });
       if (shouldStop()) return { stale: true, results: [] };
     }
     if (shouldStop()) return { stale: true, results: [] };
+    const filters = Array.isArray(opts.filters) ? opts.filters : [];
+    const filterOnly = Boolean(parsed.filterOnly);
+    if (filterOnly && !filters.length) {
+      throw createError("validation", "Enter text or a sys_id, or complete a filter.");
+    }
+    let conditions = [];
+    if (filters.length) {
+      const filterInfo = await resolveFilterFields(parsed.table, {
+        get, origin: opts.origin, shouldStop,
+      });
+      if (shouldStop()) return { stale: true, results: [] };
+      conditions = filterConditions(filters, filterInfo);
+    }
     const selectedFields = tableInfo.fields.length
       ? selectVerifiedFields(tableInfo, opts.fields)
       : [];
-    if (!parsed.isSysId && !selectedFields.length) {
+    if (!parsed.isSysId && !filterOnly && !selectedFields.length) {
       throw createError(
         "schema",
         "No verified text fields are selected. Choose at least one readable field."
       );
     }
     const fieldNames = selectedFields.map((field) => field.name);
-    const query = parsed.isSysId
-      ? "sys_id=" + parsed.anchor
-      : buildSearchQuery(fieldNames, parsed.anchor);
+    const parts = conditions.map((condition) => ({ kind: "filter", clause: condition.clause }));
+    if (parsed.isSysId) parts.push({ kind: "chain", clause: "sys_id=" + parsed.anchor });
+    else if (!filterOnly) parts.push({ kind: "chain", clause: buildSearchQuery(fieldNames, parsed.anchor) });
+    let query = composeQuery(parts);
+    /* With no term there is nothing to rank by, so the server's order is
+     * kept and named, rather than re-sorted into alphabetical titles. */
+    let orderLabel = "";
+    if (filterOnly) {
+      const byUpdated = tableInfo.orderField === ORDER_FIELD;
+      query += byUpdated ? "^ORDERBYDESC" + ORDER_FIELD : "^ORDERBYsys_id";
+      orderLabel = byUpdated ? "most recently updated" : "sys_id";
+    }
+    const readFields = Array.from(new Set(
+      ["sys_id"].concat(fieldNames, conditions.map((condition) => condition.field.name))
+    ));
     const rows = await getRows(get, {
       table: parsed.table,
       query,
-      fields: ["sys_id"].concat(fieldNames).join(","),
+      fields: readFields.join(","),
       limit: parsed.isSysId ? 1 : SERVER_LIMIT,
       options: { displayAll: true, excludeRefLinks: true },
     });
     if (shouldStop()) return { stale: true, results: [] };
+    /* A field the session cannot read comes back blank, not missing. Rows
+     * that all lack the filter's value were not verified as matches; they
+     * are an access answer, and must not read as "no matches". */
+    const unreadable = conditions.find((condition) => rows.length &&
+      rows.every((row) => !rawValue(row && row[condition.field.name]).trim()));
+    if (unreadable) {
+      throw createError(
+        "access",
+        "The filter field " + unreadable.field.label +
+          " could not be read back, so no row could be verified."
+      );
+    }
     const verified = rows
-      .filter((row) => parsed.isSysId || verifyRow(row, selectedFields, parsed.term))
+      .filter((row) => verifyFilters(row, conditions) &&
+        (parsed.isSysId || filterOnly || verifyRow(row, selectedFields, parsed.term)))
       .map((row) => normalizeResult(row, tableInfo, selectedFields))
       .filter(Boolean);
-    const ordered = parsed.isSysId
+    const ordered = parsed.isSysId || filterOnly
       ? verified
       : sortVerifiedResults(verified, parsed.term);
     const results = ordered.slice(0, RESULT_LIMIT);
@@ -622,10 +1255,19 @@
       fields: selectedFields,
       availableFields: tableInfo.fields,
       results,
-      sortLabel: parsed.isSysId || !selectedFields.length
-        ? ""
-        : "relevance, then " + selectedFields[0].label,
+      filterOnly,
+      filters: conditions.map((condition) => ({
+        field: condition.field.name,
+        label: condition.field.label,
+        value: condition.value,
+      })),
+      sortLabel: filterOnly
+        ? orderLabel
+        : parsed.isSysId || !selectedFields.length
+          ? ""
+          : "relevance, then " + selectedFields[0].label,
       truncated: rows.length >= SERVER_LIMIT || verified.length > RESULT_LIMIT,
+      serverFull: rows.length >= SERVER_LIMIT,
       candidateCount: rows.length,
     };
   }
@@ -659,6 +1301,9 @@
     REQUEST_TIMEOUT_MS,
     OPTIONAL_DICTIONARY_TIMEOUT_MS,
     MAX_SEARCH_FIELDS,
+    MAX_FILTERS,
+    FILTER_VALUE_LIMIT,
+    FILTER_FIELD_READ_LIMIT,
     KNOWN_TABLE_PRESETS,
     GENERIC_FIELD_PRIORITY,
     SUMMARY_FIELD_PRIORITY: GENERIC_FIELD_PRIORITY,
@@ -672,11 +1317,27 @@
     buildSearchQuery,
     createSessionTracker,
     findTables,
+    favoriteMatches,
+    mergeFavoritesIntoOptions,
     resolveHierarchy,
     discoverFields,
     chooseDefaultFields,
     resolveTableInfo,
     selectVerifiedFields,
+    choiceEnabled,
+    filterFieldsFrom,
+    resolveFilterFields,
+    resolveDisplayColumn,
+    queryValueProblem,
+    choiceValueProblem,
+    resolveChoiceSource,
+    choiceOptionsFrom,
+    narrowFilterValues,
+    loadFilterValues,
+    createFilterValueLoader,
+    filterConditions,
+    composeQuery,
+    verifyFilters,
     verifyRow,
     normalizeResult,
     valueMatchRank,

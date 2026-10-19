@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
 ```
 
 The suites cover:
@@ -67,7 +67,51 @@ The suites cover:
 - `record_search.test.js` — bounded table lookup, table/field safety, live
   preset intersection, explicit field selection, complete-term verification,
   result actions/caps, error categories, exact sys_id fallback, and stale
-  search cancellation.
+  search cancellation. Starred tables: favourites merged into the table menu
+  first, once, in stored order, with the active option kept by name; a
+  remembered field confirmed only by its own row in the bounded candidate read,
+  reported absent when that read has no row and unverifiable when its window
+  was full; remembered fields in the cache key, so a search verifies against
+  the same read. And the worker's own block, loaded from `background.js`: the
+  key comes from the sender and a message naming an origin is refused, every
+  bad shape is refused rather than coerced, two interleaved stars both survive,
+  the cap is checked against stored state, a list never writes, unstarring the
+  last table removes the key, and the instance ceiling drops the instance
+  changed longest ago; filter field names are stored and validated, never
+  anything shaped like a value. Value filters, against a double of the
+  instance: field discovery (references with a table, string and integer
+  choice fields, `"none"` is no choice list, the nearest definition decides,
+  sensitive excluded, a full window reported, a timeout an error); the
+  display column through every step of the verified order and the override
+  hint; reference values by display column, the type-ahead past 300, a pasted
+  sys_id, and a blank display column as an access error; choices from the
+  concrete table, through a redirect, in the instance language with the
+  English fallback, de-duplicated when dependent; the value refusals; the
+  builder's binding, three-filter cap, one-per-field rule and order
+  assertion; and the search itself — filter-only order kept and named, filter
+  plus text, a row dropped when any one filter differs, and a blank read-back
+  reported as access.
+- `record_search_ui.test.js` — the Record Lens panel under `node:vm`, on a DOM
+  shim with a minimal parser for the panel's own static template and a
+  selector matcher that throws on anything it does not support. Starred tables
+  open as real options before anything is typed, on every path that opens the
+  menu on an empty box; while a lookup runs only matching favourites are
+  selectable and, with none, Enter selects nothing; live results arrive behind
+  the favourites with the active option kept. The star is its own cell outside
+  the clipping summary, enabled only once the table is verified, with a
+  constant name and `aria-pressed`; the cap refusal; a failed favourite
+  unstarred from where it fails without losing focus; remembered fields
+  applied, saved only for a starred table, named when gone, and never saved
+  after they could not be verified. Value filters: rows appear only for a
+  verified table, at most three, each picker with ids never reused; a field
+  used in one row is not offered in another and a value waits for its field;
+  picking a field opens its values; a search sends only complete rows and
+  names the rest; nothing is searched with neither text nor a complete filter;
+  Escape closes a filter menu before the panel; every picker is busy during a
+  search; an access error and a capped list are shown as such; a table change
+  removes the rows; a starred table restores its filter fields with empty
+  values, names one that is gone, and never saves over ones it could not
+  verify.
 - `command_palette.test.js` — the pure palette model: label/description
   matching, relevance ranking (every built-in command must rank first for its
   own exact label, and groups must stay contiguous),
