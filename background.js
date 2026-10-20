@@ -5667,20 +5667,30 @@ const RL_MAX_FAVORITES = 20;
 const RL_MAX_FAVORITE_INSTANCES = 100;
 const RL_MAX_FAVORITE_FIELDS = 6;
 const RL_MAX_FAVORITE_FILTER_FIELDS = 3;
+const RL_MAX_FAVORITE_COLUMNS = 6;
 const RL_MAX_NAME_LENGTH = 80;
 const RL_MAX_LABEL_LENGTH = 120;
 const RL_MAX_FAVORITE_ENTRY_BYTES = 2000;
 const RL_TABLE_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 const RL_FIELD_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 /* filterFields holds field NAMES only. A filter value is a record identifier
- * and is never stored, so no key could carry one. */
-const RL_FAVORITE_ENTRY_KEYS = ["name", "label", "fields", "filterFields", "starredAt"];
+ * and is never stored, so no key could carry one. columns, the fields shown
+ * in each result row, are names too, kept in the order they were chosen. */
+const RL_FAVORITE_ENTRY_KEYS = ["name", "label", "fields", "filterFields", "columns", "starredAt"];
 const RL_FAVORITE_MESSAGE_KEYS = {
   list: ["type", "op"],
-  star: ["type", "op", "name", "label", "fields", "filterFields"],
+  star: ["type", "op", "name", "label", "fields", "filterFields", "columns"],
   unstar: ["type", "op", "name"],
   fields: ["type", "op", "name", "fields"],
   filterFields: ["type", "op", "name", "filterFields"],
+  columns: ["type", "op", "name", "columns"],
+};
+/* The list each per-list operation writes, with its cap and the word its
+ * refusals carry. */
+const RL_FAVORITE_LIST_OPS = {
+  fields: { key: "fields", max: RL_MAX_FAVORITE_FIELDS, prefix: "" },
+  filterFields: { key: "filterFields", max: RL_MAX_FAVORITE_FILTER_FIELDS, prefix: "filter " },
+  columns: { key: "columns", max: RL_MAX_FAVORITE_COLUMNS, prefix: "column " },
 };
 
 function recordLensFavoritesKey(sender) {
@@ -5726,10 +5736,15 @@ function recordLensFavoriteEntryProblem(entry) {
   }
   const fieldProblem = recordLensFieldListProblem(entry.fields);
   if (fieldProblem) return fieldProblem;
-  /* Optional, so a favourite stored before filters existed stays valid. */
+  /* Optional, so a favourite stored before filters or columns existed stays
+   * valid. */
   if (Object.prototype.hasOwnProperty.call(entry, "filterFields")) {
     const filterProblem = recordLensFieldListProblem(entry.filterFields, RL_MAX_FAVORITE_FILTER_FIELDS);
     if (filterProblem) return "filter " + filterProblem;
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, "columns")) {
+    const columnProblem = recordLensFieldListProblem(entry.columns, RL_MAX_FAVORITE_COLUMNS);
+    if (columnProblem) return "column " + columnProblem;
   }
   if (typeof entry.starredAt !== "number" || !isFinite(entry.starredAt)) {
     return "bad timestamp";
@@ -5754,6 +5769,7 @@ function readRecordLensFavorites(value) {
       label: entry.label,
       fields: entry.fields.slice(),
       filterFields: Array.isArray(entry.filterFields) ? entry.filterFields.slice() : [],
+      columns: Array.isArray(entry.columns) ? entry.columns.slice() : [],
       starredAt: entry.starredAt,
     });
   });
@@ -5782,20 +5798,23 @@ function applyRecordLensFavoriteOp(storedValue, msg, now) {
   const index = tables.findIndex((entry) => entry.name === msg.name);
   const next = tables.slice();
   if (op === "star") {
-    const keepFilters = index >= 0 ? tables[index].filterFields : [];
+    /* A list the message leaves out keeps what was stored. */
+    const kept = (key) => (Object.prototype.hasOwnProperty.call(msg, key)
+      ? msg[key]
+      : index >= 0 ? tables[index][key] : []);
     const entry = {
       name: msg.name,
       label: msg.label,
       fields: msg.fields,
-      filterFields: Object.prototype.hasOwnProperty.call(msg, "filterFields")
-        ? msg.filterFields
-        : keepFilters,
+      filterFields: kept("filterFields"),
+      columns: kept("columns"),
       starredAt: index >= 0 ? tables[index].starredAt : now,
     };
     const problem = recordLensFavoriteEntryProblem(entry);
     if (problem) return invalid(problem);
     entry.fields = entry.fields.slice();
     entry.filterFields = entry.filterFields.slice();
+    entry.columns = entry.columns.slice();
     if (index >= 0) {
       next[index] = entry;
     } else if (tables.length >= RL_MAX_FAVORITES) {
@@ -5806,16 +5825,12 @@ function applyRecordLensFavoriteOp(storedValue, msg, now) {
   } else if (op === "unstar") {
     if (index < 0) return { ok: true, changed: false, tables };
     next.splice(index, 1);
-  } else if (op === "fields") {
-    if (index < 0) return { ok: false, code: "not-starred", tables };
-    const problem = recordLensFieldListProblem(msg.fields);
-    if (problem) return invalid(problem);
-    next[index] = Object.assign({}, tables[index], { fields: msg.fields.slice() });
   } else {
+    const list = RL_FAVORITE_LIST_OPS[op];
     if (index < 0) return { ok: false, code: "not-starred", tables };
-    const problem = recordLensFieldListProblem(msg.filterFields, RL_MAX_FAVORITE_FILTER_FIELDS);
-    if (problem) return invalid("filter " + problem);
-    next[index] = Object.assign({}, tables[index], { filterFields: msg.filterFields.slice() });
+    const problem = recordLensFieldListProblem(msg[list.key], list.max);
+    if (problem) return invalid(list.prefix + problem);
+    next[index] = Object.assign({}, tables[index], { [list.key]: msg[list.key].slice() });
   }
   return {
     ok: true,

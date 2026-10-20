@@ -51,6 +51,26 @@
     "string", "email", "url", "phone_number", "translated",
     "translated_field", "translated_text",
   ]);
+  /* Searched by name as well as shown. A reference's LIKE matches the
+   * referenced record's display value: verified read-only on a customer
+   * instance, where a fragment of the name matched every row returned and a
+   * fragment of the sys_id matched none. */
+  const REFERENCE_TYPE = "reference";
+  /* Shown in a result row, never searched. Every name is a sys_glide_object
+   * type on a live instance (the legacy `numeric` is not, so it is left
+   * out), and the Table API returns each as display text. HTML, script,
+   * journal, password, encrypted, condition and variable types never enter
+   * any list. */
+  const SHOW_ONLY_TYPES = new Set([
+    "boolean", "integer", "longint", "decimal", "float", "currency", "price",
+    "glide_date", "glide_date_time", "due_date", "glide_time", "glide_duration",
+    "choice", "glide_list", "sys_class_name", "domain_id", "table_name", "field_name",
+  ]);
+  const MAX_SHOW_COLUMNS = 6;
+  /* A table with no display field and none of the familiar text fields is
+   * usually a many-to-many, which is told apart by what it links. Its
+   * references are searched by name and shown. */
+  const DEFAULT_REFERENCE_FIELDS = 4;
   /* HTML/script types never enter TEXT_TYPES. Value/body/secret-like strings
    * remain available for explicit selection but are never defaults. */
   const SENSITIVE_AUTO_FIELD_PATTERN =
@@ -101,6 +121,14 @@
       }
       if (value.value != null) return String(value.value);
     }
+    return String(value);
+  }
+
+  /* The display half alone. displayValue falls back to the stored value,
+   * which for a reference is a sys_id and would hide a blank display. */
+  function displayOnly(value) {
+    if (value == null) return "";
+    if (typeof value === "object") return value.display_value == null ? "" : String(value.display_value);
     return String(value);
   }
 
@@ -489,18 +517,37 @@
       /html|script|journal|password|encrypted/i.test(String(type || ""));
   }
 
+  function fieldKind(type) {
+    if (TEXT_TYPES.has(type)) return "text";
+    if (type === REFERENCE_TYPE) return "reference";
+    return SHOW_ONLY_TYPES.has(type) ? "other" : "";
+  }
+
+  /* Every field that can be shown. `searchable` marks the ones text can be
+   * matched against: text, and references by name. */
   function normalizeDictionaryField(row, hierarchyRank) {
     const name = rawValue(row.element);
     const type = rawValue(row.internal_type).toLowerCase();
-    if (!FIELD_NAME_PATTERN.test(name) || !TEXT_TYPES.has(type)) return null;
+    const kind = fieldKind(type);
+    if (!FIELD_NAME_PATTERN.test(name) || !kind) return null;
     return {
       name,
       label: displayValue(row.column_label) || name,
       type,
+      kind,
+      searchable: kind !== "other",
       display: rawValue(row.display).toLowerCase() === "true",
       autoSelectable: !isSensitiveAutoField(name, type),
       rank: hierarchyRank.get(rawValue(row.name).toLowerCase()) ?? 999,
     };
+  }
+
+  /* The kind decides when there is one, so a flag cannot contradict it.
+   * Older and hand-built field objects carry neither; they were all text.
+   * Exported, so the panel applies the same rule. */
+  function isSearchable(field) {
+    if (!field) return false;
+    return field.kind ? field.kind !== "other" : field.searchable !== false;
   }
 
   function presetCandidatesForHierarchy(hierarchy) {
@@ -512,27 +559,28 @@
     return Array.from(new Set(result));
   }
 
-  function safeFieldNames(names) {
+  function safeFieldNames(names, max) {
     if (!Array.isArray(names)) return [];
     return Array.from(new Set(names.filter((name) =>
       typeof name === "string" && FIELD_NAME_PATTERN.test(name)
-    ))).slice(0, MAX_SEARCH_FIELDS);
+    ))).slice(0, max || MAX_SEARCH_FIELDS);
   }
 
   function emptyRemembered() {
     return { requested: [], verified: [], absent: [], unverifiable: [] };
   }
 
-  async function readDictionaryFields(hierarchy, get, rememberedFields) {
+  async function readDictionaryFields(hierarchy, get, rememberedFields, rememberedColumns) {
     const names = hierarchy.map((item) => item.name);
     const hierarchyRank = new Map(names.map((name, index) => [name, index]));
     const base = "nameIN" + names.join(",");
     const remembered = safeFieldNames(rememberedFields);
+    const rememberedShown = safeFieldNames(rememberedColumns, MAX_SHOW_COLUMNS);
     /* The ordering column for filter-only results is verified here, in the
      * bounded read, so that order never depends on whether the capped
      * optional read happened to reach it. */
     const candidates = Array.from(new Set(
-      presetCandidatesForHierarchy(hierarchy).concat(remembered, [ORDER_FIELD])
+      presetCandidatesForHierarchy(hierarchy).concat(remembered, rememberedShown, [ORDER_FIELD])
     ));
     const request = (query, limit, timeoutMs) => getRows(get, {
       table: "sys_dictionary",
@@ -575,23 +623,30 @@
      * candidate read, never by the optional read that can degrade to []. A
      * full candidate window could have cut its row off, so a field missing
      * from one is unverifiable rather than gone. */
-    const confirmed = new Set(candidateRows
+    const confirmedFields = candidateRows
       .map((row) => normalizeDictionaryField(row, hierarchyRank))
-      .filter(Boolean)
-      .map((field) => field.name));
+      .filter(Boolean);
+    const confirmed = new Set(confirmedFields.map((field) => field.name));
+    /* A remembered SEARCH field must still be searchable; a shown column
+     * need only still be listable. */
+    const confirmedSearchable = new Set(confirmedFields.filter(isSearchable).map((field) => field.name));
     const windowFull = candidateRows.length >= DICTIONARY_CANDIDATE_LIMIT;
-    const missing = remembered.filter((name) => !confirmed.has(name));
+    const verdict = (requested, accepted) => {
+      const missing = requested.filter((name) => !accepted.has(name));
+      return {
+        requested,
+        verified: requested.filter((name) => accepted.has(name)),
+        absent: windowFull ? [] : missing,
+        unverifiable: windowFull ? missing : [],
+      };
+    };
     const orderField = candidateRows.some((row) => rawValue(row && row.element) === ORDER_FIELD)
       ? ORDER_FIELD : "";
     return {
       fields,
       orderField,
-      remembered: {
-        requested: remembered,
-        verified: remembered.filter((name) => confirmed.has(name)),
-        absent: windowFull ? [] : missing,
-        unverifiable: windowFull ? missing : [],
-      },
+      remembered: verdict(remembered, confirmedSearchable),
+      rememberedColumns: verdict(rememberedShown, confirmed),
     };
   }
 
@@ -604,15 +659,21 @@
     const presetTable = [table].concat(hierarchy.map((item) => item.name))
       .find((name) => KNOWN_TABLE_PRESETS[name]);
     const preset = presetTable ? KNOWN_TABLE_PRESETS[presetTable] : null;
+    const usable = (field) => isSearchable(field) && field.autoSelectable;
     let selected = (preset || [])
       .map((name) => byName.get(name))
-      .filter((field) => field && field.autoSelectable);
+      .filter(usable);
     if (!selected.length) {
-      const displayFields = fields.filter((field) => field.display && field.autoSelectable);
+      const displayFields = fields.filter((field) => field.display && usable(field));
       const fallbackFields = GENERIC_FIELD_PRIORITY
         .map((name) => byName.get(name))
-        .filter((field) => field && field.autoSelectable);
+        .filter(usable);
       selected = displayFields.concat(fallbackFields);
+    }
+    if (!selected.length) {
+      selected = fields
+        .filter((field) => field.kind === REFERENCE_TYPE && field.autoSelectable)
+        .slice(0, DEFAULT_REFERENCE_FIELDS);
     }
     return Array.from(new Map(selected.map((field) => [field.name, field])).values())
       .slice(0, MAX_SEARCH_FIELDS);
@@ -627,7 +688,9 @@
      * part of what was read and therefore part of the key. A search on that
      * table passes the same list and verifies against the same read. */
     const remembered = safeFieldNames(opts.rememberedFields);
-    const cacheKey = String(opts.origin || "") + "|" + safeTable + "|" + remembered.join(",");
+    const rememberedShown = safeFieldNames(opts.rememberedColumns, MAX_SHOW_COLUMNS);
+    const cacheKey = String(opts.origin || "") + "|" + safeTable + "|" + remembered.join(",") +
+      "|" + rememberedShown.join(",");
     if (!opts.noCache && tableInfoCache.has(cacheKey)) return tableInfoCache.get(cacheKey);
     const hierarchy = await resolveHierarchy(safeTable, get, shouldStop);
     if (!hierarchy.length) throw createError("cancelled", "Record Search was cancelled.");
@@ -641,10 +704,11 @@
         fields: [],
         defaultFields: [],
         remembered: emptyRemembered(),
+        rememberedColumns: emptyRemembered(),
         orderField: "",
       };
     }
-    const read = await readDictionaryFields(hierarchy, get, remembered);
+    const read = await readDictionaryFields(hierarchy, get, remembered, rememberedShown);
     const fields = read.fields;
     const info = {
       table: safeTable,
@@ -654,6 +718,7 @@
       fields,
       defaultFields: chooseDefaultFields(safeTable, hierarchy, fields),
       remembered: read.remembered,
+      rememberedColumns: read.rememberedColumns,
       orderField: read.orderField,
     };
     if (!opts.noCache) tableInfoCache.set(cacheKey, info);
@@ -661,7 +726,9 @@
   }
 
   function selectVerifiedFields(tableInfo, selectedNames) {
-    const available = new Map((tableInfo.fields || []).map((field) => [field.name, field]));
+    const available = new Map((tableInfo.fields || [])
+      .filter(isSearchable)
+      .map((field) => [field.name, field]));
     const requested = Array.isArray(selectedNames) && selectedNames.length
       ? selectedNames
       : (tableInfo.defaultFields || []).map((field) => field.name);
@@ -672,6 +739,23 @@
     const verified = unique.map((name) => available.get(name)).filter(Boolean);
     if (verified.length !== unique.length) {
       throw createError("schema", "The selected fields no longer match the live dictionary.");
+    }
+    return verified;
+  }
+
+  /* The fields each result row shows, in the order given: the first is the
+   * row's title. Any listed field qualifies, searchable or not. With none
+   * named, a row shows what was searched, as it always has. */
+  function selectVerifiedColumns(tableInfo, selectedNames, fallback) {
+    if (!Array.isArray(selectedNames) || !selectedNames.length) return (fallback || []).slice();
+    const available = new Map((tableInfo.fields || []).map((field) => [field.name, field]));
+    const unique = Array.from(new Set(selectedNames.map(assertSafeField)));
+    if (unique.length > MAX_SHOW_COLUMNS) {
+      throw createError("validation", "Show no more than six columns.");
+    }
+    const verified = unique.map((name) => available.get(name)).filter(Boolean);
+    if (verified.length !== unique.length) {
+      throw createError("schema", "The shown columns no longer match the live dictionary.");
     }
     return verified;
   }
@@ -1153,21 +1237,42 @@
     );
   }
 
-  function normalizeResult(row, tableInfo, fields) {
+  /*
+   * A row shows its columns; the first value is its title. With a text
+   * search, `search` names the fields searched. A match found in a field the
+   * row does not show is appended, marked, so no row appears without what
+   * it matched on. Its rank comes from the searched fields, never from what
+   * happens to be shown.
+   */
+  function normalizeResult(row, tableInfo, columns, search) {
     const sysId = rawValue(row.sys_id);
     if (!SYS_ID_PATTERN.test(sysId)) return null;
-    const values = fields.map((field) => ({
+    const valueOf = (field) => ({
       field: field.name,
       label: field.label,
       value: displayValue(row[field.name]),
-    })).filter((item) => item.value);
-    return {
+    });
+    const values = columns.map(valueOf).filter((item) => item.value);
+    const result = {
       table: tableInfo.table,
       tableLabel: tableInfo.label,
       sysId,
       title: values.length ? values[0].value : sysId,
       values,
     };
+    if (search && search.term) {
+      const shown = new Set(columns.map((field) => field.name));
+      const needle = String(search.term).toLowerCase();
+      const matched = search.fields
+        .filter((field) => !shown.has(field.name))
+        .map((field) => Object.assign(valueOf(field), { matched: true }))
+        .filter((item) => item.value.toLowerCase().includes(needle));
+      result.values = values.concat(matched);
+      result.matchRank = Math.min.apply(null, search.fields
+        .map((field) => valueMatchRank(displayValue(row[field.name]), search.term))
+        .concat([4]));
+    }
+    return result;
   }
 
   function valueMatchRank(value, term) {
@@ -1182,9 +1287,11 @@
 
   function sortVerifiedResults(results, term) {
     return (results || []).slice().sort((a, b) => {
-      const rank = (result) => Math.min.apply(null,
-        (result.values || []).map((item) => valueMatchRank(item.value, term)).concat([4])
-      );
+      const rank = (result) => (typeof result.matchRank === "number"
+        ? result.matchRank
+        : Math.min.apply(null,
+          (result.values || []).map((item) => valueMatchRank(item.value, term)).concat([4])
+        ));
       return rank(a) - rank(b) ||
         String(a.title || a.sysId).localeCompare(
           String(b.title || b.sysId),
@@ -1201,11 +1308,12 @@
     const get = opts.get || defaultTransport;
     const shouldStop = opts.shouldStop || (() => false);
     const rememberedFields = opts.rememberedFields;
+    const rememberedColumns = opts.rememberedColumns;
     let tableInfo;
     if (parsed.isSysId) {
       try {
         tableInfo = await resolveTableInfo(parsed.table, {
-          get, origin: opts.origin, shouldStop, rememberedFields,
+          get, origin: opts.origin, shouldStop, rememberedFields, rememberedColumns,
         });
       } catch (error) {
         if (shouldStop()) return { stale: true, results: [] };
@@ -1220,7 +1328,7 @@
       }
     } else {
       tableInfo = await resolveTableInfo(parsed.table, {
-        get, origin: opts.origin, shouldStop, rememberedFields,
+        get, origin: opts.origin, shouldStop, rememberedFields, rememberedColumns,
       });
       if (shouldStop()) return { stale: true, results: [] };
     }
@@ -1248,6 +1356,9 @@
       );
     }
     const fieldNames = selectedFields.map((field) => field.name);
+    const columns = tableInfo.fields.length
+      ? selectVerifiedColumns(tableInfo, opts.columns, selectedFields)
+      : [];
     const parts = conditions.map((condition) => ({ kind: "filter", clause: condition.clause }));
     if (parsed.isSysId) parts.push({ kind: "chain", clause: "sys_id=" + parsed.anchor });
     else if (!filterOnly) parts.push({ kind: "chain", clause: buildSearchQuery(fieldNames, parsed.anchor) });
@@ -1261,7 +1372,11 @@
       orderLabel = byUpdated ? "most recently updated" : "sys_id";
     }
     const readFields = Array.from(new Set(
-      ["sys_id"].concat(fieldNames, conditions.map((condition) => condition.field.name))
+      ["sys_id"].concat(
+        fieldNames,
+        columns.map((field) => field.name),
+        conditions.map((condition) => condition.field.name)
+      )
     ));
     const rows = await getRows(get, {
       table: parsed.table,
@@ -1283,11 +1398,28 @@
           " could not be read back, so no row could be verified."
       );
     }
+    const textSearch = parsed.isSysId || filterOnly
+      ? null
+      : { fields: selectedFields, term: parsed.term };
     const verified = rows
       .filter((row) => verifyFilters(row, conditions) &&
-        (parsed.isSysId || filterOnly || verifyRow(row, selectedFields, parsed.term)))
-      .map((row) => normalizeResult(row, tableInfo, selectedFields))
+        (!textSearch || verifyRow(row, selectedFields, parsed.term)))
+      .map((row) => normalizeResult(row, tableInfo, columns, textSearch))
       .filter(Boolean);
+    /* A reference is matched by its display value, which comes back blank
+     * when the session cannot read the referenced record. If nothing
+     * verified and a searched reference is blank on every row, the server's
+     * matches could not be checked: an access answer, as with filters. */
+    const blankReference = textSearch && rows.length && !verified.length &&
+      selectedFields.find((field) => field.kind === "reference" &&
+        rows.every((row) => !displayOnly(row && row[field.name]).trim()));
+    if (blankReference) {
+      throw createError(
+        "access",
+        "The searched field " + blankReference.label +
+          " could not be read back, so no row could be verified."
+      );
+    }
     const ordered = parsed.isSysId || filterOnly
       ? verified
       : sortVerifiedResults(verified, parsed.term);
@@ -1300,6 +1432,7 @@
       bySysId: Boolean(parsed.isSysId),
       staging: Boolean(tableInfo.staging),
       fields: selectedFields,
+      columns,
       availableFields: tableInfo.fields,
       results,
       filterOnly,
@@ -1312,7 +1445,9 @@
         ? orderLabel
         : parsed.isSysId || !selectedFields.length
           ? ""
-          : "relevance, then " + selectedFields[0].label,
+          /* Ties break on the title, which is the first shown column (review
+           * B1: naming the first searched field was wrong once they differ). */
+          : "relevance, then " + (columns.length ? columns[0] : selectedFields[0]).label,
       truncated: rows.length >= SERVER_LIMIT || verified.length > RESULT_LIMIT,
       serverFull: rows.length >= SERVER_LIMIT,
       candidateCount: rows.length,
@@ -1348,6 +1483,9 @@
     REQUEST_TIMEOUT_MS,
     OPTIONAL_DICTIONARY_TIMEOUT_MS,
     MAX_SEARCH_FIELDS,
+    MAX_SHOW_COLUMNS,
+    DEFAULT_REFERENCE_FIELDS,
+    SHOW_ONLY_TYPES,
     MAX_FILTERS,
     FILTER_VALUE_LIMIT,
     FILTER_FIELD_READ_LIMIT,
@@ -1370,7 +1508,9 @@
     discoverFields,
     chooseDefaultFields,
     resolveTableInfo,
+    isSearchable,
     selectVerifiedFields,
+    selectVerifiedColumns,
     choiceEnabled,
     filterFieldsFrom,
     resolveFilterFields,

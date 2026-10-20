@@ -20,9 +20,9 @@ walkthrough.
   searchable, keyboard-driven, and with one command favouritable to the top.
 - **Record Lens**: read-only record search by table, using verified summary
   fields or an exact `sys_id` without downloading whole records, narrowed by up
-  to three exact filters on reference and choice fields. Star the tables you
-  use on an instance to have them, and their search and filter fields, ready
-  when it opens.
+  to three exact filters on reference and choice fields, with the columns you
+  choose in each result. Star the tables you use on an instance to have them,
+  and their search fields, filter fields and columns, ready when it opens.
 - Read-only **code search** across everyday scripts and configuration source
   the platform's own code search commonly misses.
 - **Translation Lens**: a read-only report of which translations a form or
@@ -260,7 +260,7 @@ retry that source when it reports **Capped**.
 | --- | --- |
 | sys_id | *Copy the current record sys_id.* Copies it to the clipboard. |
 | Translation Assistant | *Prepare and fill translations.* Listed only on the Localization Framework comparison page of a catalog item or record producer (**Edit Translations** on the item, in ad-hoc mode). Step 1 downloads one JSON file holding the item's untranslated, unlocked text — its fields and the `getMessage` messages in its scripts — with its own instructions for the AI tool of your choice; rich text goes out as HTML and is filled back through the page's own editor with the source's tags kept exactly, so only its words change; the panel names what it left out and why (already translated, rich text whose markup or editor it cannot handle, a message that looks like a key rather than text, a text shared with a locked field), and which texts are shared instance-wide, including every script message, which changes for every script using the same key. Step 2 takes the tool's reply, pasted or uploaded, and fills the page: every row that still passes the checks is written into the page's own unsaved model, and the panel then lists each row it did not fill with the reason, offers **Fill anyway** for a placeholder mismatch and **Overwrite** for a field you changed on the page since the draft, and keeps the old text of every translation a fill replaced. Nothing is saved until you press the page's own **Publish**; reloading the page discards every fill. GlideLens never contacts an AI service: the file leaves your browser only when you upload it somewhere. |
-| Record Lens | *Search verified records across readable tables* Find a table by label or technical name, or pick one you starred, choose live dictionary-verified fields, then search text or an exact `sys_id`, filter by up to three reference or choice values, or both. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
+| Record Lens | *Search verified records across readable tables* Find a table by label or technical name, or pick one you starred, choose live dictionary-verified fields to search (references by name) and the columns to show, then search text or an exact `sys_id`, filter by up to three reference or choice values, or both. Copy result IDs/URLs, open a record, or open the verified set as a platform list. |
 | Playbooks | *Open playbook executions for this record* Opens Process Automation playbook executions for the current record. |
 | Playbook Updates | *Open captured updates for this playbook activity.* Listed only on a playbook (process definition) page; opens the related `sys_update_xml` customer updates. |
 | Customer Updates | *Open captured customer updates by sys_id…* Enter a record sys_id or ServiceNow URL to open its customer updates. |
@@ -284,12 +284,31 @@ that does not exist or cannot be read is never silently searched.
 Table suggestions and result rows are fully keyboard-navigable: arrow keys,
 `Home`/`End`, `Enter` to take the highlighted item, and `Esc` to dismiss.
 
-The field control shows exactly which live dictionary-confirmed fields will be
-searched. Known tables receive useful presets, intersected with the live
-dictionary; other tables use safe display and summary fallbacks. Up to six can
-be selected. Sensitive value/body fields are never selected automatically,
-HTML/script types are excluded, and the System Properties preset never selects
-`value`.
+**Search and Show.** Two pickers, both limited to live dictionary-confirmed
+fields:
+
+- **Search** sets which fields your text is matched against. That can be text
+  fields, and reference fields, which match the referenced record's display
+  name, so typing part of a supplier's name finds the rows that link to it.
+  If the session cannot read the referenced table, that is reported as an
+  access problem, not as "no matches". Known tables get useful presets,
+  intersected with the live dictionary. Other tables use their display field
+  and familiar summary fields. A table with neither, typically a many-to-many
+  link table, starts with its reference fields.
+- **Show** sets the columns each result displays, in the order you tick them.
+  The first column is the row's title, and a number beside each ticked column
+  shows its position. Any readable column can be shown: references and choices
+  by their labels, dates, true/false flags and numbers. Show starts as whatever
+  is searched.
+
+Each picker takes up to six. When a picker opens, what you have ticked is listed
+first, under **Selected**, so it is easy to review and untick. A find box at the
+top narrows a long list by a field's label or technical name.
+If your text matched a field you are not showing,
+that value is still added to the row, marked "match", so every row shows why it
+matched. Sensitive value/body fields are never selected automatically.
+HTML, script, journal, password and encrypted types are never listed. The
+System Properties preset never selects `value`.
 
 **Filters.** Press **Add filter** to narrow a search by an exact value — up to
 three, all of which must match. Pick a field, then a value: reference fields
@@ -306,18 +325,20 @@ reported as an access problem, never as "no matches".
 **Starred tables.** Select a table and press **Star** beside it. Starred tables
 are listed as soon as Record Lens opens, before you type anything, and come
 first when what you type matches them. Each one remembers the fields you
-search it by and the fields you filter it by, never the values: change them on
-a starred table and the change is saved, and the status line says so. Favourites are kept per instance, so one customer's tables
-never show up on another's, and only on this device. Up to 20 per instance. A
+search it by, the fields you filter it by and the columns you show, in their
+order, but never the values. Change any of them on a starred table and the
+change is saved, and the status line says so. Favourites are kept per
+instance, so one customer's tables never show up on another's, and only on
+this device. Up to 20 per instance. A
 remembered field is still checked against the live dictionary every time; one
 that no longer exists is named and dropped rather than searched. A starred
 table that can no longer be read shows its error with the star still pressed,
 so you can unstar it there.
 
 The results update as you go. A search runs when typing pauses, when you pick
-or clear a filter value, and when you change the search fields, one search at a
-time. Enter or **Search** searches at once. Switching tables clears the
-previous table's results.
+or clear a filter value, and when you change the searched fields or the shown
+columns, one search at a time. Enter or **Search** searches at once. Switching
+tables clears the previous table's results.
 
 Text searches send a safe fragment to ServiceNow and verify the complete term
 again in the returned summary values before showing a row. At most 20 results
@@ -435,7 +456,8 @@ ServiceNow instance it came from — it can only reach `*.service-now.com`, so i
 could not contact a third party if it tried. Four small things are kept in
 local extension storage: your pinned palette command, two per-instance maps of
 what code search can reach, and the Record Lens tables you starred on each
-instance with the names of their search and filter fields. Translation Assistant is the one feature that
+instance with the names of their search fields, filter fields and shown columns.
+Translation Assistant is the one feature that
 produces something meant to leave your browser: a JSON file of a catalog
 item's field text, which you upload to an AI tool of your own choosing. GlideLens
 does not upload it and does not talk to any AI service.

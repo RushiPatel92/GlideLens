@@ -7470,6 +7470,7 @@ async function openRecordSearch() {
       origin: location.origin,
       shouldStop: isStale,
       rememberedFields: options && options.rememberedFields,
+      rememberedColumns: options && options.rememberedColumns,
     })),
     /* Filter lookups are not session-tracked: they are read while choosing,
      * never alongside a search (the pickers are busy during one), and the
@@ -7491,6 +7492,8 @@ async function openRecordSearch() {
         shouldStop: isStale,
         fields: input && input.fields,
         rememberedFields: input && input.rememberedFields,
+        columns: input && input.columns,
+        rememberedColumns: input && input.rememberedColumns,
         filters,
       }));
     },

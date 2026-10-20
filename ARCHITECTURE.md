@@ -220,12 +220,81 @@ only ever produces a candidate, and `sys_db_object` still decides whether that
 candidate is real and readable.
 
 Text search never guesses columns. It walks `sys_db_object.super_class`, reads
-the hierarchy's bounded `sys_dictionary` rows, and exposes the confirmed text
-fields in a selector. Known-table presets are preferences intersected with
-those live rows, followed by confirmed generic display/summary fallbacks. At
-most six fields can be selected. HTML/script types are excluded; value, body,
-content, credential, and similar fields are never selected automatically. The
-`sys_properties` preset explicitly excludes `value`.
+the hierarchy's bounded `sys_dictionary` rows, and classifies each confirmed
+field by `internal_type`:
+
+- **text**: `TEXT_TYPES`, searchable and showable;
+- **reference**: searchable and showable;
+- **other**: `SHOW_ONLY_TYPES`, showable only.
+
+The other list holds booleans, numbers, currency and price, dates and times,
+durations, `choice`, `glide_list`, and a few name types. Every one was
+confirmed as a `sys_glide_object` name on a live instance. The legacy `numeric`
+is not one, so it stays out. HTML, script, journal, password, encrypted,
+condition and variable types are never listed.
+
+**Search and Show are separate pickers.** The owner reported that a
+many-to-many supplier-company table offered none of its useful columns. It had
+four references, no display field, and opened with nothing selected. Its
+references could only filter, and choosing a field to show meant searching it.
+
+- **Searching a reference** sends `refLIKE<anchor>`. That matches the
+  referenced record's display value: verified read-only on a customer instance,
+  where a name fragment matched every row on two reference fields and a sys_id
+  fragment matched none. The row check already compares display values. A
+  reference search is a join on the instance, so it counts toward the six.
+- **Defaults.** Known-table presets are intersected with the live rows, then
+  display fields, then generic summary fallbacks, all searchable. A table with
+  none of these gets its first four references (`DEFAULT_REFERENCE_FIELDS`).
+  Show starts as what is searched.
+- **Show** holds up to six columns in tick order; the first is the row's title.
+  `selectVerifiedColumns` accepts any listed field. When no columns are named,
+  a row shows what was searched, as before the split. The panel reaches that
+  state only when a table opens with nothing to search, and its button then
+  reads "Show searched fields" rather than zero. The last column cannot be
+  unticked.
+- **One rule for searchability.** `isSearchable` lets the kind decide when
+  there is one, so a flag cannot contradict it. The panel calls the engine's
+  rule rather than copying it. Remembered columns are capped by
+  `MAX_SHOW_COLUMNS`, not by the search-field cap.
+- **Pickers are checkbox groups.** Each list is a `role="group"` of checkboxes
+  under a disclosure button (`aria-expanded`, `aria-controls`), not a
+  listbox, because its children are not options. A column's position badge and
+  a row's "match" tag are each their own word when read aloud.
+- **Ticked rows are sorted on opening, never while open.** Opening a picker
+  moves its ticked rows into a Selected group above the rest. Columns go in
+  shown order, so the badges read 1, 2, 3 down the list, and search fields go in
+  list order. A row ticked while the list is open stays where it was pressed,
+  so nothing moves under the pointer. Opening also empties the find box and
+  puts the cursor in it. The box matches a field's label or technical name.
+  Enter in it is swallowed, because it would submit the search form, and
+  Escape hands focus back to the picker's button.
+- **The lists are sized to the panel.** The panel clips with
+  `overflow:hidden`, so a list is `min(600px, 100vw − 260px)` wide. That keeps
+  the Show list, which starts further right, inside the panel at any width
+  above the narrow layout. The narrow layout stacks the buttons, so each list
+  spans the panel.
+- **A display field of a show-only type**, such as a date, is not added to the
+  default columns, because Show starts as what is searched. It can be ticked in
+  Show. This is a decision, not a gap.
+- **A searched reference the session cannot read** comes back with its
+  `sys_id` and a blank display value, so the server's by-name match cannot be
+  verified. When nothing verified and a searched reference is blank on every
+  returned row, the search reports an access problem, as a filter's blank
+  read-back does. When only some rows are blank, they are dropped as unverified.
+  The blank read-back itself has not been observed live. A text field blanked
+  by a field ACL is not covered: the rule is limited to references, whose
+  display depends on another table's access.
+- **A match in an unshown field** is appended to the row and marked
+  `matched`, so no row appears without what it matched on. Relevance ranking
+  comes from the searched fields (`matchRank`), never from the shown values.
+- **Remembered columns** are verified exactly as remembered fields are: asked
+  for by name in the bounded candidate read, absent or unverifiable on the same
+  rules, and part of the cache key. A remembered search field must still be
+  searchable; a column need only still be listable.
+
+Value, body, content, credential and similar fields are never selected
+automatically. The `sys_properties` preset explicitly excludes `value`.
 
 Record Lens reads time out instead of leaving the panel busy indefinitely.
 The broad optional dictionary read has a shorter timeout and may degrade to the
@@ -237,13 +306,16 @@ values. Invalid or unexpected metadata field names are rejected rather than
 sent to ServiceNow.
 
 The server returns at most 50 candidate rows and the panel shows at most 20
-verified results. Only `sys_id` and the selected summaries are retrieved; full
-record contents are neither requested nor stored. Exact `sys_id` lookup can
+verified results. Only `sys_id`, the searched fields, the shown columns and the
+filter fields are retrieved; full record contents are neither requested nor
+stored. Exact `sys_id` lookup can
 fall back to `sys_id` alone when dictionary metadata is unreadable.
 
 Verified record results sort by match quality (exact value, prefix, word-start,
-then contains), followed by the first displayed field and `sys_id`. The results
-status names this order so it is not mistaken for an instance-defined sort.
+then contains) in the searched fields. Ties fall to the row's title, which is
+its first non-empty shown column, and then to `sys_id`. The results status names
+this order, including the first shown column, so it is not mistaken for an
+instance-defined sort.
 
 Result rows provide form opening plus Copy sys_id and Copy URL actions. A copy
 is confirmed on the pressed button (✓ Copied or Copy failed, for two seconds)
@@ -264,9 +336,10 @@ invalidates older work so stale results cannot replace the current search.
 
 ### Starred tables
 
-A user can star a table, and a starred table remembers its search fields.
-These are **user data, not a cache**: there is no expiry, and nothing writes
-them except starring, unstarring, or changing a starred table's fields.
+A user can star a table, and a starred table remembers its search fields,
+filter fields and shown columns. These are **user data, not a cache**: there
+is no expiry, and nothing writes them except starring, unstarring, or changing
+a starred table's search fields, filter fields or columns.
 Opening the panel and selecting a favourite write nothing, and there is no
 automatic "recent tables" list — that would be the search history the panel
 promises not to keep.
@@ -275,9 +348,12 @@ promises not to keep.
   `snhRecordLensFavorites:<origin>`, holding at most 20 tables. Never
   `storage.sync`, which would send customer table names to the browser vendor.
 - **The worker owns every operation**, through `RECORD_LENS_FAVORITES` with an
-  `op` of `list`, `star`, `unstar`, `fields` or `filterFields`. A favourite
-  remembers filter field *names*, never values: a value is a record
-  identifier, and no key of the stored shape could carry one. The Code Search cache lock
+  `op` of `list`, `star`, `unstar`, `fields`, `filterFields` or `columns`. A
+  favourite remembers filter field *names*, never values: a value is a record
+  identifier, and no key of the stored shape could carry one. `columns` are
+  names too, at most six, kept in order. A favourite stored before filters or
+  columns existed still reads, with empty lists, and a star that omits a list
+  keeps what was stored. The Code Search cache lock
   serialises writes, not read-modify-write, and a star adds to what is stored,
   so a tab sending its finished list could overwrite another tab's star. Each
   operation is therefore applied to the stored value inside the worker's own
@@ -376,13 +452,15 @@ below), applied to a generic table:
 
 - **What asks.** Picking or clearing a filter value, clearing a field that
   carried a value, removing a complete row, the text ✕, and choosing a table
-  under text already typed all ask at once. Typing and search-field changes
-  wait for a **500 ms** pause. Picking a filter field opens its values instead,
-  because a field alone is half a condition. Enter and Search always ask,
+  under text already typed all ask at once. Typing, search-field changes and
+  shown-column changes wait for a **500 ms** pause. A column change asks again
+  even with an answer on screen, since the new column's values were never read;
+  the column order is part of the question, because it chooses the title.
+  Picking a filter field opens its values instead, because a field alone is
+  half a condition. Enter and Search always ask,
   changed or not; every other trigger is skipped when the question matches the
-  one last asked. A question is the table, the trimmed term, the sorted fields
-  and the complete filter rows. The fields count even without text, because
-  they choose the values each row shows.
+  one last asked. A question is the table, the trimmed term, the sorted fields,
+  the shown columns in order, and the complete filter rows.
 - **Withdrawing.** The term is judged by the engine's own `parseSearch`. A term
   too short to anchor says what is needed, neutrally, and withdraws the answer
   on screen. So does text with no field selected. Emptying the last criterion
