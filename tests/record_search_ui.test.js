@@ -1945,7 +1945,7 @@ test("the find box narrows a picker by label or technical name, and Enter in it 
   find.value = "zzz";
   find.fire("input");
   const none = q(shadow, ".field-menu .picker-none");
-  assert.strictEqual(none.hidden, false);
+  assert.strictEqual(none.getAttribute("role"), "status", "the note is announced");
   assert.strictEqual(none.textContent, "No field label or name contains “zzz”.");
 
   termInput(shadow).value = "acme";
@@ -1956,7 +1956,50 @@ test("the find box narrows a picker by label or technical name, and Enter in it 
   assert.strictEqual(find.value, "", "a reopened picker starts unfiltered");
   assert.deepStrictEqual(pickerGroups(shadow, ".field-menu"),
     { chosen: ["u_company", "u_supplier"], rest: ["u_currency"] });
-  assert.strictEqual(none.hidden, true);
+  assert.strictEqual(none.textContent, "", "an empty status hides itself and says nothing");
+});
+
+/* Review S3: the rest go back to list order, not to wherever they were. */
+test("a reopened picker puts what is no longer ticked back in list order", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  const columns = q(shadow, ".columns-button");
+  ["u_active", "u_company", "u_supplier", "u_company"].forEach((name) => toggleColumn(shadow, name));
+  columns.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_active", "u_company"], rest: ["u_supplier", "u_currency"] });
+  ["u_currency", "u_active", "u_company"].forEach((name) => toggleColumn(shadow, name));
+  columns.fire("click");
+  columns.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_currency"], rest: ["u_company", "u_supplier", "u_active"] });
+});
+
+/* Review S1: a row in a list Escape closed is not rendered, so focusing it
+ * would leave focus nowhere. */
+test("Escape during a search sends the focus it took to the picker's button", async () => {
+  const harness = load();
+  const searching = deferred();
+  const shadow = linkPanel(harness, { onSearch: () => searching.promise });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  termInput(shadow).value = "acme";
+  q(shadow, ".fields-button").fire("click");
+  const box = shadow.querySelectorAll(".field-option input")
+    .find((input) => input.dataset.field === "u_currency");
+  box.focus();
+  toggleField(shadow, "u_currency");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(box.disabled, true, "the search is running");
+  assert.strictEqual(harness.dom.document.activeElement, null, "disabling the box dropped focus");
+  harness.dom.window.fire("keydown", { key: "Escape" });
+  assert.strictEqual(q(shadow, ".field-menu").hidden, true);
+  searching.resolve({ stale: false, table: "u_example_link", results: [] });
+  await settle();
+  assert.strictEqual(harness.dom.document.activeElement, q(shadow, ".fields-button"));
 });
 
 test("Escape in a picker closes it and hands focus back to its button", async () => {

@@ -1095,6 +1095,38 @@ test("a blank reference is not an access answer when another field verified a ro
   assert.deepStrictEqual(own(result.results).map((item) => item.sysId), ["00000000000000000000000000000002"]);
 });
 
+/* Review B1: the server matches one word, verification the whole term, so
+ * "nothing verified" is routine. An unset reference is not an unreadable one. */
+test("an empty reference with nothing verified stays no matches, not an access answer", async () => {
+  const empty = { display_value: "", value: "" };
+  const result = await referenceSearch([
+    { sys_id: "00000000000000000000000000000001", u_supplier: empty, u_currency: "EUR" },
+    { sys_id: "00000000000000000000000000000002", u_supplier: empty, u_currency: "USD" },
+  ], "https://example.service-now.com/ref-blank-4");
+  assert.strictEqual(result.results.length, 0);
+});
+
+test("a filter-only search never takes a blank searched reference for an access answer", async () => {
+  const instance = filterInstance({
+    records: () => [Object.assign(incidentRow(1, GROUP_ID, "2"),
+      { assignment_group: { value: GROUP_ID, display_value: "" } })],
+  });
+  /* Offer the reference as a search field too, so the guard has one to see. */
+  const get = (request) => (request.table === "sys_dictionary" && String(request.query).includes("elementIN")
+    ? Promise.resolve([{ name: "task", element: "assignment_group", column_label: "Assignment group",
+      internal_type: "reference", display: "false" }])
+    : instance.get(request));
+  const result = await RS.runSearch(RS.parseSearch("incident", "", { allowEmptyTerm: true }), {
+    origin: "https://example.service-now.com/ref-blank-5",
+    get,
+    fields: ["assignment_group"],
+    filters: [{ field: "assignment_group", value: OTHER_GROUP_ID }],
+  });
+  assert.deepStrictEqual(own(result.fields).map((field) => field.name), ["assignment_group"],
+    "the blank reference really is a searched field");
+  assert.strictEqual(result.results.length, 0, "the filter dropped the row; that is no matches");
+});
+
 test("a reference blank on only some rows stays no matches, as filters do", async () => {
   const result = await referenceSearch([
     { sys_id: "00000000000000000000000000000001", u_supplier: hiddenRef, u_currency: "EUR" },

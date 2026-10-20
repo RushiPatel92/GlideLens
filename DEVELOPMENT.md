@@ -105,8 +105,10 @@ The suites cover:
     and key the cache.
   - A search reads its columns, matches a reference by name, appends a match
     in an unshown field, and ranks by the searched fields. A searched reference
-    blank on every row, with nothing verified, is an access answer; blank on
-    some rows, or beside a verified row, it is not.
+    with a `sys_id` but no display on every row, and nothing verified, is an
+    access answer. It is not one when the reference is merely empty, when it
+    is blank on only some rows, when it sits beside a verified row, or in a
+    filter-only search.
   - The worker stores columns in order, keeps them across a star that omits
     them, and refuses bad lists with a "column" prefix.
 - `record_search_ui.test.js` — the Record Lens panel under `node:vm`, on a DOM
@@ -157,11 +159,13 @@ The suites cover:
   - Opening one picker closes the other, and Escape or an outside click closes
     both.
   - Opening sorts ticked rows into Selected (columns in shown order, where that
-    differs from list order). A row pressed while open stays put.
+    differs from list order). Unticked rows go back to list order. A row pressed
+    while open stays put.
   - The find box takes focus on opening and matches label or technical name,
-    trimmed and in any case. Its headings and no-match note follow what is
-    visible, Enter in it never submits, and reopening empties it.
-  - Escape in a picker hands focus back to its button.
+    trimmed and in any case. Its headings and its `role="status"` no-match note
+    follow what is visible, Enter in it never submits, and reopening empties it.
+  - Escape in a picker hands focus back to its button. So does a search that
+    took focus from a row whose list Escape closed meanwhile.
 - `command_palette.test.js` — the pure palette model: label/description
   matching, relevance ranking (every built-in command must rank first for its
   own exact label, and groups must stay contiguous),

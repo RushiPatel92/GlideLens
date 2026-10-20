@@ -268,20 +268,31 @@ references could only filter, and choosing a field to show meant searching it.
   so nothing moves under the pointer. Opening also empties the find box and
   puts the cursor in it. The box matches a field's label or technical name.
   Enter in it is swallowed, because it would submit the search form, and
-  Escape hands focus back to the picker's button.
+  Escape hands focus back to the picker's button. A search that took focus
+  from a row in a list closed meanwhile also returns it to that button, since
+  a row in a hidden list is connected and enabled but cannot hold focus. The
+  no-match note is a `role="status"` that is always present and empty while
+  rows match, so it is announced when written.
 - **The lists are sized to the panel.** The panel clips with
   `overflow:hidden`, so a list is `min(600px, 100vw − 260px)` wide. That keeps
   the Show list, which starts further right, inside the panel at any width
   above the narrow layout. The narrow layout stacks the buttons, so each list
-  spans the panel.
+  spans the panel. Height is bounded by the window as well as capped at 380px,
+  so on a short window the last rows stay scrollable instead of sitting below
+  the panel's clip.
 - **A display field of a show-only type**, such as a date, is not added to the
   default columns, because Show starts as what is searched. It can be ticked in
   Show. This is a decision, not a gap.
 - **A searched reference the session cannot read** comes back with its
   `sys_id` and a blank display value, so the server's by-name match cannot be
-  verified. When nothing verified and a searched reference is blank on every
-  returned row, the search reports an access problem, as a filter's blank
-  read-back does. When only some rows are blank, they are dropped as unverified.
+  verified. The search reports an access problem, as a filter's blank
+  read-back does, when all three hold: nothing verified, a searched reference
+  has no display value on any returned row, and at least one row holds its
+  `sys_id`. A reference that is simply empty is not an access answer. That
+  matters because nothing verifying is routine: the server matches one word
+  of the term, and verification checks the whole of it. When only some rows
+  are blank, they are dropped as unverified. Filter-only and `sys_id` searches
+  never take this path.
   The blank read-back itself has not been observed live. A text field blanked
   by a field ACL is not covered: the rule is limited to references, whose
   display depends on another table's access.

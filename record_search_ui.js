@@ -153,7 +153,8 @@
     .add-filter:hover:not(:disabled){background:#2d2d48;color:#fff}
     .fields-button::after,.columns-button::after{content:"▾";float:right;margin-left:10px;color:#aaaac5}
     .field-menu,.column-menu{position:absolute;left:0;top:calc(100% + 5px);z-index:4;
-      width:min(600px,calc(100vw - 260px));max-height:380px;display:flex;flex-direction:column;
+      width:min(600px,calc(100vw - 260px));max-height:max(160px,min(380px,calc(100vh - 230px)));
+      display:flex;flex-direction:column;
       overflow:hidden;background:#171724;border:1px solid #565681;
       border-radius:8px;box-shadow:0 16px 38px rgba(0,0,0,.55);padding:6px}
     .field-menu[hidden],.column-menu[hidden]{display:none}
@@ -162,6 +163,7 @@
     .picker-heading{padding:6px 8px 3px;color:#8f8fa9;font-size:9px;font-weight:650;
       letter-spacing:.06em;text-transform:uppercase}
     .picker-heading.rest{margin-top:4px;padding-top:8px;border-top:1px solid #2e2e4e}
+    .picker-none:empty{display:none}
     .field-option,.column-option{display:grid;grid-template-columns:auto 1fr auto;
       align-items:center;gap:8px;padding:7px 8px;border-radius:5px;color:#d7d7e6;
       font-size:11px;font-weight:400;cursor:pointer}
@@ -206,7 +208,7 @@
       .field-line{grid-template-columns:1fr}.field-line .field-summary{grid-column:auto}
       .filter-row{grid-template-columns:1fr}
       .fields-button,.columns-button,.star-btn{width:100%}.sys-id{display:none}
-      .field-menu,.column-menu{width:calc(100vw - 56px)}}
+      .field-menu,.column-menu{width:calc(100vw - 56px);max-height:max(160px,calc(100vh - 340px))}}
   `;
 
   function engine() { return globalThis.SNRecordSearch; }
@@ -1520,8 +1522,10 @@
     });
     const list = el("div", "picker-list");
     const rest = el("div", "picker-rest");
+    /* Always present and empty while rows match, so a screen reader hears
+     * the note when it is written, not a region appearing. */
     const none = el("div", "menu-message picker-none");
-    none.hidden = true;
+    none.setAttribute("role", "status");
     [
       el("div", "picker-heading chosen", "Selected"),
       el("div", "picker-chosen"),
@@ -1570,9 +1574,9 @@
     });
     menu.querySelector(".picker-heading.chosen").hidden = !visible[0];
     menu.querySelector(".picker-heading.rest").hidden = !visible[0] || !visible[1];
-    const none = menu.querySelector(".picker-none");
-    none.hidden = visible[0] + visible[1] > 0;
-    none.textContent = none.hidden ? "" : "No field label or name contains “" + find.value.trim() + "”.";
+    menu.querySelector(".picker-none").textContent = visible[0] + visible[1] > 0
+      ? ""
+      : "No field label or name contains “" + find.value.trim() + "”.";
   }
 
   function arrangeFieldPicker() {
@@ -2076,9 +2080,14 @@
    * instead, since focusing a detached node would leave it on the page. */
   function restoreFocus(node) {
     if (!shadow || !node || shadow.activeElement) return;
+    /* A row in a picker closed meanwhile (Escape during the search) is
+     * connected and enabled but not rendered, so focusing it does nothing;
+     * its picker's button takes focus instead. */
+    const picker = node.closest ? node.closest(".field-picker") : null;
+    const list = picker ? node.closest("[role='group']") : null;
     const target = node.isConnected === false || node.disabled || node.hidden
       ? shadow.querySelector("[data-input='term']")
-      : node;
+      : list && list.hidden ? picker.querySelector("button") : node;
     const owner = Object.keys(combos).map((key) => combos[key])
       .find((combo) => combo && combo.input === target);
     if (owner) {

@@ -1408,10 +1408,14 @@
       .filter(Boolean);
     /* A reference is matched by its display value, which comes back blank
      * when the session cannot read the referenced record. If nothing
-     * verified and a searched reference is blank on every row, the server's
-     * matches could not be checked: an access answer, as with filters. */
+     * verified and a searched reference has no display on any row, though
+     * at least one row holds a sys_id, the server's matches could not be
+     * checked: an access answer, as with filters. A reference that is just
+     * empty is not one. Nothing verifying is routine, since the server
+     * matches one word of the term and verification the whole of it. */
     const blankReference = textSearch && rows.length && !verified.length &&
       selectedFields.find((field) => field.kind === "reference" &&
+        rows.some((row) => rawValue(row && row[field.name]).trim()) &&
         rows.every((row) => !displayOnly(row && row[field.name]).trim()));
     if (blankReference) {
       throw createError(
