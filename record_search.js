@@ -43,6 +43,10 @@
     sys_properties: ["name", "description"],
     sys_db_object: ["label", "name"],
     kb_knowledge: ["number", "short_description"],
+    /* Without this, syslog falls through to its only two references,
+     * source_package and source_application_family, which are almost always
+     * empty on a log row. */
+    syslog: ["message", "source", "level", "sys_created_by"],
   });
   const GENERIC_FIELD_PRIORITY = [
     "number", "name", "short_description", "title", "user_name", "email",

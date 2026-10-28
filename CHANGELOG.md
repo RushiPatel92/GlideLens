@@ -45,7 +45,9 @@ reconstructed version by version.
   the panel says so rather than reporting no matches. A table with no display
   field or familiar text field, typically a many-to-many link table, starts by
   searching and showing its references, where before it started with nothing
-  selected. If your text matched a field you are not showing, the row still
+  selected. The system log is the exception: it starts with Message, Source,
+  Level and Created by rather than its two references, which a log row rarely
+  fills. If your text matched a field you are not showing, the row still
   shows it, marked "match". A starred table remembers its columns, in order.
   Both pickers are wider. They list what you ticked first, under Selected, and
   have a find box that narrows a long list by label or technical name.

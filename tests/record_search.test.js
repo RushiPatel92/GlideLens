@@ -512,6 +512,28 @@ test("known-table presets are intersected with live fields", () => {
   assert.ok(!own(selected).some((field) => field.name === "description"));
 });
 
+/* syslog's live shape: no display field, none of the familiar names, and two
+ * references that are almost always empty on a log row. */
+test("the system log searches its text, not its two references", () => {
+  const field = (name, kind) => ({
+    name, label: name, kind, searchable: kind !== "other", autoSelectable: true, display: false,
+  });
+  const fields = [
+    field("source_application_family", "reference"),
+    field("source_package", "reference"),
+    field("sys_created_by", "text"),
+    field("level", "text"),
+    field("message", "text"),
+    field("sequence", "text"),
+    field("source", "text"),
+    field("sys_created_on", "other"),
+  ];
+  assert.deepStrictEqual(
+    own(RS.chooseDefaultFields("syslog", [{ name: "syslog" }], fields)).map((item) => item.name),
+    ["message", "source", "level", "sys_created_by"]
+  );
+});
+
 test("system property value and body-like fields are never selected automatically", () => {
   const fields = [
     { name: "name", label: "Name", autoSelectable: true, display: false },
