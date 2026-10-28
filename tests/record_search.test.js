@@ -369,7 +369,7 @@ test("hierarchy discovery walks parents explicitly", async () => {
   assert.deepStrictEqual(calls, ["name=example_child", "name=example_parent"]);
 });
 
-test("field discovery keeps only confirmed text summaries and prefers display fields", async () => {
+test("field discovery keeps confirmed text and reference fields and prefers display fields", async () => {
   const hierarchy = [
     { name: "example_child", label: "Example Child" },
     { name: "example_parent", label: "Example Parent" },
@@ -408,10 +408,91 @@ test("field discovery keeps only confirmed text summaries and prefers display fi
       },
     ];
   });
-  assert.deepStrictEqual(own(fields).map((field) => field.name), [
-    "number",
-    "short_description",
+  assert.deepStrictEqual(own(fields).map((field) => [field.name, field.kind, field.searchable]), [
+    ["number", "text", true],
+    ["short_description", "text", true],
+    ["assigned_to", "reference", true],
   ]);
+});
+
+/* The Show list: every type a row can display, each name a real
+ * sys_glide_object type; nothing that renders markup, runs, or holds a
+ * secret. */
+test("shown-only types are listed but never searched, and unsafe types are never listed", async () => {
+  const row = (element, internalType) => ({
+    name: "u_example_link", element, column_label: element, internal_type: internalType, display: "false",
+  });
+  const fields = await RS.discoverFields([{ name: "u_example_link", label: "Example link" }], async () => [
+    row("u_active", "boolean"),
+    row("u_opened", "glide_date_time"),
+    row("u_payees", "glide_list"),
+    row("u_amount", "currency"),
+    row("u_state", "choice"),
+    row("u_legacy", "numeric"),
+    row("u_notes", "journal_input"),
+    row("u_body", "html"),
+    row("u_code", "script_plain"),
+    row("u_secret", "password2"),
+    row("u_crypt", "encrypted_text"),
+    row("u_when", "conditions"),
+    row("sys_id", "GUID"),
+  ]);
+  assert.deepStrictEqual(own(fields).map((field) => field.name).sort(),
+    ["u_active", "u_amount", "u_opened", "u_payees", "u_state"]);
+  assert.ok(fields.every((field) => field.kind === "other" && field.searchable === false));
+  assert.ok(!RS.SHOW_ONLY_TYPES.has("numeric"), "not a sys_glide_object type");
+});
+
+test("a table with no display or familiar text field defaults to its references", () => {
+  const field = (name, kind, extra) => Object.assign({
+    name, label: name, kind, searchable: kind !== "other", autoSelectable: true, display: false,
+  }, extra || {});
+  const linkFields = [
+    field("u_company", "reference"),
+    field("u_currency", "text"),
+    field("u_active", "other"),
+    field("u_supplier", "reference"),
+    field("u_case", "reference"),
+    field("u_term", "reference"),
+    field("u_secret_token", "reference", { autoSelectable: false }),
+    field("u_payee", "reference"),
+  ];
+  const selected = RS.chooseDefaultFields("u_example_link", [{ name: "u_example_link" }], linkFields);
+  assert.deepStrictEqual(own(selected).map((item) => item.name),
+    ["u_company", "u_supplier", "u_case", "u_term"]);
+  assert.strictEqual(selected.length, RS.DEFAULT_REFERENCE_FIELDS);
+
+  /* A display text field still wins, and a shown-only field is never a default. */
+  const withDisplay = linkFields.concat([field("u_name", "text", { display: true })]);
+  assert.deepStrictEqual(
+    own(RS.chooseDefaultFields("u_example_link", [{ name: "u_example_link" }], withDisplay)).map((item) => item.name),
+    ["u_name"]
+  );
+  const onlyShown = [field("u_active", "other", { display: true })];
+  assert.deepStrictEqual(own(RS.chooseDefaultFields("u_example_link", [{ name: "u_example_link" }], onlyShown)), []);
+});
+
+test("columns are verified like fields, but any listed field qualifies and order is kept", () => {
+  const info = {
+    fields: [
+      { name: "number", searchable: true },
+      { name: "u_supplier", kind: "reference", searchable: true },
+      { name: "u_active", kind: "other", searchable: false },
+    ],
+    defaultFields: [{ name: "number" }],
+  };
+  assert.deepStrictEqual(
+    own(RS.selectVerifiedColumns(info, ["u_active", "u_supplier", "number"], [])).map((field) => field.name),
+    ["u_active", "u_supplier", "number"]
+  );
+  assert.deepStrictEqual(own(RS.selectVerifiedColumns(info, [], [{ name: "number" }])).map((field) => field.name),
+    ["number"], "none named shows what was searched");
+  assert.throws(() => RS.selectVerifiedColumns(info, ["u_gone"], []), /shown columns no longer match/);
+  assert.throws(() => RS.selectVerifiedColumns(info, ["a", "b", "c", "d", "e", "f", "g"], []), /no more than six/);
+  assert.throws(() => RS.selectVerifiedFields(info, ["u_active"]), /live dictionary/,
+    "a shown-only field can never be searched");
+  assert.deepStrictEqual(own(RS.selectVerifiedFields(info, ["u_supplier"])).map((field) => field.name),
+    ["u_supplier"]);
 });
 
 test("known-table presets are intersected with live fields", () => {
@@ -429,6 +510,28 @@ test("known-table presets are intersected with live fields", () => {
     "short_description",
   ]);
   assert.ok(!own(selected).some((field) => field.name === "description"));
+});
+
+/* syslog's live shape: no display field, none of the familiar names, and two
+ * references that are almost always empty on a log row. */
+test("the system log searches its text, not its two references", () => {
+  const field = (name, kind) => ({
+    name, label: name, kind, searchable: kind !== "other", autoSelectable: true, display: false,
+  });
+  const fields = [
+    field("source_application_family", "reference"),
+    field("source_package", "reference"),
+    field("sys_created_by", "text"),
+    field("level", "text"),
+    field("message", "text"),
+    field("sequence", "text"),
+    field("source", "text"),
+    field("sys_created_on", "other"),
+  ];
+  assert.deepStrictEqual(
+    own(RS.chooseDefaultFields("syslog", [{ name: "syslog" }], fields)).map((item) => item.name),
+    ["message", "source", "level", "sys_created_by"]
+  );
 });
 
 test("system property value and body-like fields are never selected automatically", () => {
@@ -887,6 +990,194 @@ test("remembered fields are part of the cache key, and a search reuses the same 
   assert.strictEqual(result.results.length, 1);
 });
 
+test("remembered columns join the candidate read, are verified by name, and key the cache", async () => {
+  const origin = "https://example.service-now.com/columns-1";
+  const dictionary = dictionaryGet({
+    existing: ["u_code"],
+    optionalFails: true,
+    rows: [{ sys_id: "00000000000000000000000000000005", number: "EX5", u_code: "example code" }],
+  });
+  const remembered = ["u_code", "u_removed"];
+  await RS.resolveTableInfo("u_example_record", { origin, get: dictionary.get });
+  const plain = dictionary.requests.length;
+  const info = await RS.resolveTableInfo("u_example_record", {
+    origin, get: dictionary.get, rememberedColumns: remembered,
+  });
+  assert.ok(dictionary.requests.length > plain, "a different remembered list is a different read");
+  const candidate = dictionary.requests.filter((request) =>
+    request.table === "sys_dictionary" && request.query.includes("elementIN")).at(-1);
+  assert.ok(candidate.query.includes(",u_code,u_removed"), "both are asked for by name");
+  assert.deepStrictEqual(own(info.rememberedColumns.verified), ["u_code"]);
+  assert.deepStrictEqual(own(info.rememberedColumns.absent), ["u_removed"]);
+  assert.deepStrictEqual(own(info.remembered.requested), [], "the search fields are untouched");
+
+  const before = dictionary.requests.length;
+  const result = await RS.runSearch(RS.parseSearch("u_example_record", "EX5"), {
+    origin,
+    get: dictionary.get,
+    fields: ["number"],
+    columns: ["u_code"],
+    rememberedColumns: remembered,
+  });
+  assert.strictEqual(dictionary.requests.slice(before)
+    .filter((request) => request.table !== "u_example_record").length, 0, "the search reused the read");
+  assert.strictEqual(result.results[0].title, "example code", "the first column is the title");
+  assert.deepStrictEqual(own(result.results[0].values).map((item) => [item.field, Boolean(item.matched)]), [
+    ["u_code", false],
+    ["number", true],
+  ], "the match is shown although number is not a column");
+});
+
+test("a search shows its columns in order, searches references by name, and ranks by what it searched", async () => {
+  const table = "u_example_link";
+  const requests = [];
+  const dictionaryRow = (element, internalType, label) => ({
+    name: table, element, column_label: label, internal_type: internalType, display: "false",
+  });
+  const ref = (display) => ({ display_value: display, value: "0123456789abcdef0123456789abcdef" });
+  const get = async (request) => {
+    requests.push(request);
+    if (request.table === "sys_db_object") return [{ name: table, label: "Example link", "super_class.name": "" }];
+    if (request.table === "sys_dictionary") {
+      if (request.query.includes("display=true")) return [];
+      return [
+        dictionaryRow("u_company", "reference", "Company"),
+        dictionaryRow("u_supplier", "reference", "Supplier"),
+        dictionaryRow("u_currency", "string", "Currency"),
+        dictionaryRow("u_active", "boolean", "Active"),
+      ];
+    }
+    return [
+      { sys_id: "00000000000000000000000000000002", u_company: ref("acme"), u_supplier: ref("Other"),
+        u_currency: "Pay acme", u_active: { display_value: "false", value: "false" } },
+      { sys_id: "00000000000000000000000000000001", u_company: ref("FR01"), u_supplier: ref("Acme Ltd"),
+        u_currency: "EUR", u_active: { display_value: "true", value: "true" } },
+    ];
+  };
+  const result = await RS.runSearch(RS.parseSearch(table, "acme"), {
+    origin: "https://example.service-now.com/columns-2",
+    get,
+    fields: ["u_supplier", "u_currency"],
+    columns: ["u_company", "u_active"],
+  });
+  const read = requests.find((request) => request.table === table);
+  assert.strictEqual(read.query, "u_supplierLIKEacme^ORu_currencyLIKEacme", "a reference is matched by name");
+  assert.strictEqual(read.fields, "sys_id,u_supplier,u_currency,u_company,u_active");
+  /* The second row's shown Company reads exactly "acme", but it matched only
+   * at a word start in Currency: ranking follows the searched fields. */
+  assert.deepStrictEqual(own(result.results).map((item) => item.title), ["FR01", "acme"]);
+  assert.deepStrictEqual(own(result.results[0].values).map((item) => [item.label, item.value, Boolean(item.matched)]), [
+    ["Company", "FR01", false],
+    ["Active", "true", false],
+    ["Supplier", "Acme Ltd", true],
+  ]);
+  assert.deepStrictEqual(own(result.columns).map((field) => field.name), ["u_company", "u_active"]);
+  /* Review B1: ties break on the title, the first shown column, so that is
+   * the column the status names -- not the first searched field. */
+  assert.strictEqual(result.sortLabel, "relevance, then Company");
+});
+
+/* Review S8: a reference the session cannot read comes back with its sys_id
+ * but a blank display, so the server's by-name match cannot be verified. */
+function referenceSearch(rows, origin) {
+  const table = "u_example_link";
+  const get = async (request) => {
+    if (request.table === "sys_db_object") return [{ name: table, label: "Example link", "super_class.name": "" }];
+    if (request.table === "sys_dictionary") {
+      if (request.query.includes("display=true")) return [];
+      return [
+        { name: table, element: "u_supplier", column_label: "Supplier", internal_type: "reference", display: "false" },
+        { name: table, element: "u_currency", column_label: "Currency", internal_type: "string", display: "false" },
+      ];
+    }
+    return rows;
+  };
+  return RS.runSearch(RS.parseSearch(table, "acme"), {
+    origin, get, fields: ["u_supplier", "u_currency"], columns: ["u_currency"],
+  });
+}
+const hiddenRef = { display_value: "", value: "0123456789abcdef0123456789abcdef" };
+
+test("a searched reference that reads back blank on every row is an access answer", async () => {
+  await assert.rejects(
+    () => referenceSearch([
+      { sys_id: "00000000000000000000000000000001", u_supplier: hiddenRef, u_currency: "EUR" },
+      { sys_id: "00000000000000000000000000000002", u_supplier: hiddenRef, u_currency: "USD" },
+    ], "https://example.service-now.com/ref-blank-1"),
+    (error) => error.code === "access" &&
+      error.message === "The searched field Supplier could not be read back, so no row could be verified."
+  );
+});
+
+test("a blank reference is not an access answer when another field verified a row", async () => {
+  const result = await referenceSearch([
+    { sys_id: "00000000000000000000000000000001", u_supplier: hiddenRef, u_currency: "EUR" },
+    { sys_id: "00000000000000000000000000000002", u_supplier: hiddenRef, u_currency: "Pay acme" },
+  ], "https://example.service-now.com/ref-blank-2");
+  assert.deepStrictEqual(own(result.results).map((item) => item.sysId), ["00000000000000000000000000000002"]);
+});
+
+/* Review B1: the server matches one word, verification the whole term, so
+ * "nothing verified" is routine. An unset reference is not an unreadable one. */
+test("an empty reference with nothing verified stays no matches, not an access answer", async () => {
+  const empty = { display_value: "", value: "" };
+  const result = await referenceSearch([
+    { sys_id: "00000000000000000000000000000001", u_supplier: empty, u_currency: "EUR" },
+    { sys_id: "00000000000000000000000000000002", u_supplier: empty, u_currency: "USD" },
+  ], "https://example.service-now.com/ref-blank-4");
+  assert.strictEqual(result.results.length, 0);
+});
+
+test("a filter-only search never takes a blank searched reference for an access answer", async () => {
+  const instance = filterInstance({
+    records: () => [Object.assign(incidentRow(1, GROUP_ID, "2"),
+      { assignment_group: { value: GROUP_ID, display_value: "" } })],
+  });
+  /* Offer the reference as a search field too, so the guard has one to see. */
+  const get = (request) => (request.table === "sys_dictionary" && String(request.query).includes("elementIN")
+    ? Promise.resolve([{ name: "task", element: "assignment_group", column_label: "Assignment group",
+      internal_type: "reference", display: "false" }])
+    : instance.get(request));
+  const result = await RS.runSearch(RS.parseSearch("incident", "", { allowEmptyTerm: true }), {
+    origin: "https://example.service-now.com/ref-blank-5",
+    get,
+    fields: ["assignment_group"],
+    filters: [{ field: "assignment_group", value: OTHER_GROUP_ID }],
+  });
+  assert.deepStrictEqual(own(result.fields).map((field) => field.name), ["assignment_group"],
+    "the blank reference really is a searched field");
+  assert.strictEqual(result.results.length, 0, "the filter dropped the row; that is no matches");
+});
+
+test("a reference blank on only some rows stays no matches, as filters do", async () => {
+  const result = await referenceSearch([
+    { sys_id: "00000000000000000000000000000001", u_supplier: hiddenRef, u_currency: "EUR" },
+    { sys_id: "00000000000000000000000000000002",
+      u_supplier: { display_value: "Other", value: "fedcba9876543210fedcba9876543210" }, u_currency: "USD" },
+  ], "https://example.service-now.com/ref-blank-3");
+  assert.strictEqual(result.results.length, 0);
+});
+
+test("the kind decides searchability, so a flag cannot contradict it", () => {
+  assert.strictEqual(RS.isSearchable({ name: "u_opened", kind: "other" }), false);
+  assert.strictEqual(RS.isSearchable({ name: "u_opened", kind: "other", searchable: true }), false);
+  assert.strictEqual(RS.isSearchable({ name: "u_company", kind: "reference" }), true);
+  assert.strictEqual(RS.isSearchable({ name: "number" }), true, "older objects without a kind were all text");
+  assert.strictEqual(RS.isSearchable({ name: "number", searchable: false }), false);
+  assert.strictEqual(RS.isSearchable(null), false);
+});
+
+test("remembered columns are capped by the column limit, not the search-field limit", async () => {
+  const dictionary = dictionaryGet({ existing: [] });
+  const many = Array.from({ length: RS.MAX_SHOW_COLUMNS + 2 }, (_, index) => "u_col_" + index);
+  const info = await RS.resolveTableInfo("u_example_record", {
+    origin: "https://example.service-now.com/columns-cap",
+    get: dictionary.get,
+    rememberedColumns: many,
+  });
+  assert.deepStrictEqual(own(info.rememberedColumns.requested), many.slice(0, RS.MAX_SHOW_COLUMNS));
+});
+
 /* ------------------------------------------------------------------------ *
  * Starred tables: the worker side.
  *
@@ -966,6 +1257,7 @@ test("a favourite is stored under the sender's own instance", async () => {
       label: "Example u_example_table",
       fields: ["short_description"],
       filterFields: [],
+      columns: [],
       starredAt: 1000,
     }],
   });
@@ -1065,7 +1357,7 @@ test("starring again updates the label and fields but keeps its place and starre
   );
   const first = storage.store[KEY_A].tables[0];
   assert.deepStrictEqual(first, {
-    name: "u_example_one", label: "Renamed", fields: ["number"], filterFields: [], starredAt: 1000,
+    name: "u_example_one", label: "Renamed", fields: ["number"], filterFields: [], columns: [], starredAt: 1000,
   });
   assert.strictEqual(storage.store[KEY_A].updatedAt, 2000);
 });
@@ -1187,6 +1479,40 @@ test("a favourite remembers filter field names, and only names", async () => {
   /* Starring again without filterFields keeps what was saved. */
   await worker.handleRecordLensFavorites(star("u_example_table"), senderFor(ORIGIN_A), 3000);
   assert.deepStrictEqual(storage.store[KEY_A].tables[0].filterFields, ["state", "priority"]);
+});
+
+test("a favourite remembers its shown columns in the order chosen, and only names", async () => {
+  const storage = storageDouble();
+  const worker = loadFavoriteWorker(storage.chrome);
+  await worker.handleRecordLensFavorites(
+    star("u_example_table", { columns: ["u_supplier", "u_company"] }), senderFor(ORIGIN_A), 1000
+  );
+  assert.deepStrictEqual(storage.store[KEY_A].tables[0].columns, ["u_supplier", "u_company"]);
+  const columns = (list) => ({ type: "RECORD_LENS_FAVORITES", op: "columns", name: "u_example_table", columns: list });
+  const saved = await worker.handleRecordLensFavorites(columns(["u_company", "u_case", "number"]), senderFor(ORIGIN_A), 2000);
+  assert.strictEqual(saved.ok, true);
+  assert.deepStrictEqual(storage.store[KEY_A].tables[0].columns, ["u_company", "u_case", "number"],
+    "the order is kept: the first column is the row's title");
+  /* Starring again without columns keeps what was saved. */
+  await worker.handleRecordLensFavorites(star("u_example_table"), senderFor(ORIGIN_A), 3000);
+  assert.deepStrictEqual(storage.store[KEY_A].tables[0].columns, ["u_company", "u_case", "number"]);
+
+  for (const bad of [
+    ["a", "b", "c", "d", "e", "f", "g"],
+    ["number", "number"],
+    [{ field: "number" }],
+    "number",
+    ["number^ORactive=true"],
+  ]) {
+    const answer = await worker.handleRecordLensFavorites(columns(bad), senderFor(ORIGIN_A), 4000);
+    assert.strictEqual(answer.code, "invalid", JSON.stringify(bad));
+    assert.match(answer.error, /^column /);
+  }
+  const notStarred = await worker.handleRecordLensFavorites(
+    { type: "RECORD_LENS_FAVORITES", op: "columns", name: "u_example_new", columns: [] }, senderFor(ORIGIN_A), 4000
+  );
+  assert.strictEqual(notStarred.code, "not-starred");
+  assert.strictEqual(storage.store[KEY_A].updatedAt, 3000, "no refusal wrote anything");
 });
 
 test("bad filter field lists are refused, and a favourite stored before filters still reads", async () => {

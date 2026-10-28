@@ -36,11 +36,27 @@ reconstructed version by version.
   have the ✕ that the filter pickers and Impersonate already have. Clearing
   the table also clears its fields and filters, and lists your starred tables
   again.
+- **Choose what Record Lens shows, separately from what it searches.** A new
+  **Show** picker sets the columns each result displays, in the order you tick
+  them. The first column is the row's title. A column can be any readable
+  field: a reference or choice by its label, a date, a true/false flag or a
+  number. The **Search** picker now offers reference fields too, matched by the
+  referenced record's display name; if you cannot read the referenced table,
+  the panel says so rather than reporting no matches. A table with no display
+  field or familiar text field, typically a many-to-many link table, starts by
+  searching and showing its references, where before it started with nothing
+  selected. The system log is the exception: it starts with Message, Source,
+  Level and Created by rather than its two references, which a log row rarely
+  fills. If your text matched a field you are not showing, the row still
+  shows it, marked "match". A starred table remembers its columns, in order.
+  Both pickers are wider. They list what you ticked first, under Selected, and
+  have a find box that narrows a long list by label or technical name.
 
 ### Changed
 - **Record Lens searches as you go.** As in Impersonate, the results update
   when typing pauses for half a second, when you pick or clear a filter value,
-  when you remove a filter, and when you change the search fields. Enter and
+  when you remove a filter, and when you change the searched fields or the
+  shown columns. Enter and
   Search still search at once. If the text is too short to search, the panel
   says what it needs and removes the old results. Only one search runs at a
   time. A change made during a search waits for it to finish, and then only
@@ -50,8 +66,9 @@ reconstructed version by version.
   seconds. Before, the only confirmation was on the status line above the
   results, where it was easy to miss.
 - **Privacy.** Local storage now holds a fourth item: the tables you starred in
-  Record Lens and the names of their search and filter fields. The privacy
-  page, README and store listing say so. Nothing new leaves your device.
+  Record Lens, with the names of their search fields, filter fields and shown
+  columns. The privacy page, README and store listing say so. Nothing new
+  leaves your device.
 
 ### Fixed
 - **Record Lens kept another table's results.** After you switched tables,

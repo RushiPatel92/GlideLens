@@ -206,6 +206,16 @@ function createDom() {
       this.children.push(node);
       return node;
     }
+    get firstChild() { return this.children[0] || null; }
+    insertBefore(node, reference) {
+      if (!reference) return this.appendChild(node);
+      if (node.parentNode) node.parentNode.removeChild(node);
+      const index = this.children.indexOf(reference);
+      if (index < 0) throw new Error("insertBefore: the reference is not a child");
+      node.parentNode = this;
+      this.children.splice(index, 0, node);
+      return node;
+    }
     removeChild(node) {
       const index = this.children.indexOf(node);
       if (index >= 0) this.children.splice(index, 1);
@@ -564,7 +574,7 @@ test("the toolbar keeps its promise and names what is kept", () => {
   const harness = load();
   const note = q(openPanel(harness), ".toolbar-note").textContent;
   assert.match(note, /no record or search history is stored/);
-  assert.match(note, /starred tables and their fields are kept on this device/);
+  assert.match(note, /starred tables, with their fields and columns, are kept on this device/);
 });
 
 test("a hostile favourite label renders as text, never as markup", () => {
@@ -737,6 +747,7 @@ test("the star is its own cell, named once, and enabled only after the table is 
   await settle();
   assert.deepStrictEqual(worker.calls, [{
     op: "star", name: "u_example_table", label: "Example table", fields: ["number"], filterFields: [],
+    columns: ["number"],
   }]);
   assert.strictEqual(star.getAttribute("aria-pressed"), "true");
   assert.strictEqual(star.getAttribute("aria-label"), "Star this table", "the name never changes");
@@ -829,9 +840,9 @@ test("a favourite's remembered fields are verified, applied, saved on change, an
   key(tableInput(shadow), "Enter");
   await settle();
   assert.deepStrictEqual(JSON.parse(JSON.stringify(resolveCalls)), [
-    ["u_example_table", { rememberedFields: ["u_code"] }],
+    ["u_example_table", { rememberedFields: ["u_code"], rememberedColumns: [] }],
   ]);
-  assert.strictEqual(q(shadow, ".fields-button").textContent, "1 field");
+  assert.strictEqual(q(shadow, ".fields-button").textContent, "Search 1 field");
   assert.match(q(shadow, ".field-summary").textContent, /\[u_code\]/);
   assert.match(status(shadow), /this favourite's remembered fields/);
   assert.deepStrictEqual(worker.calls, [], "selecting a favourite writes nothing");
@@ -1316,7 +1327,8 @@ test("the Table ✕ empties the box and its selection, then shows the starred ta
   assert.strictEqual(harness.dom.document.activeElement, tableInput(shadow));
   assert.strictEqual(q(shadow, ".filters").hidden, true, "the table's filters go with it");
   assert.strictEqual(shadow.querySelectorAll(".filter-row").length, 0);
-  assert.strictEqual(q(shadow, ".fields-button").textContent, "0 fields");
+  assert.strictEqual(q(shadow, ".fields-button").textContent, "Search 0 fields");
+  assert.strictEqual(q(shadow, ".columns-button").textContent, "Show 0 columns");
   assert.strictEqual(menu(shadow).hidden, false);
   assert.strictEqual(options(shadow).length, 2);
   assert.ok(options(shadow).every((option) => option.textContent.includes("starred")));
@@ -1727,6 +1739,433 @@ test("clearing a filter field on a starred table leaves the status to the search
   assert.match(status(shadow), /^Searching with 1 filter/, "the save's note does not replace the spinner");
   calls[2].resolve(searchAnswer);
   await settle();
+});
+
+/* ------------------------------------------------------------------ *
+ * Search in vs Show: the columns each row displays
+ * ------------------------------------------------------------------ */
+
+/* A synthetic many-to-many: no display field, two references, one text
+ * field and one shown-only flag. */
+function linkInfo(name, extra) {
+  const field = (fieldName, label, kind) => ({
+    name: fieldName,
+    label,
+    type: kind === "reference" ? "reference" : kind === "other" ? "boolean" : "string",
+    kind,
+    searchable: kind !== "other",
+    display: false,
+    autoSelectable: true,
+  });
+  const fields = [
+    field("u_company", "Company", "reference"),
+    field("u_supplier", "Supplier", "reference"),
+    field("u_currency", "Currency", "text"),
+    field("u_active", "Active", "other"),
+  ];
+  return Object.assign({
+    table: name,
+    label: "Example link",
+    hierarchy: [name],
+    fields,
+    defaultFields: fields.slice(0, 2),
+    remembered: EMPTY_REMEMBERED,
+    rememberedColumns: EMPTY_REMEMBERED,
+  }, extra || {});
+}
+
+function toggleColumn(shadow, name) {
+  const box = shadow.querySelectorAll(".column-option input")
+    .find((input) => input.dataset.column === name);
+  assert.ok(box, "no column checkbox for " + name);
+  box.checked = !box.checked;
+  box.fire("change");
+}
+
+/* Ticked columns with the position each one shows, in that position's order. */
+const shownOrder = (shadow) => shadow.querySelectorAll(".column-option")
+  .filter((option) => option.querySelector("input").checked)
+  .map((option) => [option.querySelector("input").dataset.column, option.querySelector(".order").textContent])
+  .sort((a, b) => Number(a[1]) - Number(b[1]));
+
+function linkPanel(harness, extra) {
+  return openPanel(harness, Object.assign({
+    onFindTables: async () => [{ name: "u_example_link", label: "Example link" }],
+    onResolveTable: async (name) => linkInfo(name),
+  }, extra || {}));
+}
+
+test("Show starts as what is searched, keeps the order ticked, and asks again after the pause", async () => {
+  const harness = load();
+  const searches = [];
+  const shadow = linkPanel(harness, {
+    onSearch: async (input) => {
+      searches.push(JSON.parse(JSON.stringify(input)));
+      return { stale: false, table: input.table, results: [] };
+    },
+  });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  assert.strictEqual(q(shadow, ".fields-button").textContent, "Search 2 fields");
+  assert.strictEqual(q(shadow, ".columns-button").textContent, "Show 2 columns");
+  assert.deepStrictEqual(shownOrder(shadow), [["u_company", "1"], ["u_supplier", "2"]]);
+  assert.match(status(shadow), /searching 2 fields · showing 2 columns/);
+
+  assert.deepStrictEqual(shadow.querySelectorAll(".field-option input").map((input) => input.dataset.field),
+    ["u_company", "u_supplier", "u_currency"], "a shown-only field is never offered for search");
+  const company = shadow.querySelectorAll(".field-option")
+    .find((option) => option.querySelector("input").dataset.field === "u_company");
+  assert.match(company.textContent, /by name/);
+  assert.deepStrictEqual(shadow.querySelectorAll(".column-option input").map((input) => input.dataset.column),
+    ["u_company", "u_supplier", "u_currency", "u_active"]);
+
+  termInput(shadow).value = "acme";
+  toggleColumn(shadow, "u_active");
+  toggleColumn(shadow, "u_company");
+  assert.deepStrictEqual(shownOrder(shadow), [["u_supplier", "1"], ["u_active", "2"]]);
+  assert.match(q(shadow, ".field-summary").textContent, / · Showing: Supplier, Active$/);
+  assert.strictEqual(searches.length, 0, "a column change waits for the pause");
+  harness.runTimers();
+  await settle();
+  assert.deepStrictEqual(searches.map((search) => search.columns), [["u_supplier", "u_active"]]);
+  assert.deepStrictEqual(searches[0].fields, ["u_company", "u_supplier"], "what is searched is untouched");
+
+  /* With an answer on screen, a column change still asks again: the new
+   * column's values were never read. */
+  toggleColumn(shadow, "u_supplier");
+  harness.runTimers();
+  await settle();
+  assert.deepStrictEqual(searches.map((search) => search.columns), [["u_supplier", "u_active"], ["u_active"]]);
+
+  toggleColumn(shadow, "u_active");
+  assert.deepStrictEqual(shownOrder(shadow), [["u_active", "1"]], "the last column stays");
+  assert.strictEqual(status(shadow), "Keep at least one column to show.");
+});
+
+test("Show is capped at six, and both pickers are busy during a search", async () => {
+  const harness = load();
+  const searching = deferred();
+  const extra = ["u_one", "u_two", "u_three", "u_four", "u_five"].map((name) => ({
+    name, label: name, type: "integer", kind: "other", searchable: false, display: false, autoSelectable: true,
+  }));
+  const shadow = linkPanel(harness, {
+    onResolveTable: async (name) => {
+      const info = linkInfo(name);
+      return Object.assign(info, { fields: info.fields.concat(extra) });
+    },
+    onSearch: () => searching.promise,
+  });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  ["u_currency", "u_active", "u_one", "u_two"].forEach((name) => toggleColumn(shadow, name));
+  assert.strictEqual(shownOrder(shadow).length, 6);
+  toggleColumn(shadow, "u_three");
+  assert.strictEqual(shownOrder(shadow).length, 6);
+  assert.strictEqual(status(shadow), "Show no more than six columns.");
+
+  termInput(shadow).value = "acme";
+  q(shadow, ".form").fire("submit");
+  await tick();
+  assert.strictEqual(q(shadow, ".columns-button").disabled, true);
+  assert.ok(shadow.querySelectorAll(".column-option input").every((input) => input.disabled));
+  searching.resolve({ stale: false, table: "u_example_link", results: [] });
+  await settle();
+  assert.strictEqual(q(shadow, ".columns-button").disabled, false);
+  assert.ok(shadow.querySelectorAll(".column-option input").every((input) => !input.disabled));
+});
+
+/* A picker's visible rows, group by group. */
+const pickerGroups = (shadow, menuSelector) => {
+  const names = (group) => q(shadow, menuSelector + " " + group).children
+    .filter((option) => !option.hidden)
+    .map((option) => option.dataset.name);
+  return { chosen: names(".picker-chosen"), rest: names(".picker-rest") };
+};
+
+test("a picker lists what is ticked first, in shown order, and re-sorts only when it opens", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_company", "u_supplier"], rest: ["u_currency", "u_active"] });
+
+  const columns = q(shadow, ".columns-button");
+  columns.fire("click");
+  toggleColumn(shadow, "u_active");
+  toggleColumn(shadow, "u_company");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_company", "u_supplier"], rest: ["u_currency", "u_active"] },
+    "while the list is open, a pressed row stays where it is");
+
+  columns.fire("click");
+  columns.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_supplier", "u_active"], rest: ["u_company", "u_currency"] },
+    "reopened: ticked columns in shown order, then the rest in list order");
+  assert.deepStrictEqual(shownOrder(shadow), [["u_supplier", "1"], ["u_active", "2"]]);
+  toggleColumn(shadow, "u_company");
+  columns.fire("click");
+  columns.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu").chosen, ["u_supplier", "u_active", "u_company"],
+    "shown order, not list order, where the two differ");
+
+  const fields = q(shadow, ".fields-button");
+  fields.fire("click");
+  assert.strictEqual(q(shadow, ".column-menu").hidden, true, "opening one picker closes the other");
+  toggleField(shadow, "u_company");
+  fields.fire("click");
+  fields.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".field-menu"),
+    { chosen: ["u_supplier"], rest: ["u_company", "u_currency"] });
+});
+
+test("the find box narrows a picker by label or technical name, and Enter in it never submits", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  const fields = q(shadow, ".fields-button");
+  fields.fire("click");
+  const find = q(shadow, ".field-menu .picker-find");
+  assert.strictEqual(harness.dom.document.activeElement, find, "opening puts the cursor in the find box");
+  const headings = () => ["chosen", "rest"].map((name) => q(shadow, ".field-menu .picker-heading." + name).hidden);
+  assert.deepStrictEqual(headings(), [false, false]);
+
+  find.value = "CURR";
+  find.fire("input");
+  assert.deepStrictEqual(pickerGroups(shadow, ".field-menu"), { chosen: [], rest: ["u_currency"] });
+  assert.deepStrictEqual(headings(), [true, true], "a single plain group needs no headings");
+
+  find.value = " u_sup ";
+  find.fire("input");
+  assert.deepStrictEqual(pickerGroups(shadow, ".field-menu"), { chosen: ["u_supplier"], rest: [] });
+  assert.deepStrictEqual(headings(), [false, true]);
+
+  find.value = "zzz";
+  find.fire("input");
+  const none = q(shadow, ".field-menu .picker-none");
+  assert.strictEqual(none.getAttribute("role"), "status", "the note is announced");
+  assert.strictEqual(none.textContent, "No field label or name contains “zzz”.");
+
+  termInput(shadow).value = "acme";
+  assert.strictEqual(key(find, "Enter").defaultPrevented, true, "Enter would submit the search form");
+
+  fields.fire("click");
+  fields.fire("click");
+  assert.strictEqual(find.value, "", "a reopened picker starts unfiltered");
+  assert.deepStrictEqual(pickerGroups(shadow, ".field-menu"),
+    { chosen: ["u_company", "u_supplier"], rest: ["u_currency"] });
+  assert.strictEqual(none.textContent, "", "an empty status hides itself and says nothing");
+});
+
+/* Review S3: the rest go back to list order, not to wherever they were. */
+test("a reopened picker puts what is no longer ticked back in list order", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  const columns = q(shadow, ".columns-button");
+  ["u_active", "u_company", "u_supplier", "u_company"].forEach((name) => toggleColumn(shadow, name));
+  columns.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_active", "u_company"], rest: ["u_supplier", "u_currency"] });
+  ["u_currency", "u_active", "u_company"].forEach((name) => toggleColumn(shadow, name));
+  columns.fire("click");
+  columns.fire("click");
+  assert.deepStrictEqual(pickerGroups(shadow, ".column-menu"),
+    { chosen: ["u_currency"], rest: ["u_company", "u_supplier", "u_active"] });
+});
+
+/* Review S1: a row in a list Escape closed is not rendered, so focusing it
+ * would leave focus nowhere. */
+test("Escape during a search sends the focus it took to the picker's button", async () => {
+  const harness = load();
+  const searching = deferred();
+  const shadow = linkPanel(harness, { onSearch: () => searching.promise });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  termInput(shadow).value = "acme";
+  q(shadow, ".fields-button").fire("click");
+  const box = shadow.querySelectorAll(".field-option input")
+    .find((input) => input.dataset.field === "u_currency");
+  box.focus();
+  toggleField(shadow, "u_currency");
+  harness.runTimers();
+  await tick();
+  assert.strictEqual(box.disabled, true, "the search is running");
+  assert.strictEqual(harness.dom.document.activeElement, null, "disabling the box dropped focus");
+  harness.dom.window.fire("keydown", { key: "Escape" });
+  assert.strictEqual(q(shadow, ".field-menu").hidden, true);
+  searching.resolve({ stale: false, table: "u_example_link", results: [] });
+  await settle();
+  assert.strictEqual(harness.dom.document.activeElement, q(shadow, ".fields-button"));
+});
+
+test("Escape in a picker closes it and hands focus back to its button", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  q(shadow, ".columns-button").fire("click");
+  assert.strictEqual(harness.dom.document.activeElement, q(shadow, ".column-menu .picker-find"));
+  harness.dom.window.fire("keydown", { key: "Escape" });
+  assert.strictEqual(q(shadow, ".column-menu").hidden, true);
+  assert.strictEqual(harness.dom.document.activeElement, q(shadow, ".columns-button"));
+  assert.strictEqual(harness.ui.isOpen(), true, "the first Escape closes the list, not the panel");
+});
+
+test("a starred table's columns come back in order and are saved when changed", async () => {
+  const harness = load();
+  const favorites = [{ name: "u_example_link", label: "Example link", fields: [], columns: ["u_active", "u_company"] }];
+  const worker = favoriteWorker(favorites);
+  const resolveCalls = [];
+  const shadow = linkPanel(harness, {
+    favorites,
+    onFavoriteOp: worker.op,
+    onResolveTable: async (name, opts) => {
+      resolveCalls.push(JSON.parse(JSON.stringify(opts)));
+      return linkInfo(name, { rememberedColumns: {
+        requested: ["u_active", "u_company"], verified: ["u_active", "u_company"], absent: [], unverifiable: [],
+      } });
+    },
+  });
+  options(shadow)[0].fire("click");
+  await settle();
+  assert.deepStrictEqual(resolveCalls, [{ rememberedFields: [], rememberedColumns: ["u_active", "u_company"] }]);
+  assert.deepStrictEqual(shownOrder(shadow), [["u_active", "1"], ["u_company", "2"]]);
+  assert.match(status(shadow), /showing 2 columns · its remembered columns/);
+  assert.deepStrictEqual(worker.calls, [], "selecting a favourite writes nothing");
+
+  toggleColumn(shadow, "u_currency");
+  await settle();
+  assert.deepStrictEqual(worker.calls, [
+    { op: "columns", name: "u_example_link", columns: ["u_active", "u_company", "u_currency"] },
+  ]);
+  assert.strictEqual(status(shadow), "Saved as this favourite's columns");
+});
+
+test("a remembered column that is gone is named; ones that could not be verified are never saved over", async () => {
+  const favorites = [{ name: "u_example_link", label: "Example link", fields: [], columns: ["u_active", "u_gone"] }];
+  const opened = async (rememberedColumns) => {
+    const harness = load();
+    const worker = favoriteWorker(favorites);
+    const shadow = linkPanel(harness, {
+      favorites,
+      onFavoriteOp: worker.op,
+      onResolveTable: async (name) => linkInfo(name, { rememberedColumns }),
+    });
+    options(shadow)[0].fire("click");
+    await settle();
+    return { shadow, worker };
+  };
+  const gone = await opened({ requested: ["u_active", "u_gone"], verified: ["u_active"], absent: ["u_gone"], unverifiable: [] });
+  assert.match(status(gone.shadow), /columns no longer on this table: u_gone \(dropped when its columns are next saved\)/);
+  assert.strictEqual(q(gone.shadow, ".status").className, "status validation");
+  assert.deepStrictEqual(shownOrder(gone.shadow), [["u_active", "1"]]);
+
+  const unsure = await opened({ requested: ["u_active", "u_gone"], verified: [], absent: [], unverifiable: ["u_active", "u_gone"] });
+  assert.match(status(unsure.shadow), /remembered columns could not be verified right now, so the searched fields are shown/);
+  assert.deepStrictEqual(shownOrder(unsure.shadow), [["u_company", "1"], ["u_supplier", "2"]]);
+  toggleColumn(unsure.shadow, "u_currency");
+  await settle();
+  assert.deepStrictEqual(unsure.worker.calls, [], "a passing failure is never saved as a loss");
+  assert.match(status(unsure.shadow), /Not saved: this favourite's columns could not be verified/);
+});
+
+test("a row marks a match found in a field it does not show", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness, {
+    onSearch: async () => ({ stale: false, table: "u_example_link", tableLabel: "Example link", results: [{
+      table: "u_example_link",
+      sysId: RESULT_SYS_ID,
+      title: "FR01",
+      values: [
+        { field: "u_company", label: "Company", value: "FR01" },
+        { field: "u_active", label: "Active", value: "true" },
+        { field: "u_supplier", label: "Supplier", value: "Acme Ltd", matched: true },
+      ],
+    }] }),
+  });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  termInput(shadow).value = "acme";
+  q(shadow, ".form").fire("submit");
+  await settle();
+  assert.deepStrictEqual(resultTitles(shadow), ["FR01"]);
+  const values = shadow.querySelectorAll(".row .value");
+  assert.deepStrictEqual(values.map((node) => [node.className, node.textContent]), [
+    ["value", "Active: true"],
+    ["value matched", "Supplier: Acme Ltd match"],
+  ], "the tag is its own word when read aloud");
+  assert.strictEqual(values[1].title, "Matched your text. Not one of the shown columns.");
+});
+
+test("a column's position is its own word when read aloud", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  const company = shadow.querySelectorAll(".column-option")
+    .find((option) => option.querySelector("input").dataset.column === "u_company");
+  assert.match(company.textContent, /^1 Company/);
+});
+
+test("a table that opens with nothing to search says Show follows what is searched", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness, {
+    onResolveTable: async (name) => linkInfo(name, { defaultFields: [] }),
+  });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  assert.strictEqual(q(shadow, ".fields-button").textContent, "Search 0 fields");
+  assert.strictEqual(q(shadow, ".columns-button").textContent, "Show 0 columns");
+  toggleField(shadow, "u_currency");
+  assert.strictEqual(q(shadow, ".columns-button").textContent, "Show searched fields",
+    "not zero: an empty Show list shows what is searched");
+  assert.match(q(shadow, ".field-summary").textContent, / · Showing: the searched fields$/);
+  toggleColumn(shadow, "u_active");
+  assert.strictEqual(q(shadow, ".columns-button").textContent, "Show 1 column");
+});
+
+test("the Search list follows the engine's rule: a shown-only kind is never offered", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness, {
+    onResolveTable: async (name) => {
+      const info = linkInfo(name);
+      /* A field object whose kind says shown-only but which carries no flag. */
+      info.fields.push({ name: "u_opened", label: "Opened", kind: "other", display: false, autoSelectable: true });
+      return info;
+    },
+  });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  assert.ok(!shadow.querySelectorAll(".field-option input").some((input) => input.dataset.field === "u_opened"));
+  assert.ok(shadow.querySelectorAll(".column-option input").some((input) => input.dataset.column === "u_opened"));
+});
+
+test("opening one picker closes the other, and Escape or a click elsewhere closes both", async () => {
+  const harness = load();
+  const shadow = linkPanel(harness);
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  const fieldMenu = q(shadow, ".field-menu");
+  const columnMenu = q(shadow, ".column-menu");
+  q(shadow, ".fields-button").fire("click");
+  assert.deepStrictEqual([fieldMenu.hidden, columnMenu.hidden], [false, true]);
+  q(shadow, ".columns-button").fire("click");
+  assert.deepStrictEqual([fieldMenu.hidden, columnMenu.hidden], [true, false]);
+  assert.strictEqual(q(shadow, ".columns-button").getAttribute("aria-expanded"), "true");
+
+  shadow.fire("click", { target: q(shadow, ".column-option") });
+  assert.strictEqual(columnMenu.hidden, false, "a click inside its own list keeps it open");
+  shadow.fire("click", { target: q(shadow, ".status") });
+  assert.strictEqual(columnMenu.hidden, true);
+
+  q(shadow, ".columns-button").fire("click");
+  harness.dom.window.fire("keydown", { key: "Escape" });
+  assert.strictEqual(columnMenu.hidden, true);
+  assert.strictEqual(harness.ui.isOpen(), true, "Escape closed the list, not the panel");
 });
 
 test("focus a search took goes back to the picker that had it, without reopening its list", async () => {

@@ -94,7 +94,23 @@ The suites cover:
   Typing the exact technical name keeps one first, even when it is labelled
   with its own name. A full staging window is checked again by name for the
   candidates on screen. A failed staging read loses only the tags. The
-  hierarchy flag carries through to a sys_id search's result.
+  hierarchy flag carries through to a sys_id search's result. Search and Show:
+  - Field discovery lists text and reference fields as searchable and the
+    shown-only types as listable. Unsafe types and the legacy `numeric` are
+    never listed.
+  - A table with no display or familiar text field defaults to its first four
+    references.
+  - Columns are verified in order, any listed field qualifies, a shown-only
+    field can never be searched, and remembered columns are confirmed by name
+    and key the cache.
+  - A search reads its columns, matches a reference by name, appends a match
+    in an unshown field, and ranks by the searched fields. A searched reference
+    with a `sys_id` but no display on every row, and nothing verified, is an
+    access answer. It is not one when the reference is merely empty, when it
+    is blank on only some rows, when it sits beside a verified row, or in a
+    filter-only search.
+  - The worker stores columns in order, keeps them across a star that omits
+    them, and refuses bad lists with a "column" prefix.
 - `record_search_ui.test.js` — the Record Lens panel under `node:vm`, on a DOM
   shim with a minimal parser for the panel's own static template and a
   selector matcher that throws on anything it does not support. Starred tables
@@ -132,7 +148,24 @@ The suites cover:
   filter rows are restored, and not at all when a filter field is gone; it
   still saves afterwards. A filter-field clear leaves the status line to the
   search it starts. The shim drops focus from a detached node and will not
-  focus one, as Chrome does.
+  focus one, as Chrome does. Search and Show:
+  - Show starts as what is searched, keeps the order ticked with a position
+    badge, and asks again after the pause, even with an answer on screen.
+  - The last column cannot be unticked, and Show is capped at six.
+  - Both pickers are busy during a search.
+  - A starred table's columns come back in order and are saved on change. A gone
+    column is named, and unverifiable ones are never saved over.
+  - A match in an unshown field is marked.
+  - Opening one picker closes the other, and Escape or an outside click closes
+    both.
+  - Opening sorts ticked rows into Selected (columns in shown order, where that
+    differs from list order). Unticked rows go back to list order. A row pressed
+    while open stays put.
+  - The find box takes focus on opening and matches label or technical name,
+    trimmed and in any case. Its headings and its `role="status"` no-match note
+    follow what is visible, Enter in it never submits, and reopening empties it.
+  - Escape in a picker hands focus back to its button. So does a search that
+    took focus from a row whose list Escape closed meanwhile.
 - `command_palette.test.js` — the pure palette model: label/description
   matching, relevance ranking (every built-in command must rank first for its
   own exact label, and groups must stay contiguous),

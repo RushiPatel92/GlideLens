@@ -20,8 +20,10 @@
    * Saving their fields this session could persist a passing failure as a
    * loss, so nothing is saved for them until the panel is reopened. */
   let unsavedFavorites = new Set();
-  /* The same rule for a favourite's remembered filter fields. */
+  /* The same rule for a favourite's remembered filter fields, and for its
+   * shown columns. */
   let unsavedFilterFavorites = new Set();
+  let unsavedColumnFavorites = new Set();
   let onFilterFields = null;
   let onFilterValues = null;
   /* Each row is { id, field, value, remove, node }. Ids only ever increase,
@@ -44,6 +46,10 @@
   let selectedTable = null;
   let tableInfo = null;
   let selectedFields = new Set();
+  /* The fields each result row shows, in the order they were ticked: the
+   * first is the row's title. Decoupled from selectedFields, which are only
+   * what text is matched against. */
+  let selectedColumns = [];
   let lastResult = null;
   let searchBusy = false;
   /* As in Impersonate, a pause in typing, a filter value or a field change
@@ -106,14 +112,15 @@
       border-radius:4px;color:#e2b864;font-size:10px;font-weight:600;line-height:1.5}
     .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
       clip:rect(0,0,0,0);white-space:nowrap;border:0}
-    .search-btn,.toolbar button,.fields-button,.star-btn,.result-action{border:1px solid #5b5b86;
+    .search-btn,.toolbar button,.fields-button,.columns-button,.star-btn,.result-action{border:1px solid #5b5b86;
       background:#3f4067;color:#e6e6f5;border-radius:7px;padding:8px 13px;cursor:pointer;font-size:12px}
     .search-btn{background:var(--pink);border-color:var(--pink);color:#2a0d1a;
       font-weight:650;height:36px}.search-btn:hover{background:#ff85bb}
     button:disabled{opacity:.48;cursor:default}
-    .field-line{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:10px;align-items:center;
-      margin-top:11px}.field-picker{position:relative}.fields-button{min-width:126px;text-align:left}
-    .field-line .field-summary{grid-column:3}
+    .field-line{display:grid;grid-template-columns:auto auto auto minmax(0,1fr);gap:10px;align-items:center;
+      margin-top:11px}.field-picker{position:relative}
+    .fields-button,.columns-button{min-width:126px;text-align:left}
+    .field-line .field-summary{grid-column:4}
     .star-btn{white-space:nowrap}.star-btn[aria-pressed="true"]{background:#4a2338;
       border-color:var(--pink);color:#ffd6e8}.star-btn[aria-pressed="true"] .star-glyph{color:var(--pink)}
     .star-btn:hover:not(:disabled){background:#4a4b78;color:#fff}
@@ -144,14 +151,30 @@
     .add-filter{align-self:flex-start;border:1px dashed #5b5b86;background:transparent;color:#cfcfe6;
       border-radius:7px;padding:6px 11px;cursor:pointer;font-size:11px}
     .add-filter:hover:not(:disabled){background:#2d2d48;color:#fff}
-    .fields-button::after{content:"▾";float:right;margin-left:10px;color:#aaaac5}
-    .field-menu{position:absolute;left:0;top:calc(100% + 5px);z-index:4;width:min(400px,80vw);
-      max-height:300px;overflow:auto;background:#171724;border:1px solid #565681;
+    .fields-button::after,.columns-button::after{content:"▾";float:right;margin-left:10px;color:#aaaac5}
+    .field-menu,.column-menu{position:absolute;left:0;top:calc(100% + 5px);z-index:4;
+      width:min(600px,calc(100vw - 260px));max-height:max(160px,min(380px,calc(100vh - 230px)));
+      display:flex;flex-direction:column;
+      overflow:hidden;background:#171724;border:1px solid #565681;
       border-radius:8px;box-shadow:0 16px 38px rgba(0,0,0,.55);padding:6px}
-    .field-menu[hidden]{display:none}.field-option{display:grid;grid-template-columns:auto 1fr auto;
+    .field-menu[hidden],.column-menu[hidden]{display:none}
+    .picker-find{flex:none;margin-bottom:4px;padding:7px 9px;font-size:12px}
+    .picker-list{overflow:auto;min-height:0}
+    .picker-heading{padding:6px 8px 3px;color:#8f8fa9;font-size:9px;font-weight:650;
+      letter-spacing:.06em;text-transform:uppercase}
+    .picker-heading.rest{margin-top:4px;padding-top:8px;border-top:1px solid #2e2e4e}
+    .picker-none:empty{display:none}
+    .field-option,.column-option{display:grid;grid-template-columns:auto 1fr auto;
       align-items:center;gap:8px;padding:7px 8px;border-radius:5px;color:#d7d7e6;
-      font-size:11px;font-weight:400;cursor:pointer}.field-option:hover{background:#292943}
-    .field-option input{width:auto;margin:0;accent-color:var(--teal)}
+      font-size:11px;font-weight:400;cursor:pointer}
+    .field-option:hover,.column-option:hover{background:#292943}
+    .field-option input,.column-option input{width:auto;margin:0;accent-color:var(--teal)}
+    .menu-note{padding:4px 8px 7px;color:#8f8fa9;font-size:10px;line-height:1.4}
+    .kind{color:#8fb8e8;font-size:9px}
+    .order{display:inline-block;min-width:16px;margin-right:6px;padding:0 4px;border-radius:8px;
+      background:#173d3a;color:#c4f7f1;font-size:9px;font-weight:650;text-align:center}
+    .value.matched .value-label{color:#6fb3ab}.match-tag{margin-left:5px;padding:0 4px;
+      border:1px solid #2f6f68;border-radius:4px;color:#8fe0d6;font-size:9px}
     .field-tech{color:#8585a1;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
     .manual{color:#e1b678;font-size:9px}.field-summary{min-width:0;color:#9f9fb7;
       font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -184,7 +207,8 @@
       .form-main{grid-template-columns:1fr}.search-btn{width:100%}.header{padding:14px}
       .field-line{grid-template-columns:1fr}.field-line .field-summary{grid-column:auto}
       .filter-row{grid-template-columns:1fr}
-      .fields-button,.star-btn{width:100%}.sys-id{display:none}}
+      .fields-button,.columns-button,.star-btn{width:100%}.sys-id{display:none}
+      .field-menu,.column-menu{width:calc(100vw - 56px);max-height:max(160px,calc(100vh - 340px))}}
   `;
 
   function engine() { return globalThis.SNRecordSearch; }
@@ -830,6 +854,7 @@
         label: typeof item.label === "string" && item.label ? item.label : item.name,
         fields: names(item.fields),
         filterFields: names(item.filterFields),
+        columns: names(item.columns),
       }));
   }
 
@@ -958,6 +983,7 @@
     tableInfo = null;
     tableError = false;
     selectedFields = new Set();
+    selectedColumns = [];
     lastResult = null;
     clearFilterRows();
     renderFieldControl();
@@ -1077,6 +1103,7 @@
     tableInfo = null;
     tableError = false;
     selectedFields = new Set();
+    selectedColumns = [];
     lastResult = null;
     clearFilterRows();
     shadow.querySelector("[data-input='table']").value = option.name;
@@ -1090,46 +1117,65 @@
      * confirmed by its own live dictionary row before it is applied. */
     const favorite = favoriteFor(option.name);
     const rememberedFields = favorite ? favorite.fields.slice() : [];
+    const rememberedColumns = favorite ? favorite.columns.slice() : [];
     setStatus(
       (detected ? "Detected " : "Checking ") + option.name + " and reading its live dictionary…",
       "",
       true
     );
     try {
-      const info = await onResolveTable(option.name, { rememberedFields });
+      const info = await onResolveTable(option.name, { rememberedFields, rememberedColumns });
       if (!shadow || sequence !== requestSequence || !info) return;
       tableInfo = info;
       selectedTable = { name: info.table, label: info.label || info.table };
-      const remembered = info.remembered || {};
-      const verified = Array.isArray(remembered.verified) ? remembered.verified : [];
-      const absent = Array.isArray(remembered.absent) ? remembered.absent : [];
-      const unverifiable = Array.isArray(remembered.unverifiable) ? remembered.unverifiable : [];
-      const useRemembered = verified.length > 0 && !unverifiable.length;
-      if (unverifiable.length) unsavedFavorites.add(info.table);
+      const verdict = (value) => {
+        const list = (key) => (value && Array.isArray(value[key]) ? value[key] : []);
+        return { verified: list("verified"), absent: list("absent"), unverifiable: list("unverifiable") };
+      };
+      const fieldsRead = verdict(info.remembered);
+      const columnsRead = verdict(info.rememberedColumns);
+      const useRemembered = fieldsRead.verified.length > 0 && !fieldsRead.unverifiable.length;
+      const useRememberedColumns = columnsRead.verified.length > 0 && !columnsRead.unverifiable.length;
+      if (fieldsRead.unverifiable.length) unsavedFavorites.add(info.table);
+      if (columnsRead.unverifiable.length) unsavedColumnFavorites.add(info.table);
       selectedFields = new Set(useRemembered
-        ? verified
+        ? fieldsRead.verified
         : (info.defaultFields || []).map((field) => field.name));
+      /* With nothing remembered, a row shows what is searched, as before the
+       * two were separate. */
+      selectedColumns = useRememberedColumns ? columnsRead.verified.slice() : Array.from(selectedFields);
       renderFieldControl();
       let readyText;
       let readyKind;
-      if (!info.fields || !info.fields.length) {
-        readyText = "The table is readable, but no searchable text fields were verified. " +
+      if (!searchableFields().length) {
+        readyText = "The table is readable, but no searchable fields were verified. " +
           "Exact sys_id lookup and filters can still run.";
         readyKind = "schema";
       } else {
         readyText =
-          "Ready · " + selectedTable.label + " (" + selectedTable.name + ") · " +
-            selectedFields.size + (selectedFields.size === 1 ? " field selected" : " fields selected") +
+          "Ready · " + selectedTable.label + " (" + selectedTable.name + ") · searching " +
+            selectedFields.size + (selectedFields.size === 1 ? " field" : " fields") +
             (useRemembered ? " · this favourite's remembered fields" : "") +
-            (absent.length
-              ? " · no longer on this table: " + absent.join(", ") +
+            " · showing " + selectedColumns.length + (selectedColumns.length === 1 ? " column" : " columns") +
+            (useRememberedColumns ? " · its remembered columns" : "") +
+            (fieldsRead.absent.length
+              ? " · no longer on this table: " + fieldsRead.absent.join(", ") +
                 " (dropped when its fields are next saved)"
               : "") +
-            (unverifiable.length
+            (columnsRead.absent.length
+              ? " · columns no longer on this table: " + columnsRead.absent.join(", ") +
+                " (dropped when its columns are next saved)"
+              : "") +
+            (fieldsRead.unverifiable.length
               ? " · the remembered fields could not be verified right now, so defaults apply" +
                 " and nothing is saved for this favourite until Record Lens is reopened"
+              : "") +
+            (columnsRead.unverifiable.length
+              ? " · the remembered columns could not be verified right now, so the searched" +
+                " fields are shown and its columns are not saved until Record Lens is reopened"
               : "");
-        readyKind = absent.length || unverifiable.length ? "validation" : "";
+        readyKind = fieldsRead.absent.length || fieldsRead.unverifiable.length ||
+          columnsRead.absent.length || columnsRead.unverifiable.length ? "validation" : "";
       }
       setStatus(readyText, readyKind, false);
       shadow.querySelector("[data-input='term']").focus();
@@ -1180,18 +1226,42 @@
       tableInfo = null;
       tableError = true;
       selectedFields = new Set();
+      selectedColumns = [];
       renderFieldControl();
       setStatus(String(error && error.message || error), errorKind(error), false);
       renderEmpty("The table could not be prepared.", String(error && error.message || error));
     }
   }
 
-  function setFieldMenu(open) {
+  /* Opening one picker closes the other, so two lists never overlap. */
+  function setPickerMenu(buttonSelector, menuSelector, open) {
     if (!shadow) return;
-    const button = shadow.querySelector(".fields-button");
-    const menu = shadow.querySelector(".field-menu");
+    const button = shadow.querySelector(buttonSelector);
+    const menu = shadow.querySelector(menuSelector);
     menu.hidden = !open;
     button.setAttribute("aria-expanded", String(Boolean(open)));
+  }
+
+  function setFieldMenu(open) {
+    setPickerMenu(".fields-button", ".field-menu", open);
+  }
+
+  function setColumnMenu(open) {
+    setPickerMenu(".columns-button", ".column-menu", open);
+  }
+
+  function anyPickerOpen() {
+    return Boolean(shadow) && (!shadow.querySelector(".field-menu").hidden ||
+      !shadow.querySelector(".column-menu").hidden);
+  }
+
+  function allFields() {
+    return tableInfo && Array.isArray(tableInfo.fields) ? tableInfo.fields : [];
+  }
+
+  /* The engine's rule, not a copy of it, so the two cannot drift. */
+  function searchableFields() {
+    return allFields().filter((field) => engine().isSearchable(field));
   }
 
   /* The star is its own cell beside the summary, never inside it: the
@@ -1209,7 +1279,7 @@
     star.disabled = searchBusy || (!tableInfo && !(tableError && starred));
     star.title = starred
       ? "Starred on this instance · press to unstar"
-      : "Star this table to list it, with its fields, when the table box is empty";
+      : "Star this table to list it, with its fields and columns, when the table box is empty";
     star.querySelector(".star-glyph").textContent = starred ? "★" : "☆";
   }
 
@@ -1254,6 +1324,7 @@
         label: tableInfo.label || table.name,
         fields: Array.from(selectedFields),
         filterFields: currentFilterFieldNames(),
+        columns: selectedColumns.slice(),
       };
     favoriteBusy = true;
     let response = null;
@@ -1271,6 +1342,7 @@
     }
     unsavedFavorites.delete(table.name);
     unsavedFilterFavorites.delete(table.name);
+    unsavedColumnFavorites.delete(table.name);
     /* Unstarring a table that failed to resolve hides the star, which would
      * otherwise take keyboard focus with it. The failed name is of no further
      * use, so the box is cleared and focus returns to it. */
@@ -1284,7 +1356,7 @@
     setStatus(
       (starred
         ? "Removed " + name + " from your starred tables."
-        : "Starred " + name + " · it is listed, with these search fields, when the table box is empty.") +
+        : "Starred " + name + " · it is listed, with these fields and columns, when the table box is empty.") +
         (response.evicted
           ? " The starred tables of the instance changed longest ago were removed to make room."
           : ""),
@@ -1323,6 +1395,33 @@
     applyFavoriteResponse(response);
     if (sequence !== requestSequence) return;
     if (response && response.ok) setStatus("Saved as this favourite's search fields", "", false);
+    else setStatus(favoriteFailure(response), "transient", false);
+  }
+
+  /* The same rules for the shown columns, in the order they are shown. */
+  async function saveFavoriteColumns() {
+    if (!shadow || !onFavoriteOp || !selectedTable || !tableInfo) return;
+    const name = selectedTable.name;
+    if (!favoriteFor(name)) return;
+    if (unsavedColumnFavorites.has(name)) {
+      setStatus(
+        "Not saved: this favourite's columns could not be verified when it was opened, so they are left as they were.",
+        "validation",
+        false
+      );
+      return;
+    }
+    const sequence = requestSequence;
+    let response = null;
+    try {
+      response = await onFavoriteOp({ op: "columns", name, columns: selectedColumns.slice() });
+    } catch (_) {
+      response = null;
+    }
+    if (!shadow) return;
+    applyFavoriteResponse(response);
+    if (sequence !== requestSequence) return;
+    if (response && response.ok) setStatus("Saved as this favourite's columns", "", false);
     else setStatus(favoriteFailure(response), "transient", false);
   }
 
@@ -1368,11 +1467,22 @@
     updateStarControl();
     updateFilterControls();
     const summary = shadow.querySelector(".field-summary");
-    const button = shadow.querySelector(".fields-button");
-    const fields = tableInfo && Array.isArray(tableInfo.fields) ? tableInfo.fields : [];
-    const chosen = fields.filter((field) => selectedFields.has(field.name));
-    button.disabled = searchBusy || !fields.length;
-    button.textContent = chosen.length + (chosen.length === 1 ? " field" : " fields");
+    const fieldsButton = shadow.querySelector(".fields-button");
+    const columnsButton = shadow.querySelector(".columns-button");
+    const byName = new Map(allFields().map((field) => [field.name, field]));
+    const chosen = searchableFields().filter((field) => selectedFields.has(field.name));
+    const shown = selectedColumns.map((name) => byName.get(name)).filter(Boolean);
+    fieldsButton.disabled = searchBusy || !searchableFields().length;
+    fieldsButton.textContent = "Search " + chosen.length + (chosen.length === 1 ? " field" : " fields");
+    columnsButton.disabled = searchBusy || !allFields().length;
+    /* No columns means a row shows what is searched, which is what the
+     * engine does with an empty list (review S1). That state is reached only
+     * when a table opens with nothing to search; it is named for what it
+     * shows rather than as zero. */
+    const showsSearched = !shown.length && chosen.length > 0;
+    columnsButton.textContent = showsSearched
+      ? "Show searched fields"
+      : "Show " + shown.length + (shown.length === 1 ? " column" : " columns");
     summary.textContent = "";
     if (!selectedTable) {
       summary.textContent = "Choose a table to load verified fields.";
@@ -1388,46 +1498,161 @@
       : "No fields selected";
     summary.appendChild(table);
     summary.appendChild(fieldsText);
+    if (shown.length || showsSearched) {
+      summary.appendChild(el("span", "selected-table", " · Showing: " + (showsSearched
+        ? "the searched fields"
+        : shown.map((field) => field.label).join(", "))));
+    }
+  }
+
+  /* Both pickers share one shape: a find box, a note, then the ticked
+   * options in their own group above the rest. Options are added to the
+   * rest; arrangePicker sorts them. Returns the group to add them to. */
+  function buildPicker(menu, note, findLabel) {
+    const find = el("input", "picker-find");
+    find.type = "text";
+    find.placeholder = "Find a field by label or name";
+    find.setAttribute("aria-label", findLabel);
+    find.setAttribute("autocomplete", "off");
+    find.setAttribute("spellcheck", "false");
+    find.addEventListener("input", () => filterPicker(menu));
+    /* Enter in the box would otherwise submit the search form. */
+    find.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") event.preventDefault();
+    });
+    const list = el("div", "picker-list");
+    const rest = el("div", "picker-rest");
+    /* Always present and empty while rows match, so a screen reader hears
+     * the note when it is written, not a region appearing. */
+    const none = el("div", "menu-message picker-none");
+    none.setAttribute("role", "status");
+    [
+      el("div", "picker-heading chosen", "Selected"),
+      el("div", "picker-chosen"),
+      el("div", "picker-heading rest", "Other fields"),
+      rest,
+      none,
+    ].forEach((node) => list.appendChild(node));
+    menu.appendChild(find);
+    menu.appendChild(el("div", "menu-note", note));
+    menu.appendChild(list);
+    return rest;
+  }
+
+  /* Ticked options go first, in the order given, and the find box starts
+   * empty. Run when a picker opens, never while it is open, so a row never
+   * moves out from under the pointer that just ticked it. */
+  function arrangePicker(menu, names) {
+    const chosen = menu.querySelector(".picker-chosen");
+    const rest = menu.querySelector(".picker-rest");
+    if (!chosen || !rest) return;
+    const options = Array.from(menu.querySelectorAll("[data-name]"))
+      .sort((a, b) => Number(a.dataset.order) - Number(b.dataset.order));
+    const picked = names
+      .map((name) => options.find((option) => option.dataset.name === name))
+      .filter(Boolean);
+    picked.forEach((option) => chosen.appendChild(option));
+    options.filter((option) => !picked.includes(option)).forEach((option) => rest.appendChild(option));
+    menu.querySelector(".picker-find").value = "";
+    filterPicker(menu);
+  }
+
+  /* Matches a field's label or technical name. A group's heading shows only
+   * while the group has a visible row, and "Other fields" only when there is
+   * a Selected group above it to tell apart from. */
+  function filterPicker(menu) {
+    const find = menu.querySelector(".picker-find");
+    if (!find) return;
+    const needle = find.value.trim().toLowerCase();
+    const visible = [".picker-chosen", ".picker-rest"].map((selector) => {
+      let count = 0;
+      Array.from(menu.querySelector(selector).children).forEach((option) => {
+        option.hidden = Boolean(needle) && !option.dataset.find.includes(needle);
+        if (!option.hidden) count += 1;
+      });
+      return count;
+    });
+    menu.querySelector(".picker-heading.chosen").hidden = !visible[0];
+    menu.querySelector(".picker-heading.rest").hidden = !visible[0] || !visible[1];
+    menu.querySelector(".picker-none").textContent = visible[0] + visible[1] > 0
+      ? ""
+      : "No field label or name contains “" + find.value.trim() + "”.";
+  }
+
+  function arrangeFieldPicker() {
+    if (!shadow) return;
+    arrangePicker(shadow.querySelector(".field-menu"),
+      searchableFields().filter((field) => selectedFields.has(field.name)).map((field) => field.name));
+  }
+
+  /* Columns keep their shown order, so the badges read 1, 2, 3 down the list. */
+  function arrangeColumnPicker() {
+    if (!shadow) return;
+    arrangePicker(shadow.querySelector(".column-menu"), selectedColumns.slice());
+  }
+
+  /* A checkbox row shared by both pickers. The title is returned so a caller
+   * can add to it. */
+  function pickerOption(className, dataKey, field, checked, onChange) {
+    const label = el("label", className);
+    label.dataset.name = field.name;
+    label.dataset.find = ((field.label || "") + " " + field.name).toLowerCase();
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = checked;
+    checkbox.disabled = searchBusy;
+    checkbox.dataset[dataKey] = field.name;
+    const title = el("span");
+    title.appendChild(document.createTextNode(field.label || field.name));
+    label.appendChild(checkbox);
+    label.appendChild(title);
+    label.appendChild(el("span", "field-tech", field.name));
+    if (!field.autoSelectable) {
+      title.appendChild(document.createTextNode(" "));
+      title.appendChild(el("span", "manual", "manual only"));
+    }
+    checkbox.addEventListener("change", () => onChange(checkbox));
+    return { label, title };
+  }
+
+  /* Each ticked Show row carries its position, so which column becomes the
+   * title is never a guess. Updated in place: rebuilding the list would take
+   * focus from the checkbox just pressed. */
+  function refreshColumnOrder() {
+    if (!shadow) return;
+    shadow.querySelectorAll(".column-option").forEach((option) => {
+      const box = option.querySelector("input");
+      const badge = option.querySelector(".order");
+      const index = selectedColumns.indexOf(box.dataset.column);
+      box.checked = index >= 0;
+      badge.textContent = index >= 0 ? String(index + 1) : "";
+      setHidden(badge, index < 0);
+    });
   }
 
   function renderFieldControl() {
     if (!shadow) return;
     const menu = shadow.querySelector(".field-menu");
+    const columnMenu = shadow.querySelector(".column-menu");
     menu.textContent = "";
-    const fields = tableInfo && Array.isArray(tableInfo.fields) ? tableInfo.fields : [];
+    columnMenu.textContent = "";
+    const fields = allFields();
+    const searchable = searchableFields();
     if (!fields.length) {
-      const note = document.createElement("div");
-      note.className = "menu-message";
-      note.textContent = selectedTable ? "No verified text fields available." : "Choose a table first.";
-      menu.appendChild(note);
+      const text = selectedTable ? "No verified fields available." : "Choose a table first.";
+      menu.appendChild(el("div", "menu-message", text));
+      columnMenu.appendChild(el("div", "menu-message", text));
       setFieldMenu(false);
+      setColumnMenu(false);
       updateFieldSummary();
       return;
     }
-    fields.forEach((field) => {
-      const label = document.createElement("label");
-      label.className = "field-option";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = selectedFields.has(field.name);
-      checkbox.disabled = searchBusy;
-      checkbox.dataset.field = field.name;
-      const title = document.createElement("span");
-      title.textContent = field.label || field.name;
-      const tech = document.createElement("span");
-      tech.className = "field-tech";
-      tech.textContent = field.name;
-      label.appendChild(checkbox);
-      label.appendChild(title);
-      label.appendChild(tech);
-      if (!field.autoSelectable) {
-        const manual = document.createElement("span");
-        manual.className = "manual";
-        manual.textContent = "manual only";
-        title.appendChild(document.createTextNode(" "));
-        title.appendChild(manual);
-      }
-      checkbox.addEventListener("change", () => {
+    const fieldList = searchable.length
+      ? buildPicker(menu, "Text is matched against these. A reference matches its record's display name.",
+        "Find a field to search")
+      : menu.appendChild(el("div", "menu-message", "No searchable fields available."));
+    searchable.forEach((field, index) => {
+      const option = pickerOption("field-option", "field", field, selectedFields.has(field.name), (checkbox) => {
         if (checkbox.checked && selectedFields.size >= engine().MAX_SEARCH_FIELDS) {
           checkbox.checked = false;
           setStatus("Select no more than six fields.", "validation", false);
@@ -1441,8 +1666,47 @@
         saveFavoriteFields();
         scheduleSearch();
       });
-      menu.appendChild(label);
+      if (field.kind === "reference") {
+        option.title.appendChild(document.createTextNode(" "));
+        option.title.appendChild(el("span", "kind", "by name"));
+      }
+      option.label.dataset.order = String(index);
+      fieldList.appendChild(option.label);
     });
+    const columnList = buildPicker(columnMenu,
+      "Each result shows these, in the order ticked. The first is its title.", "Find a column to show");
+    fields.forEach((field, index) => {
+      const option = pickerOption("column-option", "column", field, false, (checkbox) => {
+        if (checkbox.checked && selectedColumns.length >= engine().MAX_SHOW_COLUMNS) {
+          checkbox.checked = false;
+          setStatus("Show no more than six columns.", "validation", false);
+          return;
+        }
+        if (!checkbox.checked && selectedColumns.length === 1 && selectedColumns[0] === field.name) {
+          checkbox.checked = true;
+          setStatus("Keep at least one column to show.", "validation", false);
+          return;
+        }
+        selectedColumns = selectedColumns.filter((name) => name !== field.name);
+        if (checkbox.checked) selectedColumns.push(field.name);
+        lastResult = null;
+        refreshColumnOrder();
+        updateFieldSummary();
+        updateListButton();
+        saveFavoriteColumns();
+        scheduleSearch();
+      });
+      /* The space keeps "1" and the label apart when read aloud (review S4);
+       * the badge's margin already parts them on screen. */
+      const label = option.title.firstChild;
+      option.title.insertBefore(el("span", "order"), label);
+      option.title.insertBefore(document.createTextNode(" "), label);
+      option.label.dataset.order = String(index);
+      columnList.appendChild(option.label);
+    });
+    arrangeFieldPicker();
+    arrangeColumnPicker();
+    refreshColumnOrder();
     updateFieldSummary();
   }
 
@@ -1561,6 +1825,9 @@
     shadow.querySelectorAll(".field-option input").forEach((input) => {
       input.disabled = searchBusy;
     });
+    shadow.querySelectorAll(".column-option input").forEach((input) => {
+      input.disabled = searchBusy;
+    });
     Object.keys(combos).forEach((key) => combos[key].setBusy(searchBusy));
     filterRows.forEach((row) => setDisabled(row.remove, searchBusy));
     refreshClearButtons();
@@ -1666,12 +1933,16 @@
       values.className = "values";
       (resultRow.values || []).forEach((item, valueIndex) => {
         if (!item.value || (valueIndex === 0 && item.value === resultRow.title)) return;
-        const value = document.createElement("span");
-        const valueLabel = document.createElement("span");
-        valueLabel.className = "value-label";
-        valueLabel.textContent = (item.label || item.field) + ": ";
-        value.appendChild(valueLabel);
+        const value = el("span", item.matched ? "value matched" : "value");
+        value.appendChild(el("span", "value-label", (item.label || item.field) + ": "));
         value.appendChild(document.createTextNode(item.value));
+        /* Text matched a field the row does not show: it is named here so
+         * no row appears without what it matched on. */
+        if (item.matched) {
+          value.title = "Matched your text. Not one of the shown columns.";
+          value.appendChild(document.createTextNode(" "));
+          value.appendChild(el("span", "match-tag", "match"));
+        }
         values.appendChild(value);
       });
       if (values.childNodes.length) row.appendChild(values);
@@ -1701,13 +1972,15 @@
       .map((row) => ({ field: row.field.selected.value, value: row.value.selected.value }));
   }
 
-  /* Trimmed, as the engine trims it. The fields count even for a sys_id or
-   * filter-only search, because they choose the values each row shows. */
+  /* Trimmed, as the engine trims it. The shown columns count in their
+   * order, because the first is each row's title, and they need a read of
+   * their own values. */
   function currentRequestKey() {
     return JSON.stringify([
       selectedTable ? selectedTable.name : "",
       termValue(),
       Array.from(selectedFields).sort(),
+      selectedColumns,
       completeFilters().map((filter) => [filter.field, filter.value]),
     ]);
   }
@@ -1807,9 +2080,14 @@
    * instead, since focusing a detached node would leave it on the page. */
   function restoreFocus(node) {
     if (!shadow || !node || shadow.activeElement) return;
+    /* A row in a picker closed meanwhile (Escape during the search) is
+     * connected and enabled but not rendered, so focusing it does nothing;
+     * its picker's button takes focus instead. */
+    const picker = node.closest ? node.closest(".field-picker") : null;
+    const list = picker ? node.closest("[role='group']") : null;
     const target = node.isConnected === false || node.disabled || node.hidden
       ? shadow.querySelector("[data-input='term']")
-      : node;
+      : list && list.hidden ? picker.querySelector("button") : node;
     const owner = Object.keys(combos).map((key) => combos[key])
       .find((combo) => combo && combo.input === target);
     if (owner) {
@@ -1899,14 +2177,14 @@
     try {
       /* The same remembered list the table was resolved with, so the search
        * verifies its fields against the same live read. */
-      const remembered = tableInfo.remembered && Array.isArray(tableInfo.remembered.requested)
-        ? tableInfo.remembered.requested
-        : [];
+      const requested = (value) => (value && Array.isArray(value.requested) ? value.requested.slice() : []);
       const result = await onSearch({
         table: selectedTable.name,
         term,
         fields: Array.from(selectedFields),
-        rememberedFields: remembered.slice(),
+        rememberedFields: requested(tableInfo.remembered),
+        columns: selectedColumns.slice(),
+        rememberedColumns: requested(tableInfo.rememberedColumns),
         filters,
       });
       if (sequence !== requestSequence || !result || result.stale) return;
@@ -1966,6 +2244,7 @@
     tableError = false;
     unsavedFavorites = new Set();
     unsavedFilterFavorites = new Set();
+    unsavedColumnFavorites = new Set();
     onFilterFields = null;
     onFilterValues = null;
     tableOptions = [];
@@ -1973,6 +2252,7 @@
     selectedTable = null;
     tableInfo = null;
     selectedFields = new Set();
+    selectedColumns = [];
     lastResult = null;
     searchBusy = false;
   }
@@ -2026,10 +2306,17 @@
               <button class="search-btn" type="submit">Search</button>
             </div>
             <div class="field-line">
-              <div class="field-picker">
-                <button class="fields-button" type="button" aria-haspopup="listbox"
-                  aria-expanded="false" disabled>0 fields</button>
-                <div class="field-menu" role="listbox" aria-multiselectable="true" hidden></div>
+              <div class="field-picker" data-picker="fields">
+                <button class="fields-button" type="button" aria-controls="snh-rs-field-menu"
+                  aria-expanded="false" disabled>Search 0 fields</button>
+                <div class="field-menu" id="snh-rs-field-menu" role="group"
+                  aria-label="Fields to search" hidden></div>
+              </div>
+              <div class="field-picker" data-picker="columns">
+                <button class="columns-button" type="button" aria-controls="snh-rs-column-menu"
+                  aria-expanded="false" disabled>Show 0 columns</button>
+                <div class="column-menu" id="snh-rs-column-menu" role="group"
+                  aria-label="Columns to show" hidden></div>
               </div>
               <button class="star-btn" type="button" aria-label="Star this table"
                 aria-pressed="false" hidden disabled><span class="star-glyph" aria-hidden="true">☆</span> Star</button>
@@ -2043,7 +2330,7 @@
           <div class="status" role="status" aria-live="polite">Search for a table to begin.</div>
           <div class="rows"></div>
           <footer class="toolbar">
-            <span class="toolbar-note">Read-only · at most 20 verified results · no record or search history is stored · starred tables and their fields are kept on this device</span>
+            <span class="toolbar-note">Read-only · at most 20 verified results · no record or search history is stored · starred tables, with their fields and columns, are kept on this device</span>
             <button type="button" data-action="open-list" disabled>Open results in list</button>
             <button type="button" data-action="close">Close</button>
           </footer>
@@ -2093,9 +2380,25 @@
         setTableMenu(false);
       }
     });
+    /* Opening sorts what is ticked to the top and puts the cursor in the
+     * find box, so a long list can be narrowed straight away. */
+    const focusFind = (menuSelector) => {
+      const find = shadow.querySelector(menuSelector + " .picker-find");
+      if (find) find.focus();
+    };
     shadow.querySelector(".fields-button").addEventListener("click", () => {
-      const menu = shadow.querySelector(".field-menu");
-      setFieldMenu(menu.hidden);
+      const open = shadow.querySelector(".field-menu").hidden;
+      setColumnMenu(false);
+      if (open) arrangeFieldPicker();
+      setFieldMenu(open);
+      if (open) focusFind(".field-menu");
+    });
+    shadow.querySelector(".columns-button").addEventListener("click", () => {
+      const open = shadow.querySelector(".column-menu").hidden;
+      setFieldMenu(false);
+      if (open) arrangeColumnPicker();
+      setColumnMenu(open);
+      if (open) focusFind(".column-menu");
     });
     shadow.querySelector(".star-btn").addEventListener("click", toggleStar);
     shadow.querySelector(".add-filter").addEventListener("click", () => {
@@ -2111,7 +2414,10 @@
     shadow.querySelector("[data-action='open-list']").addEventListener("click", openResultList);
     shadow.addEventListener("click", (event) => {
       if (!event.target.closest(".combo")) setTableMenu(false);
-      if (!event.target.closest(".field-picker")) setFieldMenu(false);
+      const picker = event.target.closest(".field-picker");
+      const which = picker ? picker.dataset.picker : "";
+      if (which !== "fields") setFieldMenu(false);
+      if (which !== "columns") setColumnMenu(false);
     });
     const overlay = shadow.querySelector(".overlay");
     overlay.addEventListener("click", (event) => {
@@ -2120,13 +2426,17 @@
     keydownHandler = (event) => {
       if (event.key !== "Escape" || !host) return;
       const tableMenuOpen = !shadow.querySelector(".table-menu").hidden;
-      const fieldMenuOpen = !shadow.querySelector(".field-menu").hidden;
       /* Every open menu closes before Escape may close the panel, filter
-       * pickers included. */
-      if (tableMenuOpen || fieldMenuOpen || anyComboOpen()) {
+       * pickers and both field pickers included. */
+      if (tableMenuOpen || anyPickerOpen() || anyComboOpen()) {
+        const focused = shadow.activeElement;
+        const picker = focused && focused.closest(".field-picker");
         setTableMenu(false);
         setFieldMenu(false);
+        setColumnMenu(false);
         closeAllCombos();
+        /* Focus in a closing picker goes back to its button, not nowhere. */
+        if (picker) picker.querySelector("button").focus();
         return;
       }
       event.preventDefault();
