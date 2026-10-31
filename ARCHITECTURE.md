@@ -2207,7 +2207,14 @@ are looked at. It opens on Needs attention (Stale and Can't tell) when there
 is any, draws 100 rows at a time, badges each verdict in colour with its
 word, shows details for Stale and Can't tell, and puts the other instance's
 answer on a row only where it differs; that instance's links show on any
-opened row once a check has finished. A run is bound to its panel:
+opened row once a check has finished. Success is said, not left to the
+counts: a run with every update read, no Stale or Can't tell row and no
+warning banner says nothing needs attention, and a check where every record
+compared runs this set's version says the instance matches ("so far" while
+some updates weren't compared). A difference is said in amber: the check's
+count line, the row's note, a second badge on the row, and a **Differs on**
+filter chip that lapses with the check. Same content there stays grey,
+because the content matches. A run is bound to its panel:
 closing it, opening another, or choosing another instance drops late results.
 A check answers for the rows it was sent, so switching the batch or checking
 the next 2,000 clears it too, and drops an answer still on its way. Enter

@@ -284,7 +284,8 @@ The panel opens on the rows that need attention:
 
 The rest are **Same content** (the same content runs, versioned under another
 set), **In this batch** (a newer version in a sibling set of the same batch)
-and **Current**. The summary counts are filters. A batch parent that holds no
+and **Current**. The summary counts are filters, and a finished run with no
+Stale or Can't tell row says nothing needs attention. A batch parent that holds no
 updates itself checks its child sets, nested ones included, which you can
 switch off. A run checks up to 2,000 updates and offers **Check the next
 2,000**. Only captured changes are compared: a change made without an update
@@ -297,7 +298,10 @@ finds it) and its version history.
 chosen one — as that tab's own
 session — whether this set (or each set of a batch) was retrieved there and how
 far it got, and record by record whether that instance runs the same version.
-Where it runs another version, the row says when that version was saved
+When every record does, it says the instance matches. When any doesn't, that
+line turns amber, each such row gets an amber badge, and a **Differs on**
+filter lists just those rows (same content under another update is shown in
+grey, since the content matches). Where it runs another version, the row says when that version was saved
 there and in which update set, so a change made there after the commit is
 easy to spot. An opened row then also links, on that instance, to the
 record, the version that runs there and the record's version history, where

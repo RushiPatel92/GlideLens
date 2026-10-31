@@ -902,6 +902,7 @@ test("membership pages are keyed on sys_id, 200 a page, and a run stops at 2,000
   assert.strictEqual(view.rows.length, 2000);
   assert.deepStrictEqual(plain(view.totals), { checked: 2000, total: 2150, exact: false });
   assert.strictEqual(view.canContinue, true);
+  assert.strictEqual(session.remoteRequest().partial, true, "a check now compares only what was checked so far");
   const pages = instance.requests.filter((request) => request.table === "sys_update_xml" && /ORDERBYsys_id/.test(request.query));
   assert.ok(pages.every((request) => request.limit <= 200));
   assert.match(pages[1].query, /\^sys_id>[0-9a-f]{32}\^ORDERBYsys_id$/);
@@ -912,6 +913,7 @@ test("membership pages are keyed on sys_id, 200 a page, and a run stops at 2,000
   assert.strictEqual(view.rows.length, 2150);
   assert.deepStrictEqual(plain(view.totals), { checked: 2150, total: 2150, exact: true });
   assert.strictEqual(view.canContinue, false);
+  assert.strictEqual(session.remoteRequest().partial, false);
   assert.strictEqual(new Set(view.rows.map((row) => row.name)).size, 2150, "no row twice across runs");
 });
 
@@ -1095,6 +1097,32 @@ test("the content line counts in the singular when there is one", () => {
   const two = [{ key: "a", verdict: "stale" }, { key: "b", verdict: "current" }];
   assert.strictEqual(lens.remoteView({ copies: [], clones: [], content: ["other", "other"] }, remoteRequestFor(two), two, "exampletest").lines[1].text,
     "exampletest runs this set's version for 0 of 2 records; 2 run another version (1 already stale here).");
+});
+
+test("every record running this set's version there is said as a match, and only a match so far when some weren't compared", () => {
+  const rows = ["current", "stale", "current"].map((verdict, index) => ({ key: "k" + index, verdict }));
+  const line = (request, content) =>
+    lens.remoteView({ copies: [], clones: [], content: content || ["runs", "runs", "runs"] }, request, rows, "exampletest").lines[1];
+  assert.deepStrictEqual(plain(line(remoteRequestFor(rows))),
+    { kind: "ok", text: "exampletest matches: it runs this set's version for all 3 records." });
+  assert.deepStrictEqual(plain(line(Object.assign(remoteRequestFor(rows), { partial: true }))),
+    { kind: "ok", text: "exampletest matches so far: it runs this set's version for all 3 records compared." });
+  const capped = lens.remoteView({ copies: [], clones: [], content: ["runs", "runs", "runs"] },
+    Object.assign(remoteRequestFor(rows), { unsent: 5 }), rows, "exampletest");
+  assert.strictEqual(capped.lines[1].text, "exampletest matches so far: it runs this set's version for all 3 records compared.");
+  assert.match(capped.lines[2].text, /^Compared the first /);
+  const one = [{ key: "k0", verdict: "current" }];
+  assert.strictEqual(lens.remoteView({ copies: [], clones: [], content: ["runs"] }, remoteRequestFor(one), one, "exampletest").lines[1].text,
+    "exampletest matches: it runs this set's version for its one record.");
+  /* Not a match: flagged as differing, except same content, which is told. */
+  for (const [status, kind] of [["same", "content"], ["other", "differs"], ["none", "differs"], ["unknown", "differs"]]) {
+    const mixed = line(remoteRequestFor(rows), ["runs", "runs", status]);
+    assert.strictEqual(mixed.kind, kind, status);
+    assert.match(mixed.text, /^exampletest runs this set's version for 2 of 3 records; /);
+  }
+  const filtered = Object.assign(remoteRequestFor(rows.slice(0, 2)), { filtered: ["k2"] });
+  assert.strictEqual(lens.remoteView({ copies: [], clones: [], content: ["runs", "runs"] }, filtered, rows, "exampletest").lines[1].kind,
+    "differs", "a row that couldn't be sent is Can't tell, so not a match");
 });
 
 test("a checked row links to its record, the version that runs there, and its version history there", () => {

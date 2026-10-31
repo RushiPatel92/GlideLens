@@ -1582,6 +1582,8 @@
       keys,
       filtered,
       unsent: Math.max(0, state.rows.length - records.length - filtered.length),
+      /* Updates still to check here: a match is then only a match so far. */
+      partial: state.lists.some((list) => !list.done),
     };
   }
 
@@ -1780,7 +1782,17 @@
       perRow[key] = { kind: "cant", text: "On " + instance + ": can't tell" };
     });
     const compared = request.keys.length + request.filtered.length;
-    if (compared) {
+    if (compared && counts.runs === compared) {
+      /* Every record compared runs this set's version there: said as a
+       * match, and as a match so far while some were not compared. */
+      const all = compared === 1 ? "its one record" : "all " + compared.toLocaleString() + " records";
+      lines.push({
+        kind: "ok",
+        text: request.unsent || request.partial
+          ? instance + " matches so far: it runs this set's version for " + all + " compared."
+          : instance + " matches: it runs this set's version for " + all + ".",
+      });
+    } else if (compared) {
       const one = (count, single, plural) => count + " " + (count === 1 ? single : plural);
       const bits = [
         instance + " runs this set's version for " + counts.runs + " of " + one(compared, "record", "records"),
@@ -1794,7 +1806,8 @@
       }
       if (counts.none) bits.push(one(counts.none, "has", "have") + " no readable current version there");
       if (counts.cant) bits.push(counts.cant + " can't tell");
-      lines.push({ kind: "content", text: bits.join("; ") + "." });
+      /* Same content there is told, not flagged: the content matches. */
+      lines.push({ kind: counts.other || counts.none || counts.cant ? "differs" : "content", text: bits.join("; ") + "." });
     }
     if (request.unsent) {
       lines.push({

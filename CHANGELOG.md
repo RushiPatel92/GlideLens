@@ -26,7 +26,10 @@ reconstructed version by version.
   updates can live. **Check on** asks another instance open in the browser,
   as that tab's own session, whether the set was retrieved there and how far it
   got, and record by record whether that instance runs the same version;
-  where it doesn't, when and in which update set that version was saved. Each
+  where it doesn't, when and in which update set that version was saved. A
+  run with nothing to look at, and a check where every record matches, each
+  say so with a tick; a record that differs there is badged in amber, and a
+  **Differs on** filter lists those rows. Each
   row links to its update, record and version history here, and after a check
   to its record, running version and version history there. Up to 2,000
   updates a run, then **Check the next 2,000**. Read-only on both instances;

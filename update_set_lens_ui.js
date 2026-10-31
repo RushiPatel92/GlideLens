@@ -18,7 +18,9 @@
  * Settled by the owner on the mockup (U1-U7): opens on Needs attention when
  * there is any, rows drawn 100 at a time, coloured badges with their word,
  * Check on right under the summary, details shown for Stale and Can't tell,
- * and the other instance's answer on a row only where it differs.
+ * and the other instance's answer on a row only where it differs. That
+ * answer is amber, with its own badge and a Differs on chip, except Same
+ * content there, which is grey because the content matches.
  */
 (() => {
   if (globalThis.SNUpdateSetLensUI) return;
@@ -36,6 +38,14 @@
     batch: "IN THIS BATCH",
     same: "SAME CONTENT",
     current: "CURRENT",
+  };
+  /* The checked instance's answer as a row's second badge. Same content
+   * there is grey: the content matches. */
+  const THERE_WORDS = {
+    other: "OTHER VERSION THERE",
+    none: "NO CURRENT VERSION THERE",
+    cant: "CAN'T TELL THERE",
+    same: "SAME CONTENT THERE",
   };
   const SUMMARY_WORDS = {
     stale: "stale",
@@ -103,6 +113,10 @@
     .check-out .state{font-weight:650;color:#f5f5ff}
     .check-out .warn{color:#f0d9a6}
     .check-out .note{color:#9a9ab3}
+    .ok{color:#8fe0d6;font-weight:600}
+    .check-out .differs{color:var(--amber);font-weight:600}
+    .mark{margin-right:5px}
+    .progress .ok{font-size:12px}
     .btn{border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;border-radius:7px;padding:6px 12px;
       cursor:pointer;font-size:12px}
     .btn:hover:not(:disabled){background:#4a4b78;color:#fff}
@@ -113,6 +127,7 @@
     .chip{border:1px solid #4a4a6e;background:transparent;color:#cfcfe6;border-radius:999px;
       padding:4px 10px;font-size:11.5px;cursor:pointer;font-variant-numeric:tabular-nums}
     .chip:hover{background:#2d2d48}
+    .chip.there{border-color:var(--amber-line);color:var(--amber)}
     .chip[aria-pressed="true"]{background:#173d3a;border-color:var(--teal);color:#d9fbf7}
     .rows{flex:1;overflow:auto;min-height:0}
     .row{padding:9px 20px;border-bottom:1px solid #282841;outline:none}
@@ -131,6 +146,9 @@
     .b-cant{background:#2c2619;border-color:var(--amber-line);color:var(--amber)}
     .b-same,.b-batch{background:#26263b;border-color:#4a4a6e;color:#c3c3d8}
     .b-current{background:transparent;border-color:#33334f;color:#8d8da6}
+    .badges{display:inline-flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}
+    .b-there{background:#2c2619;border-color:var(--amber-line);color:var(--amber)}
+    .b-there.same{background:transparent;border-color:#4a4a6e;color:#b9b3e8}
     .sum-badge{font-size:12px;font-weight:650;letter-spacing:0;padding:3px 9px;cursor:pointer;
       font-variant-numeric:tabular-nums}
     .sum-badge:hover{filter:brightness(1.18)}
@@ -145,6 +163,7 @@
     .link{border:0;background:transparent;color:#8fd6cf;padding:0;cursor:pointer;font-size:11.5px;
       text-decoration:underline;text-underline-offset:2px}
     .remote-tag{display:block;margin-top:2px;color:#b9b3e8;font-size:11.5px}
+    .remote-tag.warn{color:var(--amber)}
     .links-on{color:var(--muted);font-size:11.5px}
     .link-note{margin-top:3px;color:var(--amber);font-size:11.5px}
     .more{display:flex;justify-content:center;padding:12px}
@@ -179,6 +198,16 @@
     node.type = "button";
     node.setAttribute("type", "button");
     if (onClick) node.addEventListener("click", onClick);
+    return node;
+  }
+
+  /* A result line: a mark that screen readers skip, then the words. */
+  function markedLine(tag, className, mark, text) {
+    const node = el(tag, className);
+    const sign = el("span", "mark", mark);
+    sign.setAttribute("aria-hidden", "true");
+    node.appendChild(sign);
+    node.appendChild(document.createTextNode(text));
     return node;
   }
 
@@ -229,6 +258,7 @@
     if (!panel) return;
     panel.remoteToken += 1;
     panel.remote = { state: "idle" };
+    if (panel.filter === "there") panel.filter = null;
   }
 
   /* A row's link that could not open says why beside its links, for a few
@@ -279,15 +309,35 @@
     return row.verdict === "stale" || row.verdict === "cant";
   }
 
-  /* U2: Needs attention while there is any and nothing has been picked. */
+  /* Every update checked, none Stale or Can't tell, and no warning that the
+   * list may be partial or the set isn't one to move: said as a success. */
+  function allClear(view, rows) {
+    const totals = view.totals || {};
+    return view.phase === "done" && Boolean(totals.exact) && rows.length > 0 && !rows.some(needsAttention) &&
+      !(view.banners || []).some((banner) => banner.kind === "warn");
+  }
+
+  /* The checked instance's answer for a row: there is one only where it
+   * differs, once a check has finished. */
+  function remoteAnswer(row) {
+    const remote = panel.remote;
+    if (remote.state !== "done" || !remote.perRow) return null;
+    return remote.perRow[row.key] || null;
+  }
+
+  const differsThere = (row) => Boolean(remoteAnswer(row));
+
+  /* U2: Needs attention while there is any and nothing has been picked. A
+   * pick of Differs there lapses with the check that answered it. */
   function activeFilter(rows) {
-    if (panel.filter) return panel.filter;
+    if (panel.filter && (panel.filter !== "there" || rows.some(differsThere))) return panel.filter;
     return rows.some(needsAttention) ? "attention" : "all";
   }
 
   function matchesFilter(row, filter) {
     if (filter === "all") return true;
     if (filter === "attention") return needsAttention(row);
+    if (filter === "there") return differsThere(row);
     return row.verdict === filter;
   }
 
@@ -473,7 +523,9 @@
       if (totals.total != null) {
         text += (totals.exact ? " of " : " of up to ") + Number(totals.total).toLocaleString();
       }
-      els.progress.appendChild(el("span", null, text + "."));
+      els.progress.appendChild(allClear(view, rows)
+        ? markedLine("span", "ok", "✓", text + ". Nothing needs attention before promoting.")
+        : el("span", null, text + "."));
     }
   }
 
@@ -511,6 +563,12 @@
       els.checkOut.appendChild(el("div", "warn", remote.message));
     } else if (remote.state === "done") {
       (remote.lines || []).forEach((line) => {
+        if (line.kind === "ok" || line.kind === "differs") {
+          els.checkOut.appendChild(line.kind === "ok"
+            ? markedLine("div", "ok", "✓", line.text)
+            : markedLine("div", "differs", "≠", line.text));
+          return;
+        }
         els.checkOut.appendChild(el("div", line.kind === "state" ? "state" : line.kind === "warn" ? "warn" : line.kind === "note" ? "note" : "", line.text));
       });
     }
@@ -531,21 +589,33 @@
     const c = counts(rows);
     const tally = {
       attention: c.stale + c.cant, stale: c.stale, cant: c.cant, batch: c.batch,
-      same: c.same, current: c.current, all: rows.length,
+      same: c.same, current: c.current, all: rows.length, there: rows.filter(differsThere).length,
     };
-    CHIPS.forEach((chip) => {
-      if (chip.batchOnly && !(view.batch && view.batch.included)) return;
-      const node = button("chip", chip.label + " " + tally[chip.id].toLocaleString(), () => setFilter(chip.id));
+    const chips = CHIPS.filter((chip) => !chip.batchOnly || (view.batch && view.batch.included));
+    /* After a check, the rows it differs on, just before All. */
+    if (tally.there) {
+      chips.splice(chips.length - 1, 0, {
+        id: "there", label: "Differs on " + (panel.remote.instance || "the other instance"), className: "there",
+      });
+    }
+    chips.forEach((chip) => {
+      const node = button("chip" + (chip.className ? " " + chip.className : ""),
+        chip.label + " " + tally[chip.id].toLocaleString(), () => setFilter(chip.id));
       node.setAttribute("aria-pressed", filter === chip.id ? "true" : "false");
       els.chips.appendChild(remember(node, "chip:" + chip.id));
     });
   }
 
   function remoteTag(row) {
-    const remote = panel.remote;
-    if (remote.state !== "done" || !remote.perRow) return null;
-    const answer = remote.perRow[row.key];
-    return answer ? el("span", "remote-tag", answer.text) : null;
+    const answer = remoteAnswer(row);
+    return answer ? el("span", "remote-tag" + (answer.kind === "same" ? "" : " warn"), answer.text) : null;
+  }
+
+  function thereBadge(answer) {
+    const kind = THERE_WORDS[answer.kind] ? answer.kind : "cant";
+    const badge = el("span", "badge b-there" + (kind === "same" ? " same" : ""), THERE_WORDS[kind]);
+    badge.title = str(answer.text);
+    return badge;
   }
 
   /* The checked instance's links for a row, after its check finished. */
@@ -575,7 +645,11 @@
     if (sub) name.appendChild(el("span", "r-sub", sub));
     top.appendChild(name);
     top.appendChild(el("span", "r-action", row.action || ""));
-    top.appendChild(el("span", "badge b-" + row.verdict, BADGE_WORDS[row.verdict] || row.verdict));
+    const badges = el("span", "badges");
+    badges.appendChild(el("span", "badge b-" + row.verdict, BADGE_WORDS[row.verdict] || row.verdict));
+    const answer = remoteAnswer(row);
+    if (answer) badges.appendChild(thereBadge(answer));
+    top.appendChild(badges);
     node.appendChild(top);
 
     const tag = remoteTag(row);
@@ -889,6 +963,7 @@
     if (!entry) return;
     panel.remoteToken += 1;
     panel.remote = { state: "busy", instance: entry.label || origin, message: "" };
+    if (panel.filter === "there") panel.filter = null;
     paint();
     callbacks.onCheckRemote(origin, panel.remoteToken);
   }

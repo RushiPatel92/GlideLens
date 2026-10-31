@@ -462,6 +462,32 @@ test("the progress line is polite and reads Checked N of up to M until exact", (
   assert.strictEqual(byClass(harness.shadow(), "progress")[0].textContent, "Checked 1.");
 });
 
+test("a finished run with nothing to look at says so, with a tick that screen readers skip", () => {
+  const harness = load();
+  const shadow = open(harness, view([row("current"), row("same"), row("current")]));
+  const progress = byClass(shadow, "progress")[0];
+  assert.strictEqual(progress.textContent, "✓Checked 3 of 3. Nothing needs attention before promoting.");
+  assert.strictEqual(byClass(progress, "ok").length, 1);
+  assert.strictEqual(byClass(progress, "mark")[0].getAttribute("aria-hidden"), "true");
+  const line = (theView) => {
+    harness.ui.update(theView);
+    return byClass(harness.shadow(), "progress")[0];
+  };
+  const warn = { kind: "warn", text: "The update count and the updates read disagree; the list may be incomplete.", links: [] };
+  for (const [why, theView] of [
+    ["a stale row", view([row("current"), row("stale")])],
+    ["a can't tell row", view([row("cant")])],
+    ["more to check", view([row("current")], { totals: { checked: 1, total: 40, exact: false }, canContinue: true })],
+    ["a warning banner", view([row("current")], { banners: [warn] })],
+    ["no rows", view([])],
+    ["still running", view([row("current")], { phase: "classifying" })],
+  ]) {
+    assert.strictEqual(byClass(line(theView), "ok").length, 0, why);
+  }
+  const info = { kind: "info", text: "Committed here from a retrieved set (a loaded XML file).", links: [] };
+  assert.strictEqual(byClass(line(view([row("current")], { banners: [info] })), "ok").length, 1, "an info banner doesn't stop it");
+});
+
 test("Escape closes the panel, calls onClose, restores focus, and a late snapshot paints nothing", () => {
   const harness = load();
   const opener = harness.dom.document.createElement("button");
@@ -527,6 +553,83 @@ test("a check shows the other instance's answer, and on a row only where it diff
   /* Progress that arrives after the answer never replaces it. */
   harness.ui.showRemote({ state: "busy", message: "late" }, 1);
   assert.ok(!harness.text().includes("late"));
+});
+
+test("a check where every record matches says so with a tick", () => {
+  const harness = load();
+  const shadow = open(harness, view([row("current")]), { onCheckRemote: () => {} },
+    { origins: [{ origin: "https://exampletest.service-now.com", label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [
+      { kind: "state", text: "exampletest: committed on 30 Oct 2026." },
+      { kind: "ok", text: "exampletest matches: it runs this set's version for its one record." },
+    ],
+    perRow: {},
+    counts: { runs: 1, same: 0, other: 0, otherStale: 0, none: 0, cant: 0 },
+  }, 1);
+  const ok = byClass(byClass(shadow, "check-out")[0], "ok");
+  assert.strictEqual(ok.length, 1);
+  assert.strictEqual(ok[0].textContent, "✓exampletest matches: it runs this set's version for its one record.");
+  assert.strictEqual(byClass(ok[0], "mark")[0].getAttribute("aria-hidden"), "true");
+  assert.ok(!chip(shadow, "Differs on exampletest"), "nothing differs, so no chip");
+});
+
+test("where the other instance differs, the row says so in amber with its own badge, and a chip lists those rows", () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const other = row("current");
+  const same = row("current");
+  const none = row("current");
+  const cant = row("current");
+  const fine = row("current");
+  const shadow = open(harness, view([other, same, none, cant, fine]), { onCheckRemote: () => {} },
+    { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  const summary = "exampletest runs this set's version for 1 of 5 records; 1 has the same content under another update; " +
+    "1 runs another version; 1 has no readable current version there; 1 can't tell.";
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "differs", text: summary }],
+    perRow: {
+      [other.key]: { kind: "other", text: "On exampletest: runs another version" },
+      [same.key]: { kind: "same", text: "On exampletest: same content under another update" },
+      [none.key]: { kind: "none", text: "On exampletest: no readable current version" },
+      [cant.key]: { kind: "cant", text: "On exampletest: can't tell" },
+    },
+    counts: { runs: 1, same: 1, other: 1, otherStale: 0, none: 1, cant: 1 },
+  }, 1);
+  const line = byClass(byClass(shadow, "check-out")[0], "differs")[0];
+  assert.strictEqual(line.textContent, "≠" + summary);
+  assert.strictEqual(byClass(line, "mark")[0].getAttribute("aria-hidden"), "true");
+
+  const rowFor = (fixture) => visibleRows(harness.shadow()).find((node) => byClass(node, "r-name")[0].textContent === fixture.target);
+  const badges = (fixture) => byClass(rowFor(fixture), "badge").map((badge) => badge.textContent);
+  assert.deepStrictEqual(badges(other), ["CURRENT", "OTHER VERSION THERE"]);
+  assert.deepStrictEqual(badges(same), ["CURRENT", "SAME CONTENT THERE"]);
+  assert.deepStrictEqual(badges(none), ["CURRENT", "NO CURRENT VERSION THERE"]);
+  assert.deepStrictEqual(badges(cant), ["CURRENT", "CAN'T TELL THERE"]);
+  assert.deepStrictEqual(badges(fine), ["CURRENT"], "a row that matches there gets no second badge");
+  const thereBadge = (fixture) => byClass(rowFor(fixture), "b-there")[0];
+  assert.strictEqual(thereBadge(other).title, "On exampletest: runs another version");
+  assert.ok(!hasClass(thereBadge(other), "same"), "amber");
+  assert.ok(hasClass(thereBadge(same), "same"), "grey: the content matches");
+  assert.ok(hasClass(byClass(rowFor(other), "remote-tag")[0], "warn"));
+  assert.ok(!hasClass(byClass(rowFor(same), "remote-tag")[0], "warn"));
+
+  const labels = byClass(shadow, "chip").map((node) => node.textContent);
+  assert.deepStrictEqual(labels.slice(-2), ["Differs on exampletest 4", "All 5"], "just before All");
+  assert.ok(hasClass(chip(shadow, "Differs on exampletest"), "there"));
+  chip(shadow, "Differs on exampletest").click();
+  assert.strictEqual(visibleRows(harness.shadow()).length, 4);
+  assert.ok(!rowFor(fine));
+
+  /* A new check drops the answer, so its filter lapses with it. */
+  buttons(harness.shadow(), "Check")[0].click();
+  assert.strictEqual(visibleRows(harness.shadow()).length, 5);
+  assert.ok(!chip(harness.shadow(), "Differs on exampletest"));
+  assert.strictEqual(chip(harness.shadow(), "All").getAttribute("aria-pressed"), "true");
 });
 
 test("an opened row links to its record and, after a check, to the record, version and history there", async () => {
