@@ -2242,7 +2242,7 @@ async function exportPrefillSource(msg) {
   let pendingText = "";
   let timer = null;
   const send = () => {
-    const payload = { type: "PREFILL_REMOTE_PROGRESS", requestId };
+    const payload = { type: "REMOTE_READ_PROGRESS", requestId };
     if (pendingText) payload.message = pendingText;
     pendingText = "";
     lastSentAt = Date.now();
@@ -6219,12 +6219,12 @@ async function openCurrentRecordPlaybookExecutions() {
 }
 
 /*
- * Every branch here but one answers synchronously, so this listener must not
+ * Every branch here but two answers synchronously, so this listener must not
  * return true for them. `return true` means "a reply is coming later, hold the
  * channel open", and for the branches that never reply it left the sender's
  * promise unsettled until Chrome tore the port down. Answer in each branch,
- * return false once. PREFILL_EXPORT_SOURCE is the one asynchronous branch, and
- * it always replies.
+ * return false once. PREFILL_EXPORT_SOURCE and UPDATE_SET_EXPORT_STATUS are
+ * the asynchronous branches, and both always reply.
  */
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "PREFILL_EXPORT_SOURCE") {
@@ -6237,6 +6237,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: false, error: serialisePrefillError(error) })
     );
     return true;
+  }
+  if (msg && msg.type === "UPDATE_SET_EXPORT_STATUS") {
+    // The same two rules as Prefill's export.
+    if (window !== window.top || !sender || sender.tab || sender.id !== chrome.runtime.id) {
+      return false;
+    }
+    exportUpdateSetStatus(msg).then(sendResponse, (error) =>
+      sendResponse({ ok: false, error: { code: "read-error", message: String((error && error.message) || error) } })
+    );
+    return true;
+  }
+  if (msg && msg.type === "UPDATE_SET_LENS_PROGRESS") {
+    // Another instance's tab, relayed by the worker, while Check on runs.
+    const shown = window === window.top && Boolean(updateSetLensActive);
+    if (shown && typeof msg.message === "string" && msg.message) {
+      updateSetLensActive.ui.showRemote({ state: "busy", message: msg.message }, updateSetLensActive.remoteToken);
+    }
+    sendResponse({ ok: true, shown });
+    return false;
   }
   if (msg && msg.type === "TOGGLE_PALETTE") {
     // Only the top frame owns the palette to avoid duplicate overlays. Every
@@ -6547,6 +6566,25 @@ function buildCommands() {
       group: "Tools",
       keepOpen: true,
       run: refreshCodeSearchCoverage,
+    },
+    /* "Update Set Lens" is three words: the owner's deliberate exception to
+     * the two-word rule. Not `input: true`: on a set's form it opens on that
+     * set without asking, and only elsewhere shows the input row, whose label
+     * and placeholder are these. */
+    {
+      id: "update-set-lens",
+      favoriteKey: "update-set-lens",
+      label: "Update Set Lens",
+      description: "Check an update set for stale updates and where it has moved…",
+      keywords: [
+        "update set", "sys_update_set", "customer update", "sys_update_xml", "stale",
+        "collision", "version", "promote", "retrieved", "preview", "commit",
+      ],
+      group: "Tools",
+      inputLabel: "Update set name, sys_id or link",
+      placeholder: "update set name, sys_id, or a link to it",
+      keepOpen: true,
+      run: openUpdateSetLens,
     },
     {
       id: "open-table-list",
@@ -7501,6 +7539,794 @@ async function openRecordSearch() {
 }
 
 /* =====================================================================
+ * UPDATE SET LENS
+ *
+ * Orchestration only. The engine is update_set_lens.js and the panel is
+ * update_set_lens_ui.js, both injected on first use. Same-instance reads go
+ * through SN_UPDATE_SET_LENS_GET, which bounds each one. Check on another
+ * instance goes through the worker's UPDATE_SET_REMOTE_CHECK, which hands
+ * the reads to GlideLens's own content script in a tab of that instance:
+ * exportUpdateSetStatus below, answering UPDATE_SET_EXPORT_STATUS there.
+ * ===================================================================== */
+
+const UPDATE_SET_LENS_UI_METHODS = ["open", "update", "setOrigins", "showRemote", "close", "isOpen"];
+const UPDATE_SET_LENS_ENGINE_METHODS = [
+  "resolveUpdateSetInput", "pageUpdateSet", "createSession", "remoteView", "remoteProblem",
+];
+/* The worker bounds the check itself. This only catches a reply that never
+ * arrives, if the worker is torn down mid-read. */
+const UPDATE_SET_REMOTE_REPLY_CEILING_MS = 240000;
+let updateSetLensPanelSequence = 0;
+/* The open panel, for progress another instance's tab relays during Check on. */
+let updateSetLensActive = null;
+/* The input row's chooser, while that row is open. */
+let updateSetChooser = null;
+
+async function ensureUpdateSetLensLoaded() {
+  if (!globalThis.SNUpdateSetLens || !globalThis.SNUpdateSetLensUI) {
+    const response = await chrome.runtime.sendMessage({ type: "INJECT_UPDATE_SET_LENS" });
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "Couldn't load Update Set Lens.");
+    }
+  }
+  const engine = globalThis.SNUpdateSetLens;
+  const ui = globalThis.SNUpdateSetLensUI;
+  if (!engine || !ui) throw new Error("Update Set Lens did not load in this frame.");
+  /* A half-loaded panel would take a click and do nothing with it. */
+  const missing = UPDATE_SET_LENS_UI_METHODS.filter((name) => typeof ui[name] !== "function")
+    .concat(UPDATE_SET_LENS_ENGINE_METHODS.filter((name) => typeof engine[name] !== "function"));
+  if (missing.length) throw new Error("Update Set Lens is incomplete.");
+  return true;
+}
+
+function updateSetLensContext(extra) {
+  return Object.assign({ origin: location.origin, sysIdFromText }, extra || {});
+}
+
+function hidePaletteToast() {
+  clearTimeout(showToast._t);
+  if (paletteToast) {
+    paletteToast.style.display = "none";
+    paletteToast.dataset.final = "";
+  }
+}
+
+/* The palette command. On a set's form it opens on that set without asking;
+ * anywhere else it asks for one (§3.2 of the plan). */
+async function openUpdateSetLens() {
+  try {
+    await ensureUpdateSetLensLoaded();
+  } catch (error) {
+    showToast(String((error && error.message) || error), true, 7000);
+    return;
+  }
+  const engine = globalThis.SNUpdateSetLens;
+  const paletteAtStart = paletteHost;
+  showToast("Looking for an update set on this page…", false, 0, { busy: true });
+  let found = { kind: "none" };
+  try {
+    found = await engine.pageUpdateSet(location.href, updateSetLensContext({
+      pageTable: recordContextFromText(location.href).table,
+      currentSysId: getCurrentRecordSysId,
+    }));
+  } catch (error) {
+    found = { kind: "none" };
+  }
+  /* Closed or reopened meanwhile: the person has moved on. */
+  if (!paletteHost || paletteHost !== paletteAtStart) return;
+  if (found.kind === "set" || found.kind === "retrieved") {
+    closePalette();
+    startUpdateSetLens(found, { pageSysId: found.pageSysId });
+    return;
+  }
+  hidePaletteToast();
+  showArgInput(updateSetLensInputCommand());
+}
+
+function updateSetLensInputCommand() {
+  return {
+    id: "update-set-lens",
+    label: "Update Set Lens",
+    inputLabel: "Update set name, sys_id or link",
+    placeholder: "update set name, sys_id, or a link to it",
+    keepOpen: true,
+    argExtras: mountUpdateSetChooser,
+    run: runUpdateSetLensInput,
+  };
+}
+
+/* U1: when a name matches several sets they are listed here, under the
+ * input, and nothing opens until one is picked. */
+function mountUpdateSetChooser({ row, input, keydown }) {
+  const chooser = document.createElement("div");
+  chooser.id = "arg-chooser";
+  chooser.className = "usl-chooser";
+  chooser.setAttribute("role", "group");
+  chooser.hidden = true;
+  const hint = document.createElement("div");
+  hint.id = "arg-hint";
+  hint.className = "cmd-input-hint";
+  hint.textContent = "A name, a sys_id, or the set's link. Names match ignoring capitals and trailing spaces.";
+  row.appendChild(chooser);
+  row.appendChild(hint);
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" || chooser.hidden) return;
+    const first = chooser.querySelector("button");
+    if (!first) return;
+    event.preventDefault();
+    first.focus();
+  });
+  input.addEventListener("input", () => {
+    if (updateSetChooser && updateSetChooser.chooser === chooser) updateSetChooser.typed = null;
+  });
+  updateSetChooser = { chooser, hint, input, keydown, typed: null };
+}
+
+function updateSetChoiceMeta(set) {
+  return [
+    set.stateLabel,
+    set.scope,
+    set.createdBy ? "created by " + set.createdBy : "",
+    set.updatedOn ? "updated " + set.updatedOn : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function showUpdateSetChoices(result) {
+  const state = updateSetChooser;
+  if (!state || !state.chooser.isConnected) return;
+  const { chooser, hint, keydown } = state;
+  chooser.textContent = "";
+  chooser.setAttribute(
+    "aria-label",
+    result.kind === "choose" ? "Sets with this name" : "Sets whose names contain it"
+  );
+  const note = document.createElement("div");
+  note.className = "usl-chooser-note";
+  note.textContent = result.kind === "choose"
+    ? result.sets.length + " sets share this name. Pick one."
+    : "No set is named exactly that. Sets whose names contain it:";
+  chooser.appendChild(note);
+  const options = result.sets.map((set) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "usl-option";
+    const name = document.createElement("span");
+    name.className = "usl-option-name";
+    name.textContent = set.name || "Unnamed update set";
+    if (set.isDefault) {
+      const tag = document.createElement("span");
+      tag.className = "usl-tag";
+      tag.textContent = "Default";
+      name.appendChild(tag);
+    }
+    const meta = document.createElement("span");
+    meta.className = "usl-option-meta";
+    meta.textContent = updateSetChoiceMeta(set);
+    option.appendChild(name);
+    option.appendChild(meta);
+    option.addEventListener("click", () => pickUpdateSet(set));
+    chooser.appendChild(option);
+    return option;
+  });
+  options.forEach((option, index) => {
+    option.onkeydown = (event) => {
+      if (event.key === "Escape") {
+        keydown(event);
+        return;
+      }
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        option.click();
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        const next = index + (event.key === "ArrowDown" ? 1 : -1);
+        if (next < 0) state.input.focus();
+        else if (options[next]) options[next].focus();
+        return;
+      }
+      if (event.key !== "Tab") event.stopPropagation();
+    };
+  });
+  if (result.more) {
+    const more = document.createElement("div");
+    more.className = "usl-chooser-note";
+    more.textContent = "More sets share this name; type more of it or paste the sys_id.";
+    chooser.appendChild(more);
+  }
+  chooser.hidden = false;
+  hint.textContent = "Enter does nothing until a set is picked. Names match ignoring capitals and trailing spaces.";
+}
+
+function pickUpdateSet(set) {
+  closePalette();
+  startUpdateSetLens({ kind: "set", set }, {});
+}
+
+async function runUpdateSetLensInput(value) {
+  const engine = globalThis.SNUpdateSetLens;
+  const state = updateSetChooser;
+  const text = String(value || "").trim();
+  /* Enter never picks: with the same text, the list on screen stands. */
+  if (state && state.typed !== null && state.typed === text && !state.chooser.hidden) return;
+  if (state) {
+    state.typed = null;
+    state.chooser.hidden = true;
+  }
+  const paletteAtStart = paletteHost;
+  showToast("Looking up the update set…", false, 0, { busy: true });
+  let result;
+  try {
+    result = await engine.resolveUpdateSetInput(text, updateSetLensContext());
+  } catch (error) {
+    result = { kind: "error", message: String((error && error.message) || error) };
+  }
+  if (!paletteHost || paletteHost !== paletteAtStart) return;
+  if (result.kind === "set" || result.kind === "retrieved") {
+    closePalette();
+    startUpdateSetLens(result, {});
+    return;
+  }
+  if (result.kind === "choose" || result.kind === "suggest") {
+    hidePaletteToast();
+    if (state) state.typed = text;
+    showUpdateSetChoices(result);
+    return;
+  }
+  showToast(result.message || "Couldn't find that update set.", true, 7000);
+}
+
+async function loadUpdateSetCheckOrigins(ui, isCurrent) {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "PREFILL_SOURCE_INSTANCES" });
+    if (!isCurrent() || !resp || resp.ok !== true || !Array.isArray(resp.origins)) return;
+    ui.setOrigins(resp.origins
+      .filter((entry) => entry && typeof entry.origin === "string" && entry.origin !== location.origin)
+      .map((entry) => ({ origin: entry.origin, label: String(entry.label || prefillInstanceLabel(entry.origin)) })));
+  } catch (error) {
+    /* No list is the same as no other instance open: the hint says how. */
+  }
+}
+
+function startUpdateSetLens(resolution, options) {
+  const engine = globalThis.SNUpdateSetLens;
+  const ui = globalThis.SNUpdateSetLensUI;
+  const token = ++updateSetLensPanelSequence;
+  /* A run is bound to this panel: closing it, or opening another, drops
+   * every late result. */
+  const isCurrent = () => token === updateSetLensPanelSequence && ui.isOpen();
+  const session = engine.createSession(
+    resolution,
+    updateSetLensContext({ shouldStop: () => !isCurrent() }),
+    { pageSysId: (options && options.pageSysId) || "" }
+  );
+  updateSetLensActive = { token, ui, remoteToken: 0 };
+  ui.open({
+    view: session.view(),
+    origins: [],
+    callbacks: {
+      onToggleBatch: (on) => session.setIncludeChildren(on),
+      onContinue: () => session.continue(),
+      onCheckRemote: (origin, remoteToken) => checkUpdateSetElsewhere(session, origin, remoteToken, token),
+      onOpenUrl: (url) => {
+        chrome.runtime.sendMessage({ type: "OPEN_URL", url }).catch(() => {});
+      },
+      onOpenRecord: (name) => openUpdateRecord(name),
+      onOpenRemote: (target) => openOnCheckedInstance(target),
+      onCopy: (text) => copyText(text).then(() => true, () => false),
+      onClose: () => {
+        if (token === updateSetLensPanelSequence) updateSetLensPanelSequence += 1;
+        session.cancel();
+        if (updateSetLensActive && updateSetLensActive.token === token) updateSetLensActive = null;
+      },
+    },
+  });
+  session.onChange((view) => {
+    if (isCurrent()) ui.update(view);
+  });
+  loadUpdateSetCheckOrigins(ui, isCurrent);
+  session.prepare()
+    .then(() => {
+      if (isCurrent() && session.view().phase === "ready") return session.start();
+      return null;
+    })
+    .catch(() => {});
+}
+
+async function checkUpdateSetElsewhere(session, origin, remoteToken, panelToken) {
+  const engine = globalThis.SNUpdateSetLens;
+  const ui = globalThis.SNUpdateSetLensUI;
+  const live = () => panelToken === updateSetLensPanelSequence && ui.isOpen();
+  const instance = prefillInstanceLabel(origin) || origin;
+  let host = origin;
+  try {
+    host = new URL(origin).hostname;
+  } catch (error) {}
+  if (updateSetLensActive && updateSetLensActive.token === panelToken) {
+    updateSetLensActive.remoteToken = remoteToken;
+  }
+  const request = session.remoteRequest();
+  let backstop = null;
+  let reply;
+  try {
+    reply = await Promise.race([
+      chrome.runtime.sendMessage({
+        type: "UPDATE_SET_REMOTE_CHECK",
+        origin,
+        setIds: request.setIds,
+        records: request.records,
+      }),
+      new Promise((resolve) => {
+        backstop = setTimeout(() => resolve({ ok: false, code: "timeout" }), UPDATE_SET_REMOTE_REPLY_CEILING_MS);
+      }),
+    ]);
+  } catch (error) {
+    reply = { ok: false, code: "failed" };
+  } finally {
+    clearTimeout(backstop);
+  }
+  if (!live()) return;
+  if (!reply || reply.ok !== true) {
+    ui.showRemote({ state: "error", message: engine.remoteProblem(reply, instance, host) }, remoteToken);
+    return;
+  }
+  const shown = engine.remoteView(reply, request, session.view().rows, instance, origin);
+  ui.showRemote({
+    state: "done",
+    lines: shown.lines,
+    perRow: shown.perRow,
+    counts: shown.counts,
+    links: shown.links,
+  }, remoteToken);
+}
+
+/* Open record: one lookup when clicked, then the same-origin OPEN_URL. */
+async function openUpdateRecord(name) {
+  const engine = globalThis.SNUpdateSetLens;
+  const found = await engine.recordUrl(name, updateSetLensContext());
+  if (!found.ok) return found;
+  chrome.runtime.sendMessage({ type: "OPEN_URL", url: found.url }).catch(() => {});
+  return { ok: true };
+}
+
+/* A page on the instance checked. Only an origin and ids cross: the worker
+ * builds the URL, and opens it only on an instance open in a tab here. */
+async function openOnCheckedInstance(target) {
+  const instance = prefillInstanceLabel(target && target.origin) || "that instance";
+  const message = { type: "UPDATE_SET_REMOTE_OPEN", origin: target && target.origin };
+  if (target && target.name) message.name = target.name;
+  else {
+    message.table = target && target.table;
+    message.sysId = target && target.sysId;
+  }
+  let reply;
+  try {
+    reply = await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    reply = null;
+  }
+  if (reply && reply.ok === true) return { ok: true };
+  if (reply && reply.code === "not-open") {
+    return { ok: false, message: instance + " isn't open in a tab any more. Open it, sign in, then try again." };
+  }
+  return { ok: false, message: "GlideLens couldn't open that page on " + instance + "." };
+}
+
+/*
+ * Check on, answered in a tab of the instance being checked
+ * (UPDATE_SET_EXPORT_STATUS: from the worker only, top frame only).
+ *
+ * Update Set Lens may never have run in this tab, so this builds its six
+ * fixed reads itself and reads ONLY through SN_UPDATE_SET_LENS_GET, which
+ * bounds each read: never snGetMany or the fan-out SN_TABLE_GET. Every read
+ * carries this tab's origin and requires a token, because a token-less read
+ * raises the browser's own sign-in dialog. It beats after every read itself:
+ * snGetManyListeners hears only snGetMany. Record names are never echoed
+ * back; each record's answer is its status, by index; for one that runs
+ * something else there, when that version was saved and in which set; and
+ * the ids its links need: its record's table and sys_id, and its version's.
+ */
+const UPDATE_SET_EXPORT_PROGRESS_MS = 250;
+const UPDATE_SET_EXPORT_URL_CAP = 6000;
+const UPDATE_SET_EXPORT_NAMES_PER_READ = 40;
+const UPDATE_SET_EXPORT_SETS_PER_READ = 80;
+const UPDATE_SET_EXPORT_COPIES_PER_SET = 20;
+const UPDATE_SET_EXPORT_COPIES = 200;
+const UPDATE_SET_EXPORT_RETRIEVED_FIELDS =
+  "sys_id,state,remote_sys_id,origin_sys_id,update_set,commit_date,collisions,sys_created_on";
+const UPDATE_SET_EXPORT_VERSION_FIELDS = "sys_id,name,state,update_guid,payload_hash,source,source_table,sys_created_on";
+const UPDATE_SET_EXPORT_RECORD_FIELDS = "sys_id,sys_class_name,sys_update_name";
+/* Where-saved notes, and the ids behind each row's links, stop at 64 KiB
+ * each, well inside the worker's 256 KiB reply cap; the rows past either
+ * keep their status and lose only the note or the links. */
+const UPDATE_SET_EXPORT_SAVED_CHARS = 64 * 1024;
+const UPDATE_SET_EXPORT_FOUND_CHARS = 64 * 1024;
+const UPDATE_SET_EXPORT_SAVED_FIELD = 200;
+/* The record lookup only adds links, so it starts no read this long into
+ * the export: with each read held to 30 s, the statuses still reach the
+ * worker inside its 180 s ceiling, whatever the links cost. */
+const UPDATE_SET_EXPORT_LINKS_BY_MS = 120 * 1000;
+
+function updateSetExportRaw(row, field) {
+  const value = row && row[field];
+  if (value == null) return "";
+  if (typeof value === "object") return value.value == null ? "" : String(value.value);
+  return String(value);
+}
+
+function updateSetExportShown(row, field) {
+  const value = row && row[field];
+  if (value == null) return "";
+  if (typeof value === "object") {
+    if (value.display_value != null && value.display_value !== "") return String(value.display_value);
+    return value.value == null ? "" : String(value.value);
+  }
+  return String(value);
+}
+
+function updateSetExportFailure(error) {
+  const out = { code: error && error.status === 403 ? "refused" : "read-error" };
+  if (error && typeof error.status === "number") out.status = error.status;
+  if (out.code === "read-error") out.message = String((error && error.message) || "read failed").slice(0, 300);
+  return out;
+}
+
+function updateSetExportChunks(names, limitFor) {
+  const measure = (group) => {
+    const params = new URLSearchParams();
+    params.set("sysparm_query", "state=current^nameIN" + group.join(","));
+    params.set("sysparm_fields", UPDATE_SET_EXPORT_VERSION_FIELDS);
+    params.set("sysparm_limit", String(limitFor(group.length)));
+    params.set("sysparm_display_value", "all");
+    return location.origin.length + "/api/now/table/sys_update_version?".length + params.toString().length;
+  };
+  const chunks = [];
+  let current = [];
+  names.forEach((name) => {
+    const next = current.concat([name]);
+    if (current.length && (next.length > UPDATE_SET_EXPORT_NAMES_PER_READ || measure(next) > UPDATE_SET_EXPORT_URL_CAP)) {
+      chunks.push(current);
+      current = [name];
+    } else {
+      current = next;
+    }
+  });
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
+/* The verdict for one record against what runs there, by guid and hash
+ * together. No newer or older claim: versions on two instances aren't
+ * ordered. No current version is not absence. */
+function updateSetExportStatus(record, versions) {
+  if (!versions.length) return "none";
+  if (versions.length > 1) return "unknown";
+  const current = versions[0];
+  if (!current.guid || !current.hash) return "unknown";
+  if (current.guid === record.guid) return current.hash === record.hash ? "runs" : "conflict";
+  return current.hash === record.hash ? "same" : "other";
+}
+
+/* When and where the version that runs there was saved, for a record that
+ * runs something else there. A set shows as "<table label>: <name>", so
+ * only the name is kept; any other source keeps its label. */
+function updateSetExportSaved(version) {
+  const out = {};
+  if (version.savedOn) out.on = version.savedOn;
+  if (version.source && version.sourceTable === "sys_update_set") {
+    const at = version.source.indexOf(": ");
+    out.set = at >= 0 ? version.source.slice(at + 2) : version.source;
+  } else if (version.source) {
+    out.from = version.source;
+  }
+  Object.keys(out).forEach((field) => { out[field] = out[field].slice(0, UPDATE_SET_EXPORT_SAVED_FIELD); });
+  return Object.keys(out).length ? out : null;
+}
+
+async function exportUpdateSetStatus(msg) {
+  const startedAt = Date.now();
+  const requestId = typeof msg.requestId === "string" ? msg.requestId : "";
+  const setIds = (Array.isArray(msg.setIds) ? msg.setIds : [])
+    .filter((id) => typeof id === "string" && /^[0-9a-f]{32}$/.test(id))
+    .slice(0, 1000);
+  /* The worker checked these; a record that still fails is answered
+   * "unknown" and never reaches a query. */
+  const records = (Array.isArray(msg.records) ? msg.records : []).slice(0, 2000).map((record) => {
+    const ok = record && typeof record.name === "string" && /^[A-Za-z0-9_.-]{1,250}$/.test(record.name) &&
+      typeof record.guid === "string" && /^[0-9a-f]{32}$/.test(record.guid) &&
+      typeof record.hash === "string" && /^-?[0-9]{1,10}$/.test(record.hash);
+    return ok ? { name: record.name, guid: record.guid, hash: record.hash } : null;
+  });
+  let lastSentAt = 0;
+  let pendingText = "";
+  let timer = null;
+  const send = () => {
+    const payload = { type: "REMOTE_READ_PROGRESS", requestId };
+    if (pendingText) payload.message = pendingText;
+    pendingText = "";
+    lastSentAt = Date.now();
+    chrome.runtime.sendMessage(payload).catch(() => {});
+  };
+  /* At most one message per 250 ms, as Prefill's export; a heartbeat with no
+   * text rides on the same message. */
+  const report = (text) => {
+    if (text) pendingText = text;
+    if (timer) return;
+    const wait = lastSentAt + UPDATE_SET_EXPORT_PROGRESS_MS - Date.now();
+    if (wait <= 0) {
+      send();
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      send();
+    }, wait);
+  };
+  const options = { expectedOrigin: location.origin, requireToken: true };
+  const read = async (table, query, fields, limit, displayAll) => {
+    let resp;
+    try {
+      resp = await chrome.runtime.sendMessage({
+        type: "SN_UPDATE_SET_LENS_GET",
+        table,
+        query,
+        fields,
+        limit,
+        options: Object.assign({ displayAll: Boolean(displayAll) }, options),
+      });
+    } finally {
+      report("");
+    }
+    if (!resp || resp.ok !== true) {
+      const error = new Error((resp && resp.error) || "Couldn't read " + table);
+      if (resp && typeof resp.status === "number") error.status = resp.status;
+      throw error;
+    }
+    return Array.isArray(resp.result) ? resp.result : [];
+  };
+  const chunked = (ids, size) => {
+    const out = [];
+    for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+    return out;
+  };
+  const inList = (field, ids) => (ids.length === 1 ? field + "=" + ids[0] : field + "IN" + ids.join(","));
+
+  // Started, before the first read: the worker tells "nothing was listening"
+  // from "the tab changed under the read" by whether this arrived.
+  send();
+  try {
+    const copies = [];
+    const perSet = new Map();
+    const clones = [];
+    let presenceFailure = null;
+    const pushCopy = (row, index, match) => {
+      const count = perSet.get(index) || 0;
+      if (count >= UPDATE_SET_EXPORT_COPIES_PER_SET || copies.length >= UPDATE_SET_EXPORT_COPIES) return;
+      perSet.set(index, count + 1);
+      const updateSet = updateSetExportRaw(row, "update_set").toLowerCase();
+      copies.push({
+        set: index,
+        match,
+        sysId: updateSetExportRaw(row, "sys_id").toLowerCase(),
+        state: updateSetExportRaw(row, "state").toLowerCase(),
+        stateLabel: updateSetExportShown(row, "state"),
+        retrievedOn: updateSetExportShown(row, "sys_created_on"),
+        committedOn: updateSetExportShown(row, "commit_date"),
+        collisions: updateSetExportShown(row, "collisions"),
+        updateSet: /^[0-9a-f]{32}$/.test(updateSet) ? updateSet : "",
+      });
+    };
+    try {
+      report("Reading retrieved copies…");
+      /* 1. Retrieved copies of these sets, newest first. */
+      for (const group of chunked(setIds, UPDATE_SET_EXPORT_SETS_PER_READ)) {
+        const rows = await read("sys_remote_update_set",
+          inList("remote_sys_id", group) + "^ORDERBYDESCsys_created_on", UPDATE_SET_EXPORT_RETRIEVED_FIELDS, 1000, true);
+        rows.forEach((row) => {
+          const index = setIds.indexOf(updateSetExportRaw(row, "remote_sys_id").toLowerCase());
+          if (index < 0 || !group.includes(setIds[index])) return;
+          pushCopy(row, index, "remote");
+        });
+      }
+      /* 2. By origin, for the sets not found by id. */
+      const missing = setIds.filter((id, index) => !perSet.has(index));
+      for (const group of chunked(missing, UPDATE_SET_EXPORT_SETS_PER_READ)) {
+        const rows = await read("sys_remote_update_set",
+          inList("origin_sys_id", group) + "^ORDERBYDESCsys_created_on", UPDATE_SET_EXPORT_RETRIEVED_FIELDS, 1000, true);
+        rows.forEach((row) => {
+          const origin = updateSetExportRaw(row, "origin_sys_id").toLowerCase();
+          if (!group.includes(origin)) return;
+          pushCopy(row, setIds.indexOf(origin), "origin");
+        });
+      }
+      /* 3. The local sets committed copies point at, validated first: a
+       * missing link once built `sys_id=undefined`. */
+      const localIds = Array.from(new Set(copies
+        .filter((copy) => copy.state === "committed" && /^[0-9a-f]{32}$/.test(copy.updateSet))
+        .map((copy) => copy.updateSet)));
+      const locals = new Map();
+      for (const group of chunked(localIds, UPDATE_SET_EXPORT_SETS_PER_READ)) {
+        const rows = await read("sys_update_set", inList("sys_id", group), "sys_id,state,remote_sys_id", group.length + 1, true);
+        rows.forEach((row) => {
+          const id = updateSetExportRaw(row, "sys_id").toLowerCase();
+          if (group.includes(id)) locals.set(id, row);
+        });
+      }
+      copies.forEach((copy) => {
+        const local = locals.get(copy.updateSet);
+        if (!local) return;
+        copy.localState = updateSetExportRaw(local, "state").toLowerCase();
+        copy.localStateLabel = updateSetExportShown(local, "state");
+        copy.linked = updateSetExportRaw(local, "remote_sys_id").toLowerCase() === copy.sysId;
+      });
+      /* 4. The same sys_id as a set here: clone lineage, not promotion. */
+      for (const group of chunked(setIds, UPDATE_SET_EXPORT_SETS_PER_READ)) {
+        const rows = await read("sys_update_set", inList("sys_id", group), "sys_id", group.length + 1, false);
+        rows.forEach((row) => {
+          const index = setIds.indexOf(updateSetExportRaw(row, "sys_id").toLowerCase());
+          if (index >= 0 && group.includes(setIds[index]) && !clones.includes(index)) clones.push(index);
+        });
+      }
+    } catch (error) {
+      if (error && error.status === 401) throw error;
+      presenceFailure = updateSetExportFailure(error);
+    }
+
+    /* 5. What runs there, 40 names a read under the URL cap. */
+    const names = Array.from(new Set(records.filter(Boolean).map((record) => record.name)));
+    const limitFor = (count) => count * 2 + 2;
+    const queue = updateSetExportChunks(names, limitFor);
+    const byName = new Map();
+    const failedNames = new Set();
+    const saturated = new Set();
+    let refused = 0;
+    let done = 0;
+    while (queue.length) {
+      const group = queue.shift();
+      const limit = limitFor(group.length);
+      let rows;
+      try {
+        rows = await read("sys_update_version",
+          "state=current^" + inList("name", group), UPDATE_SET_EXPORT_VERSION_FIELDS, limit, true);
+      } catch (error) {
+        if (error && error.status === 401) throw error;
+        if (error && error.status === 403) refused += 1;
+        group.forEach((name) => failedNames.add(name));
+        continue;
+      }
+      if (rows.length >= limit) {
+        if (group.length === 1) saturated.add(group[0]);
+        else queue.push(group.slice(0, Math.ceil(group.length / 2)), group.slice(Math.ceil(group.length / 2)));
+        continue;
+      }
+      done += 1;
+      report("Comparing versions… " + done + " read" + (done === 1 ? "" : "s"));
+      rows.forEach((row) => {
+        const name = updateSetExportRaw(row, "name");
+        if (updateSetExportRaw(row, "state") !== "current" || !group.includes(name)) return;
+        if (!byName.has(name)) byName.set(name, []);
+        byName.get(name).push({
+          sysId: updateSetExportRaw(row, "sys_id").toLowerCase(),
+          guid: updateSetExportRaw(row, "update_guid"),
+          hash: updateSetExportRaw(row, "payload_hash"),
+          savedOn: updateSetExportShown(row, "sys_created_on"),
+          source: updateSetExportRaw(row, "source") ? updateSetExportShown(row, "source") : "",
+          sourceTable: updateSetExportRaw(row, "source_table"),
+        });
+      });
+    }
+    /* Every read failing is a failure of the check; some failing leaves those
+     * records "unknown" and the rest stand. */
+    let content = null;
+    let saved = null;
+    let found = null;
+    let contentFailure = null;
+    if (names.length > 0 && failedNames.size === names.length) {
+      contentFailure = refused ? { code: "refused", status: 403 } : { code: "read-error", message: "Version reads failed" };
+    } else {
+      content = records.map((record) => {
+        if (!record || failedNames.has(record.name) || saturated.has(record.name)) return "unknown";
+        return updateSetExportStatus(record, byName.get(record.name) || []);
+      });
+      let spent = 0;
+      saved = content.map((status, index) => {
+        if ((status !== "other" && status !== "same") || spent > UPDATE_SET_EXPORT_SAVED_CHARS) return null;
+        const note = updateSetExportSaved(byName.get(records[index].name)[0]);
+        if (note) spent += JSON.stringify(note).length;
+        return note;
+      });
+
+      /* 6. Each record's own table and sys_id here, as ServiceNow's Show
+       * Related Record finds them: sys_metadata by sys_update_name, latest
+       * updated first. Its URL is shorter than the version read's, so the
+       * same chunks fit. A failed read, or one the time limit leaves out,
+       * costs only those records' links. */
+      const own = new Map();
+      const seen = new Set();
+      const metaQueue = updateSetExportChunks(names, limitFor);
+      if (metaQueue.length) report("Finding the records…");
+      while (metaQueue.length && Date.now() - startedAt < UPDATE_SET_EXPORT_LINKS_BY_MS) {
+        const group = metaQueue.shift();
+        const limit = limitFor(group.length);
+        let rows;
+        try {
+          rows = await read("sys_metadata", inList("sys_update_name", group) + "^ORDERBYDESCsys_updated_on",
+            UPDATE_SET_EXPORT_RECORD_FIELDS, limit, false);
+        } catch (error) {
+          continue;
+        }
+        if (rows.length >= limit) {
+          if (group.length > 1) metaQueue.push(group.slice(0, Math.ceil(group.length / 2)), group.slice(Math.ceil(group.length / 2)));
+          continue;
+        }
+        const byFolded = new Map(group.map((name) => [name.trim().toLowerCase(), name]));
+        rows.forEach((row) => {
+          const name = byFolded.get(updateSetExportRaw(row, "sys_update_name").trim().toLowerCase());
+          if (!name || seen.has(name)) return;
+          seen.add(name);
+          const table = updateSetExportRaw(row, "sys_class_name");
+          const id = updateSetExportRaw(row, "sys_id").toLowerCase();
+          if (/^[a-z][a-z0-9_]{0,79}$/.test(table) && /^[0-9a-f]{32}$/.test(id)) own.set(name, { table, id });
+        });
+      }
+      let linkSpent = 0;
+      found = records.map((record) => {
+        if (!record || linkSpent > UPDATE_SET_EXPORT_FOUND_CHARS) return null;
+        const out = {};
+        const mine = own.get(record.name);
+        if (mine) {
+          out.table = mine.table;
+          out.record = mine.id;
+        }
+        const versions = byName.get(record.name) || [];
+        if (versions.length === 1 && /^[0-9a-f]{32}$/.test(versions[0].sysId)) out.version = versions[0].sysId;
+        if (!Object.keys(out).length) return null;
+        linkSpent += JSON.stringify(out).length;
+        return out;
+      });
+    }
+    return {
+      ok: true,
+      copies: copies.map((copy) => {
+        const out = {
+          set: copy.set,
+          match: copy.match,
+          state: copy.state,
+          stateLabel: copy.stateLabel,
+          retrievedOn: copy.retrievedOn,
+          committedOn: copy.committedOn,
+          collisions: copy.collisions,
+        };
+        if (copy.localState) {
+          out.localState = copy.localState;
+          out.localStateLabel = copy.localStateLabel;
+          out.linked = copy.linked;
+        }
+        return out;
+      }),
+      clones,
+      content,
+      saved,
+      found,
+      presenceFailure,
+      contentFailure,
+    };
+  } catch (error) {
+    // Every read here carried a token, so a 401 is the session, not the token.
+    if (error && error.status === 401) {
+      return { ok: false, error: { code: "signed-out", status: 401, message: "Not signed in" } };
+    }
+    const out = updateSetExportFailure(error);
+    return { ok: false, error: out };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* =====================================================================
  * IMPERSONATE
  *
  * Orchestration only. The engine is impersonate.js, the panel is
@@ -8301,6 +9127,24 @@ const PALETTE_CSS = `
     border-color:var(--teal);background:color-mix(in srgb, var(--teal) 18%, var(--palette-raised));
   }
   #palette-confirm button:focus{outline:2px solid var(--teal);outline-offset:2px}
+  .usl-chooser{
+    display:flex;flex-direction:column;gap:4px;max-height:260px;overflow:auto;padding:5px;
+    background:#171724;border:1px solid #565681;border-radius:8px;
+  }
+  .usl-chooser-note{padding:6px 9px 4px;color:#9999b1;font-size:11px;line-height:1.4}
+  .usl-option{
+    display:grid;gap:3px;width:100%;padding:9px;border:1px solid transparent;border-radius:6px;
+    background:transparent;color:#ececf7;text-align:left;cursor:pointer;font:inherit;
+  }
+  .usl-option:hover,.usl-option:focus{
+    background:#2c2d49;border-color:#4d5079;outline:none;box-shadow:inset 3px 0 0 var(--teal);
+  }
+  .usl-option-name{font-size:12.5px;font-weight:650;overflow-wrap:anywhere}
+  .usl-option-meta{color:#9494af;font-size:11px;overflow-wrap:anywhere}
+  .usl-tag{
+    display:inline-block;margin-left:6px;padding:0 5px;border:1px solid #6d5b34;border-radius:4px;
+    color:#e2b864;font-size:10px;font-weight:600;line-height:1.5;
+  }
   #toast{
     display:none;padding:10px 16px;font-size:12px;line-height:1.5;white-space:pre-line;
     border-top:1px solid var(--palette-border-subtle);color:#a8e6b8;

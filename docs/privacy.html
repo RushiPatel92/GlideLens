@@ -128,7 +128,7 @@ main.wrap { padding-top: 40px; }
 
   <p class="eyebrow">Privacy</p>
   <h1>What GlideLens does with your data</h1>
-  <p class="updated">Last updated 15 October 2026 · applies to GlideLens v0.11.1 and later</p>
+  <p class="updated">Last updated 30 October 2026 · applies to GlideLens v0.11.1 and later</p>
 
   <div class="tldr">
     <p><strong>There is no GlideLens server.</strong> No account, no telemetry, no
@@ -146,7 +146,9 @@ main.wrap { padding-top: 40px; }
   using the feature that needs it. None of it is transmitted anywhere except
   back to the ServiceNow instance it came from — or, when you ask Variable
   Prefill to copy a ticket from another instance you have open, to the
-  instance whose form you are filling, as described below.</p>
+  instance whose form you are filling, and when you ask Update Set Lens to
+  check another instance you have open, to that instance, as described
+  below.</p>
 
   <div class="scroll-x">
   <table>
@@ -178,6 +180,21 @@ main.wrap { padding-top: 40px; }
       <td>While Debug Timeline is recording: <code>g_form</code> calls, field
       events, GlideAjax requests and responses, and JavaScript errors</td>
       <td>To produce the timeline. See the caveat below</td>
+    </tr>
+    <tr>
+      <td>When you run Update Set Lens: the update set's details, and for each
+      update it holds, its name, type and fingerprint (update id and content
+      hash), with the same for the versions of those records, including who
+      recorded them and when, and, when you click <strong>Open record</strong>,
+      that record's table and sys_id. Never the updates' contents</td>
+      <td>To tell which updates are no longer the version that runs, and where
+      the newer one is. With <strong>Check on</strong>, each update's name and
+      fingerprint go to the other instance you chose, through a tab you have
+      open there, to compare with what runs there; for an update that differs
+      there, when the version running there was saved and the name of the
+      update set it was saved in come back, and for each update, the table and
+      sys_id of its record there and the sys_id of the version that runs there,
+      so the row can link to them</td>
     </tr>
     <tr>
       <td>When you run Translation Assistant: the text of the catalog item open
@@ -250,8 +267,9 @@ main.wrap { padding-top: 40px; }
   <p><strong>Nothing, other than requests to the ServiceNow instance you are
   already signed in to.</strong> The extension makes network requests to the
   origin of the ServiceNow tab you are on. When you ask Variable Prefill to read
-  a ticket from another instance, GlideLens reads it through a tab you already
-  have open on that instance, with that tab's own session, in the same way. It
+  a ticket from another instance, or Update Set Lens to check another instance,
+  GlideLens reads it through a tab you already have open on that instance, with
+  that tab's own session, in the same way. It
   never signs in anywhere itself. It has permission to reach
   <code>https://*.service-now.com/*</code> and nothing else, so it could not
   contact a third party even if it tried to.</p>

@@ -320,11 +320,11 @@ function exportReply(variables, extra) {
  */
 function loadWorker(options) {
   const opts = options || {};
-  const block = between(backgroundSource, "const PREFILL_REMOTE_IDLE_MS", "// Content scripts can't call chrome.tabs.create")
-    .replace("const PREFILL_REMOTE_IDLE_MS = 45000;", "const PREFILL_REMOTE_IDLE_MS = " + (opts.idleMs || 200) + ";")
-    .replace("const PREFILL_REMOTE_CEILING_MS = 180000;",
-      "const PREFILL_REMOTE_CEILING_MS = " + (opts.ceilingMs || 5000) + ";")
-    .replace("const PREFILL_REMOTE_TICK_MS = 1000;", "const PREFILL_REMOTE_TICK_MS = 5;");
+  const block = between(backgroundSource, "const REMOTE_READ_IDLE_MS", "// Content scripts can't call chrome.tabs.create")
+    .replace("const REMOTE_READ_IDLE_MS = 45000;", "const REMOTE_READ_IDLE_MS = " + (opts.idleMs || 200) + ";")
+    .replace("const REMOTE_READ_CEILING_MS = 180000;",
+      "const REMOTE_READ_CEILING_MS = " + (opts.ceilingMs || 5000) + ";")
+    .replace("const REMOTE_READ_TICK_MS = 1000;", "const REMOTE_READ_TICK_MS = 5;");
   const origins = between(backgroundSource, "const SN_TAB_HOST", "/* Returns a URL rebuilt from its parsed form");
   const state = {
     tabs: opts.tabs || [],
@@ -341,7 +341,7 @@ function loadWorker(options) {
   let api;
   const worker = {
     heartbeat: (tabId, requestId, message) =>
-      api.notePrefillRemoteProgress({ requestId, message }, { tab: { id: tabId }, frameId: 0 }),
+      api.noteRemoteReadProgress({ requestId, message }, { tab: { id: tabId }, frameId: 0 }),
   };
   const chrome = {
     tabs: {
@@ -359,8 +359,8 @@ function loadWorker(options) {
     "chrome", "discoverContentFrames", "probeTokenFrame", "readImpersonationState",
     "prefillSwapByTab", "prefillRemoteByTab", "sendToTab",
     origins + block +
-      "\nreturn { readPrefillFromOtherInstance, prefillSourceInstances, notePrefillRemoteProgress, " +
-      "checkedPrefillExport, prefillRemoteByRequest };"
+      "\nreturn { readPrefillFromOtherInstance, otherInstanceOrigins, noteRemoteReadProgress, " +
+      "checkedPrefillExport, remoteReadByRequest };"
   )(
     chrome,
     async () => [0],
@@ -392,7 +392,7 @@ test("the Read from list is every other instance open in this browsing context, 
       sourceTab({ id: 6, url: "https://exampleprivate.service-now.com/", incognito: true }),
     ],
   });
-  const answer = plain(await worker.prefillSourceInstances(SENDER));
+  const answer = plain(await worker.otherInstanceOrigins(SENDER));
   assert.deepStrictEqual(answer, {
     ok: true,
     origins: [
@@ -405,7 +405,7 @@ test("the Read from list is every other instance open in this browsing context, 
 test("an incognito tab is never offered to a normal window, nor a normal one to incognito", async () => {
   const tabs = [sourceTab({ incognito: true })];
   const worker = loadWorker({ tabs, answer: async () => exportReply([]) });
-  assert.deepStrictEqual(plain(await worker.prefillSourceInstances(SENDER)).origins, []);
+  assert.deepStrictEqual(plain(await worker.otherInstanceOrigins(SENDER)).origins, []);
   const read = await worker.readPrefillFromOtherInstance({ origin: SANDBOX, input: "RITM0010001" }, SENDER);
   assert.strictEqual(read.code, "not-open");
   assert.deepStrictEqual(worker.state.sent, []);
@@ -520,15 +520,15 @@ test("the source's progress reaches the form's top frame, and nobody else's does
     answer: async (tabId, message, w) => {
       w.heartbeat(tabId, message.requestId);
       w.heartbeat(tabId, message.requestId, "Reading catalog variables…");
-      worker.notePrefillRemoteProgress(
+      worker.noteRemoteReadProgress(
         { requestId: message.requestId, message: "from the wrong tab" },
         { tab: { id: 99 }, frameId: 0 }
       );
-      worker.notePrefillRemoteProgress(
+      worker.noteRemoteReadProgress(
         { requestId: message.requestId, message: "from a sub-frame" },
         { tab: { id: 51 }, frameId: 4 }
       );
-      worker.notePrefillRemoteProgress({ requestId: "made-up", message: "unknown read" }, { tab: { id: 51 }, frameId: 0 });
+      worker.noteRemoteReadProgress({ requestId: "made-up", message: "unknown read" }, { tab: { id: 51 }, frameId: 0 });
       return exportReply([]);
     },
   });
@@ -536,7 +536,7 @@ test("the source's progress reaches the form's top frame, and nobody else's does
   assert.deepStrictEqual(plain(worker.state.relayed), [
     { tabId: 1, message: { type: "PREFILL_PROGRESS", message: "Reading catalog variables…" }, options: { frameId: 0 } },
   ]);
-  assert.strictEqual(worker.prefillRemoteByRequest.size, 0, "nothing is kept once the read settles");
+  assert.strictEqual(worker.remoteReadByRequest.size, 0, "nothing is kept once the read settles");
 });
 
 test("a read that keeps sending heartbeats survives several slow reads in a row", async () => {
@@ -736,12 +736,12 @@ test("the read route takes an origin and a ticket, and nothing that could steer 
   const route = stripComments(between(
     backgroundSource,
     'if (msg && msg.type === "PREFILL_REMOTE_READ"',
-    'if (msg && msg.type === "PREFILL_REMOTE_PROGRESS"'
+    'if (msg && msg.type === "REMOTE_READ_PROGRESS"'
   ));
   const fromMessage = Array.from(new Set(route.match(/msg\.[A-Za-z_]+/g) || [])).sort();
   assert.deepStrictEqual(fromMessage, ["msg.input", "msg.origin", "msg.type"]);
   assert.ok(!/PREFILL_SWAP|stopImpersonation|runImpersonation/.test(
-    between(backgroundSource, "const PREFILL_REMOTE_IDLE_MS", "// Content scripts can't call chrome.tabs.create")
+    between(backgroundSource, "const REMOTE_READ_IDLE_MS", "// Content scripts can't call chrome.tabs.create")
   ), "the remote read never switches anyone's session");
 });
 
@@ -910,10 +910,10 @@ test("the export says it started before its first read, and beats after reads", 
   const prefill = loadPrefill({ origin: SANDBOX, answer: sourceInstance({ slowTaskMs: 300 }) });
   await prefill.exportPrefillSource({ input: "RITM0010001", requestId: "r1" });
   const types = sentTypes(prefill.page);
-  assert.strictEqual(types[0], "PREFILL_REMOTE_PROGRESS", "the heartbeat goes before any read");
+  assert.strictEqual(types[0], "REMOTE_READ_PROGRESS", "the heartbeat goes before any read");
   assert.strictEqual(prefill.page.sent[0].requestId, "r1");
   assert.ok(!("message" in prefill.page.sent[0]));
-  const beats = prefill.page.sent.filter((msg) => msg.type === "PREFILL_REMOTE_PROGRESS");
+  const beats = prefill.page.sent.filter((msg) => msg.type === "REMOTE_READ_PROGRESS");
   assert.ok(beats.length >= 2, "more than the first one");
   assert.ok(beats.every((beat) => beat.requestId === "r1"));
 });

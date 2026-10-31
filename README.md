@@ -41,6 +41,11 @@ walkthrough.
   locked-out and web-service-only accounts are never offered, and nothing
   happens without an explicit confirmation. ServiceNow audits impersonation
   itself.
+- **Update Set Lens**: before you promote an update set, see which of its
+  updates are no longer the version this instance runs, and where the newer
+  one is — then check, on another instance open in your browser, whether the
+  set got there and whether that instance runs the same versions. Read-only on
+  both.
 
 ---
 
@@ -209,6 +214,7 @@ line is the description shown beside it.
 | Code Search | *Search verified code and configuration…* Searches all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
 | Impersonate | *Find a user by identity, role or group and start impersonation.* Searches `sys_user` by name, user ID, email, title or exact `sys_id`, by a filterable field discovered from your instance's own dictionary, by **role** or by **group** — including either one alone, so "who holds `catalog_admin`?" or "who is in this group?" is answerable without knowing a name first. Role membership comes from the effective membership table, so grants that arrive through a group or through role containment are included, and each holder is badged **Direct role** or **Inherited role**. Group membership is the group's direct members, as its Group Members list shows them. Inactive, locked-out and web-service-only accounts are never listed, because impersonating one can end your own session. A typed name searches once you pause. When the panel opens, it lists the people you recently impersonated, from ServiceNow's own list, and checks each one like a search result. A result opens a confirmation rather than acting, and the confirmation lists the roles the person was assigned, directly or through a group, with the roles bundled inside those one click away; **Stop impersonating** returns you to the account you started from, going through ServiceNow's classic impersonation dialog when the usual way back is refused. ServiceNow records impersonation in its own audit log. |
 | Search Sources | *Refresh available Code Search sources.* Re-reads this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
+| Update Set Lens | *Check an update set for stale updates and where it has moved…* On an update set's form it opens on that set; anywhere else it asks for a set's name, `sys_id` or link. Each customer update is reported as **Stale** (a newer version from another set, an upgrade or an app install now runs here, named with who recorded it and when), **Can't tell** (with the reason), **Same content**, **In this batch** or **Current**. **Check on** compares the set with another instance open in your browser. Read-only on both instances. |
 
 #### Code Search
 
@@ -253,6 +259,52 @@ Code search is read-only: it performs same-instance GETs and never
 runs or edits what it finds. It does not support regular expressions. Searches
 are capped at 50 records per source; refine the text or use `table:<name>` to
 retry that source when it reports **Capped**.
+
+#### Update Set Lens
+
+Open the palette on an update set's form and choose **Update Set Lens**; it
+opens on that set. A retrieved set's form opens on the local set it was
+committed into, or, when it is not committed here, says where it stands
+(loaded, previewed, backed out) with links to ServiceNow's own form and
+preview problems. Anywhere else, type the set's name, its `sys_id`, or paste
+its link. When several sets share the name, they are listed under the input,
+with Default sets marked and last, and nothing opens until you pick one.
+
+The panel opens on the rows that need attention:
+
+- **Stale** — the version this instance runs came later, from another set
+  (named, with its state: in progress, Default, Ignore), from an upgrade or
+  from an application install. Deletes, re-creations and reverts are worded as
+  such. A row is called Stale only when this set's own version was loaded here
+  and later replaced, so an update skipped at commit is never reported as
+  replaced by an older one.
+- **Can't tell** — the version history is missing, unreadable or contradicts
+  the update, with the reason on the row. Use **Version history** or the
+  update's own **Compare to Current**.
+
+The rest are **Same content** (the same content runs, versioned under another
+set), **In this batch** (a newer version in a sibling set of the same batch)
+and **Current**. The summary counts are filters. A batch parent that holds no
+updates itself checks its child sets, nested ones included, which you can
+switch off. A run checks up to 2,000 updates and offers **Check the next
+2,000**. Only captured changes are compared: a change made without an update
+set capturing it has no version to compare. An opened row links to the
+update, its **record** (found the way ServiceNow's own Show Related Record
+finds it) and its version history.
+
+**Check on** lists the other ServiceNow instances open in tabs of this browser
+(normal and private windows are kept apart). Sign in there first: it asks the
+chosen one — as that tab's own
+session — whether this set (or each set of a batch) was retrieved there and how
+far it got, and record by record whether that instance runs the same version.
+Where it runs another version, the row says when that version was saved
+there and in which update set, so a change made there after the commit is
+easy to spot. An opened row then also links, on that instance, to the
+record, the version that runs there and the record's version history, where
+you can compare its versions; a record with no current version there gets no
+history link. A record with no readable current version there
+is reported as exactly that, never as missing. **Copy summary** copies counts
+only: no set, record or person name, id or link.
 
 **Record**
 
@@ -457,6 +509,7 @@ could not contact a third party if it tried. Four small things are kept in
 local extension storage: your pinned palette command, two per-instance maps of
 what code search can reach, and the Record Lens tables you starred on each
 instance with the names of their search fields, filter fields and shown columns.
+Update Set Lens keeps what it reads in the open panel only.
 Translation Assistant is the one feature that
 produces something meant to leave your browser: a JSON file of a catalog
 item's field text, which you upload to an AI tool of your own choosing. GlideLens

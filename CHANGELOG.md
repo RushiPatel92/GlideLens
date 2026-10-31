@@ -13,6 +13,24 @@ reconstructed version by version.
 ## Unreleased
 
 ### Added
+- **Update Set Lens.** A new palette command for checking an update set before
+  you promote it. On a set's form it opens on that set; elsewhere, type its
+  name, `sys_id` or link. Each customer update is reported as **Stale** (the
+  version this instance runs came later, from another set, an upgrade or an
+  app install, named with who recorded it and when), **Can't tell** (with the
+  reason), **Same content**, **In this batch** or **Current**. Stale is claimed
+  only when this set's own version was loaded here and later replaced, so an
+  update skipped at commit is never reported as replaced by an older one. A
+  batch parent with no updates of its own checks its child sets, nested ones
+  included. A set committed from another instance is read from both places its
+  updates can live. **Check on** asks another instance open in the browser,
+  as that tab's own session, whether the set was retrieved there and how far it
+  got, and record by record whether that instance runs the same version;
+  where it doesn't, when and in which update set that version was saved. Each
+  row links to its update, record and version history here, and after a check
+  to its record, running version and version history there. Up to 2,000
+  updates a run, then **Check the next 2,000**. Read-only on both instances;
+  **Copy summary** copies counts only.
 - **Value filters in Record Lens.** Narrow a search by up to three exact
   values on reference and choice fields — Assignment group, Caller, State,
   Priority — with text, with an exact `sys_id`, or on their own, when results
