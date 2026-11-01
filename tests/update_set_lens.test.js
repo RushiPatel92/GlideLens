@@ -917,6 +917,56 @@ test("membership pages are keyed on sys_id, 200 a page, and a run stops at 2,000
   assert.strictEqual(new Set(view.rows.map((row) => row.name)).size, 2150, "no row twice across runs");
 });
 
+/* ServiceNow answers HTTP 400 "Pagination not supported" when a long query
+ * matches more rows than its limit, unless the pagination header is
+ * suppressed (measured: 2,007 characters passed, 2,667 failed). This fake
+ * fails from 2,048 characters. */
+function paginatingInstance(world) {
+  const sn = fakeInstance(world);
+  const requests = [];
+  const transport = async (request) => {
+    requests.push(plain(request));
+    const options = request.options || {};
+    const full = await sn.transport(Object.assign({}, request, { options: Object.assign({}, options, { withTotal: true }) }));
+    if (!options.suppressPagination && String(request.query).length > 2048 && full.ok && full.total > request.limit) {
+      return { ok: false, status: 400, error: "HTTP 400 reading " + request.table };
+    }
+    if (!options.withTotal) delete full.total;
+    return full;
+  };
+  return { transport, requests };
+}
+
+test("a batch of 80 child sets is counted and read: every read suppresses the pagination header", async () => {
+  const children = Array.from({ length: 80 }, (_, index) => setRow(100 + index, { parent: SET }));
+  const world = {
+    sets: [setRow(1, { name: "Release batch" })].concat(children),
+    xml: [],
+    versions: [],
+  };
+  /* Two updates a child: the 80-id chunk then matches 160 rows, which
+   * overflows the 1-row count read. */
+  children.forEach((child, index) => {
+    [[NAME(5000 + index), guid(index + 1), String(index)], [NAME(6000 + index), guid(index + 200), String(1000 + index)]]
+      .forEach(([name, g, hash]) => {
+        world.xml.push(xmlRow(child.sys_id, name, g, hash));
+        world.versions.push(versionRow(name, child.sys_id, "current", g, hash, "2026-10-01 10:00:00"));
+      });
+  });
+  const instance = paginatingInstance(world);
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(world.sets[0]) }, ctxFor(instance), {});
+  await session.prepare();
+  await session.start();
+  const view = session.view();
+  assert.strictEqual(view.phase, "done", "the run finishes rather than ending in an error");
+  assert.deepStrictEqual(plain(view.totals), { checked: 160, total: 160, exact: true });
+  assert.strictEqual(view.rows.length, 160);
+  const long = instance.requests.filter((request) => request.query.length > 2048);
+  assert.ok(long.some((request) => request.table === "sys_update_xml"), "the 80-id chunk is long enough to fail");
+  assert.ok(instance.requests.every((request) => request.options.suppressPagination === true),
+    "every Update Set Lens read sends the parameter");
+});
+
 test("version reads stay under the 6,000-character URL cap with 250-character names", () => {
   const names = Array.from({ length: 40 }, (_, index) => "x".repeat(246) + String(index).padStart(4, "0"));
   const build = (group) => "state=current^nameIN" + group.join(",");
@@ -1208,7 +1258,8 @@ test("Open record falls back to the table and sys_id in the name only when a rea
   assert.deepStrictEqual(plain(await lens.recordUrl("x_example_data_" + id(20), ctx)),
     { ok: true, url: ORIGIN + "/x_example_data.do?sys_id=" + id(20) });
   assert.deepStrictEqual(instance.requests[1], {
-    table: "x_example_data", query: "sys_id=" + id(20), fields: "sys_id", limit: 1, options: { displayAll: false },
+    table: "x_example_data", query: "sys_id=" + id(20), fields: "sys_id", limit: 1,
+    options: { displayAll: false, suppressPagination: true },
   });
   assert.deepStrictEqual(plain(await lens.recordUrl("x_example_data_" + id(21), ctx)),
     { ok: false, message: "No record found for this update." }, "gone: nothing to open");

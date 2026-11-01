@@ -239,7 +239,9 @@ The suites cover:
   read, lists and other tables costing nothing, the retrieved form's line per
   state. Batches: the default, the walk, the base read, the depth, size and
   cycle limits. Paging: keyed pages, the 2,000 cap and Continue, the URL cap
-  with 250-character names, comma and caret names, and a missing total.
+  with 250-character names, comma and caret names, a missing total, and a
+  batch of 80 child sets against a simulated instance that answers HTTP 400
+  to a long query without the suppressed pagination header.
   Static and run-time refusals of guid or hash reads, `payload`, `category=`
   and any `fetch`. Reading the other instance's answer: every presence state,
   several copies, origin-only, clone, not found, and the content statuses,
@@ -262,8 +264,9 @@ The suites cover:
   allowlist and its caps, every status code, and the impersonation read only
   after an access answer. The routes, the timeout, the release on navigation
   and close, injection, packaging and the manifest. The shared reader's
-  `withTotal`, with every other caller unchanged. And the content script's
-  real exporter: only the timed route, with this origin and a token, an
+  `withTotal` and `suppressPagination`, with every other caller unchanged.
+  And the content script's real exporter: only the timed route, with this
+  origin, a token and the suppressed pagination header, an
   invalid local-set id never queried, names never echoed, a beat before the
   first read and after reads without `snGetManyListeners`, signed out, a
   refused presence read, refused version reads, 40 names a read, and the

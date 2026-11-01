@@ -8065,7 +8065,11 @@ async function exportUpdateSetStatus(msg) {
       send();
     }, wait);
   };
-  const options = { expectedOrigin: location.origin, requireToken: true };
+  /* These reads go to the route directly, not through the engine's readTable,
+   * so they ask for the suppressed pagination header themselves: they are
+   * built from the same long IN lists (set ids, 40 names a read), and can
+   * meet the same HTTP 400. */
+  const options = { expectedOrigin: location.origin, requireToken: true, suppressPagination: true };
   const read = async (table, query, fields, limit, displayAll) => {
     let resp;
     try {
