@@ -125,10 +125,10 @@
     button,input{font:inherit}
     .overlay{
       position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
-      display:flex;align-items:center;justify-content:center;padding:12px;
+      display:flex;align-items:center;justify-content:center;padding:24px;
     }
     .panel{
-      width:min(1360px,calc(100vw - 24px));height:min(1100px,calc(100vh - 24px));
+      width:min(1800px,calc(100vw - 48px));height:calc(100vh - 48px);
       display:flex;flex-direction:column;overflow:hidden;
       background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
       box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;
@@ -139,7 +139,7 @@
     }
     .heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:#85859f;line-height:1.5}
+    .subtitle{font-size:12px;color:#85859f;line-height:1.5;max-width:90ch}
     .subtitle .mono{
       font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
       color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
@@ -192,10 +192,14 @@
       font-size:10px;font-weight:700;white-space:nowrap;
     }
     .chip-alert:hover{background:#5b2b3b;border-color:#ffc4c4;color:#fff}
+    /* Bands keep their full width; the right padding holds the text to about
+       90 characters on a wide screen. */
     .banner{
-      padding:9px 20px;font-size:12px;border-bottom:1px solid #292944;line-height:1.5;
+      padding:9px max(20px,calc(100% - 90ch)) 9px 20px;
+      font-size:12px;border-bottom:1px solid #292944;line-height:1.5;
     }
-    .banner.progress{color:#cfeee9;background:color-mix(in srgb, var(--teal) 10%, #21283a)}
+    /* One short line over a progress bar that should span the band. */
+    .banner.progress{color:#cfeee9;background:color-mix(in srgb, var(--teal) 10%, #21283a);padding-right:20px}
     .banner.error{color:#ffc9c9;background:#39222c;border-bottom-color:#5c3a48}
     .banner.notice{color:#ffe3b0;background:#3a3122;border-bottom-color:#5c4b2a;display:block}
     .banner.notice .what{display:block;margin-bottom:4px}
@@ -303,7 +307,8 @@
       background:#20202f;color:#c9c9e0;border:1px solid #2e2e46;
     }
     .section-note{
-      padding:9px 20px;font-size:11px;color:#8f8fa8;line-height:1.55;
+      padding:9px max(20px,calc(100% - 90ch)) 9px 20px;
+      font-size:11px;color:#8f8fa8;line-height:1.55;
       border-bottom:1px solid #23233a;background:#20202f;
     }
     .row{
@@ -363,10 +368,11 @@
     .chip.flag{color:var(--flag);background:var(--flag-bg);border-color:var(--flag-line)}
     .chip.info{color:var(--info);background:var(--info-bg);border-color:var(--info-line)}
     .chip.ok .lang,.chip.gap .lang,.chip.flag .lang,.chip.info .lang{color:inherit}
-    .chips-note{font-size:11px;color:#8686a0;padding:2px 0}
+    .chips-note{font-size:11px;color:#8686a0;padding:2px 0;max-width:90ch}
     .evidence{margin:11px 0 0;padding:0;list-style:none}
     .evidence li{
       font-size:11px;color:#a0a0b8;line-height:1.6;padding:2px 0 2px 13px;position:relative;
+      max-width:90ch;
     }
     .evidence li::before{content:"•";position:absolute;left:0;color:#5b5b7e}
     button.more{
@@ -390,7 +396,7 @@
     }
     .finding-text{
       font-size:11px;color:#a0a0b8;line-height:1.6;margin-top:4px;overflow-wrap:anywhere;
-      padding-left:9px;border-left:2px solid #3a3a5c;
+      padding-left:9px;border-left:2px solid #3a3a5c;max-width:90ch;
     }
     .finding-flag{font-size:11px;color:var(--flag);margin-top:5px}
     button.link{
@@ -424,15 +430,16 @@
       padding:6px 10px;font-size:11px;cursor:pointer;
     }
     .lookup button:hover:not(:disabled){background:#41426b;color:#fff}
-    .lookup .lookup-note{font-size:11px;color:#8686a0;flex:1;min-width:160px;line-height:1.5}
+    .lookup .lookup-note{font-size:11px;color:#8686a0;flex:1;min-width:160px;max-width:90ch;line-height:1.5}
     .lookup .lookup-note.err{color:#ffc9c9}
-    .empty{padding:40px 20px;text-align:center;color:#74748b;font-size:13px;line-height:1.6}
+    .empty{padding:40px 20px;text-align:center;color:#74748b;font-size:13px;line-height:1.6;
+      max-width:90ch;margin:0 auto}
     .empty .hint{display:block;margin-top:6px;font-size:11px;color:#5f5f76}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
-    .toolbar-note{font-size:11px;color:#67677e;flex:1;min-width:150px}
+    .toolbar-note{font-size:11px;color:#67677e;flex:1;min-width:150px;max-width:90ch;margin-right:auto}
     .toolbar button{
       border:1px solid #3a3a5c;background:#292941;color:#d8d8ea;
       border-radius:6px;padding:6px 9px;cursor:pointer;font-size:12px;

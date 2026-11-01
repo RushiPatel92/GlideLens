@@ -90,6 +90,9 @@ reconstructed version by version.
   Record Lens, with the names of their search fields, filter fields and shown
   columns. The privacy page, README and store listing say so. Nothing new
   leaves your device.
+- **Bigger panels on big screens.** Result panels now use more of a large
+  screen, up to 1800 px wide and the full window height, and still fit a small
+  laptop with a margin around them.
 
 ### Fixed
 - **Record Lens kept another table's results.** After you switched tables,
@@ -108,6 +111,10 @@ reconstructed version by version.
 - **Impersonate pickers.** While a role, group or attribute list was looking
   up, Enter could pick an option from the previous list, which was no longer
   on screen.
+- **Status line when nothing matched.** In Record Lens and Impersonate, the
+  status line above the results grew to nearly three times its height, in
+  larger centred text, when a search found nothing. It now stays one line,
+  and the message below the status line still explains the empty result.
 
 ## [0.17.0] - 2026-10-14
 

@@ -2700,7 +2700,7 @@ test("the portal path now lists masked variables as secret and no longer treats 
 });
 
 test("native panel source exposes comparison state, differing filter, and modal keyboard access", () => {
-  assert.match(uiSource, /width:min\(1180px,calc\(100vw - 32px\)\)/);
+  assert.match(uiSource, /width:min\(1800px,calc\(100vw - 48px\)\);height:calc\(100vh - 48px\)/);
   assert.match(uiSource, /data-filter="differs"/);
   assert.match(uiSource, /data-count="differs"/);
   assert.match(uiSource, /role="dialog" aria-modal="true"/);

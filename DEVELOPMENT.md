@@ -177,7 +177,11 @@ The suites cover:
   than listed, carries the shared GlideLens teal and pink tokens and stops the
   page's inherited styles with `:host{all:initial}`, which no host rule undoes
   with `inherit`, `unset` or `revert` — there is no build step to share CSS, so
-  the copies are compared instead.
+  the copies are compared instead. The same glob holds every panel except the
+  Translation Assistant, a form whose height fits its content, to one size:
+  `min(1800px, 100vw − 48px)` wide and `100vh − 48px` high, with no other
+  width or height except the narrow layouts' full window, and to an overlay
+  padded by 24 px, which keeps that margin when the page shows a scrollbar.
 - `content_context.test.js` — conservative table and sys_id detection from page
   URLs, including the classic `*_list.do` suffix strip, classic record routes,
   encoded URLs, and the complete Workspace experience path. Workspace support is

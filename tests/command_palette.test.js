@@ -419,6 +419,52 @@ test("every result panel wears the shared palette and stops page inheritance at 
   }
 });
 
+test("every list panel takes the same share of the screen", () => {
+  /* Each panel owns its stylesheet, so the size rule is a copy in every file.
+   * The copies had drifted to six different sizes, 880 to 1360 px wide and
+   * 680 to 1100 px high, which left most of a large monitor empty. One rule
+   * now grows to 1800 px and keeps a 24 px margin on a laptop. Globbed like
+   * the palette test above, so a panel added later is held to it. The
+   * Translation Assistant is a form read top to bottom whose height fits its
+   * content, so it keeps its own size. */
+  const root = path.join(__dirname, "..");
+  const panels = fs.readdirSync(root)
+    .filter((name) => /_ui\.js$/.test(name) && name !== "translation_assistant_ui.js")
+    .sort();
+  assert.ok(panels.length >= 8, "the glob must actually find the panels: " + panels.join(", "));
+
+  /* The shared size, and the narrow-screen layouts' full-window size. Any
+   * other width or height on the panel, a min- or max- one included, is the
+   * drift this test exists to stop. */
+  const allowed = {
+    width: ["min(1800px,calc(100vw - 48px))", "100%"],
+    height: ["calc(100vh - 48px)", "calc(100vh - 16px)"],
+  };
+
+  for (const file of panels) {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    const rules = source.match(/\.panel\{[^}]*\}/g) || [];
+    assert.ok(
+      rules.some((rule) =>
+        /(?<![\w-])width:min\(1800px,calc\(100vw - 48px\)\)/.test(rule) &&
+        /(?<![\w-])height:calc\(100vh - 48px\)/.test(rule)),
+      file + " must use the shared panel size"
+    );
+    for (const rule of rules) {
+      for (const [, property, value] of rule.matchAll(/(?<![\w-])((?:min-|max-)?(?:width|height)):([^;}]*)/g)) {
+        assert.ok((allowed[property] || []).includes(value.trim()),
+          file + " must not size the panel with " + property + ":" + value.trim());
+      }
+    }
+    /* 100vw counts a page scrollbar and the fixed overlay does not, so with
+     * one showing it is the overlay's own padding that keeps the margin. */
+    assert.ok(
+      (source.match(/\.overlay\{[^}]*\}/g) || []).some((rule) => /padding:24px/.test(rule)),
+      file + " must pad its overlay by the same 24 px as the panel's margin"
+    );
+  }
+});
+
 test("result panels use the same stable feature headings", () => {
   const files = {
     "record_search_ui.js": /<h2>Record Lens<\/h2>/,
