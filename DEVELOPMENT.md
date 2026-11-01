@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js tests/update_set_lens.test.js tests/update_set_lens_ui.test.js tests/update_set_lens_integration.test.js
 ```
 
 The suites cover:
@@ -219,6 +219,55 @@ The suites cover:
   either confirmation button returns focus to the input, and Esc there closes
   the palette once a run's last message is showing. `frame_discovery.test.js` adds
   that no fill starts while a switch holds the tab.
+- `update_set_lens.test.js` — the Update Set Lens engine under `node:vm`,
+  against a simulated instance whose encoded-query evaluator answers `name=`
+  ignoring case and trailing spaces and gives `X-Total-Count` only when asked.
+  Every row of the rule, including the two content disagreements that are
+  Can't tell, the applied-here guard (guid or content baseline, an earlier
+  save that is not one, backed out, never loaded, none at all) and its time
+  check, and a skipped update on a committed arrival that must never read as
+  replaced by an older version; deletes, re-creations, reverts, upgrades and
+  app installs; every newer-set flag and a newer set that can't be read; a
+  version read that fills its limit split down to one name. Membership: no
+  category filter, the union of both arrival shapes with the attached row
+  kept and "the retrieved copy differs", "up to M" until both lists are read,
+  a duplicate name, a count with no readable rows, and refused version reads
+  as Partial. Input: ids, the set's own links, another instance's link and a
+  list link refused before any read, one name, several (ordered, Default
+  last, never picked), none (suggestions), more than 20, and an ignored
+  condition caught by the code check. Page context: `nav_to` decided by a
+  read, lists and other tables costing nothing, the retrieved form's line per
+  state. Batches: the default, the walk, the base read, the depth, size and
+  cycle limits. Paging: keyed pages, the 2,000 cap and Continue, the URL cap
+  with 250-character names, comma and caret names, and a missing total.
+  Static and run-time refusals of guid or hash reads, `payload`, `category=`
+  and any `fetch`. Reading the other instance's answer: every presence state,
+  several copies, origin-only, clone, not found, and the content statuses,
+  which never say "not there" or claim newer or older.
+- `update_set_lens_ui.test.js` — the panel on the Impersonate suite's DOM
+  shim: a closed shadow root with no markup path, hostile names as text,
+  opening on Needs attention (or All), badges that count and filter, 100 rows
+  at a time, details for Stale and Can't tell and a click or Enter for the
+  rest, same-origin links only, child-set and "as retrieved" labels, a new
+  snapshot keeping the filter and the focus, Escape, the focus trap, Check on
+  hidden until another instance is open, the other instance's answer on a row
+  only where it differs, late answers and late progress dropped, the batch
+  checkbox, Continue, the counts-only copy summary, the retrieved-set screen
+  and banners.
+- `update_set_lens_integration.test.js` — the runtime boundary. The worker's
+  real Check on route against simulated tabs: every refusal (a table or query
+  field, sizes, a comma name, guid case and length, hex, blank, decimal and
+  over-long hashes, the sender's own origin, a sub-frame), signed decimals
+  kept exact, frame 0 with ids and records only, progress relayed, the reply
+  allowlist and its caps, every status code, and the impersonation read only
+  after an access answer. The routes, the timeout, the release on navigation
+  and close, injection, packaging and the manifest. The shared reader's
+  `withTotal`, with every other caller unchanged. And the content script's
+  real exporter: only the timed route, with this origin and a token, an
+  invalid local-set id never queried, names never echoed, a beat before the
+  first read and after reads without `snGetManyListeners`, signed out, a
+  refused presence read, refused version reads, 40 names a read, and the
+  listener answering only the extension from the top frame.
 - `prefill_cross_instance.test.js` — Prefill from another instance. Parsing:
   a link names its own instance and wins over Read from, a link's sys_id is
   taken from Workspace, classic, `nav_to` and portal routes, and a non-SN,
@@ -709,6 +758,8 @@ default. Reverify when platform behavior or the queried schema changes.
   isolated-world results UI.
 - `translation_lens.js`, `translation_lens_ui.js` — lazily injected Translation
   Lens coverage engine and read-only report panel.
+- `update_set_lens.js`, `update_set_lens_ui.js` — lazily injected Update Set
+  Lens engine and read-only panel.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including
   variable-scoped views.
 - `hidden_variables_ui.js` — shared Service Portal and classic RITM Variable

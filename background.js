@@ -104,6 +104,11 @@ function extractSysId() {
  * A body that is not JSON is a failure for every caller, never a throw. A
  * fetch that throws (a network error, or a redirect to an identity provider
  * that CORS blocks) is left to throw: it surfaces as a frame failure, as before.
+ *
+ * `withTotal` (Update Set Lens) adds `total`, the X-Total-Count header as a
+ * number, or null when the header is missing or not a count. It equals the
+ * Aggregate API's count. Callers that do not ask get exactly the answer they
+ * always got.
  */
 async function tableApiGetInPage(request) {
   const options = request.options || {};
@@ -161,6 +166,14 @@ async function tableApiGetInPage(request) {
       nonJson: true,
       error: "Unreadable answer reading " + request.table,
     };
+  }
+  if (options.withTotal) {
+    let total = null;
+    try {
+      const header = res.headers && res.headers.get ? res.headers.get("X-Total-Count") : null;
+      if (header != null && /^\d+$/.test(String(header).trim())) total = Number(String(header).trim());
+    } catch (e) {}
+    return { ok: true, result: (data && data.result) || [], total };
   }
   return { ok: true, result: (data && data.result) || [] };
 }
@@ -359,6 +372,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   prefillSwapByTab.delete(tabId);
   /* Nor will a read from another instance this page was waiting on. */
   prefillRemoteByTab.delete(tabId);
+  updateSetRemoteByTab.delete(tabId);
   /* Likewise a Translation Assistant fill: the page it was writing into is
    * unloading, and the fresh page has none of that fill's content to revert. */
   releaseLfAssistantApplyLock(tabId, null);
@@ -417,6 +431,10 @@ const prefillOpByTab = new Map();
  * changes nothing, so a page that has gone may simply start another.
  */
 const prefillRemoteByTab = new Map();
+
+/* One Update Set Lens check on another instance per tab
+ * (UPDATE_SET_REMOTE_CHECK), released the same ways. */
+const updateSetRemoteByTab = new Map();
 
 function notePrefillActivity(tabId) {
   const op = prefillOpByTab.get(tabId);
@@ -813,6 +831,19 @@ function translationTableGet(tabId, request) {
   );
 }
 
+/* Update Set Lens makes the same bounded, repeated reads, so it gets the same
+ * shape: one resolved token frame, and a ceiling of its own, because
+ * tokenFrameGet has none and SN_RECORD_SEARCH_GET does not add one. The
+ * remote export in another instance's tab reads through this route too, from
+ * that tab, with expectedOrigin and requireToken set. */
+function updateSetLensTableGet(tabId, request) {
+  return withTimeout(
+    tokenFrameGet(tabId, tableApiGetInPage, request, request.table),
+    PAGE_READ_TIMEOUT_MS,
+    "Update Set Lens read for " + request.table
+  );
+}
+
 /*
  * Tier 1: the instance's own Code Search endpoint. A different URL shape from
  * the Table API, so it gets its own MAIN-world reader — but the same single
@@ -842,6 +873,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   releasePrefillLock(tabId, null);
   prefillSwapByTab.delete(tabId);
   prefillRemoteByTab.delete(tabId);
+  updateSetRemoteByTab.delete(tabId);
   releaseLfAssistantApplyLock(tabId, null);
 });
 
@@ -6820,35 +6852,37 @@ async function endPrefillSwap(tabId, origin) {
 }
 
 /* ---------------------------------------------------------------------------
-   Prefill from another instance.
+   Reads on another instance.
 
-   The form is on one instance and the ticket on another. A Table API read
-   needs the page token of the instance it reads, and the only way to get one
-   for that instance is to run code in a page of it. So the read is run by
-   GlideLens's own content script in a tab the person already has open there,
-   on that tab's session: the same read Prefill makes at home, with no second
-   copy of its rules.
+   A Table API read needs the page token of the instance it reads, and the
+   only way to get one for that instance is to run code in a page of it. So a
+   read on another instance is run by GlideLens's own content script in a tab
+   the person already has open there, on that tab's session. Two features do
+   this: Prefill from another instance (the same read Prefill makes at home,
+   with no second copy of its rules) and Update Set Lens's Check on.
 
-   These routes are a feature route, never a proxy. In goes a ticket
-   identifier and nothing else; out comes the variable list. Nothing from
-   content code names a table, query or tab, and the source tab answers only a
-   message from the extension itself.
+   These are feature routes, never a proxy. Nothing from content code names a
+   table, query or tab, and the other tab answers only a message from the
+   extension itself. The helpers below are shared: finding and ordering the
+   other tab, the heartbeat and its watchdog, and the reply allowlist's
+   building blocks. Each feature keeps its own message types, request checks
+   and reply allowlist.
    --------------------------------------------------------------------------- */
-const PREFILL_REMOTE_IDLE_MS = 45000;
-const PREFILL_REMOTE_CEILING_MS = 180000;
-const PREFILL_REMOTE_TICK_MS = 1000;
-const PREFILL_REMOTE_MAX_ATTEMPTS = 3;
-const PREFILL_REMOTE_MAX_CANDIDATES = 8;
+const REMOTE_READ_IDLE_MS = 45000;
+const REMOTE_READ_CEILING_MS = 180000;
+const REMOTE_READ_TICK_MS = 1000;
+const REMOTE_READ_MAX_ATTEMPTS = 3;
+const REMOTE_READ_MAX_CANDIDATES = 8;
+const REMOTE_READ_MAX_PROGRESS = 200;
+const REMOTE_READ_MAX_MESSAGE = 500;
 const PREFILL_REMOTE_MAX_INPUT = 2000;
 const PREFILL_REMOTE_MAX_REPLY_CHARS = 5 * 1024 * 1024;
 const PREFILL_REMOTE_MAX_VARIABLES = 1000;
-const PREFILL_REMOTE_MAX_PROGRESS = 200;
-const PREFILL_REMOTE_MAX_MESSAGE = 500;
 
-/* One entry per message sent to a source tab, keyed by the id the worker gave
- * it. Its progress, and only its source tab's, keeps it alive. */
-const prefillRemoteByRequest = new Map();
-let prefillRemoteSequence = 0;
+/* One entry per message sent to another instance's tab, keyed by the id the
+ * worker gave it. Its progress, and only its tab's, keeps it alive. */
+const remoteReadByRequest = new Map();
+let remoteReadSequence = 0;
 
 function senderServiceNowOrigin(sender) {
   return (
@@ -6857,7 +6891,7 @@ function senderServiceNowOrigin(sender) {
   );
 }
 
-function prefillInstanceName(origin) {
+function instanceShortName(origin) {
   try {
     return new URL(origin).hostname.split(".")[0] || "";
   } catch (error) {
@@ -6870,7 +6904,7 @@ function prefillInstanceName(origin) {
  * an incognito one must never exchange values. tabs.query returns each tab's
  * url without the "tabs" permission, because the host permission covers it
  * (measured in Chromium 151 and Edge 155). */
-async function prefillServiceNowTabs(sender, pattern) {
+async function serviceNowTabsInContext(sender, pattern) {
   const tabs = await chrome.tabs.query({ url: pattern || "https://*.service-now.com/*" });
   const incognito = Boolean(sender && sender.tab && sender.tab.incognito);
   return (tabs || []).filter(
@@ -6878,11 +6912,12 @@ async function prefillServiceNowTabs(sender, pattern) {
   );
 }
 
-/* Origins only: no tab ids and no titles cross to content code. */
-async function prefillSourceInstances(sender) {
+/* Origins only: no tab ids and no titles cross to content code. Prefill's Read
+ * from and Update Set Lens's Check on both list these. */
+async function otherInstanceOrigins(sender) {
   const own = senderServiceNowOrigin(sender);
   const origins = new Set();
-  (await prefillServiceNowTabs(sender)).forEach((tab) => {
+  (await serviceNowTabsInContext(sender)).forEach((tab) => {
     const origin = serviceNowOrigin(tab.url);
     if (origin && origin !== own) origins.add(origin);
   });
@@ -6890,14 +6925,14 @@ async function prefillSourceInstances(sender) {
     ok: true,
     origins: Array.from(origins)
       .sort()
-      .map((origin) => ({ origin, label: prefillInstanceName(origin) })),
+      .map((origin) => ({ origin, label: instanceShortName(origin) })),
   };
 }
 
 /* A tab active in any window first, then the most recently used (Chrome 121+
  * supplies lastAccessed), then query order. The sender's own window does not
- * help: its active tab is the form. */
-function orderPrefillSourceTabs(tabs) {
+ * help: its active tab is the one asking. */
+function orderRemoteTabs(tabs) {
   return tabs
     .map((tab, index) => ({ tab, index }))
     .sort((a, b) => {
@@ -6916,7 +6951,7 @@ function orderPrefillSourceTabs(tabs) {
  * then answers "signed out". */
 async function tabHasTokenFrame(tabId) {
   try {
-    const frameIds = await discoverContentFrames(tabId, "prefill source");
+    const frameIds = await discoverContentFrames(tabId, "remote read");
     const probes = await Promise.all(frameIds.map((frameId) => probeTokenFrame(tabId, frameId)));
     return probes.some((probe) => probe && probe.hasToken);
   } catch (error) {
@@ -6925,71 +6960,75 @@ async function tabHasTokenFrame(tabId) {
 }
 
 /*
- * Bounded by inactivity rather than a fixed time: the source sends a heartbeat
- * when it starts and after every Table API read, and each read may take up to
- * the 30 s frame ceiling, so 45 s of silence means stuck.
+ * Bounded by inactivity rather than a fixed time: the other tab sends a
+ * heartbeat when it starts and after every Table API read, and each read may
+ * take up to the 30 s frame ceiling, so 45 s of silence means stuck.
  *
  * Abandoning a READ is harmless, because it changes nothing. Do not copy this
  * bound onto anything that writes: the fill's own watchdog says "it may still
  * be running" for exactly that reason.
  */
-function prefillRemoteWatchdog(attempt) {
+function remoteReadWatchdog(attempt) {
   return new Promise((resolve) => {
     const tick = () => {
       if (attempt.done) return;
       const now = Date.now();
       if (
-        now - attempt.lastActivityAt > PREFILL_REMOTE_IDLE_MS ||
-        now - attempt.startedAt > PREFILL_REMOTE_CEILING_MS
+        now - attempt.lastActivityAt > REMOTE_READ_IDLE_MS ||
+        now - attempt.startedAt > REMOTE_READ_CEILING_MS
       ) {
         resolve({ timedOut: true });
         return;
       }
-      setTimeout(tick, PREFILL_REMOTE_TICK_MS);
+      setTimeout(tick, REMOTE_READ_TICK_MS);
     };
-    setTimeout(tick, PREFILL_REMOTE_TICK_MS);
+    setTimeout(tick, REMOTE_READ_TICK_MS);
   });
 }
 
-/* Frame 0 only: a broadcast would run the read once per frame. Resolves
- * { value } for a reply, { rejected } for a failed send, or { timedOut }, plus
- * whether the source was heard from first. */
-function forwardPrefillExport(op, tabId) {
-  const requestId = "prefill-remote:" + Date.now() + ":" + ++prefillRemoteSequence;
+/* Frame 0 only: a broadcast would run the read once per frame. `op.exportType`
+ * is the other tab's handler, `op.payload` what it is sent besides the request
+ * id, and `op.progressType` what its progress reaches the asking tab as.
+ * Resolves { value } for a reply, { rejected } for a failed send, or
+ * { timedOut }, plus whether the other tab was heard from first. */
+function forwardRemoteExport(op, tabId) {
+  const requestId = "remote-read:" + Date.now() + ":" + ++remoteReadSequence;
   const attempt = {
     tabId,
     targetTabId: op.targetTabId,
+    progressType: op.progressType,
     startedAt: op.startedAt,
     lastActivityAt: Date.now(),
     heard: false,
     done: false,
   };
-  prefillRemoteByRequest.set(requestId, attempt);
+  remoteReadByRequest.set(requestId, attempt);
+  const message = Object.assign({ type: op.exportType }, op.payload, { requestId });
   const reply = chrome.tabs
-    .sendMessage(tabId, { type: "PREFILL_EXPORT_SOURCE", input: op.input, requestId }, { frameId: 0 })
+    .sendMessage(tabId, message, { frameId: 0 })
     .then(
       (value) => ({ value }),
       () => ({ rejected: true })
     );
-  return Promise.race([reply, prefillRemoteWatchdog(attempt)]).then((outcome) => {
+  return Promise.race([reply, remoteReadWatchdog(attempt)]).then((outcome) => {
     attempt.done = true;
-    prefillRemoteByRequest.delete(requestId);
+    remoteReadByRequest.delete(requestId);
     return Object.assign({ heard: attempt.heard }, outcome);
   });
 }
 
-/* Progress, and the heartbeat it carries, from the source tab of a read in
+/* Progress, and the heartbeat it carries, from the other tab of a read in
  * flight. Anything else is dropped. */
-function notePrefillRemoteProgress(msg, sender) {
-  const attempt = typeof msg.requestId === "string" ? prefillRemoteByRequest.get(msg.requestId) : null;
+function noteRemoteReadProgress(msg, sender) {
+  const attempt = typeof msg.requestId === "string" ? remoteReadByRequest.get(msg.requestId) : null;
   if (!attempt || attempt.done) return;
   if (!sender.tab || sender.tab.id !== attempt.tabId || sender.frameId !== 0) return;
   attempt.heard = true;
   attempt.lastActivityAt = Date.now();
-  if (typeof msg.message === "string" && msg.message) {
+  if (typeof msg.message === "string" && msg.message && attempt.progressType) {
     sendToTab(
       attempt.targetTabId,
-      { type: "PREFILL_PROGRESS", message: msg.message.slice(0, PREFILL_REMOTE_MAX_PROGRESS) },
+      { type: attempt.progressType, message: msg.message.slice(0, REMOTE_READ_MAX_PROGRESS) },
       { frameId: 0 }
     );
   }
@@ -7105,7 +7144,7 @@ function checkedPrefillExport(reply) {
       if (typeof reply.readFailure.status !== "number") return null;
       failure.status = reply.readFailure.status;
     }
-    if (failure.message) failure.message = failure.message.slice(0, PREFILL_REMOTE_MAX_MESSAGE);
+    if (failure.message) failure.message = failure.message.slice(0, REMOTE_READ_MAX_MESSAGE);
     out.readFailure = failure;
   }
   if (reply.source != null) {
@@ -7117,9 +7156,9 @@ function checkedPrefillExport(reply) {
 }
 
 /* Only after an access answer, so a refusal can say the session there is
- * impersonating someone. Prefill never offers to switch another tab's
+ * impersonating someone. GlideLens never offers to switch another tab's
  * session: that would change a session the person isn't looking at. */
-async function prefillSourceImpersonating(tabId, origin) {
+async function remoteTabImpersonating(tabId, origin) {
   try {
     const state = await readImpersonationState(tabId, origin);
     return Boolean(state && state.isImpersonating === true);
@@ -7133,7 +7172,7 @@ async function settlePrefillExport(reply, tabId, origin) {
     const checked = checkedPrefillExport(reply);
     if (!checked) return { ok: false, code: "malformed" };
     checked.sourceImpersonating = checked.readRefused
-      ? await prefillSourceImpersonating(tabId, origin)
+      ? await remoteTabImpersonating(tabId, origin)
       : false;
     return checked;
   }
@@ -7145,44 +7184,46 @@ async function settlePrefillExport(reply, tabId, origin) {
   if (typeof error.status === "number" && Number.isFinite(error.status)) out.status = error.status;
   if (access) {
     out.access = access;
-    out.sourceImpersonating = await prefillSourceImpersonating(tabId, origin);
+    out.sourceImpersonating = await remoteTabImpersonating(tabId, origin);
   }
   if (code === "read-error" && typeof error.message === "string") {
-    out.message = error.message.slice(0, PREFILL_REMOTE_MAX_MESSAGE);
+    out.message = error.message.slice(0, REMOTE_READ_MAX_MESSAGE);
   }
   return out;
 }
 
-async function runPrefillRemoteRead(op, sender, origin) {
-  const tabs = orderPrefillSourceTabs(
-    (await prefillServiceNowTabs(sender, origin + "/*")).filter(
+/* The other instance's tabs, in order, until one answers. `settle(reply,
+ * tabId, origin)` turns that tab's reply into the feature's answer. */
+async function runRemoteRead(op, sender, origin, settle) {
+  const tabs = orderRemoteTabs(
+    (await serviceNowTabsInContext(sender, origin + "/*")).filter(
       (tab) => serviceNowOrigin(tab.url) === origin && tab.id !== op.targetTabId
     )
   );
   if (!tabs.length) return { ok: false, code: "not-open" };
-  /* Discarding gives a tab a new id (measured), so no source tab id is kept
+  /* Discarding gives a tab a new id (measured), so no other tab's id is kept
    * beyond this one read. */
   const awake = tabs.filter((tab) => !tab.discarded);
   let attempts = 0;
-  for (const tab of awake.slice(0, PREFILL_REMOTE_MAX_CANDIDATES)) {
-    if (attempts >= PREFILL_REMOTE_MAX_ATTEMPTS) break;
+  for (const tab of awake.slice(0, REMOTE_READ_MAX_CANDIDATES)) {
+    if (attempts >= REMOTE_READ_MAX_ATTEMPTS) break;
     if (!(await tabHasTokenFrame(tab.id))) continue;
     attempts += 1;
-    const outcome = await forwardPrefillExport(op, tab.id);
+    const outcome = await forwardRemoteExport(op, tab.id);
     if (outcome.timedOut) return { ok: false, code: "timeout" };
     /*
      * One rule for a tab that never answered: a send that failed, or a reply
-     * that is not an object, before the source's first heartbeat means
+     * that is not an object, before the other tab's first heartbeat means
      * nothing there was listening (a message no listener answers resolves
      * undefined; it does not reject). Try the next tab. The error's wording
      * is never consulted, because it differs across Chrome and Edge. After a
-     * heartbeat, the source tab changed under the read: no other tab is tried.
+     * heartbeat, the tab changed under the read: no other tab is tried.
      */
     if (outcome.rejected || !isPlainRecord(outcome.value)) {
       if (!outcome.heard) continue;
       return { ok: false, code: "source-changed" };
     }
-    return settlePrefillExport(outcome.value, tab.id, origin);
+    return settle(outcome.value, tab.id, origin);
   }
   if (attempts) return { ok: false, code: "no-receiver" };
   return { ok: false, code: awake.length < tabs.length ? "asleep" : "not-open" };
@@ -7211,13 +7252,279 @@ async function readPrefillFromOtherInstance(msg, sender) {
   }
   const targetTabId = sender.tab.id;
   if (prefillRemoteByTab.has(targetTabId)) return { ok: false, code: "busy" };
-  const op = { input: msg.input, targetTabId, startedAt: Date.now() };
+  const op = {
+    exportType: "PREFILL_EXPORT_SOURCE",
+    payload: { input: msg.input },
+    progressType: "PREFILL_PROGRESS",
+    targetTabId,
+    startedAt: Date.now(),
+  };
   prefillRemoteByTab.set(targetTabId, op);
   try {
-    return await runPrefillRemoteRead(op, sender, origin);
+    return await runRemoteRead(op, sender, origin, settlePrefillExport);
   } finally {
     if (prefillRemoteByTab.get(targetTabId) === op) prefillRemoteByTab.delete(targetTabId);
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Update Set Lens: Check on another instance.
+
+   In: an origin from the instance list, the set ids to look for, and the
+   updates checked here as { name, guid, hash }. Out: where those sets have
+   got to there, and, by index, whether that instance runs each update's
+   version, with when and in which set the version it runs instead was saved,
+   and the ids its links there need. Nothing sent there names a table, query,
+   URL, method or tab: the other tab builds its six fixed reads itself, and
+   never echoes a record name back.
+   --------------------------------------------------------------------------- */
+const UPDATE_SET_REMOTE_MAX_SETS = 1000;
+const UPDATE_SET_REMOTE_MAX_RECORDS = 2000;
+const UPDATE_SET_REMOTE_MAX_REPLY_CHARS = 256 * 1024;
+const UPDATE_SET_REMOTE_MAX_COPIES = 200;
+const UPDATE_SET_REMOTE_MAX_COPIES_PER_SET = 20;
+const UPDATE_SET_REMOTE_MAX_FIELD = 200;
+const UPDATE_SET_REMOTE_SET_ID = /^[0-9a-f]{32}$/;
+const UPDATE_SET_REMOTE_NAME = /^[A-Za-z0-9_.-]{1,250}$/;
+const UPDATE_SET_REMOTE_GUID = /^[0-9a-f]{32}$/;
+/* payload_hash is a SIGNED DECIMAL (a 32-bit hash, about half negative,
+ * measured on a customer instance), never hex. Kept as the exact string. */
+const UPDATE_SET_REMOTE_HASH = /^-?[0-9]{1,10}$/;
+const UPDATE_SET_REMOTE_KEYS = ["type", "origin", "setIds", "records"];
+const UPDATE_SET_REMOTE_STATUSES = ["runs", "same", "other", "conflict", "none", "unknown"];
+/* Only these answers carry where the version that runs there was saved. */
+const UPDATE_SET_REMOTE_SAVED_STATUSES = ["same", "other"];
+const UPDATE_SET_SAVED_FIELDS = ["on", "set", "from"];
+/* What a row's links there are built from: its record's table and sys_id,
+ * and the sys_id of the version that runs there. Ids, never a URL. */
+const UPDATE_SET_FOUND_FIELDS = ["table", "record", "version"];
+const UPDATE_SET_REMOTE_TABLE = /^[a-z][a-z0-9_]{0,79}$/;
+const UPDATE_SET_COPY_FIELDS = [
+  "state", "stateLabel", "retrievedOn", "committedOn", "collisions", "localState", "localStateLabel",
+];
+
+/* The request as it will be sent on, or null. The panel has already left out
+ * every update whose name, guid or hash fails its pattern, so a record that
+ * fails here, or any field this route does not take, is a bug or a forged
+ * message: the whole request is refused. */
+function checkedUpdateSetRequest(msg) {
+  if (!isPlainRecord(msg)) return null;
+  if (Object.keys(msg).some((key) => !UPDATE_SET_REMOTE_KEYS.includes(key))) return null;
+  const setIds = msg.setIds;
+  const records = msg.records;
+  if (!Array.isArray(setIds) || !setIds.length || setIds.length > UPDATE_SET_REMOTE_MAX_SETS) return null;
+  if (setIds.some((id) => typeof id !== "string" || !UPDATE_SET_REMOTE_SET_ID.test(id))) return null;
+  if (new Set(setIds).size !== setIds.length) return null;
+  if (!Array.isArray(records) || records.length > UPDATE_SET_REMOTE_MAX_RECORDS) return null;
+  const checked = [];
+  for (const record of records) {
+    if (!isPlainRecord(record)) return null;
+    if (Object.keys(record).some((key) => key !== "name" && key !== "guid" && key !== "hash")) return null;
+    if (typeof record.name !== "string" || !UPDATE_SET_REMOTE_NAME.test(record.name)) return null;
+    if (typeof record.guid !== "string" || !UPDATE_SET_REMOTE_GUID.test(record.guid)) return null;
+    if (typeof record.hash !== "string" || !UPDATE_SET_REMOTE_HASH.test(record.hash)) return null;
+    checked.push({ name: record.name, guid: record.guid, hash: record.hash });
+  }
+  return { setIds: setIds.slice(), records: checked };
+}
+
+/* A failure the other tab reported for one part of the check, or undefined
+ * for one of the wrong shape (which refuses the reply). */
+function checkedUpdateSetFailure(value) {
+  if (value == null) return null;
+  const failure = checkedStringFields(value, ["code", "message"]);
+  if (!failure || (failure.code !== "refused" && failure.code !== "read-error")) return undefined;
+  if (value.status != null) {
+    if (typeof value.status !== "number" || !Number.isFinite(value.status)) return undefined;
+    failure.status = value.status;
+  }
+  if (failure.message) failure.message = failure.message.slice(0, REMOTE_READ_MAX_MESSAGE);
+  return failure;
+}
+
+/* The export's reply, rebuilt from an allowlist, or null for a malformed one.
+ * A known field of the wrong type refuses it; an unknown field is dropped. */
+function checkedUpdateSetExport(reply, request) {
+  let size = 0;
+  try {
+    size = JSON.stringify(reply).length;
+  } catch (error) {
+    return null;
+  }
+  if (size > UPDATE_SET_REMOTE_MAX_REPLY_CHARS) return null;
+  const copies = reply.copies == null ? [] : reply.copies;
+  if (!Array.isArray(copies) || copies.length > UPDATE_SET_REMOTE_MAX_COPIES) return null;
+  const perSet = new Map();
+  const outCopies = [];
+  for (const copy of copies) {
+    const out = checkedStringFields(copy, UPDATE_SET_COPY_FIELDS);
+    if (!out) return null;
+    if (!Number.isInteger(copy.set) || copy.set < 0 || copy.set >= request.setIds.length) return null;
+    if (copy.match !== "remote" && copy.match !== "origin") return null;
+    if (copy.linked != null && typeof copy.linked !== "boolean") return null;
+    const count = (perSet.get(copy.set) || 0) + 1;
+    if (count > UPDATE_SET_REMOTE_MAX_COPIES_PER_SET) return null;
+    perSet.set(copy.set, count);
+    UPDATE_SET_COPY_FIELDS.forEach((field) => {
+      if (out[field]) out[field] = out[field].slice(0, UPDATE_SET_REMOTE_MAX_FIELD);
+    });
+    out.set = copy.set;
+    out.match = copy.match;
+    if (copy.linked != null) out.linked = copy.linked;
+    outCopies.push(out);
+  }
+  const clones = reply.clones == null ? [] : reply.clones;
+  if (!Array.isArray(clones) || clones.length > request.setIds.length) return null;
+  if (clones.some((index) => !Number.isInteger(index) || index < 0 || index >= request.setIds.length)) return null;
+  let content = null;
+  if (reply.content != null) {
+    if (!Array.isArray(reply.content) || reply.content.length !== request.records.length) return null;
+    if (reply.content.some((status) => !UPDATE_SET_REMOTE_STATUSES.includes(status))) return null;
+    content = reply.content.slice();
+  }
+  let saved = null;
+  if (reply.saved != null) {
+    if (!content || !Array.isArray(reply.saved) || reply.saved.length !== content.length) return null;
+    saved = [];
+    for (let index = 0; index < reply.saved.length; index += 1) {
+      const entry = reply.saved[index];
+      const out = entry == null ? {} : checkedStringFields(entry, UPDATE_SET_SAVED_FIELDS);
+      if (!out) return null;
+      UPDATE_SET_SAVED_FIELDS.forEach((field) => {
+        if (out[field]) out[field] = out[field].slice(0, UPDATE_SET_REMOTE_MAX_FIELD);
+        else delete out[field];
+      });
+      /* A note on an answer that runs this set's version would say nothing true. */
+      const shown = UPDATE_SET_REMOTE_SAVED_STATUSES.includes(content[index]) && Object.keys(out).length;
+      saved.push(shown ? out : null);
+    }
+  }
+  let found = null;
+  if (reply.found != null) {
+    if (!content || !Array.isArray(reply.found) || reply.found.length !== content.length) return null;
+    found = [];
+    for (const entry of reply.found) {
+      const out = entry == null ? {} : checkedStringFields(entry, UPDATE_SET_FOUND_FIELDS);
+      if (!out) return null;
+      UPDATE_SET_FOUND_FIELDS.forEach((field) => { if (!out[field]) delete out[field]; });
+      /* The other tab checked these; one that fails is a bug or a forgery. */
+      if ((out.table || out.record) &&
+        (!UPDATE_SET_REMOTE_TABLE.test(out.table || "") || !UPDATE_SET_REMOTE_SET_ID.test(out.record || ""))) return null;
+      if (out.version && !UPDATE_SET_REMOTE_SET_ID.test(out.version)) return null;
+      found.push(Object.keys(out).length ? out : null);
+    }
+  }
+  const presenceFailure = checkedUpdateSetFailure(reply.presenceFailure);
+  const contentFailure = checkedUpdateSetFailure(reply.contentFailure);
+  if (presenceFailure === undefined || contentFailure === undefined) return null;
+  return {
+    ok: true,
+    copies: outCopies,
+    clones: Array.from(new Set(clones)),
+    content,
+    saved,
+    found,
+    presenceFailure,
+    contentFailure,
+  };
+}
+
+async function settleUpdateSetExport(reply, tabId, origin, request) {
+  if (reply.ok === true) {
+    const checked = checkedUpdateSetExport(reply, request);
+    if (!checked) return { ok: false, code: "malformed" };
+    const refused = [checked.presenceFailure, checked.contentFailure]
+      .some((failure) => failure && failure.code === "refused");
+    checked.sourceImpersonating = refused ? await remoteTabImpersonating(tabId, origin) : false;
+    return checked;
+  }
+  const error = isPlainRecord(reply.error) ? reply.error : {};
+  const code = error.code === "signed-out" || error.code === "refused" ? error.code : "read-error";
+  const out = { ok: false, code };
+  if (typeof error.status === "number" && Number.isFinite(error.status)) out.status = error.status;
+  if (code === "refused") out.sourceImpersonating = await remoteTabImpersonating(tabId, origin);
+  if (code === "read-error" && typeof error.message === "string") {
+    out.message = error.message.slice(0, REMOTE_READ_MAX_MESSAGE);
+  }
+  return out;
+}
+
+async function checkUpdateSetOnOtherInstance(msg, sender) {
+  const own = senderServiceNowOrigin(sender);
+  const origin = serviceNowOrigin(msg && msg.origin);
+  const request = checkedUpdateSetRequest(msg);
+  if (
+    !sender.tab ||
+    sender.frameId !== 0 ||
+    !own ||
+    !origin ||
+    origin !== msg.origin ||
+    origin === own ||
+    !request
+  ) {
+    return { ok: false, code: "invalid" };
+  }
+  /* The account on that instance is mid-switch, and a read made now would be
+   * made as whoever the switch has left it. */
+  for (const swap of prefillSwapByTab.values()) {
+    if (swap && swap.origin === origin) return { ok: false, code: "switching" };
+  }
+  const targetTabId = sender.tab.id;
+  if (updateSetRemoteByTab.has(targetTabId)) return { ok: false, code: "busy" };
+  const op = {
+    exportType: "UPDATE_SET_EXPORT_STATUS",
+    payload: { setIds: request.setIds, records: request.records },
+    progressType: "UPDATE_SET_LENS_PROGRESS",
+    targetTabId,
+    startedAt: Date.now(),
+  };
+  updateSetRemoteByTab.set(targetTabId, op);
+  try {
+    return await runRemoteRead(op, sender, origin, (reply, tabId, at) =>
+      settleUpdateSetExport(reply, tabId, at, request));
+  } finally {
+    if (updateSetRemoteByTab.get(targetTabId) === op) updateSetRemoteByTab.delete(targetTabId);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Update Set Lens: a row's links on the instance checked.
+
+   In: an origin, and either a table and sys_id (the record, or the version
+   that runs there) or an update's name (its version history). The URL is
+   built here from those pieces, each against its pattern, never taken whole.
+   It opens only on another instance open in a tab in the sender's own
+   browsing context: OPEN_URL's same-origin rule, widened by exactly the
+   instances Check on can choose.
+   --------------------------------------------------------------------------- */
+const UPDATE_SET_REMOTE_OPEN_KEYS = ["type", "origin", "table", "sysId", "name"];
+
+/* The path to open, or "" for a message of the wrong shape. */
+function updateSetRemotePath(msg) {
+  if (!isPlainRecord(msg)) return "";
+  if (Object.keys(msg).some((key) => !UPDATE_SET_REMOTE_OPEN_KEYS.includes(key))) return "";
+  if (msg.name != null) {
+    if (msg.table != null || msg.sysId != null) return "";
+    if (typeof msg.name !== "string" || !UPDATE_SET_REMOTE_NAME.test(msg.name)) return "";
+    return "/sys_update_version_list.do?sysparm_query=" +
+      encodeURIComponent("name=" + msg.name + "^ORDERBYDESCsys_recorded_at");
+  }
+  if (typeof msg.table !== "string" || !UPDATE_SET_REMOTE_TABLE.test(msg.table)) return "";
+  if (typeof msg.sysId !== "string" || !UPDATE_SET_REMOTE_SET_ID.test(msg.sysId)) return "";
+  return "/" + msg.table + ".do?sys_id=" + msg.sysId;
+}
+
+async function openOnOtherInstance(msg, sender) {
+  const own = senderServiceNowOrigin(sender);
+  const origin = serviceNowOrigin(msg && msg.origin);
+  const path = updateSetRemotePath(msg);
+  if (!sender.tab || sender.frameId !== 0 || !own || !origin || origin !== msg.origin || origin === own || !path) {
+    return { ok: false, code: "invalid" };
+  }
+  const open = await otherInstanceOrigins(sender);
+  if (!open.origins.some((entry) => entry.origin === origin)) return { ok: false, code: "not-open" };
+  await chrome.tabs.create(openUrlTabOptions(origin + path, sender));
+  return { ok: true };
 }
 
 // Content scripts can't call chrome.tabs.create; they ask us via OPEN_URL.
@@ -7553,6 +7860,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
+  if (msg && msg.type === "INJECT_UPDATE_SET_LENS" && sender.tab) {
+    /* Engine and panel together, into the frame that asked, isolated world.
+     * Both no-op when already present. */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["update_set_lens.js", "update_set_lens_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
   if (msg && msg.type === "INJECT_IMPERSONATE" && sender.tab) {
     /* record_search.js first: the engine reuses its anchor extraction, ranking
      * and bounded Table API transport rather than carrying copies. Its panel is
@@ -7607,6 +7926,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === "SN_RECORD_SEARCH_GET" && sender.tab) {
     recordSearchTableGet(sender.tab.id, {
+      table: msg.table,
+      query: msg.query,
+      fields: msg.fields,
+      limit: msg.limit,
+      options: msg.options || {},
+    })
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, status: 0, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "SN_UPDATE_SET_LENS_GET" && sender.tab) {
+    updateSetLensTableGet(sender.tab.id, {
       table: msg.table,
       query: msg.query,
       fields: msg.fields,
@@ -7728,7 +8059,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: false, origins: [] });
       return false;
     }
-    prefillSourceInstances(sender)
+    otherInstanceOrigins(sender)
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false, origins: [] }));
     return true;
@@ -7739,8 +8070,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: false, code: "failed" }));
     return true;
   }
-  if (msg && msg.type === "PREFILL_REMOTE_PROGRESS" && sender.tab) {
-    notePrefillRemoteProgress({ requestId: msg.requestId, message: msg.message }, sender);
+  /* Progress from another instance's tab, for whichever feature is reading
+   * there; the request id decides where it goes. */
+  if (msg && msg.type === "REMOTE_READ_PROGRESS" && sender.tab) {
+    noteRemoteReadProgress({ requestId: msg.requestId, message: msg.message }, sender);
+  }
+  /* Update Set Lens's Check on. The whole message is handed over so that a
+   * field this route does not take refuses the request. */
+  if (msg && msg.type === "UPDATE_SET_REMOTE_CHECK" && sender.tab) {
+    checkUpdateSetOnOtherInstance(msg, sender)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, code: "failed" }));
+    return true;
+  }
+  if (msg && msg.type === "UPDATE_SET_REMOTE_OPEN" && sender.tab) {
+    openOnOtherInstance(msg, sender)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, code: "failed" }));
+    return true;
   }
   if (msg && msg.type === "MAP_PORTAL_VARIABLES" && sender.tab) {
     readFromPageFrames(

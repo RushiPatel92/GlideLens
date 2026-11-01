@@ -81,6 +81,8 @@ const SHIP = [
   "translation_lens_ui.js",
   "translation_assistant.js",
   "translation_assistant_ui.js",
+  "update_set_lens.js",
+  "update_set_lens_ui.js",
   "popup.html",
   "popup.js",
   "popup.css",

@@ -101,7 +101,9 @@ Record Lens follows the same single-frame rule through
 so they must not use the fan-out `SN_TABLE_GET` path either. Impersonate reads
 through that same route rather than adding a fourth: its reads have the same
 bounded, repeated shape, which is why `record_search.js` is injected alongside
-it.
+it. Update Set Lens has its own route, `SN_UPDATE_SET_LENS_GET`, because
+`tokenFrameGet` has no ceiling and `SN_RECORD_SEARCH_GET` adds none: its
+reader is wrapped in `withTimeout` the way Translation Lens's is.
 
 ## Command palette
 
@@ -1892,7 +1894,12 @@ sent to the wrong instance. The routes are feature routes instead:
 | worker | `PREFILL_SOURCE_INSTANCES` | nothing in; origins only out, never tab ids or titles |
 | worker | `PREFILL_REMOTE_READ` | an origin and a ticket identifier in; the variable list out |
 | source tab, frame 0 | `PREFILL_EXPORT_SOURCE` | the ticket identifier and a worker-made request id, from the extension only |
-| worker | `PREFILL_REMOTE_PROGRESS` | progress from that source tab's top frame, relayed to the form's top frame |
+| worker | `REMOTE_READ_PROGRESS` | progress from that source tab's top frame, relayed to the form's top frame as `PREFILL_PROGRESS` |
+
+The tab finding, the heartbeat and its watchdog, and the allowlist helpers are
+shared with Update Set Lens's Check on (`runRemoteRead`, `forwardRemoteExport`,
+`noteRemoteReadProgress`, `REMOTE_READ_*`). Each feature passes its own export
+message type, progress message type and reply check; nothing else differs.
 
 - **Frame 0 only.** The read is sent with `{ frameId: 0 }`, because a
   broadcast would run it once per frame, and the export answers only when
@@ -2008,6 +2015,211 @@ session answered **401 with JSON** ("User is not authenticated") on both a
 basic-auth and an SSO instance, never HTML or a redirect, and a login page has
 a `g_ck`. The export therefore classifies a 401 to a read sent with a token as
 signed out.
+
+## Update Set Lens
+
+Update Set Lens checks one update set (or a batch) before it is promoted:
+which customer updates are no longer the version this instance runs, where the
+newer one is, and — on another instance open in the browser — whether the set
+got there and whether that instance runs the same versions. It writes nothing
+on either instance. `update_set_lens.js` is the DOM-free engine and
+`update_set_lens_ui.js` the panel; both are injected on first use by
+`INJECT_UPDATE_SET_LENS` and are absent from `manifest.json`.
+
+### The version-source trap
+
+`sys_update_version` has **no `update_set` column**. A version belongs to the
+set named in `source` when `source_table` is `sys_update_set`; upgrades and
+store applications write versions with other source tables. A misspelt
+condition is silently ignored rather than refused, so a read naming the wrong
+column returns unrelated rows. Every row that comes back is therefore checked
+again in code: the exact name, the state, and the set it belongs to.
+
+Identity is `sys_update_xml.name`, which travels unchanged between instances.
+`sys_update_xml.table` is the configuration's target table, not the record's,
+and is never read. Neither is `payload` (up to 4 MB a row).
+
+### The rule
+
+Per update, against the one `current` version of its name:
+
+1. No current version, more than one, a refused or failed read, or a blank
+   guid, hash or source is **Can't tell**. Two blanks never compare equal.
+2. Same guid and same hash is **Current** (a note when the version is credited
+   elsewhere); same guid with different content is **Can't tell**.
+3. A later save in this set is Current with equal content, Can't tell without.
+4. In a batch, a version in a sibling set is **In this batch**.
+5. Equal content anywhere else is **Same content**. A later save that changes
+   nothing writes no new version, so without the hash a third to two thirds of
+   "newer version elsewhere" rows were false alarms.
+6. Otherwise it is a Stale candidate, and Stale only if this set's own version
+   was **loaded here and later replaced**: a `previous` version under the
+   row's own set, with this capture's guid or its exact content (the latter is
+   worded "matched by content"). `backedout`, `history` and
+   `history_collision` versions give Can't tell with their own reasons, and so
+   does finding no version from this set at all — an update skipped at commit
+   stays listed under the retrieved set but never became a version here, and
+   calling an older version "newer" would reverse the order. 6b: a
+   `skip_collision` update gets a `previous` version although it was skipped,
+   so the current version must also not be older than that baseline.
+7. A current version from an upgrade, an application install or another
+   source table is Stale, worded as such; otherwise Stale names the newer set,
+   its state, and who recorded the version when. Deletes, re-creations and
+   reverts have their own wording.
+
+Content disagreement is never resolved in favour of Current. Version time is
+never used to order captures across sets: import time is not change time.
+
+### Reads
+
+- **Never by guid or hash.** One lookup by guid took 11.8 s against 0.19 s by
+  name. Versions are read by name, rule 6's by source and name, and guid, hash
+  and state are compared in code. `assertSafeRead` refuses such a read, and a
+  static test refuses the strings in the engine and the exporter.
+- **Names are chunked**: 40 to a read, and fewer whenever the encoded URL
+  would pass 6,000 characters — 40 names of 250 characters made a
+  10,407-character URL that got HTTP 414. A name with a comma is read alone
+  through `name=`; one with `^`, a line break or a leading `javascript:` is
+  never queried and its row is Can't tell. A chunk that comes back full is
+  split, down to single names, and a single name that still fills its limit is
+  Can't tell.
+- **Membership pages are keyed**, `sys_id>` the last one with `ORDERBYsys_id`,
+  because `tableApiGetInPage` has no offset. Totals come from `X-Total-Count`
+  through the opt-in `options.withTotal`; every other caller's answer is
+  unchanged. A run checks at most 2,000 rows and continues from the cursor on
+  request; nothing pages silently to the end. A full page whose rows all
+  belong to other sets stops the list instead of walking the table.
+- **Names match like the server**: `name=` ignores case and trailing spaces,
+  so the code-side check folds both. Several matches go to a chooser in the
+  palette and are never picked silently; Default is read from `is_default`.
+
+### Membership: two shapes, one union
+
+A set committed from another instance holds its updates in either of two
+places, depending on how it arrived: attached to the local set, or still under
+the retrieved set (`remote_update_set`) with `update_set` empty. Membership is
+the union: `update_set=<set>`, plus `remote_update_set=<set.remote_sys_id>`
+when the set has one, deduplicated by set and name with the attached row kept.
+Rows found only under the retrieved set say "as retrieved". "This set" is
+still the local set's id, because that is the versions' `source`.
+`sys_update_xml.category` follows the arrival route, not the content, so
+membership is **never** filtered by category.
+
+### Page context and batches
+
+On a list the command opens with the input row and reads nothing:
+`sysIdFromText` matches `sys_id=` inside `remote_sys_id=`, so a list filtered
+by one would otherwise open silently on that set. The raw route decides,
+because `recordContextFromText` strips `_list`. A page whose URL names some
+other table also costs no read. Otherwise the table is decided by reading
+`sys_update_set`, then `sys_remote_update_set`: a top-frame `nav_to.do` URL
+names `nav_to`. A retrieved set opens on its local copy when committed, and is
+otherwise shown by its state with links to ServiceNow's own form and preview
+problems; the panel never presses Preview, Commit or Back Out.
+
+A batch parent with no rows of its own (95 of 102 measured) checks its
+children by default. They are walked breadth first on `parent`, at most 6
+levels and 1,000 sets, every visited id kept against cycles, or read once by
+`base_update_set` when the root is its own base.
+
+### Check on another instance
+
+The same pattern as Prefill from another instance, and the same shared
+helpers. Feature routes, never a proxy:
+
+| Where | Message | Carries |
+| --- | --- | --- |
+| worker | `PREFILL_SOURCE_INSTANCES` | reused as it is: origins only |
+| worker | `UPDATE_SET_REMOTE_CHECK` | an origin, up to 1,000 set ids and up to 2,000 `{ name, guid, hash }` records in; presence, per-record statuses, where-saved notes and link ids out |
+| other tab, frame 0 | `UPDATE_SET_EXPORT_STATUS` | the same ids and records, and a worker-made request id, from the extension only |
+| worker | `REMOTE_READ_PROGRESS` → `UPDATE_SET_LENS_PROGRESS` | the other tab's progress, relayed to the panel's top frame |
+| worker | `UPDATE_SET_REMOTE_OPEN` | an origin and a `{ table, sysId }` or an update's `name`; opens one tab there |
+
+- **Validation on both sides.** Set ids are 32-hex, guids `/^[0-9a-f]{32}$/`,
+  names `/^[A-Za-z0-9_.-]{1,250}$/`, and `payload_hash` is a **signed
+  decimal** (`/^-?[0-9]{1,10}$/`, a 32-bit hash, about half negative) — never
+  hex. Both are kept as the exact strings read. The panel leaves out any row
+  that fails, and that row's answer is Can't tell, so one odd row never sinks
+  the check. The worker refuses a request that still holds a failing record or
+  any field it does not take: that is a bug or a forged message.
+- **The exporter builds its own six reads**: retrieved copies by
+  `remote_sys_id`, then by `origin_sys_id`, the local sets committed copies
+  point at (each id validated first), the same sys_id as a set there (clone
+  lineage, not promotion), current versions 40 names a read, and, once those
+  compared, each record's own row in `sys_metadata` by `sys_update_name`,
+  latest updated first, in the same chunks. That last read only adds links,
+  so it starts no read two minutes into the export: with each read held to
+  30 s, the statuses still beat the worker's 180 s ceiling. It makes
+  every one through `SN_UPDATE_SET_LENS_GET` from its own tab, with
+  `expectedOrigin` and `requireToken`. It never uses `snGetMany` or
+  `SN_TABLE_GET`, and so beats explicitly after each read: Prefill's
+  heartbeat rides on `snGetManyListeners`, which only `snGetMany` triggers.
+- **The reply** holds at most 20 copies per set and 200 in all, a status per
+  record by index (`runs`, `same`, `other`, `conflict`, `none`, `unknown`),
+  and never a record's name. For a `same` or `other` record it also says
+  when the version that runs there was saved and the set it was saved in
+  (`{ on, set }`, or `{ on, from }` for an upgrade or app), as display text
+  from that instance: the row then reads "runs another version, saved there
+  2026-10-30 12:32:27 in Default", which is usually a change made
+  there after the commit. Those notes stop at 64 KiB and cost no read: the
+  version read just asks for `source`, `source_table` and `sys_created_on`
+  with display values. Each record also gets the ids its links need, `{ table,
+  record, version }`: its record's class and sys_id from `sys_metadata`, and
+  the version's sys_id when exactly one runs there. Those stop at their own
+  64 KiB, and a failed `sys_metadata` read costs only the record links. The
+  reply is capped at 256 KiB and rebuilt from an allowlist in the worker,
+  which drops a note on any other status and refuses an id that fails its
+  pattern. A 401
+  to a read sent with a token is signed out; a 403 is access, followed by
+  the impersonation-state read.
+- **No current version there is not absence.** The record may exist with no
+  captured history, or its history may be hidden from that account, so the
+  panel says "no readable current version", never "not there". Versions on
+  two instances are not ordered, so "runs another version" claims nothing
+  about which is newer.
+- **Links there are ids, never URLs.** `OPEN_URL` opens only the sender's own
+  origin, so a row's links on the other instance go to
+  `UPDATE_SET_REMOTE_OPEN` as an origin and either `{ table, sysId }` (the
+  record, or the version that runs there) or the update's `name` (its version
+  history, left off a row with no current version there, where the list
+  would be empty). The worker checks each piece against its pattern, refuses any
+  other field, builds the URL itself, and opens it only on another instance
+  open in a tab in the sender's own browsing context — exactly the instances
+  Check on can choose. That list is read at click time, so a worker restart
+  between the check and the click costs nothing, and a closed tab answers
+  `not-open`.
+
+### Panel
+
+The panel has no markup path: every value is set as text, and links are
+buttons handing a URL the engine built from allowlisted fields to `OPEN_URL`,
+same origin only. Two kinds carry no URL. **Open record** carries the
+update's name, and content.js finds the record only when it is clicked, as
+ServiceNow's own Show Related Record does: `sys_metadata` by
+`sys_update_name`, latest updated first. Data added to a set is outside
+`sys_metadata`, so a `<table>_<sys_id>` name is tried next and opened only
+once a read finds that row. A link on the other instance carries an origin
+and ids for `UPDATE_SET_REMOTE_OPEN`. A link that can't open says why
+beside the row's links for six seconds.
+
+The panel draws snapshots from the engine's session and owns only how they
+are looked at. It opens on Needs attention (Stale and Can't tell) when there
+is any, draws 100 rows at a time, badges each verdict in colour with its
+word, shows details for Stale and Can't tell, and puts the other instance's
+answer on a row only where it differs; that instance's links show on any
+opened row once a check has finished. Success is said, not left to the
+counts: a run with every update read, no Stale or Can't tell row and no
+warning banner says nothing needs attention, and a check where every record
+compared runs this set's version says the instance matches ("so far" while
+some updates weren't compared). A difference is said in amber: the check's
+count line, the row's note, a second badge on the row, and a **Differs on**
+filter chip that lapses with the check. Same content there stays grey,
+because the content matches. A run is bound to its panel:
+closing it, opening another, or choosing another instance drops late results.
+A check answers for the rows it was sent, so switching the batch or checking
+the next 2,000 clears it too, and drops an answer still on its way. Enter
+and Space on a link inside a row belong to the link, never the row's
+fold. **Copy summary** holds counts only.
 
 ## Debug Timeline
 

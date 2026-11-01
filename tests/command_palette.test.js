@@ -40,6 +40,7 @@ function loadBuiltCommands(debugTimelineUI, options) {
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
     "showVariableValues",
     "showCatalogInsight", "refreshCodeSearchCoverage", "openImpersonate",
+    "openUpdateSetLens",
     contentSource.slice(commandStart, commandEnd) +
       contentSource.slice(helperStart, helperEnd) +
       "\nreturn buildCommands();"
@@ -53,7 +54,8 @@ function loadBuiltCommands(debugTimelineUI, options) {
      * that wants one has to supply what decodedVariants would have seen. */
     () => opts.decodedUrls || [],
     () => Boolean(opts.workspaceRoute),
-    noop, noop, noop, noop, noop, noop, noop, noop, noop, noop
+    noop, noop, noop, noop, noop, noop, noop, noop, noop, noop,
+    function openUpdateSetLens() {}
   );
 }
 
@@ -92,11 +94,53 @@ test("current built-ins expose the accepted unique command labels", () => {
       "Translation Lens", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
       "Customer Updates", "Variable Prefill", "Variable Values", "Catalog Logic",
       "Variable Insight", "Code Search", "Impersonate", "Search Sources",
-      "Table List", "New Record",
+      "Update Set Lens", "Table List", "New Record",
     ]
   );
   assert.ok(builtIns.every((item) => item.description));
   assert.ok(builtIns.filter((item) => item.input).every((item) => item.inputLabel));
+});
+
+/*
+ * Update Set Lens: three words, the owner's deliberate exception to the
+ * two-word label rule. It is not an input command, because on a set's form it
+ * opens on that set without asking; the description's ellipsis says it asks
+ * everywhere else, with the input label and placeholder it carries.
+ */
+test("Update Set Lens is a Tools command that asks only when the page gives no set", () => {
+  const builtIns = loadBuiltCommands();
+  const lens = builtIns.find((item) => item.id === "update-set-lens");
+  assert.ok(lens);
+  assert.strictEqual(lens.label, "Update Set Lens");
+  assert.strictEqual(lens.favoriteKey, "update-set-lens");
+  assert.strictEqual(lens.group, "Tools");
+  assert.strictEqual(lens.description, "Check an update set for stale updates and where it has moved…");
+  assert.ok(lens.description.endsWith("…"));
+  assert.strictEqual(lens.inputLabel, "Update set name, sys_id or link");
+  assert.ok(lens.placeholder);
+  assert.strictEqual(lens.input, undefined, "the page decides whether to ask");
+  assert.strictEqual(lens.keepOpen, true);
+  assert.strictEqual(lens.run.name, "openUpdateSetLens");
+  assert.strictEqual(builtIns.filter((item) => item.label.toLowerCase() === "update set lens").length, 1);
+
+  /* Its own label makes it the active row. */
+  assert.strictEqual(palette.preparePaletteCommands(builtIns, "Update Set Lens", null)[0].id, "update-set-lens");
+
+  /* "update set" prefixes both it and the Update Sets dev link. Both are a
+   * label-prefix match, so the declared group order decides: Tools before Dev
+   * Links. Pinned here rather than assumed. */
+  const both = palette.preparePaletteCommands(builtIns, "update set", null).map((item) => item.id);
+  assert.strictEqual(both[0], "update-set-lens");
+  assert.ok(both.includes("devlink-/sys_update_set_list.do"));
+  assert.ok(both.indexOf("update-set-lens") < both.indexOf("devlink-/sys_update_set_list.do"));
+  /* And the dev link still wins its own label. */
+  assert.strictEqual(palette.preparePaletteCommands(builtIns, "Update Sets", null)[0].id, "devlink-/sys_update_set_list.do");
+
+  /* The Tools group keeps its order, Update Set Lens at its end. */
+  const tools = builtIns.filter((item) => item.group === "Tools").map((item) => item.label);
+  assert.deepStrictEqual(tools, [
+    "Translation Lens", "Debug Timeline", "Code Search", "Impersonate", "Search Sources", "Update Set Lens",
+  ]);
 });
 
 /*
@@ -384,6 +428,7 @@ test("result panels use the same stable feature headings", () => {
     "debug_timeline_ui.js": /<h2 id="snh-debug-title">Debug Timeline /,
     "translation_lens_ui.js": /el\("h2", "", "Translation Lens"\)/,
     "translation_assistant_ui.js": /el\("h2", "", "Translation Assistant"\)/,
+    "update_set_lens_ui.js": /el\("h2", "", "Update Set Lens"\)/,
   };
 
   for (const [file, pattern] of Object.entries(files)) {
