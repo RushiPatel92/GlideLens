@@ -60,7 +60,7 @@
       display:flex;align-items:center;justify-content:center;padding:24px;
     }
     .panel{
-      width:min(1180px,calc(100vw - 32px));height:min(760px,calc(100vh - 40px));
+      width:min(1800px,calc(100vw - 48px));height:calc(100vh - 48px);
       display:flex;flex-direction:column;overflow:hidden;
       background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
       box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;
@@ -71,7 +71,7 @@
     }
     .heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:#85859f;line-height:1.45}
+    .subtitle{font-size:12px;color:#85859f;line-height:1.45;max-width:90ch}
     .best-effort{
       display:inline-flex;margin-left:7px;padding:3px 7px;border-radius:999px;
       color:#c7b9ff;background:#302b50;border:1px solid #4a4271;
@@ -89,8 +89,11 @@
     }
     .summary strong{color:#f0f0fa;font-size:13px;margin-right:4px}
     .warning{margin-left:auto;color:#d2b779}
+    /* The band keeps its full width; its right padding holds the text to
+       about 90 characters on a wide screen. */
     .status-banner{
-      padding:9px 20px;border-bottom:1px solid #443d2d;background:#302b20;
+      padding:9px max(20px,calc(100% - 90ch)) 9px 20px;
+      border-bottom:1px solid #443d2d;background:#302b20;
       color:#e2c98c;font-size:11px;line-height:1.45;
     }
     .status-banner.error{background:#3a252d;border-color:#613746;color:#ffb5c5}
@@ -209,12 +212,12 @@
     .mrvs-table tbody tr:last-child td{border-bottom:none}
     .mrvs-index{color:#6f6f88;width:26px}
     .mrvs-cell-differs{color:#ffb5c5;background:#3a2531}
-    .empty{padding:48px 20px;text-align:center;color:#74748b;font-size:13px}
+    .empty{padding:48px 20px;text-align:center;color:#74748b;font-size:13px;max-width:90ch;margin:0 auto}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
-    .toolbar-note{font-size:11px;color:#67677e;flex:1}
+    .toolbar-note{font-size:11px;color:#67677e;flex:1;max-width:90ch;margin-right:auto}
     .toolbar button{
       border:1px solid #3a3a5c;background:#292941;color:#d8d8ea;
       border-radius:6px;padding:6px 9px;cursor:pointer;font-size:12px;

@@ -74,18 +74,21 @@
       --border:#3a3a5c;--text:#dedeee;--muted:#9292aa}
     button,input{font:inherit}
     .overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
-      display:flex;align-items:center;justify-content:center;padding:12px}
-    .panel{width:min(920px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));
+      display:flex;align-items:center;justify-content:center;padding:24px}
+    .panel{width:min(1800px,calc(100vw - 48px));height:calc(100vh - 48px);
       display:flex;flex-direction:column;overflow:hidden;background:var(--panel);
       border:1px solid var(--border);border-radius:12px;box-shadow:0 28px 80px rgba(0,0,0,.65);
       color:var(--text)}
     .header{display:flex;align-items:flex-start;gap:14px;padding:18px 20px 14px;
       border-bottom:1px solid #2e2e4e}.heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:var(--muted);line-height:1.45;margin:0}
+    .subtitle{font-size:12px;color:var(--muted);line-height:1.45;margin:0;max-width:90ch}
     .close{border:0;background:transparent;color:var(--muted);padding:3px 5px;font-size:12px;
       cursor:pointer;border-radius:5px}.close:hover{color:#fff;background:#2d2d48}
     .form{padding:14px 20px;border-bottom:1px solid #292944;background:var(--raised)}
+    /* The boxes and their buttons stay together rather than spanning a wide
+       screen; the results below use the full width. */
+    .form-main,.field-line,.filters{max-width:1100px}
     .form-main{display:grid;grid-template-columns:minmax(240px,.9fr) minmax(280px,1.2fr) auto;
       gap:10px;align-items:end}
     label,.field-label{display:flex;flex-direction:column;gap:5px;color:#bdbdd0;
@@ -179,15 +182,21 @@
     .manual{color:#e1b678;font-size:9px}.field-summary{min-width:0;color:#9f9fb7;
       font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .field-summary strong{color:#e4e4f1;font-weight:600}.selected-table{color:#8f8fa9}
-    .status{min-height:40px;display:flex;align-items:center;gap:9px;padding:9px 20px;
+    /* The band keeps its full width; its right padding holds the text to
+       about 90 characters on a wide screen. */
+    .status{min-height:40px;display:flex;align-items:center;gap:9px;
+      padding:9px max(20px,calc(100% - 90ch)) 9px 20px;
       border-bottom:1px solid #292944;color:#aaaac1;font-size:11px}
     .status.validation{color:#efc48f}.status.empty{color:#c2c2d2}
     .status.access,.status.schema,.status.transient{color:#ef9b9b}
     .spinner{width:12px;height:12px;border-radius:50%;border:2px solid #45456b;
       border-top-color:var(--teal);animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
     @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
-    .rows{flex:1;overflow:auto;padding:6px 0}.empty{padding:46px 20px;text-align:center;
-      color:var(--muted);font-size:13px;line-height:1.5}.empty small{display:block;margin-top:7px;color:#74748d}
+    /* Scoped to the results area: the status line also carries an "empty"
+       class when nothing matched, and must stay a status line. */
+    .rows{flex:1;overflow:auto;padding:6px 0}.rows>.empty{padding:46px 20px;text-align:center;
+      color:var(--muted);font-size:13px;line-height:1.5;max-width:90ch;margin:0 auto}
+    .rows>.empty small{display:block;margin-top:7px;color:#74748d}
     .row{position:relative;padding:12px 20px;border-bottom:1px solid #282841;outline:none}
     .row:hover{background:#282842}.row:focus-visible{outline:2px solid var(--teal);outline-offset:-2px;
       background:#282842}.row-top{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
@@ -201,7 +210,7 @@
     .result-action.copied{background:#173d3a;border-color:var(--teal);color:#c4f7f1;font-weight:650}
     .result-action.copy-failed{background:#4a2330;border-color:#ef9b9b;color:#ffd9d9;font-weight:650}
     .toolbar{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid #2e2e4e;
-      background:#20203a}.toolbar-note{flex:1;color:#85859d;font-size:11px}
+      background:#20203a}.toolbar-note{flex:1;color:#85859d;font-size:11px;max-width:90ch;margin-right:auto}
     .toolbar button:hover:not(:disabled){background:#4a4b78;color:#fff}
     @media(max-width:680px){.overlay{padding:8px}.panel{width:100%;height:calc(100vh - 16px)}
       .form-main{grid-template-columns:1fr}.search-btn{width:100%}.header{padding:14px}

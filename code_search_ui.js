@@ -61,10 +61,10 @@
     button,input{font:inherit}
     .overlay{
       position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
-      display:flex;align-items:center;justify-content:center;padding:12px;
+      display:flex;align-items:center;justify-content:center;padding:24px;
     }
     .panel{
-      width:min(1180px,calc(100vw - 24px));height:min(820px,calc(100vh - 24px));
+      width:min(1800px,calc(100vw - 48px));height:calc(100vh - 48px);
       display:flex;flex-direction:column;overflow:hidden;
       background:#1e1e2e;border:1px solid #3a3a5c;border-radius:12px;
       box-shadow:0 28px 80px rgba(0,0,0,.65);color:#dedeee;
@@ -79,7 +79,7 @@
       font:14px ui-monospace,SFMono-Regular,Consolas,monospace;
       color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
     }
-    .subtitle{font-size:12px;color:#85859f;line-height:1.45}
+    .subtitle{font-size:12px;color:#85859f;line-height:1.45;max-width:90ch}
     .close{
       border:0;background:transparent;color:#85859f;padding:3px 5px;
       font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
@@ -165,7 +165,7 @@
     .snippet mark{background:color-mix(in srgb, var(--teal) 34%, transparent);
       color:#eafffb;border-radius:2px;padding:0 1px}
     .redacted{color:#d2b779;font-style:italic}
-    .empty{padding:34px 20px;text-align:center;color:#85859f;font-size:13px}
+    .empty{padding:34px 20px;text-align:center;color:#85859f;font-size:13px;max-width:90ch;margin:0 auto}
     .empty .hint{display:block;margin-top:8px;font-size:11px;color:#6e6e88}
     .drawer{border-top:1px solid #2e2e4e;background:#1a1a2a;max-height:180px;overflow:auto}
     .drawer-head{
@@ -189,7 +189,7 @@
       display:flex;align-items:center;gap:8px;padding:11px 16px;
       border-top:1px solid #2e2e4e;background:#20203a;
     }
-    .toolbar-note{flex:1;color:#7d7d95;font-size:11px}
+    .toolbar-note{flex:1;color:#7d7d95;font-size:11px;max-width:90ch;margin-right:auto}
     .toolbar button{
       border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;border-radius:7px;
       padding:6px 12px;cursor:pointer;font-size:12px;

@@ -84,26 +84,31 @@
       --border:#3a3a5c;--text:#dedeee;--muted:#9292aa}
     button,input{font:inherit}
     .overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
-      display:flex;align-items:center;justify-content:center;padding:12px}
-    .panel{width:min(920px,calc(100vw - 24px));height:min(760px,calc(100vh - 24px));
+      display:flex;align-items:center;justify-content:center;padding:24px}
+    .panel{width:min(1800px,calc(100vw - 48px));height:calc(100vh - 48px);
       display:flex;flex-direction:column;overflow:hidden;background:var(--panel);
       border:1px solid var(--border);border-radius:12px;box-shadow:0 28px 80px rgba(0,0,0,.65);
       color:var(--text)}
     .header{display:flex;align-items:flex-start;gap:14px;padding:18px 20px 14px;
       border-bottom:1px solid #2e2e4e}.heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:var(--muted);line-height:1.45;margin:0}
+    .subtitle{font-size:12px;color:var(--muted);line-height:1.45;margin:0;max-width:90ch}
     .close{border:0;background:transparent;color:var(--muted);padding:3px 5px;font-size:12px;
       cursor:pointer;border-radius:5px}.close:hover{color:#fff;background:#2d2d48}
     .current{display:flex;align-items:center;gap:12px;padding:12px 20px;
       border-bottom:1px solid #292944;background:#2a2340}
-    .current-text{flex:1;min-width:0;font-size:12px;line-height:1.5;color:#f0e3f6}
+    .current-text{flex:1;min-width:0;max-width:90ch;margin-right:auto;font-size:12px;line-height:1.5;
+      color:#f0e3f6}
     .current-name{font-weight:650;color:#fff}
     .current-id{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#c9b6d8}
     .current-note{display:block;margin-top:3px;color:#b7a7c6;font-size:11px}
     .form{padding:14px 20px;border-bottom:1px solid #292944;background:var(--raised)}
-    .form-main{display:grid;grid-template-columns:minmax(260px,1.4fr) auto;gap:10px;align-items:end}
-    .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:11px}
+    /* The search box and its button stay together rather than spanning a
+       wide screen; the results below use the full width. */
+    .form-main{display:grid;grid-template-columns:minmax(260px,1.4fr) auto;gap:10px;align-items:end;
+      max-width:1100px}
+    .filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:11px;
+      max-width:1100px}
     label,.field-label{display:flex;flex-direction:column;gap:5px;color:#bdbdd0;
       font-size:11px;font-weight:600;min-width:0}
     input{width:100%;background:#151522;border:1px solid #555578;border-radius:7px;
@@ -132,7 +137,10 @@
       border-radius:7px;padding:8px 16px;cursor:pointer;font-size:12px;font-weight:650;height:36px}
     .search-btn:hover:not(:disabled){background:#ff85bb}
     button:disabled{opacity:.48;cursor:default}
-    .status{min-height:40px;display:flex;align-items:center;gap:9px;padding:9px 20px;
+    /* The band keeps its full width; its right padding holds the text to
+       about 90 characters on a wide screen. */
+    .status{min-height:40px;display:flex;align-items:center;gap:9px;
+      padding:9px max(20px,calc(100% - 90ch)) 9px 20px;
       border-bottom:1px solid #292944;color:#aaaac1;font-size:11px;line-height:1.45}
     .status.validation{color:#efc48f}.status.empty{color:#c2c2d2}
     .status.access,.status.schema,.status.transient,.status.indeterminate{color:#ef9b9b}
@@ -142,12 +150,15 @@
     @keyframes spin{to{transform:rotate(360deg)}}
     @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
     .body{flex:1;overflow:auto;padding:6px 0}
-    .empty{padding:46px 20px;text-align:center;color:var(--muted);font-size:13px;line-height:1.5}
-    .empty small{display:block;margin-top:7px;color:#74748d}
+    /* Scoped to the results area: the status line also carries an "empty"
+       class when nobody matched, and must stay a status line. */
+    .body>.empty{padding:46px 20px;text-align:center;color:var(--muted);font-size:13px;line-height:1.5;
+      max-width:90ch;margin:0 auto}
+    .body>.empty small{display:block;margin-top:7px;color:#74748d}
     .section-heading{display:flex;align-items:baseline;gap:10px;padding:12px 20px 6px;
       color:#9ff0e5;font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}
     .section-source{margin-left:auto;color:#74748d;font-weight:400;letter-spacing:0;text-transform:none}
-    .section-note{padding:10px 20px;color:#85859d;font-size:11px;line-height:1.45}
+    .section-note{padding:10px 20px;color:#85859d;font-size:11px;line-height:1.45;max-width:90ch}
     .row{position:relative;padding:12px 20px;border-bottom:1px solid #282841;outline:none}
     .row:hover{background:#282842}
     .row:focus-visible{outline:2px solid var(--teal);outline-offset:-2px;background:#282842}
@@ -194,7 +205,7 @@
     .confirm-state.success{color:#8fe0cf}
     .toolbar{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid #2e2e4e;
       background:#20203a}
-    .toolbar-note{flex:1;color:#85859d;font-size:11px;line-height:1.45}
+    .toolbar-note{flex:1;color:#85859d;font-size:11px;line-height:1.45;max-width:90ch;margin-right:auto}
     .toolbar button{border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;border-radius:7px;
       padding:8px 13px;cursor:pointer;font-size:12px}
     .toolbar button:hover:not(:disabled){background:#4a4b78;color:#fff}
