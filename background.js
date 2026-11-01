@@ -109,6 +109,14 @@ function extractSysId() {
  * number, or null when the header is missing or not a count. It equals the
  * Aggregate API's count. Callers that do not ask get exactly the answer they
  * always got.
+ *
+ * `suppressPagination` (Update Set Lens) sends
+ * sysparm_suppress_pagination_header=true. When a long query (an IN list of
+ * 80 sys_ids) matches more rows than its limit, ServiceNow must build "next"
+ * Link URLs from it, and answers HTTP 400 "Pagination not supported" instead.
+ * Measured 2026-11-01: 60 ids (2,007 characters) passed and 80 (2,667)
+ * failed, at limit 1 and at limit 200; with the parameter both pass and
+ * X-Total-Count still comes back. URLs without the option are unchanged.
  */
 async function tableApiGetInPage(request) {
   const options = request.options || {};
@@ -124,6 +132,9 @@ async function tableApiGetInPage(request) {
   }
   if (options.excludeRefLinks) {
     params.set("sysparm_exclude_reference_link", "true");
+  }
+  if (options.suppressPagination) {
+    params.set("sysparm_suppress_pagination_header", "true");
   }
 
   const url =

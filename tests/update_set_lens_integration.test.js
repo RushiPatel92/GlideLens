@@ -385,12 +385,15 @@ function loadReader(page) {
   )(
     { origin: HERE },
     "tok",
-    async () => ({
-      ok: true,
-      status: 200,
-      headers: page.headers === false ? undefined : { get: (name) => (name === "X-Total-Count" ? page.total : null) },
-      json: async () => ({ result: [{ sys_id: "a" }] }),
-    })
+    async (url) => {
+      if (page.urls) page.urls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        headers: page.headers === false ? undefined : { get: (name) => (name === "X-Total-Count" ? page.total : null) },
+        json: async () => ({ result: [{ sys_id: "a" }] }),
+      };
+    }
   );
   return reader;
 }
@@ -404,6 +407,22 @@ test("withTotal returns X-Total-Count as a number, null when missing; other call
   assert.strictEqual((await loadReader({ headers: false })(Object.assign({ options: { withTotal: true } }, request))).total, null);
   assert.deepStrictEqual(await loadReader({ total: "724" })(Object.assign({ options: {} }, request)),
     { ok: true, result: [{ sys_id: "a" }] }, "byte-identical without the option");
+});
+
+test("suppressPagination adds the parameter only when asked, and the total still comes back", async () => {
+  const request = { table: "sys_update_xml", query: "update_setIN" + id(1) + "," + id(2), fields: "sys_id", limit: 1 };
+  const urls = [];
+  const asked = await loadReader({ total: "1714", urls })(
+    Object.assign({ options: { withTotal: true, suppressPagination: true } }, request));
+  assert.deepStrictEqual(asked, { ok: true, result: [{ sys_id: "a" }], total: 1714 });
+  await loadReader({ total: "1714", urls })(Object.assign({ options: { withTotal: true } }, request));
+  await loadReader({ total: "1714", urls })(Object.assign({ options: {} }, request));
+  const query = (url) => new URL(url).searchParams;
+  assert.strictEqual(query(urls[0]).get("sysparm_suppress_pagination_header"), "true");
+  assert.ok(!urls[1].includes("sysparm_suppress_pagination_header"), "not sent unless asked");
+  assert.strictEqual(urls[1], urls[2], "withTotal alone changes nothing in the URL");
+  assert.strictEqual(urls[0].replace("&sysparm_suppress_pagination_header=true", ""), urls[1],
+    "the option adds exactly one parameter");
 });
 
 /* ------------------------------------------------------------------ *
@@ -530,6 +549,7 @@ test("the export reads only through the timed route, with this origin and a toke
     assert.strictEqual(read.type, "SN_UPDATE_SET_LENS_GET", "never snGetMany's SN_TABLE_GET");
     assert.strictEqual(read.options.expectedOrigin, THERE);
     assert.strictEqual(read.options.requireToken, true);
+    assert.strictEqual(read.options.suppressPagination, true, "its long IN lists can meet the same HTTP 400");
   });
   assert.ok(reads.every((read) => !/undefined/.test(read.query)), "an invalid update_set never reaches a query");
   const text = JSON.stringify(reply);

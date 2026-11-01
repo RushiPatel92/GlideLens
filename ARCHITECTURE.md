@@ -2086,7 +2086,17 @@ never used to order captures across sets: import time is not change time.
 - **Membership pages are keyed**, `sys_id>` the last one with `ORDERBYsys_id`,
   because `tableApiGetInPage` has no offset. Totals come from `X-Total-Count`
   through the opt-in `options.withTotal`; every other caller's answer is
-  unchanged. A run checks at most 2,000 rows and continues from the cursor on
+  unchanged.
+- **Every read suppresses the pagination header** (the opt-in
+  `options.suppressPagination`, sending `sysparm_suppress_pagination_header=true`).
+  When a long query matches more rows than its limit, ServiceNow has to build
+  "next" link URLs from it and answers HTTP 400 "Pagination not supported"
+  instead. An 80-id chunk is long enough: measured, 60 ids (2,007 characters)
+  passed and 80 (2,667) failed, so a batch with 61 to 80 sets in one chunk
+  could not even be counted. With the parameter the read passes and
+  `X-Total-Count` still comes back. The engine's `readTable` and the
+  exporter's own reads both send it; no other caller does.
+- **The 2,000-row cap.** A run checks at most 2,000 rows and continues from the cursor on
   request; nothing pages silently to the end. A full page whose rows all
   belong to other sets stops the list instead of walking the table.
 - **Names match like the server**: `name=` ignores case and trailing spaces,
@@ -2151,7 +2161,7 @@ helpers. Feature routes, never a proxy:
   so it starts no read two minutes into the export: with each read held to
   30 s, the statuses still beat the worker's 180 s ceiling. It makes
   every one through `SN_UPDATE_SET_LENS_GET` from its own tab, with
-  `expectedOrigin` and `requireToken`. It never uses `snGetMany` or
+  `expectedOrigin`, `requireToken` and `suppressPagination`. It never uses `snGetMany` or
   `SN_TABLE_GET`, and so beats explicitly after each read: Prefill's
   heartbeat rides on `snGetManyListeners`, which only `snGetMany` triggers.
 - **The reply** holds at most 20 copies per set and 200 in all, a status per

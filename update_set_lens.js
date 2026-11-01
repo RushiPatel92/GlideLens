@@ -225,7 +225,10 @@
   }
 
   /* One read: { rows, total }. total is X-Total-Count when asked for, else
-   * null. A refusal (401, 403) is "access"; anything else is "transport". */
+   * null. A refusal (401, 403) is "access"; anything else is "transport".
+   * Every read suppresses the pagination header: an 80-id chunk that matches
+   * more rows than its limit is otherwise answered HTTP 400, so a batch with
+   * enough child sets could never be counted. */
   async function readTable(ctx, table, query, fields, limit, options) {
     assertSafeRead(query, fields);
     if (ctx.shouldStop && ctx.shouldStop()) throw lensError("stale", "Superseded.");
@@ -234,7 +237,7 @@
       query,
       fields,
       limit,
-      options: Object.assign({ displayAll: true }, options || {}),
+      options: Object.assign({ displayAll: true, suppressPagination: true }, options || {}),
     };
     let response;
     try {
