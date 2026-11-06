@@ -40,9 +40,11 @@ function loadBuiltCommands(debugTimelineUI, options) {
     "prefillPortalVariablesFromTicket", "showHiddenPortalVariables",
     "showVariableValues",
     "showCatalogInsight", "refreshCodeSearchCoverage", "openImpersonate",
-    "openUpdateSetLens",
+    "openUpdateSetLens", "openVersionLens",
     contentSource.slice(commandStart, commandEnd) +
       contentSource.slice(helperStart, helperEnd) +
+      /* What the access check last answered on this page. */
+      "\nupdateHistoryAccess = " + JSON.stringify(opts.access || "unknown") + ";" +
       "\nreturn buildCommands();"
   );
 
@@ -55,7 +57,8 @@ function loadBuiltCommands(debugTimelineUI, options) {
     () => opts.decodedUrls || [],
     () => Boolean(opts.workspaceRoute),
     noop, noop, noop, noop, noop, noop, noop, noop, noop, noop,
-    function openUpdateSetLens() {}
+    function openUpdateSetLens() {},
+    function openVersionLens() {}
   );
 }
 
@@ -92,7 +95,7 @@ test("current built-ins expose the accepted unique command labels", () => {
     builtIns.map((item) => item.label),
     [
       "Translation Lens", "Debug Timeline", "sys_id", "Record Lens", "Playbooks",
-      "Customer Updates", "Variable Prefill", "Variable Values", "Catalog Logic",
+      "Customer Updates", "Version Lens", "Variable Prefill", "Variable Values", "Catalog Logic",
       "Variable Insight", "Code Search", "Impersonate", "Search Sources",
       "Update Set Lens", "Table List", "New Record",
     ]
@@ -141,6 +144,54 @@ test("Update Set Lens is a Tools command that asks only when the page gives no s
   assert.deepStrictEqual(tools, [
     "Translation Lens", "Debug Timeline", "Code Search", "Impersonate", "Search Sources", "Update Set Lens",
   ]);
+});
+
+/*
+ * Version Lens: a Record command beside Customer Updates, asking only when the
+ * page gives no record, like Update Set Lens. The two share keywords
+ * ("update set", "collision", "version"), and they sit in different groups,
+ * so declaration order never decides between them: the group's best match
+ * does, then the declared group order. Each pin below was worked out from that
+ * rule and is held here rather than assumed.
+ */
+test("Version Lens is a Record command that asks only when the page gives no record, and ranks as pinned", () => {
+  const builtIns = loadBuiltCommands();
+  const lens = builtIns.find((item) => item.id === "version-lens");
+  assert.ok(lens);
+  assert.strictEqual(lens.label, "Version Lens");
+  assert.strictEqual(lens.favoriteKey, "version-lens");
+  assert.strictEqual(lens.group, "Record");
+  assert.strictEqual(lens.description, "See which update sets hold this record, and which version runs…");
+  assert.ok(lens.description.endsWith("…"));
+  assert.strictEqual(lens.inputLabel, "Record link, sys_id or update name");
+  assert.ok(lens.placeholder);
+  assert.strictEqual(lens.input, undefined, "the page decides whether to ask");
+  assert.strictEqual(lens.keepOpen, true);
+  assert.strictEqual(lens.run.name, "openVersionLens");
+  for (const keyword of ["collision", "conflict", "competing", "overwrite", "update set", "customer update",
+    "sys_update_xml", "sys_update_version", "captured", "version", "who changed", "history"]) {
+    assert.ok(lens.keywords.includes(keyword), keyword);
+  }
+  assert.strictEqual(builtIns.filter((item) => item.label.toLowerCase() === "version lens").length, 1);
+  assert.strictEqual(palette.preparePaletteCommands(builtIns, "Version Lens", null)[0].id, "version-lens");
+
+  /* Declared right after Customer Updates; the Record group keeps its order. */
+  const record = builtIns.filter((item) => item.group === "Record").map((item) => item.label);
+  assert.deepStrictEqual(record, ["sys_id", "Record Lens", "Playbooks", "Customer Updates", "Version Lens"]);
+
+  /* "version": its label prefix (tier 1) puts Record ahead of Update Set
+   * Lens's keyword match in Tools (tier 3). */
+  assert.strictEqual(palette.preparePaletteCommands(builtIns, "version", null)[0].id, "version-lens");
+  /* "update set": Update Set Lens and the Update Sets link match by label
+   * prefix; Version Lens only by keyword and description. */
+  const updateSet = palette.preparePaletteCommands(builtIns, "update set", null).map((item) => item.id);
+  assert.strictEqual(updateSet[0], "update-set-lens");
+  assert.ok(updateSet.includes("version-lens"));
+  assert.ok(updateSet.indexOf("update-set-lens") < updateSet.indexOf("version-lens"));
+  /* "collision": a keyword of both, so the declared group order decides:
+   * Tools, then Record. */
+  const collision = palette.preparePaletteCommands(builtIns, "collision", null).map((item) => item.id);
+  assert.deepStrictEqual(collision, ["update-set-lens", "version-lens"]);
 });
 
 /*
@@ -465,6 +516,427 @@ test("every list panel takes the same share of the screen", () => {
   }
 });
 
+/* ------------------------------------------------------------------ *
+ * Admin-only commands: listed only where this session can read
+ * sys_update_xml, which stock ServiceNow opens to admins.
+ * ------------------------------------------------------------------ */
+
+const backgroundSource = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
+const ADMIN_ONLY_IDS = [
+  "open-current-playbook-customer-updates", "open-customer-updates-by-sysid", "open-playbook-executions",
+  "refresh-code-search-coverage", "update-set-lens", "version-lens",
+];
+
+function between(source, start, end) {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end, from + start.length);
+  assert.ok(from >= 0 && to > from, "block not found: " + start);
+  return source.slice(from, to);
+}
+
+test("without update history access the palette drops exactly the admin-only commands and every Dev Link", () => {
+  /* A playbook definition page, so Playbook Updates is listed too. */
+  const onPlaybook = { decodedUrls: ["https://example.service-now.com/sys_pd_process_definition.do?sys_id=1"] };
+  const built = (access) => loadBuiltCommands(null, Object.assign({ access }, onPlaybook));
+  const ids = (access) => built(access).map((item) => item.id);
+  const all = ids("unknown");
+  const devLinks = built("unknown").filter((item) => item.group === "Dev Links").map((item) => item.id);
+  assert.strictEqual(devLinks.length, 12);
+  assert.ok(devLinks.every((id) => id.startsWith("devlink-")));
+  const hidden = ADMIN_ONLY_IDS.concat(devLinks).sort();
+  for (const id of hidden) assert.ok(all.includes(id), id);
+  assert.deepStrictEqual(ids("readable"), all, "readable changes nothing");
+  const refused = ids("refused");
+  assert.deepStrictEqual(all.filter((id) => !refused.includes(id)).sort(), hidden);
+  assert.deepStrictEqual(refused, all.filter((id) => !hidden.includes(id)), "everything else keeps its order");
+  /* What a non-admin keeps, by label, so a regrouped command shows up here. */
+  assert.deepStrictEqual(built("refused").map((item) => item.label), [
+    "Translation Lens", "Debug Timeline", "sys_id", "Record Lens", "Variable Prefill", "Variable Values",
+    "Catalog Logic", "Variable Insight", "Code Search", "Impersonate", "Table List", "New Record",
+  ]);
+});
+
+const HERE = "https://example.service-now.com";
+
+function loadAccessCheck(snGetMany) {
+  return new Function(
+    "snGetMany", "location",
+    between(contentSource, "const ADMIN_ONLY_COMMANDS", "function buildCommands()") +
+      "\nreturn { checkUpdateHistoryAccess, commandsForAccess," +
+      " state: () => ({ access: updateHistoryAccess, asked: updateHistoryAsked }) };"
+  )(snGetMany, { origin: HERE });
+}
+
+function refusal(status) {
+  const error = new Error("refused");
+  if (status !== undefined) error.status = status;
+  return error;
+}
+
+test("the access check is one row of sys_update_xml, uncounted, that a 403 settles", async () => {
+  const reads = [];
+  const gate = loadAccessCheck(async (...request) => { reads.push(request); return [{ sys_id: "a" }]; });
+  assert.deepStrictEqual(gate.state(), { access: "unknown", asked: false });
+  const first = gate.checkUpdateHistoryAccess();
+  assert.strictEqual(gate.checkUpdateHistoryAccess(), first, "one read in flight, shared");
+  await first;
+  /* expectedOrigin: a frame embedded from another instance must not answer
+   * for this one, either way. */
+  assert.deepStrictEqual(reads, [["sys_update_xml", "", "sys_id", 1,
+    { expectedOrigin: HERE, requireToken: true, noCount: true, settleOnRefusal: true }]]);
+  assert.deepStrictEqual(gate.state(), { access: "readable", asked: true });
+  assert.strictEqual(gate.checkUpdateHistoryAccess(), null, "a known answer reads nothing more");
+  assert.strictEqual(reads.length, 1);
+});
+
+test("only a 403 hides the commands; any other failure leaves them and asks again", async () => {
+  const refused = loadAccessCheck(async () => { throw refusal(403); });
+  await refused.checkUpdateHistoryAccess();
+  assert.deepStrictEqual(refused.state(), { access: "refused", asked: true });
+  assert.strictEqual(refused.checkUpdateHistoryAccess(), null);
+  assert.deepStrictEqual(refused.commandsForAccess([
+    { id: "version-lens", group: "Record" }, { id: "record-search", group: "Record" },
+    { id: "devlink-/a_new_link.do", group: "Dev Links" },
+  ]), [{ id: "record-search", group: "Record" }], "a Dev Link added later is covered by its group");
+
+  /* A timeout or a frame that never answered (no status), a signed-out
+   * session (401), a page with no token (0) or a server fault (500). */
+  for (const status of [undefined, 0, 401, 500]) {
+    let reads = 0;
+    const gate = loadAccessCheck(async () => { reads += 1; throw refusal(status); });
+    await gate.checkUpdateHistoryAccess();
+    assert.deepStrictEqual(gate.state(), { access: "unknown", asked: true }, String(status));
+    assert.deepStrictEqual(gate.commandsForAccess([{ id: "version-lens" }]), [{ id: "version-lens" }]);
+    await gate.checkUpdateHistoryAccess();
+    assert.strictEqual(reads, 2, "an unanswered check is asked again on the next open");
+  }
+});
+
+const FULL_LIST = [{ id: "update-set-lens" }, { id: "impersonate" }, { id: "record-search" }];
+const NON_ADMIN_LIST = [{ id: "impersonate" }, { id: "record-search" }];
+
+/*
+ * The wait, its Enter handling and the placeholder, with the palette around
+ * them faked. `page.lists` is what each successive non-waiting draw shows
+ * (the last one repeats); like the real renderResults, a draw keeps the row
+ * number and clamps it to the new list.
+ */
+function loadPaletteWait(page) {
+  let api = null;
+  const timers = [];
+  const lists = (page.lists || [FULL_LIST]).slice();
+  const factory = new Function(
+    "paletteHost", "paletteInput", "paletteList", "paletteCount", "filteredCmds", "activeIndex", "activeInputCmd",
+    "paletteAwaitingAccess", "paletteAccessWaitExpired", "paletteFavoriteReady", "paletteEnterPending",
+    "PALETTE_ACCESS_WAIT_MS", "PALETTE_CHECKING_TEXT", "updateHistoryAsked",
+    "checkUpdateHistoryAccess", "renderResults", "selectCommand", "updateActivePaletteControls", "highlightActive",
+    "setTimeout", "clearTimeout", "document",
+    between(contentSource, "function renderPaletteWaiting(", "function selectCommand(") +
+      "\nreturn { waitForPaletteAccess, runActivePaletteCommand, runPendingPaletteEnter, renderPaletteWaiting," +
+      " state: () => ({ waiting: paletteAwaitingAccess, pending: paletteEnterPending })," +
+      " expired: () => paletteAccessWaitExpired," +
+      " active: () => (filteredCmds[activeIndex] || {}).id || null," +
+      " select: (i) => { activeIndex = i; }," +
+      " showList: (list) => { filteredCmds = list; activeIndex = Math.max(0, Math.min(activeIndex, list.length - 1)); }," +
+      /* openPalette's favourite callback: ready, draw, run a kept Enter. */
+      " favoriteLoaded: () => { paletteFavoriteReady = true; renderResults(); runPendingPaletteEnter(); }," +
+      " openInput: () => { activeInputCmd = { id: 'an input row' }; }," +
+      " close: () => { paletteHost = null; } };"
+  );
+  const list = {
+    innerHTML: "x", children: [], attrs: {},
+    appendChild(node) { this.children.push(node); },
+    setAttribute(k, v) { this.attrs[k] = v; },
+    removeAttribute(k) { delete this.attrs[k]; },
+  };
+  const count = { textContent: "17 commands" };
+  api = factory(
+    { id: "snh-palette-host" }, { value: "lens" }, list, count, [], 0, null,
+    false, Boolean(page.expired), page.favoriteReady !== false, false,
+    1500, "Checking this account's access…", Boolean(page.asked),
+    () => page.check,
+    /* The real renderResults draws the placeholder while waiting. */
+    () => {
+      const now = api.state();
+      page.renders.push(now.waiting ? "waiting" : "list");
+      if (!now.waiting) api.showList(lists.length > 1 ? lists.shift() : lists[0]);
+    },
+    (cmd) => page.ran.push(cmd ? cmd.id : null),
+    () => {},
+    () => { page.highlights = (page.highlights || 0) + 1; },
+    (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length; },
+    (handle) => { if (timers[handle - 1]) timers[handle - 1].cleared = true; },
+    { createElement: (tag) => ({ tag, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } }) }
+  );
+  return { api, timers, list, count };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+test("the first open waits for the answer, keeps an early Enter, and runs it once the list is drawn", async () => {
+  const answer = deferred();
+  const page = { check: answer.promise, renders: [], ran: [] };
+  const { api, timers } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  assert.deepStrictEqual(api.state(), { waiting: true, pending: false });
+  assert.deepStrictEqual(timers.map((t) => t.ms), [1500]);
+  api.runActivePaletteCommand();
+  assert.deepStrictEqual(api.state(), { waiting: true, pending: true });
+  assert.deepStrictEqual(page.ran, [], "nothing runs before the list is drawn");
+  answer.resolve();
+  await answer.promise;
+  await null;
+  assert.deepStrictEqual(page.renders, ["list"]);
+  assert.deepStrictEqual(page.ran, ["update-set-lens"], "the kept Enter runs the active row, once");
+  assert.deepStrictEqual(api.state(), { waiting: false, pending: false });
+  assert.strictEqual(timers[0].cleared, true);
+  api.runActivePaletteCommand();
+  assert.deepStrictEqual(page.ran, ["update-set-lens", "update-set-lens"], "later Enters run at once");
+});
+
+test("past the wait the full list is drawn, and a late answer only redraws it", async () => {
+  const answer = deferred();
+  const page = { check: answer.promise, renders: [], ran: [] };
+  const { api, timers } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  api.runActivePaletteCommand();
+  timers[0].fn();
+  assert.deepStrictEqual(page.renders, ["list"]);
+  assert.deepStrictEqual(page.ran, ["update-set-lens"]);
+  assert.strictEqual(api.expired(), true, "the wait ran out on this page");
+  answer.resolve();
+  await answer.promise;
+  await null;
+  assert.deepStrictEqual(page.renders, ["list", "list"], "the answer redraws");
+  assert.deepStrictEqual(page.ran, ["update-set-lens"], "and runs nothing more");
+});
+
+test("a late refusal keeps the highlighted command, not the row number", async () => {
+  const answer = deferred();
+  const page = { check: answer.promise, lists: [FULL_LIST, NON_ADMIN_LIST], renders: [], ran: [] };
+  const { api, timers } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  timers[0].fn();
+  api.select(2);
+  assert.strictEqual(api.active(), "record-search");
+  answer.resolve();
+  await answer.promise;
+  await null;
+  /* Row 2 no longer exists and row 1 is Impersonate: it must stay on Record Lens. */
+  assert.strictEqual(api.active(), "record-search");
+  assert.ok(page.highlights >= 1, "and the highlight is redrawn");
+  api.runActivePaletteCommand();
+  assert.deepStrictEqual(page.ran, ["record-search"]);
+});
+
+test("a late refusal of the highlighted command itself lands on the first row", async () => {
+  const answer = deferred();
+  const page = { check: answer.promise, lists: [FULL_LIST, NON_ADMIN_LIST], renders: [], ran: [] };
+  const { api, timers } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  timers[0].fn();
+  api.select(0);
+  assert.strictEqual(api.active(), "update-set-lens");
+  answer.resolve();
+  await answer.promise;
+  await null;
+  assert.strictEqual(api.active(), "impersonate");
+});
+
+test("a kept Enter waits for the favourite as well as the access answer, whichever comes last", async () => {
+  /* Access first, favourite after. */
+  const answer = deferred();
+  const page = { check: answer.promise, favoriteReady: false, renders: [], ran: [] };
+  const { api } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  api.runActivePaletteCommand();
+  answer.resolve();
+  await answer.promise;
+  await null;
+  assert.deepStrictEqual(page.ran, [], "the list without its favourite is not the one the Enter was for");
+  assert.strictEqual(api.state().pending, true);
+  api.favoriteLoaded();
+  assert.deepStrictEqual(page.ran, ["update-set-lens"]);
+  assert.strictEqual(api.state().pending, false);
+
+  /* Favourite first, access after. */
+  const later = deferred();
+  const other = { check: later.promise, favoriteReady: false, renders: [], ran: [] };
+  const second = loadPaletteWait(other);
+  second.api.waitForPaletteAccess();
+  second.api.runActivePaletteCommand();
+  second.api.favoriteLoaded();
+  assert.deepStrictEqual(other.ran, [], "still waiting for the access answer");
+  later.resolve();
+  await later.promise;
+  await null;
+  assert.deepStrictEqual(other.ran, ["update-set-lens"]);
+
+  /* No access wait at all: an Enter before the favourite is kept too. */
+  const known = { check: null, favoriteReady: false, renders: [], ran: [] };
+  const third = loadPaletteWait(known);
+  third.api.waitForPaletteAccess();
+  third.api.runActivePaletteCommand();
+  assert.deepStrictEqual(known.ran, []);
+  third.api.favoriteLoaded();
+  assert.deepStrictEqual(known.ran, ["update-set-lens"]);
+});
+
+test("a kept Enter is dropped, not run, if an input row took the keyboard meanwhile", async () => {
+  const answer = deferred();
+  const page = { check: answer.promise, renders: [], ran: [] };
+  const { api } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  api.runActivePaletteCommand();
+  api.openInput();
+  answer.resolve();
+  await answer.promise;
+  await null;
+  assert.deepStrictEqual(page.ran, []);
+  assert.strictEqual(api.state().pending, false, "and not kept for a later draw");
+  api.runPendingPaletteEnter();
+  assert.deepStrictEqual(page.ran, []);
+});
+
+test("once a wait has run out on a page, later opens draw at once while the check hangs", () => {
+  const hanging = new Promise(() => {});
+  const page = { check: hanging, expired: true, renders: [], ran: [] };
+  const { api, timers } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  assert.deepStrictEqual(api.state(), { waiting: false, pending: false });
+  assert.strictEqual(timers.length, 0);
+});
+
+test("no wait once a page has an answer, or after a check that answered nothing", async () => {
+  const known = { check: null, renders: [], ran: [] };
+  const first = loadPaletteWait(known);
+  first.api.waitForPaletteAccess();
+  assert.deepStrictEqual(first.api.state(), { waiting: false, pending: false });
+  assert.strictEqual(first.timers.length, 0);
+
+  const answer = deferred();
+  const again = { check: answer.promise, asked: true, renders: [], ran: [] };
+  const second = loadPaletteWait(again);
+  second.api.waitForPaletteAccess();
+  assert.deepStrictEqual(second.api.state(), { waiting: false, pending: false });
+  assert.strictEqual(second.timers.length, 0, "the list is drawn as usual meanwhile");
+  answer.resolve();
+  await answer.promise;
+  await null;
+  assert.deepStrictEqual(again.renders, ["list"], "a later answer still redraws");
+});
+
+test("an answer for a palette that has closed draws nothing and runs nothing", async () => {
+  const answer = deferred();
+  const page = { check: answer.promise, renders: [], ran: [] };
+  const { api, timers } = loadPaletteWait(page);
+  api.waitForPaletteAccess();
+  api.runActivePaletteCommand();
+  api.close();
+  answer.resolve();
+  await answer.promise;
+  await null;
+  timers[0].fn();
+  assert.deepStrictEqual(page.renders, []);
+  assert.deepStrictEqual(page.ran, []);
+});
+
+test("while waiting the listbox holds no option or status child: it is busy and the live count speaks", () => {
+  const { api, list, count } = loadPaletteWait({ check: null, renders: [], ran: [] });
+  api.renderPaletteWaiting();
+  assert.strictEqual(list.innerHTML, "");
+  assert.strictEqual(list.attrs["aria-busy"], "true");
+  assert.strictEqual(list.children.length, 1);
+  assert.strictEqual(list.children[0].id, "checking");
+  assert.strictEqual(list.children[0].attrs["aria-hidden"], "true", "the visible line is for sight only");
+  assert.strictEqual(list.children[0].attrs.role, undefined, "a listbox may own options and groups alone");
+  assert.strictEqual(list.children[0].textContent, "Checking this account's access…");
+  assert.strictEqual(count.textContent, "Checking this account's access…", "the footer count is the polite live region");
+  /* The live region it relies on, and the constant the content script uses. */
+  assert.match(contentSource, /<span id="result-count" aria-live="polite"><\/span>/);
+  assert.match(contentSource, /const PALETTE_CHECKING_TEXT = "Checking this account's access…";/);
+});
+
+test("the palette is wired to the wait: it starts on open, gates Enter and is reset on close", () => {
+  const open = between(contentSource, "function openPalette() {", "function closePalette() {");
+  assert.ok(open.indexOf("waitForPaletteAccess();") >= 0 && open.indexOf("waitForPaletteAccess();") < open.indexOf("loadPaletteFavorite("));
+  assert.match(open, /e\.key === "Enter"\) \{\s*e\.preventDefault\(\);\s*runActivePaletteCommand\(\);/);
+  /* The favourite callback marks it ready, draws, then runs a kept Enter. */
+  assert.match(open, /paletteFavoriteReady = true;\s*renderResults\(paletteInput\.value\);\s*runPendingPaletteEnter\(\);/);
+  const close = between(contentSource, "function closePalette() {", "function isEditablePaletteShortcutTarget(");
+  assert.match(close, /paletteAwaitingAccess = false;\s*paletteFavoriteReady = false;\s*paletteEnterPending = false;/);
+  assert.ok(!/paletteAccessWaitExpired/.test(close), "a wait that ran out holds for the page, not the open");
+  const render = between(contentSource, "function renderResults(query) {", "const cmds = buildCommands();");
+  assert.match(render, /if \(paletteAwaitingAccess\) \{\s*renderPaletteWaiting\(\);\s*return;\s*\}\s*paletteList\.removeAttribute\("aria-busy"\);/);
+});
+
+function loadTableReadSettles() {
+  return new Function(
+    between(backgroundSource, "function tableReadSettles(", "/* A read that found nothing") + "\nreturn tableReadSettles;"
+  )();
+}
+
+/* The MAIN-world reader as it runs in a frame of `origin`. */
+function loadTableReader(origin, fetch) {
+  return new Function(
+    "location", "g_ck", "fetch",
+    between(backgroundSource, "async function tableApiGetInPage(", "async function codeSearchApiGetInPage(") +
+      "\nreturn tableApiGetInPage;"
+  )({ origin }, "tok", fetch);
+}
+
+/* The worker's side: one frame's 403 ends the read only when asked to. */
+test("a 403 settles the shared table read only for a caller that asks, and never from another instance", () => {
+  const settles = loadTableReadSettles();
+  assert.strictEqual(settles({ ok: true }, {}), true);
+  assert.strictEqual(settles({ ok: false, status: 403 }, {}), false, "other callers wait for a success, as before");
+  assert.strictEqual(settles({ ok: false, status: 403 }, { settleOnRefusal: true }), true);
+  assert.strictEqual(settles({ ok: false, status: 403, wrongOrigin: true }, { settleOnRefusal: true }), false);
+  for (const status of [0, 401, 500]) {
+    assert.strictEqual(settles({ ok: false, status }, { settleOnRefusal: true }), false, String(status));
+  }
+  assert.strictEqual(settles(null, { settleOnRefusal: true }), false);
+  const route = between(backgroundSource, 'if (msg && msg.type === "SN_TABLE_GET"', 'if (msg && msg.type === "SN_TRANSLATION_GET"');
+  assert.match(route, /accept: \(value\) => tableReadSettles\(value, request\.options\)/);
+});
+
+test("with the check's own options, a frame of another instance answers for neither side", async () => {
+  const reads = [];
+  await loadAccessCheck(async (...request) => { reads.push(request); return []; }).checkUpdateHistoryAccess();
+  const [table, query, fields, limit, options] = reads[0];
+  const request = { table, query, fields, limit, options };
+  const settles = loadTableReadSettles();
+  const answer = (status) => async () => ({ ok: status === 200, status, json: async () => ({ result: [{ sys_id: "a" }] }) });
+  const OTHER = "https://other.service-now.com";
+
+  /* Refused there, or readable there: either way that frame is out. */
+  for (const status of [403, 200]) {
+    const there = await loadTableReader(OTHER, answer(status))(request);
+    assert.deepStrictEqual([there.ok, there.wrongOrigin, there.status], [false, true, 0], String(status));
+    assert.strictEqual(settles(there, options), false, String(status));
+  }
+  /* This instance's own refusal still settles it. */
+  const here = await loadTableReader(HERE, answer(403))(request);
+  assert.strictEqual(here.status, 403);
+  assert.strictEqual(settles(here, options), true);
+});
+
+test("noCount adds sysparm_no_count only when asked", async () => {
+  const urls = [];
+  const reader = loadTableReader(HERE,
+    async (url) => { urls.push(url); return { ok: true, status: 200, json: async () => ({ result: [] }) }; });
+  const request = { table: "sys_update_xml", query: "", fields: "sys_id", limit: 1 };
+  await reader(Object.assign({ options: { noCount: true, requireToken: true, settleOnRefusal: true } }, request));
+  await reader(Object.assign({ options: {} }, request));
+  assert.strictEqual(new URL(urls[0]).searchParams.get("sysparm_no_count"), "true");
+  assert.strictEqual(urls[0].replace("&sysparm_no_count=true", ""), urls[1], "the option adds exactly one parameter");
+  assert.ok(!urls[1].includes("sysparm_no_count"));
+});
+
 test("result panels use the same stable feature headings", () => {
   const files = {
     "record_search_ui.js": /<h2>Record Lens<\/h2>/,
@@ -475,6 +947,7 @@ test("result panels use the same stable feature headings", () => {
     "translation_lens_ui.js": /el\("h2", "", "Translation Lens"\)/,
     "translation_assistant_ui.js": /el\("h2", "", "Translation Assistant"\)/,
     "update_set_lens_ui.js": /el\("h2", "", "Update Set Lens"\)/,
+    "version_lens_ui.js": /el\("h2", "", "Version Lens"\)/,
   };
 
   for (const [file, pattern] of Object.entries(files)) {

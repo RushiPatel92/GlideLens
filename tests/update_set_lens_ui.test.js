@@ -822,6 +822,7 @@ test("a retrieved set that is not committed shows its state and links, and no ve
       loadedOn: "27 Oct 2026",
       source: "example source",
       message: "Not committed on this instance; ServiceNow's Preview checks it here.",
+      note: "Its updates aren't applied here, so there's nothing to call stale.",
       links: [
         { label: "Open retrieved set", url: ORIGIN + "/sys_remote_update_set.do?sys_id=4" },
         { label: "Open preview problems", url: ORIGIN + "/sys_update_preview_problem_list.do?sysparm_query=x" },
@@ -829,11 +830,31 @@ test("a retrieved set that is not committed shows its state and links, and no ve
     },
   }), { onOpenUrl: (url) => opened.push(url) });
   assert.ok(harness.text().includes("Not committed on this instance; ServiceNow's Preview checks it here."));
+  assert.ok(harness.text().includes("Its updates aren't applied here, so there's nothing to call stale."));
   assert.ok(harness.text().includes("retrieved set · Previewed · loaded 27 Oct 2026 from example source"));
   assert.strictEqual(byClass(shadow, "summary")[0].hidden, true);
   assert.strictEqual(byClass(shadow, "check")[0].hidden, true);
   buttons(shadow, "Open preview problems")[0].click();
   assert.strictEqual(opened.length, 1);
+});
+
+test("a committed retrieved set with no linked local set never says its updates aren't applied", () => {
+  const harness = load();
+  open(harness, view([], {
+    subject: null,
+    phase: "retrieved",
+    retrieved: {
+      name: "Approval fix",
+      stateLabel: "Committed",
+      loadedOn: "27 Oct 2026",
+      source: "",
+      message: "Committed here; its local set isn't linked.",
+      note: "",
+      links: [],
+    },
+  }));
+  assert.ok(harness.text().includes("Committed here; its local set isn't linked."));
+  assert.doesNotMatch(harness.text(), /aren't applied|nothing to call stale/);
 });
 
 test("banners render as text with their links", () => {

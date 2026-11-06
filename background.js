@@ -117,6 +117,11 @@ function extractSysId() {
  * Measured 2026-11-01: 60 ids (2,007 characters) passed and 80 (2,667)
  * failed, at limit 1 and at limit 200; with the parameter both pass and
  * X-Total-Count still comes back. URLs without the option are unchanged.
+ *
+ * `noCount` (the palette's access check) sends sysparm_no_count=true, so the
+ * server skips counting the table. Measured 2026-11-01 on a large customer
+ * instance: a one-row read of sys_update_xml took 0.77 s with the count and
+ * 0.2 s without.
  */
 async function tableApiGetInPage(request) {
   const options = request.options || {};
@@ -135,6 +140,9 @@ async function tableApiGetInPage(request) {
   }
   if (options.suppressPagination) {
     params.set("sysparm_suppress_pagination_header", "true");
+  }
+  if (options.noCount) {
+    params.set("sysparm_no_count", "true");
   }
 
   const url =
@@ -684,6 +692,19 @@ function readFromPageFrames(tabId, func, args, label, options) {
         });
       })
   );
+}
+
+/*
+ * Whether one frame's answer to SN_TABLE_GET ends the read. A success always
+ * does. `settleOnRefusal` (the palette's access check) lets a 403 from this
+ * instance end it too: every frame shares the session, so one frame's refusal
+ * speaks for them all, and the palette waits on this answer. Other callers
+ * keep waiting for a success from some other frame, as they always did.
+ */
+function tableReadSettles(value, options) {
+  if (!value) return false;
+  if (value.ok) return true;
+  return Boolean(options && options.settleOnRefusal && value.status === 403 && !value.wrongOrigin);
 }
 
 /* A read that found nothing must say whether any frame actually answered. */
@@ -7699,7 +7720,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         cache: true,
         /* Stop as soon as a frame answers. Waiting for every frame would let
          * one hung sibling hold a successful read for the full ceiling. */
-        accept: (value) => Boolean(value && value.ok),
+        accept: (value) => tableReadSettles(value, request.options),
       }
     ).then(({ results, failures }) => {
       const ok = results.find((item) => item.ok);
@@ -7878,6 +7899,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .executeScript({
         target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
         files: ["update_set_lens.js", "update_set_lens_ui.js"],
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+  if (msg && msg.type === "INJECT_VERSION_LENS" && sender.tab) {
+    /* update_set_lens.js first: the engine reads through its reader and
+     * words its verdicts with its rule. Its panel is injected only when
+     * "Check this set" opens it, through INJECT_UPDATE_SET_LENS. Each file
+     * no-ops when already present. */
+    chrome.scripting
+      .executeScript({
+        target: { tabId: sender.tab.id, frameIds: [sender.frameId || 0] },
+        files: ["update_set_lens.js", "version_lens.js", "version_lens_ui.js"],
       })
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));

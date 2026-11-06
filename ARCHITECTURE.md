@@ -103,7 +103,8 @@ through that same route rather than adding a fourth: its reads have the same
 bounded, repeated shape, which is why `record_search.js` is injected alongside
 it. Update Set Lens has its own route, `SN_UPDATE_SET_LENS_GET`, because
 `tokenFrameGet` has no ceiling and `SN_RECORD_SEARCH_GET` adds none: its
-reader is wrapped in `withTimeout` the way Translation Lens's is.
+reader is wrapped in `withTimeout` the way Translation Lens's is. Version Lens
+reads through that same route, with `update_set_lens.js` injected alongside it.
 
 ## Command palette
 
@@ -119,6 +120,87 @@ without an explicit `inputLabel`, and on any duplicate visible label
 (case-insensitively). Two commands that can appear together must be
 distinguishable by label alone; a description may not be the only thing telling
 them apart.
+
+**Admin-only commands.** Update Set Lens, Version Lens, Customer Updates and
+Playbook Updates read or list `sys_update_xml`, and stock ServiceNow answers a
+non-admin 403 on every update table (measured as the PDI's `itil` user,
+2026-11-01; `sys_metadata` alone answers 200 with no rows). The same read stands
+in for admin for the rest of the set, each measured as `itil` the same day:
+
+- **Playbooks** and eight Dev Links (Background Scripts, Script Includes,
+  Business Rules, Client Scripts, UI Actions, Update Sets, Fix Scripts, REST
+  Explorer) open on "Security constraints prevent access".
+- **System Logs, Scheduled Jobs and Sys Properties** open with 19 or 20 of every
+  20 rows "removed by Security constraints", and Flow Designer draws nothing.
+- **Search Sources** is refused `sn_codesearch_table`.
+
+`ADMIN_ONLY_COMMANDS` names those commands by id and `ADMIN_ONLY_GROUPS` covers
+Dev Links by group, so a new link is covered too. `commandsForAccess` drops
+both while `updateHistoryAccess` is `"refused"`.
+
+The Dev Links are hidden as a group on this one proxy, not link by link. That
+is an accepted cost for an account that is not stock: a delegated developer
+whose scope grants Script Includes or Business Rules but not update history, or
+a holder of a Flow Designer role, loses links that would work for them, and so
+does a non-admin given a playbook role but not update history, for Playbooks.
+
+Commands that need other access stay listed, because each reports what it
+lacked:
+
+- **Translation Lens and Code Search** work in part. Code Search marks each
+  refused source "access denied".
+- **Record Lens** says it lacks the table metadata, because `sys_dictionary`
+  answers `itil` 200 with no rows.
+- **Catalog Logic and Variable Insight** toast the 403 on
+  `catalog_script_client`.
+- **Impersonate** needs the impersonator role, which this read cannot stand in
+  for.
+
+The answer comes from `checkUpdateHistoryAccess`, a one-row `SN_TABLE_GET` of
+`sys_update_xml` with `expectedOrigin`, `requireToken`, `noCount` and
+`settleOnRefusal`, not from a role:
+
+- No surface names the session's roles reliably. `/api/now/ui/user/current_user`
+  returns none, `g_user` is classic-only, and Workspace and Portal carry a
+  `NOW.user` without them. The read is also the very thing the four need, and it
+  follows impersonation.
+- `expectedOrigin` keeps the answer to this instance's frames. A frame embedded
+  from another instance reads as that instance's session, so its 403 would hide
+  the commands from an admin here, and its rows would show them to a non-admin.
+  Such a frame answers `wrongOrigin`, which settles nothing. Prefill passes the
+  same option for the same reason.
+- `noCount` sends `sysparm_no_count=true`: 0.2 s against 0.77 s with the count,
+  measured on a large customer instance.
+- `settleOnRefusal` lets one frame's 403 end the fan-out (`tableReadSettles`).
+  Without it a refusal waits for every frame, and a hung one holds it for the
+  30 s ceiling. Other callers keep waiting for a success.
+- Only a 403 is an answer. A timeout, a 401, a server fault or a page with no
+  token leaves the state `"unknown"`, the commands stay, and the next open asks
+  again. An admin on a slow instance must never lose them.
+- The answer lives for the page, never in storage. The palette is mounted in the
+  top frame, which survives in-shell navigation, and Impersonate's start and
+  stop reload it, so impersonating from this tab never leaves a stale list. A
+  session change made in another tab (impersonation ended there, or signing in
+  as someone else) shows here only after this tab reloads, because nothing
+  crosses tabs into the content script's state.
+
+`waitForPaletteAccess` makes the first open on a page wait for the answer, up to
+`PALETTE_ACCESS_WAIT_MS` (1.5 s), so the list is drawn once and right. Meanwhile
+`renderResults` draws `#checking`, a line for sight only (`aria-hidden`, because
+a listbox may own only options and groups), marks `#results` `aria-busy`, and
+puts the same words in `#result-count`, the footer's polite live region. Typing
+continues. Once a wait has run out (`paletteAccessWaitExpired`, held for the
+page) or a check on this page has finished without an answer, later opens draw
+the full list at once, so a check held by a hung frame costs one wait, not one
+per open. An answer arriving after the list is drawn redraws it and keeps the
+highlighted command by id, falling back to the first row when that command was
+the one removed.
+
+`runActivePaletteCommand` keeps an Enter pressed before the list is first drawn
+with both the access answer and the favourite in (`paletteFavoriteReady`, set by
+`loadPaletteFavorite`'s callback, which runs even when storage fails), and
+`runPendingPaletteEnter` runs it from whichever of the two finishes last. If an
+input row took the keyboard in between, the kept Enter is dropped, not run.
 
 Presentation rules that must survive future commands:
 
@@ -2229,7 +2311,134 @@ closing it, opening another, or choosing another instance drops late results.
 A check answers for the rows it was sent, so switching the batch or checking
 the next 2,000 clears it too, and drops an answer still on its way. Enter
 and Space on a link inside a row belong to the link, never the row's
-fold. **Copy summary** holds counts only.
+fold. **Copy summary** holds counts only. An opened row also offers **Other
+sets holding it**, which closes this panel and opens Version Lens on that
+update's name.
+
+## Version Lens
+
+Version Lens is record-centric where Update Set Lens is set-centric: from one
+configuration record it lists every update set on this instance that captured
+it, says whether two or more open sets hold different versions, and says which
+version runs now. It writes nothing. `version_lens.js` is the DOM-free engine
+and `version_lens_ui.js` the panel. `INJECT_VERSION_LENS` injects
+`update_set_lens.js`, `version_lens.js` and `version_lens_ui.js`, in that
+order, because the engine reads through Update Set Lens's `readTable` and
+classifies each capture with its unchanged `classifyRows`; Update Set Lens's
+panel is injected only when **Check this set** opens it. None of them is in
+`manifest.json`.
+
+### Identity: from the record to its update name
+
+A record's identity in update history is `sys_update_xml.name`, which equals
+`sys_update_version.name` and the record's own `sys_metadata.sys_update_name`.
+The rule is to use the name ServiceNow stored, and to fall back only to a name
+that is then **read back** as a customer capture or a version. A name is never
+parsed to find a record: `sys_ui_form_sections_<id>` names no table.
+
+- **Metadata records**, every class: one `sys_metadata` read by `sys_id`,
+  checked in code. The class it returns wins over a parent-table URL. A blank
+  `sys_class_name` is a field this account can't read, so it is Can't identify
+  unless the page names the table. When `sys_metadata` is refused or its class
+  blank, the page's table is read for the class and `<class>_<sys_id>` is
+  tried; if no update has that name it is Can't identify, worded as the
+  denial, never "Not tracked": the record's stored name may be composite.
+- **A blank stored name** (translations, baseline dictionary, list and view
+  rows): `sys_dictionary_<table>_<element>` for a dictionary entry (`_null` for
+  a collection), then `<class>_<sys_id>`, each accepted only once read back.
+- **Outside `sys_metadata`**: a choice composes `sys_choice_<table>_<element>`;
+  a layout child (`sys_ui_element`, `sys_ui_form_section`,
+  `sys_ui_list_element`, `sys_ui_related_list_entry`) is captured with its
+  parent and says which to open; any other table's record is
+  `<sys_class_name>_<sys_id>`, read from that table first because a URL can
+  name a parent table such as `task`.
+- **Typed input**: a link to this instance takes the page's road; a bare
+  `sys_id` is tried as a record, an update, a version and a deleted record
+  (`sys_metadata_delete.sys_metadata`), in that order; a name is accepted only
+  once it exists. Every accepted name takes the server's spelling, because
+  `name=` folds case and trailing spaces but the version read compares names
+  exactly. **Never** `nameLIKE`, `nameENDSWITH` or `nameSTARTSWITH`: each is a
+  table scan of about five seconds.
+
+### Which sets compete
+
+One capture read, `name=<n>^category=customer^ORDERBYDESCsys_updated_on`,
+201 rows with `X-Total-Count`. Each returned row is a capture in a local set,
+a copy loaded here from another instance (no `update_set`, a 32-hex
+`remote_update_set`: counted in one line, not listed), or **unplaced**: the
+server matched the name and category, so a row with either blank, or with both
+set references blank, is a field this account can't read. An unplaced row
+makes the run Partial and rules out "No update captured it". A row naming
+another record or category means a condition was ignored, and a count above
+the rows read under the 200 cap means rows were hidden by a row-level ACL;
+either way the list is not trusted as complete.
+
+Only **open named sets** compete: `state=in progress` and not Default. A
+Default set is listed with its own amber line when it holds what runs; Ignore
+and complete sets are history here, and only **Check on** can say whether a
+complete set was promoted. A merged set competes only while still in progress.
+Each open set is compared by its newest capture, which is what it would
+promote. Two or more open sets whose `payload_hash` values are all equal and
+non-blank are **No competing versions** — either order promotes the same
+content — and a blank fingerprint is never equal to anything.
+
+### Reads and the shared route
+
+Every read goes through `SN_UPDATE_SET_LENS_GET` via `readTable`, so each is
+held to 30 s, carries `suppressPagination`, and is refused if it is keyed by
+guid or hash or names `payload`. Sets are read by explicit `sys_idIN`, 80 a
+read, with `completed_on`, the one column added to Update Set Lens's set
+fields; `classifyRows` reads the running version's set itself when no capture
+holds it, and the "Runs here" line takes it from the same map. With no
+capture, one current-version read and, when it names a set, one set read. No
+dot-walk anywhere: a misspelt one is silently ignored.
+
+Step one of the build changed Update Set Lens only additively: more exports,
+`completed_on` and `completedOn`, and a `current` field beside `classifyRows`'
+rows.
+
+### Check on, and the shared slot
+
+The same `UPDATE_SET_REMOTE_CHECK` route and exporter, unchanged: the set ids
+are the captures' non-Default sets (Default ones only when nothing else, the
+running version's set when there is no capture), and the records are the
+version that runs here, then each capture, as `{ name, guid, hash }` that may
+share one name. The exporter answers by index. When the running version is
+missing or fails its pattern, the newest capture stands in and the answer
+names it. Progress from the other tab arrives as `UPDATE_SET_LENS_PROGRESS`,
+which content.js hands to the panel whose check is running: a slot `{ kind,
+ui, token, remoteToken }` that a check claims when it starts and a panel
+releases on close only when both its ui and its token match, because the two
+panels number their runs separately.
+
+### Panel
+
+The same conventions as Update Set Lens: no markup path, same-origin links
+through `OPEN_URL`, links on the other instance through
+`UPDATE_SET_REMOTE_OPEN`, Enter and Space on a link belong to the link. One
+headline, then a collision's sub-lines, the amber attention lines (an open set
+holding a version that no longer runs here, the running version in a Default
+set, an open set that can't be told, the running version in an ignored set),
+"Runs here", and count badges that filter the rows. A tick shows only on No
+competing sets or No competing versions with no attention line, no Partial
+banner, every capture and set read, and the versions read; anything partial
+says "so far". Open rows are always expanded. **Check this set** closes the
+panel and opens Update Set Lens on the set object already read. **Copy
+summary** holds counts and the verdict's words only.
+
+The rows sit under one sticky column header and share its grid template, with
+fixed tracks so each column lines up down the list: the set, Last saved (the
+capture's `sys_updated_on` display value and `sys_updated_by`, the same facts
+as an opened row's first line), the set's state and the verdict. A finished
+check adds the instance's column from `perRow`: a badge for the set's state
+there (an id to style by and a word, from `collisionRemoteView`), **Runs
+there** for `runs` and **Runs same content** for `same`, and "Not checked" for
+a Default set or one past the request's cap. The same states, counted, come
+back as `tally` and show as badges under the check's lines; the copy line is
+unchanged. The header is `aria-hidden`; each cell carries its column's name as
+visually hidden text. Narrower panels drop the state column first (the group
+heading says it), then Last saved and the instance's column, which an opened
+row still spells out.
 
 ## Debug Timeline
 

@@ -6249,10 +6249,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg && msg.type === "UPDATE_SET_LENS_PROGRESS") {
-    // Another instance's tab, relayed by the worker, while Check on runs.
-    const shown = window === window.top && Boolean(updateSetLensActive);
+    // Another instance's tab, relayed by the worker, while Check on runs: to
+    // whichever panel started the check, Update Set Lens or Version Lens.
+    const shown = window === window.top && Boolean(updateSetCheckPanel);
     if (shown && typeof msg.message === "string" && msg.message) {
-      updateSetLensActive.ui.showRemote({ state: "busy", message: msg.message }, updateSetLensActive.remoteToken);
+      updateSetCheckPanel.ui.showRemote({ state: "busy", message: msg.message }, updateSetCheckPanel.remoteToken);
     }
     sendResponse({ ok: true, shown });
     return false;
@@ -6311,6 +6312,66 @@ const DEV_LINKS = [
   ["REST Explorer",       "/$restapi.do"],
   ["Flow Designer",       "/$flow-designer.do"],
 ];
+
+/*
+ * Admin-only commands, decided by update history access. Update Set Lens,
+ * Version Lens, Customer Updates and Playbook Updates all read or list
+ * sys_update_xml, which stock ServiceNow opens to admins: the itil user is
+ * answered 403 on every update table (measured on a PDI, 2026-11-01). The same
+ * read stands in for admin for the rest of the set, each measured as itil the
+ * same day: Playbooks' list and eight of the Dev Links answer "Security
+ * constraints prevent access", System Logs, Scheduled Jobs and Sys Properties
+ * open with 19 or 20 of every 20 rows removed, Flow Designer draws nothing,
+ * and Search Sources is refused its config table. Every Dev Link is covered
+ * by its group, so a new one is too.
+ *
+ * Asked with a one-row read rather than by role: no surface names the
+ * session's roles reliably (the current-user API returns none, and g_user is
+ * classic-only), the read is the very thing the update commands need, and it
+ * follows impersonation. Asked once per page, the first time the palette
+ * opens. The palette lives in the top frame and impersonating reloads it, and
+ * nothing is kept between pages, so the list never lags an identity change.
+ *
+ * Only a 403 hides them. A timeout, a signed-out session or a page with no
+ * session token answers nothing, and the commands stay: an admin on a slow
+ * instance must never lose them.
+ */
+const ADMIN_ONLY_COMMANDS = new Set([
+  "update-set-lens", "version-lens", "open-customer-updates-by-sysid", "open-current-playbook-customer-updates",
+  "open-playbook-executions", "refresh-code-search-coverage",
+]);
+const ADMIN_ONLY_GROUPS = new Set(["Dev Links"]);
+let updateHistoryAccess = "unknown"; // "unknown", "readable" or "refused"
+let updateHistoryAsked = false; // a check has finished on this page, whatever it said
+let updateHistoryCheck = null; // the read in flight
+
+/* The read in flight or a new one, or null once the answer is known. */
+function checkUpdateHistoryAccess() {
+  if (updateHistoryAccess !== "unknown") return null;
+  if (!updateHistoryCheck) {
+    /* This instance's frames only: a frame embedded from another instance
+     * reads as that instance's session, so its 403 or its rows say nothing
+     * about this one. */
+    updateHistoryCheck = snGetMany("sys_update_xml", "", "sys_id", 1, {
+      expectedOrigin: location.origin,
+      requireToken: true,
+      noCount: true,
+      settleOnRefusal: true,
+    }).then(
+      () => { updateHistoryAccess = "readable"; },
+      (error) => { if (error && error.status === 403) updateHistoryAccess = "refused"; }
+    ).then(() => {
+      updateHistoryAsked = true;
+      updateHistoryCheck = null;
+    });
+  }
+  return updateHistoryCheck;
+}
+
+function commandsForAccess(cmds) {
+  if (updateHistoryAccess !== "refused") return cmds;
+  return cmds.filter((cmd) => !ADMIN_ONLY_COMMANDS.has(cmd.id) && !ADMIN_ONLY_GROUPS.has(cmd.group));
+}
 
 function buildCommands() {
   const navTo = (path) =>
@@ -6473,6 +6534,24 @@ function buildCommands() {
       keepOpen: true,
       run: openCustomerUpdatesBySysId,
     },
+    /* Not `input: true`, like Update Set Lens: on a record's page it opens
+     * on that record without asking, and only elsewhere shows the input row,
+     * whose label and placeholder are these. */
+    {
+      id: "version-lens",
+      favoriteKey: "version-lens",
+      label: "Version Lens",
+      description: "See which update sets hold this record, and which version runs…",
+      keywords: [
+        "collision", "conflict", "competing", "overwrite", "update set", "customer update",
+        "sys_update_xml", "sys_update_version", "captured", "version", "who changed", "history",
+      ],
+      group: "Record",
+      inputLabel: "Record link, sys_id or update name",
+      placeholder: "a record's link (its table is in it), its sys_id, or an update name",
+      keepOpen: true,
+      run: openVersionLens,
+    },
     {
       id: "prefill-variables",
       label: "Variable Prefill",
@@ -6623,7 +6702,7 @@ function buildCommands() {
       run: () => navTo(path),
     })),
   ];
-  return validatePaletteCommands(cmds);
+  return validatePaletteCommands(commandsForAccess(cmds));
 }
 
 /* =====================================================================
@@ -7557,10 +7636,25 @@ const UPDATE_SET_LENS_ENGINE_METHODS = [
  * arrives, if the worker is torn down mid-read. */
 const UPDATE_SET_REMOTE_REPLY_CEILING_MS = 240000;
 let updateSetLensPanelSequence = 0;
-/* The open panel, for progress another instance's tab relays during Check on. */
-let updateSetLensActive = null;
 /* The input row's chooser, while that row is open. */
 let updateSetChooser = null;
+
+/* The panel whose Check on is running, for the progress another instance's
+ * tab relays: { kind, ui, token, remoteToken }. Update Set Lens and Version
+ * Lens share the route, so a check claims this when it starts. The two
+ * number their panels separately and can hold the same token, so a panel
+ * releases it on close only when the ui and the token are both its own. */
+let updateSetCheckPanel = null;
+
+function claimUpdateSetCheckPanel(kind, ui, token, remoteToken) {
+  updateSetCheckPanel = { kind, ui, token, remoteToken };
+}
+
+function releaseUpdateSetCheckPanel(ui, token) {
+  if (updateSetCheckPanel && updateSetCheckPanel.ui === ui && updateSetCheckPanel.token === token) {
+    updateSetCheckPanel = null;
+  }
+}
 
 async function ensureUpdateSetLensLoaded() {
   if (!globalThis.SNUpdateSetLens || !globalThis.SNUpdateSetLensUI) {
@@ -7803,7 +7897,11 @@ function startUpdateSetLens(resolution, options) {
     updateSetLensContext({ shouldStop: () => !isCurrent() }),
     { pageSysId: (options && options.pageSysId) || "" }
   );
-  updateSetLensActive = { token, ui, remoteToken: 0 };
+  const release = () => {
+    if (token === updateSetLensPanelSequence) updateSetLensPanelSequence += 1;
+    session.cancel();
+    releaseUpdateSetCheckPanel(ui, token);
+  };
   ui.open({
     view: session.view(),
     origins: [],
@@ -7815,13 +7913,21 @@ function startUpdateSetLens(resolution, options) {
         chrome.runtime.sendMessage({ type: "OPEN_URL", url }).catch(() => {});
       },
       onOpenRecord: (name) => openUpdateRecord(name),
+      /* "Other sets holding it": Version Lens on that update's name, in
+       * place of this panel. */
+      onOpenVersionLens: async (name) => {
+        try {
+          await ensureVersionLensLoaded();
+        } catch (error) {
+          return { ok: false, message: String((error && error.message) || error) };
+        }
+        ui.close();
+        release();
+        return openVersionLensOnName(name);
+      },
       onOpenRemote: (target) => openOnCheckedInstance(target),
       onCopy: (text) => copyText(text).then(() => true, () => false),
-      onClose: () => {
-        if (token === updateSetLensPanelSequence) updateSetLensPanelSequence += 1;
-        session.cancel();
-        if (updateSetLensActive && updateSetLensActive.token === token) updateSetLensActive = null;
-      },
+      onClose: release,
     },
   });
   session.onChange((view) => {
@@ -7845,9 +7951,7 @@ async function checkUpdateSetElsewhere(session, origin, remoteToken, panelToken)
   try {
     host = new URL(origin).hostname;
   } catch (error) {}
-  if (updateSetLensActive && updateSetLensActive.token === panelToken) {
-    updateSetLensActive.remoteToken = remoteToken;
-  }
+  claimUpdateSetCheckPanel("update-set-lens", ui, panelToken, remoteToken);
   const request = session.remoteRequest();
   let backstop = null;
   let reply;
@@ -8680,6 +8784,229 @@ async function openImpersonate() {
 }
 
 /* =====================================================================
+ * VERSION LENS
+ *
+ * Orchestration only. The engine is version_lens.js and the panel is
+ * version_lens_ui.js, injected on first use after update_set_lens.js, whose
+ * reader and rule the engine reuses. Every read goes through
+ * SN_UPDATE_SET_LENS_GET. Check on another instance goes through
+ * UPDATE_SET_REMOTE_CHECK and the Update Set Lens exporter, both unchanged,
+ * and its progress through the check slot the two panels share.
+ *
+ * This section stays after IMPERSONATE: the Update Set Lens suite lifts the
+ * exporter out of the span that ends at IMPERSONATE's header.
+ * ===================================================================== */
+
+const VERSION_LENS_UI_METHODS = ["open", "update", "setOrigins", "showRemote", "close", "isOpen"];
+const VERSION_LENS_ENGINE_METHODS = [
+  "pageTarget", "resolveInput", "targetForName", "createSession", "collisionRemoteRequest",
+  "collisionRemoteView", "remoteProblem",
+];
+const VERSION_LENS_INPUT_HINT =
+  "A record's sys_id or link, or an update name. Names match ignoring capitals and trailing spaces.";
+let versionLensPanelSequence = 0;
+
+async function ensureVersionLensLoaded() {
+  if (!globalThis.SNVersionLens || !globalThis.SNVersionLensUI) {
+    const response = await chrome.runtime.sendMessage({ type: "INJECT_VERSION_LENS" });
+    if (!response || !response.ok) {
+      throw new Error((response && response.error) || "Couldn't load Version Lens.");
+    }
+  }
+  const engine = globalThis.SNVersionLens;
+  const ui = globalThis.SNVersionLensUI;
+  if (!engine || !ui) throw new Error("Version Lens did not load in this frame.");
+  /* A half-loaded panel would take a click and do nothing with it. */
+  const missing = VERSION_LENS_UI_METHODS.filter((name) => typeof ui[name] !== "function")
+    .concat(VERSION_LENS_ENGINE_METHODS.filter((name) => typeof engine[name] !== "function"));
+  if (missing.length) throw new Error("Version Lens is incomplete.");
+  return true;
+}
+
+function versionLensContext(extra) {
+  return Object.assign({ origin: location.origin, sysIdFromText, recordContextFromText }, extra || {});
+}
+
+/* The palette command. On a record's page it opens on that record without
+ * asking; anywhere else, or on a list, a new record or an update set, it
+ * asks (§2.2 of the plan). */
+async function openVersionLens() {
+  try {
+    await ensureVersionLensLoaded();
+  } catch (error) {
+    showToast(String((error && error.message) || error), true, 7000);
+    return;
+  }
+  const engine = globalThis.SNVersionLens;
+  const paletteAtStart = paletteHost;
+  showToast("Identifying the record on this page…", false, 0, { busy: true });
+  let found = { kind: "none", hint: "" };
+  try {
+    found = await engine.pageTarget(location.href, versionLensContext({
+      pageTable: recordContextFromText(location.href).table,
+      currentSysId: getCurrentRecordSysId,
+    }));
+  } catch (error) {
+    found = { kind: "none", hint: "" };
+  }
+  /* Closed or reopened meanwhile: the person has moved on. */
+  if (!paletteHost || paletteHost !== paletteAtStart) return;
+  if (found.kind === "target" || found.kind === "identity") {
+    closePalette();
+    startVersionLens(found);
+    return;
+  }
+  hidePaletteToast();
+  showArgInput(versionLensInputCommand(found.hint));
+}
+
+function versionLensInputCommand(hint) {
+  return {
+    id: "version-lens",
+    label: "Version Lens",
+    inputLabel: "Record link, sys_id or update name",
+    placeholder: "a record's link (its table is in it), its sys_id, or an update name",
+    keepOpen: true,
+    argExtras: ({ row }) => {
+      const note = document.createElement("div");
+      note.id = "arg-hint";
+      note.className = "cmd-input-hint";
+      note.textContent = hint ? hint + " " + VERSION_LENS_INPUT_HINT : VERSION_LENS_INPUT_HINT;
+      row.appendChild(note);
+    },
+    run: runVersionLensInput,
+  };
+}
+
+async function runVersionLensInput(value) {
+  const engine = globalThis.SNVersionLens;
+  const paletteAtStart = paletteHost;
+  showToast("Looking up the record…", false, 0, { busy: true });
+  let result;
+  try {
+    result = await engine.resolveInput(String(value || "").trim(), versionLensContext());
+  } catch (error) {
+    result = { kind: "error", message: String((error && error.message) || error) };
+  }
+  if (!paletteHost || paletteHost !== paletteAtStart) return;
+  if (result.kind === "target" || result.kind === "identity") {
+    closePalette();
+    startVersionLens(result);
+    return;
+  }
+  showToast(result.message || "Couldn't find that record.", true, 7000);
+}
+
+/* "Other sets holding it" on an Update Set Lens row: that update's own
+ * name, so nothing needs identifying. */
+async function openVersionLensOnName(name) {
+  try {
+    await ensureVersionLensLoaded();
+  } catch (error) {
+    return { ok: false, message: String((error && error.message) || error) };
+  }
+  startVersionLens(globalThis.SNVersionLens.targetForName(name, "update"));
+  return { ok: true };
+}
+
+function startVersionLens(resolution) {
+  const engine = globalThis.SNVersionLens;
+  const ui = globalThis.SNVersionLensUI;
+  const token = ++versionLensPanelSequence;
+  /* A run is bound to this panel: closing it, or opening another, drops
+   * every late result. */
+  const isCurrent = () => token === versionLensPanelSequence && ui.isOpen();
+  const session = engine.createSession(resolution, versionLensContext({ shouldStop: () => !isCurrent() }));
+  const release = () => {
+    if (token === versionLensPanelSequence) versionLensPanelSequence += 1;
+    session.cancel();
+    releaseUpdateSetCheckPanel(ui, token);
+  };
+  ui.open({
+    view: session.view(),
+    origins: [],
+    callbacks: {
+      onCheckRemote: (origin, remoteToken) => checkVersionsElsewhere(session, origin, remoteToken, token),
+      onOpenUrl: (url) => {
+        chrome.runtime.sendMessage({ type: "OPEN_URL", url }).catch(() => {});
+      },
+      /* "Check this set": Update Set Lens on the set already read, in place
+       * of this panel. */
+      onOpenSetLens: async (set) => {
+        try {
+          await ensureUpdateSetLensLoaded();
+        } catch (error) {
+          return { ok: false, message: String((error && error.message) || error) };
+        }
+        ui.close();
+        release();
+        startUpdateSetLens({ kind: "set", set }, {});
+        return { ok: true };
+      },
+      onOpenRemote: (target) => openOnCheckedInstance(target),
+      onCopy: (text) => copyText(text).then(() => true, () => false),
+      onClose: release,
+    },
+  });
+  session.onChange((view) => {
+    if (isCurrent()) ui.update(view);
+  });
+  loadUpdateSetCheckOrigins(ui, isCurrent);
+  session.run().catch(() => {});
+}
+
+async function checkVersionsElsewhere(session, origin, remoteToken, panelToken) {
+  const engine = globalThis.SNVersionLens;
+  const ui = globalThis.SNVersionLensUI;
+  const live = () => panelToken === versionLensPanelSequence && ui.isOpen();
+  const instance = prefillInstanceLabel(origin) || origin;
+  let host = origin;
+  try {
+    host = new URL(origin).hostname;
+  } catch (error) {}
+  const view = session.view();
+  const request = engine.collisionRemoteRequest(view);
+  if (request.blocked) {
+    ui.showRemote({ state: "error", message: request.blocked }, remoteToken);
+    return;
+  }
+  claimUpdateSetCheckPanel("version-lens", ui, panelToken, remoteToken);
+  let backstop = null;
+  let reply;
+  try {
+    reply = await Promise.race([
+      chrome.runtime.sendMessage({
+        type: "UPDATE_SET_REMOTE_CHECK",
+        origin,
+        setIds: request.setIds,
+        records: request.records,
+      }),
+      new Promise((resolve) => {
+        backstop = setTimeout(() => resolve({ ok: false, code: "timeout" }), UPDATE_SET_REMOTE_REPLY_CEILING_MS);
+      }),
+    ]);
+  } catch (error) {
+    reply = { ok: false, code: "failed" };
+  } finally {
+    clearTimeout(backstop);
+  }
+  if (!live()) return;
+  if (!reply || reply.ok !== true) {
+    ui.showRemote({ state: "error", message: engine.remoteProblem(reply, instance, host) }, remoteToken);
+    return;
+  }
+  const shown = engine.collisionRemoteView(reply, request, view, instance, origin);
+  ui.showRemote({
+    state: "done",
+    lines: shown.lines,
+    perRow: shown.perRow,
+    tally: shown.tally,
+    links: shown.links,
+    copyLine: shown.copyLine,
+  }, remoteToken);
+}
+
+/* =====================================================================
  * CODE SEARCH
  *
  * Orchestration only — the engine is code_search.js and the panel is
@@ -8974,6 +9301,12 @@ let paletteDragCleanup = null;
 let activeIndex = 0;
 let filteredCmds = [];
 let activeInputCmd = null; // command waiting for a text argument
+let paletteAwaitingAccess = false; // the first open on a page, until the access check answers
+let paletteAccessWaitExpired = false; // a wait on this page ran out; later opens don't wait
+let paletteFavoriteReady = false; // this open's favourite has loaded
+let paletteEnterPending = false; // Enter pressed before both had
+const PALETTE_ACCESS_WAIT_MS = 1500;
+const PALETTE_CHECKING_TEXT = "Checking this account's access…";
 const PALETTE_FAVORITE_STORAGE_KEY = "paletteFavoriteCommandId";
 let paletteFavoriteCommandId = null;
 
@@ -9164,10 +9497,15 @@ const PALETTE_CSS = `
   #toast .toast-note{color:var(--palette-body)}
   #toast .toast-hint{color:var(--palette-muted)}
   @keyframes snh-toast-spin{to{transform:rotate(360deg)}}
-  @media (prefers-reduced-motion:reduce){#toast.busy::before{animation:none}}
+  @media (prefers-reduced-motion:reduce){#toast.busy::before,#checking::before{animation:none}}
   #toast a{color:var(--teal);text-decoration:underline;cursor:pointer}
   #toast a:focus{outline:2px solid var(--teal);outline-offset:2px}
-  #empty{padding:34px 16px;color:var(--palette-secondary);font-size:13px;text-align:center}
+  #empty,#checking{padding:34px 16px;color:var(--palette-secondary);font-size:13px;text-align:center}
+  #checking::before{
+    content:"";display:inline-block;width:10px;height:10px;margin-right:8px;vertical-align:-1px;
+    border:2px solid color-mix(in srgb, var(--teal) 28%, transparent);border-top-color:var(--teal);
+    border-radius:50%;animation:snh-toast-spin .8s linear infinite;
+  }
   #palette-footer{
     display:flex;align-items:center;justify-content:space-between;gap:16px;
     min-height:38px;padding:8px 16px;border-top:1px solid var(--palette-border-subtle);
@@ -9406,6 +9744,11 @@ function positionPaletteFavoriteButton() {
 
 function renderResults(query) {
   if (!paletteList) return;
+  if (paletteAwaitingAccess) {
+    renderPaletteWaiting();
+    return;
+  }
+  paletteList.removeAttribute("aria-busy");
   const cmds = buildCommands();
   filteredCmds = commandsForPalette(cmds, query);
 
@@ -9488,6 +9831,81 @@ function highlightActive() {
   const active = paletteList.querySelector(".cmd.active");
   if (active) active.scrollIntoView({ block: "nearest" });
   updateActivePaletteControls();
+}
+
+/* The list's placeholder while the first open on a page waits for the
+ * access check. The line in the list is for sight only: a listbox may hold
+ * options and groups alone, so the words go to the footer's live count, and
+ * the list says it is busy. */
+function renderPaletteWaiting() {
+  filteredCmds = [];
+  activeIndex = 0;
+  paletteList.innerHTML = "";
+  paletteList.setAttribute("aria-busy", "true");
+  const note = document.createElement("div");
+  note.id = "checking";
+  note.setAttribute("aria-hidden", "true");
+  note.textContent = PALETTE_CHECKING_TEXT;
+  paletteList.appendChild(note);
+  if (paletteCount) paletteCount.textContent = PALETTE_CHECKING_TEXT;
+  updateActivePaletteControls();
+}
+
+/*
+ * The first open on a page waits for checkUpdateHistoryAccess, up to
+ * PALETTE_ACCESS_WAIT_MS, so the list is drawn once and right. Typing goes on
+ * meanwhile. Once a wait has run out, or a check on this page has finished
+ * without an answer, later opens draw the full list at once, and an answer
+ * arriving later redraws it with the same command highlighted where it can.
+ */
+function waitForPaletteAccess() {
+  const check = checkUpdateHistoryAccess();
+  if (!check) return;
+  const host = paletteHost;
+  paletteAwaitingAccess = !updateHistoryAsked && !paletteAccessWaitExpired;
+  let timer = null;
+  const settle = (expired) => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    /* A check that hangs (a frame that never answers) must not make every
+     * later open on this page wait as well. */
+    if (expired) paletteAccessWaitExpired = true;
+    if (!paletteHost || paletteHost !== host) return;
+    const waited = paletteAwaitingAccess;
+    paletteAwaitingAccess = false;
+    /* A late redraw can drop rows above the highlight: keep the command,
+     * not the row number. */
+    const active = waited ? null : filteredCmds[activeIndex];
+    renderResults(paletteInput ? paletteInput.value : "");
+    if (active) {
+      const index = filteredCmds.findIndex((cmd) => cmd.id === active.id);
+      activeIndex = index >= 0 ? index : 0;
+      highlightActive();
+    }
+    runPendingPaletteEnter();
+  };
+  if (paletteAwaitingAccess) timer = setTimeout(() => settle(true), PALETTE_ACCESS_WAIT_MS);
+  check.then(() => settle(false));
+}
+
+/* Enter on the command list. One pressed before the list is first drawn
+ * with both the access answer and the favourite in is kept, and runs then. */
+function runActivePaletteCommand() {
+  if (paletteAwaitingAccess || !paletteFavoriteReady) {
+    paletteEnterPending = true;
+    return;
+  }
+  selectCommand(filteredCmds[activeIndex]);
+}
+
+/* Called once the access wait and the favourite load have each finished;
+ * the second of them runs a kept Enter. */
+function runPendingPaletteEnter() {
+  if (!paletteEnterPending || paletteAwaitingAccess || !paletteFavoriteReady) return;
+  paletteEnterPending = false;
+  /* An input row took the keyboard meanwhile: the Enter was not for it. */
+  if (activeInputCmd) return;
+  selectCommand(filteredCmds[activeIndex]);
 }
 
 function selectCommand(cmd) {
@@ -9975,10 +10393,13 @@ function openPalette() {
 
   activeIndex = 0;
   activeInputCmd = null;
+  waitForPaletteAccess();
   loadPaletteFavorite(() => {
     if (!paletteHost || !paletteInput) return;
     activeIndex = 0;
+    paletteFavoriteReady = true;
     renderResults(paletteInput.value);
+    runPendingPaletteEnter();
   });
   paletteInput.focus();
 
@@ -10000,7 +10421,7 @@ function openPalette() {
       highlightActive();
     } else if (e.key === "Enter") {
       e.preventDefault();
-      selectCommand(filteredCmds[activeIndex]);
+      runActivePaletteCommand();
     }
   });
 
@@ -10045,6 +10466,9 @@ function closePalette() {
     paletteFavoriteButton = null;
     paletteActiveShortcut = null;
     activeInputCmd = null;
+    paletteAwaitingAccess = false;
+    paletteFavoriteReady = false;
+    paletteEnterPending = false;
     if (palettePreviousFocus && typeof palettePreviousFocus.focus === "function") {
       try {
         palettePreviousFocus.focus({ preventScroll: true });

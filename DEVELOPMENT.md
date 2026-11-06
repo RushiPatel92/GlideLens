@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js tests/update_set_lens.test.js tests/update_set_lens_ui.test.js tests/update_set_lens_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js tests/update_set_lens.test.js tests/update_set_lens_ui.test.js tests/update_set_lens_integration.test.js tests/version_lens.test.js tests/version_lens_ui.test.js tests/version_lens_integration.test.js
 ```
 
 The suites cover:
@@ -224,7 +224,8 @@ The suites cover:
   the palette once a run's last message is showing. `frame_discovery.test.js` adds
   that no fill starts while a switch holds the tab.
 - `update_set_lens.test.js` — the Update Set Lens engine under `node:vm`,
-  against a simulated instance whose encoded-query evaluator answers `name=`
+  against a simulated instance (`update_set_sim.js`, shared with the Version
+  Lens suites) whose encoded-query evaluator answers `name=`
   ignoring case and trailing spaces and gives `X-Total-Count` only when asked.
   Every row of the rule, including the two content disagreements that are
   Can't tell, the applied-here guard (guid or content baseline, an earlier
@@ -275,6 +276,57 @@ The suites cover:
   first read and after reads without `snGetManyListeners`, signed out, a
   refused presence read, refused version reads, 40 names a read, and the
   listener answering only the extension from the top frame.
+- `update_set_sim.js` — not a suite: the simulated instance both update-set
+  engines run against. In-memory `sys_update_set`, `sys_update_xml`,
+  `sys_update_version`, `sys_remote_update_set`, `sys_metadata` and
+  `sys_metadata_delete` behind an encoded-query evaluator, every request kept,
+  and a `masked` field list that answers a matched row's field blank, the way
+  a field ACL does.
+- `version_lens.test.js` — the Version Lens engine under `node:vm`, on the real
+  Update Set Lens engine as it is injected, against `update_set_sim.js`.
+  Identity: the stored name read back from `sys_metadata` by `sys_id` and
+  checked in code, the class winning over the page's table, composite names
+  never parsed, blank names (a translation, a dictionary entry, `_null` for a
+  collection) tried in order and accepted only once read back, a deleted
+  record, a shared list layout, data records through a parent-table URL, a
+  choice's composed name, each layout child naming its parent with no capture
+  read, update and version forms, set forms, lists and new records costing no
+  read, `nav_to.do`, Workspace and sub-record routes, a blank class and an
+  unsafe name refused, and a refused `sys_metadata` read (the non-admin road)
+  ending in a denial, never "captured as data" or "not tracked". Typed input:
+  another instance's link, this instance over `http:` and a list link,
+  carets, line breaks and `javascript:` refused before any read, a bare
+  `sys_id` tried as record, update, version and deleted record in order, and
+  a name taking the server's spelling. Captures: the exact read, loaded copies
+  counted but never listed, rows an ACL blanked unplaced — Partial, no tick,
+  never "No update captured it" — the 200 cap, a count that disagrees or runs
+  above the rows read, a failed or refused capture read, and two captures in
+  one set. Verdicts: which sets are open, only open sets compared and each by
+  its newest capture, every headline, the
+  sub-lines, each attention line, Partial and "so far", "Runs here" for every
+  source, the tick's conditions, row order, and per-capture verdicts equal to
+  Update Set Lens's own. Check on: the request, every content line, presence by
+  set index with Default left out, the worker's codes, and a counts-only copy
+  summary. And, over every request the suite made, no `nameLIKE`-style scan,
+  no dot-walk and no `payload`.
+- `version_lens_ui.test.js` — the panel on the same DOM shim: a closed shadow
+  root with no markup path, hostile names as text, each headline's mark and the
+  tick only on a clear run, amber attention lines with their links, groups,
+  count badges that filter, open rows always open and the rest toggling, keys
+  on a link belonging to the link, same-origin links only, Check this set
+  handing the set object, Check on hidden until another instance is open and
+  late or stale answers dropped, the copy summary, Escape, the focus trap, a
+  snapshot made by the real engine, and Update Set Lens's **Other sets holding
+  it** handing the update's name over.
+- `version_lens_integration.test.js` — the runtime boundary: the injection
+  route's three files in order, packaging and the manifest; Update Set Lens's
+  export surface, `classifyRows`' rows and `normalizeSet` unchanged but for
+  what step one added; the pagination header on every read; the check slot the
+  two panels share, released only by its own ui and token; a record-centric
+  request through the worker's real request check and the real exporter,
+  answered by index; and the content-script section itself, reading nothing on
+  its own and sending the check with its four fields only, end to end with the
+  real engine.
 - `prefill_cross_instance.test.js` — Prefill from another instance. Parsing:
   a link names its own instance and wins over Read from, a link's sys_id is
   taken from Workspace, classic, `nav_to` and portal routes, and a non-SN,
@@ -767,6 +819,9 @@ default. Reverify when platform behavior or the queried schema changes.
   Lens coverage engine and read-only report panel.
 - `update_set_lens.js`, `update_set_lens_ui.js` — lazily injected Update Set
   Lens engine and read-only panel.
+- `version_lens.js`, `version_lens_ui.js` — lazily injected Version Lens engine
+  and read-only panel; the engine is injected after `update_set_lens.js`, whose
+  reader and rule it reuses.
 - `catalog_insight_ui.js` — catalog client script/UI policy analysis, including
   variable-scoped views.
 - `hidden_variables_ui.js` — shared Service Portal and classic RITM Variable
@@ -782,16 +837,17 @@ popup's design tokens. Assets must live inside `docs/`; parent-relative assets
 are outside the Pages root.
 
 The landing page's command list mirrors `content.js`, including each command's
-label and its action description. Its Record Lens, Code Search, Catalog Logic,
-Variable Values, and Debug Timeline demonstrations must match their real panels,
-down to the panel headings.
+label and its action description. Its Code Search, Catalog Logic, Variable
+Values, and Debug Timeline demonstrations must match their real panels, down to
+the panel headings.
 
-The Record Lens demo additionally copies two engine rules verbatim rather than
-approximating them, because they are the point of the feature: the known-table
-presets that choose default fields, and `SENSITIVE_AUTO_FIELD_PATTERN`, which
-keeps value/body/content/script/password-like fields out of the automatic
-selection. If either changes in `record_search.js`, change the demo too —
-`sys_properties.value` showing as "manual only" is the visible proof. Read the source rather than recreating panel behavior from memory,
+Update Set Lens and Record Lens are shown as screenshots in `docs/shots/`, not
+as recreated panels. Capture them on a personal developer instance with
+synthetic or stock demo data only, never on a customer instance, and check every
+frame for a hostname, account or other identifying detail before committing it.
+Recapture one when its panel changes visibly. The Impersonate demo is built on
+the search-form classes the old Record Lens demo introduced, so those styles
+stay. For the recreated panels, read the source rather than recreating panel behavior from memory,
 including grouping, search fields, counts, buckets, and category labels.
 Change a panel and its demonstration in the same change. Give each demo its
 own id prefix: `getElementById` returns the first match in the document, so an

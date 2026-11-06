@@ -34,6 +34,28 @@ reconstructed version by version.
   to its record, running version and version history there. Up to 2,000
   updates a run, then **Check the next 2,000**. Read-only on both instances;
   **Copy summary** copies counts only.
+- **Version Lens.** A new palette command, in the Record group, for one
+  configuration record — a business rule, script include, UI policy, catalog
+  item, playbook, translation or dictionary entry. On the record's page it
+  opens on that record; elsewhere, paste its link, its `sys_id` or an update
+  name. It lists every update set on this instance that captured the record,
+  with who saved it there and when, and says **Potential collision** when two
+  or more open sets hold different versions of it (open sets holding the same
+  content are not a collision). Default, Ignore and complete sets are listed
+  but never compete. Amber lines say when an open set holds a version that no
+  longer runs here, when the version that runs was saved in a Default set or
+  sits in an ignored one, and when an open set can't be told; a **Runs here**
+  line names the set the running version came from. The record is found by the
+  update name ServiceNow stored on it, and a fallback name is used only once an
+  update or version with exactly that name is read back. Rows link to the
+  update, the set, and **Check this set**, which opens Update Set Lens on it;
+  Update Set Lens rows link back with **Other sets holding it**. Rows line up
+  in columns, with when and by whom each set last saved the record.
+  **Check on** asks another instance open in the browser whether it runs the
+  same version and where each set has got there, as a column for that
+  instance: each set's state there, and **Runs there** on the set whose update
+  is the version running there. Anything read only in part says so and
+  never shows the tick. Read-only; **Copy summary** copies counts only.
 - **Value filters in Record Lens.** Narrow a search by up to three exact
   values on reference and choice fields — Assignment group, Caller, State,
   Priority — with text, with an exact `sys_id`, or on their own, when results
@@ -93,6 +115,22 @@ reconstructed version by version.
 - **Bigger panels on big screens.** Result panels now use more of a large
   screen, up to 1800 px wide and the full window height, and still fit a small
   laptop with a margin around them.
+- **Admin commands only for accounts that can use them.** Update Set Lens,
+  Version Lens, Customer Updates, Playbook Updates, Playbooks, Search Sources
+  and every Dev Link now appear in the palette only when your session can read
+  ServiceNow's update history, which on a stock instance means admins. For an
+  account such as `itil` each of them was a refusal: the update tables answer
+  403, and the Playbooks list and most Dev Links open on "Security constraints
+  prevent access" or on a list with its rows removed. Translation Lens, Code
+  Search, Record Lens, Catalog Logic, Variable Insight and Impersonate stay
+  listed, since each needs other access and says when it lacks it. The
+  palette asks once per page, the first time you open it, with a one-row read;
+  while it waits, the list says **Checking this account's access…**, and an
+  Enter you press meanwhile runs once the list appears. A slow or unanswered
+  check never hides anything: after a second and a half the full list is
+  shown, and only a refusal removes them. Impersonating someone who can't read
+  update history from the same tab hides them too, and stopping brings them
+  back; a change of account made in another tab shows after you reload.
 
 ### Fixed
 - **Record Lens kept another table's results.** After you switched tables,

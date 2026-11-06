@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GlideLens — a lens on ServiceNow forms, catalogs and code</title>
-<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, code search across 14 sources, catalog debugging, a form Debug Timeline, and a translation coverage report." />
+<meta name="description" content="A Chrome and Edge extension for ServiceNow developers. Press \ anywhere in the platform for a command palette: safe record search, update set checks before you promote, code search across 14 sources, catalog debugging, a form Debug Timeline, and a translation coverage report." />
 
 <!-- Served from /docs, so the site root is this folder — icons are copied in
      beside this file rather than referenced out of ../icons. -->
@@ -16,7 +16,7 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="GlideLens" />
 <meta property="og:title" content="GlideLens — a lens on ServiceNow forms, catalogs and code" />
-<meta property="og:description" content="Press \ anywhere in ServiceNow: code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and a translation coverage report." />
+<meta property="og:description" content="Press \ anywhere in ServiceNow: update set checks before you promote, code search across 14 sources, catalog debugging that tells you what actually runs, a form Debug Timeline, and a translation coverage report." />
 <meta property="og:url" content="https://rushipatel92.github.io/GlideLens/" />
 <meta name="twitter:card" content="summary" />
 
@@ -1023,11 +1023,12 @@ a { color: var(--teal); }
 
 .dm-empty { padding: 28px 15px; text-align: center; color: #85859f; font-size: 12.5px; }
 
-/* --- Record Lens (record_search_ui.js) ---------------------------------
-   The real panel is a search form, not a filter list, so it needs its own
-   controls: a bounded table combobox, an explicit field picker, then results.
-   Class names mirror the panel's own (.row-top/.values/.row-actions) so the
-   two stay comparable when either changes. */
+/* --- Search-form controls (from record_search_ui.js) --------------------
+   Written for the Record Lens demo, which is now a screenshot; the
+   Impersonate demo below is built on these classes, as the real Impersonate
+   panel is built on the real Record Lens panel. A search form, not a filter
+   list: a bounded combobox, then results. Class names mirror the panel's own
+   (.row-top/.values/.row-actions) so the two stay comparable. */
 .dm-rl-form { padding: 11px 15px; border-bottom: 1px solid #2e2e4e; }
 .dm-rl-main {
   display: grid;
@@ -1379,9 +1380,9 @@ a { color: var(--teal); }
 
       <p class="hero-sub rise" style="animation-delay: 120ms">
         A command palette over the platform you already work in. Find a record,
-        search the script the instance's own index can't see, read
-        <strong>what actually runs</strong> on a catalog item, and replay a form
-        interaction after it has happened.
+        check an update set before you promote it, search the script the
+        instance's own index can't see, read <strong>what actually runs</strong>
+        on a catalog item, and replay a form interaction after it has happened.
       </p>
 
       <!-- The palette below is real. Filtering it browses the page. -->
@@ -1790,12 +1791,65 @@ a { color: var(--teal); }
       </article>
 
       <!-- 5 -->
+      <article class="feature" id="update-set-lens">
+        <div class="feature-rail">
+          <p class="eyebrow">Update sets</p>
+          <dl>
+            <dt>Reads</dt>
+            <dd>sys_update_set</dd>
+            <dd>sys_update_xml</dd>
+            <dd>sys_update_version</dd>
+            <dt>Compares</dt>
+            <dd class="plain">another open instance</dd>
+          </dl>
+        </div>
+        <div class="feature-body">
+          <h2>Update Set Lens: check the set before you promote it</h2>
+          <p>
+            Open the palette on an update set's form and every customer update in
+            it is checked against the version this instance runs.
+            <strong>Stale</strong> means that version came later — from another
+            set, an upgrade or an app install — and the row names it, with who
+            saved it and when. The rest are <strong>Can't tell</strong>, with the
+            reason, <strong>Same content</strong>, <strong>In this batch</strong>
+            or <strong>Current</strong>. Stale is claimed only when this set's own
+            version was loaded here and later replaced, so an update skipped at
+            commit is never reported as replaced by an older one. A batch parent
+            checks its child sets, nested ones included.
+          </p>
+          <p>
+            <strong>Check on</strong> asks another instance open in your browser,
+            as that tab's own session, whether the set was retrieved there and
+            how far it got, then record by record whether that instance runs the
+            same version — and where it doesn't, when and in which update set
+            that version was saved. Each row links to its update, its record and
+            its version history, and <strong>Other sets holding it</strong> opens
+            Version Lens on that record: every set that captured it, and whether
+            two open sets hold different versions.
+          </p>
+          <div class="tags">
+            <span class="tag is-warn">stale updates</span>
+            <span class="tag">batch children</span>
+            <span class="tag">check on another instance</span>
+            <span class="tag">Version Lens</span>
+            <span class="tag is-ok">read-only on both</span>
+          </div>
+          <div class="shot is-media is-shot">
+            <a href="shots/update-set-lens.png"><img src="shots/update-set-lens.png" width="1280" height="800" loading="lazy" decoding="async"
+              alt="Update Set Lens on a completed update set of eight updates: three marked Stale, two changed and one deleted later in an in-progress hotfix set, each naming who saved it and when; the rest Current." /></a>
+          </div>
+        </div>
+      </article>
+
+      <!-- 6 -->
       <article class="feature" id="record-search">
         <div class="feature-rail">
           <p class="eyebrow">Records</p>
           <dl>
             <dt>Searches</dt>
             <dd class="plain">one table at a time</dd>
+            <dt>Filters</dt>
+            <dd class="plain">3 exact values</dd>
             <dt>Returns</dt>
             <dd class="plain">20 verified results</dd>
           </dl>
@@ -1804,65 +1858,37 @@ a { color: var(--teal); }
           <h2>Record Lens: find the record, skip the list-page detour</h2>
           <p>
             Find a table by label or technical name without loading the full
-            table catalog. GlideLens can preselect the current page's verified
-            table — including on a classic <code>*_list.do</code> list page — then
-            shows exactly which live dictionary-confirmed fields it will search:
-            no guessed column silently becoming an unfiltered read.
+            table catalog, or start from one you starred. GlideLens can preselect
+            the current page's verified table — including on a classic
+            <code>*_list.do</code> list page — and every field it offers is
+            confirmed against the live dictionary: no guessed column silently
+            becoming an unfiltered read.
           </p>
           <p>
-            Only the sys_id and up to six selected fields come back. Safe presets
-            are intersected with the live dictionary and sensitive value/body
-            fields are not automatic. Every text result is checked against the
-            complete term in the browser; copy an ID or URL, open the form, or
+            Choose which fields your text is searched in and, separately, which
+            columns each result shows. Narrow by up to three exact values on
+            reference and choice fields — Assignment group, Caller, State,
+            Priority — with text or on their own, newest first. Every returned
+            row is checked against your text and <strong>every filter</strong> in
+            the browser before it is shown; copy an ID or URL, open the form, or
             open only the verified set as a platform list.
           </p>
+          <p>
+            Star the tables you use, and they are listed the moment Record Lens
+            opens, with the fields you search, filter and show. Favourites are
+            kept per instance and only on this device, and never the values.
+          </p>
           <div class="tags">
-            <span class="tag">schema-confirmed fields</span>
-            <span class="tag">table combobox</span>
+            <span class="tag">starred tables</span>
+            <span class="tag">value filters</span>
+            <span class="tag">search vs show</span>
             <span class="tag">exact sys_id</span>
             <span class="tag">20-result cap</span>
             <span class="tag is-ok">read-only</span>
           </div>
-          <div class="shot is-live">
-            <p class="dm-cap"><b>Interactive demo</b> — fictional data, real panel. Search <em>laptop</em> on Incident, or switch to the User table and search <em>rossi</em>. Searching <em>rossi</em> on Incident finds nothing until you add <em>Caller</em> under <em>2 fields</em> — that is the point: only the fields you select are searched.</p>
-            <div class="dm" id="dmRl">
-              <div class="dm-head">
-                <h3 class="dm-title">Record Lens</h3>
-                <p class="dm-sub">Choose a verified table and fields. GlideLens reads only bounded summaries and opens results in ServiceNow.</p>
-              </div>
-              <div class="dm-rl-form">
-                <div class="dm-rl-main">
-                  <div class="dm-rl-combo">
-                    <label class="dm-rl-lab" for="dmrlTable">Table</label>
-                    <input class="dm-rl-in" id="dmrlTable" type="text"
-                      role="combobox" aria-autocomplete="list" aria-expanded="false"
-                      aria-controls="dmrlTableMenu"
-                      placeholder="Search table label or name" autocomplete="off" spellcheck="false" />
-                    <div class="dm-rl-menu" id="dmrlTableMenu" role="listbox" aria-label="Matching tables" hidden></div>
-                  </div>
-                  <div>
-                    <label class="dm-rl-lab" for="dmrlTerm">Text or sys_id</label>
-                    <input class="dm-rl-in" id="dmrlTerm" type="text"
-                      placeholder="number, name, email, or exact sys_id" autocomplete="off" spellcheck="false" />
-                  </div>
-                  <button class="dm-rl-go" id="dmrlGo" type="button">Search</button>
-                </div>
-                <div class="dm-rl-fieldline">
-                  <div class="dm-rl-fieldpick">
-                    <button class="dm-rl-fbtn" id="dmrlFields" type="button"
-                      aria-haspopup="listbox" aria-expanded="false" disabled>0 fields</button>
-                    <div class="dm-rl-fmenu" id="dmrlFieldMenu" role="listbox" aria-multiselectable="true" hidden></div>
-                  </div>
-                  <div class="dm-rl-summary" id="dmrlSummary">Choose a table to load verified fields.</div>
-                </div>
-              </div>
-              <div class="dm-rl-status" id="dmrlStatus" role="status" aria-live="polite">Search for a table to begin.</div>
-              <div class="dm-rows" id="dmrlRows"></div>
-              <div class="dm-rl-bar">
-                <span>Read-only · at most 20 verified results · no record or search history is stored</span>
-                <button class="dm-rl-act dm-rl-open" id="dmrlOpenList" type="button" disabled>Open results in list</button>
-              </div>
-            </div>
+          <div class="shot is-media is-shot">
+            <a href="shots/record-lens.png"><img src="shots/record-lens.png" width="1280" height="800" loading="lazy" decoding="async"
+              alt="Record Lens on the Incident table, starred, filtered to Priority 1 - Critical, showing Caller, State and Assigned to for the matching incidents, newest first." /></a>
           </div>
         </div>
       </article>
@@ -1981,7 +2007,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 6 -->
+      <!-- 7 -->
       <article class="feature" id="code-search">
         <div class="feature-rail">
           <p class="eyebrow">Search</p>
@@ -2052,7 +2078,7 @@ a { color: var(--teal); }
         </div>
       </article>
 
-      <!-- 7 -->
+      <!-- 8 -->
       <article class="feature" id="variable-icons">
         <div class="feature-rail">
           <p class="eyebrow">Catalog</p>
@@ -2240,11 +2266,12 @@ a { color: var(--teal); }
     { group: "Tools",    name: "Code Search",      desc: "Search verified code and configuration…",                    key: "",        go: "#code-search" },
     { group: "Tools",    name: "Impersonate",      desc: "Find a user by identity, role or group and start impersonation",    key: "",        go: "#impersonate" },
     { group: "Tools",    name: "Search Sources",   desc: "Refresh available Code Search sources",                      key: "",        go: "#code-search" },
-    { group: "Tools",    name: "Update Set Lens",  desc: "Check an update set for stale updates and where it has moved…", key: "",       go: "#install" },
+    { group: "Tools",    name: "Update Set Lens",  desc: "Check an update set for stale updates and where it has moved…", key: "",       go: "#update-set-lens" },
     { group: "Record",   name: "sys_id",           desc: "Copy the current record sys_id",                             key: "",        go: "#install" },
     { group: "Record",   name: "Record Lens",      desc: "Search verified records across readable tables",             key: "",        go: "#record-search" },
     { group: "Record",   name: "Playbooks",        desc: "Open playbook executions for this record",                   key: "",        go: "#install" },
     { group: "Record",   name: "Customer Updates", desc: "Open captured customer updates by sys_id…",                   key: "",        go: "#install" },
+    { group: "Record",   name: "Version Lens",     desc: "See which update sets hold this record, and which version runs…", key: "",      go: "#update-set-lens" },
     { group: "Catalog",  name: "Variable Prefill", desc: "Copy catalog-variable values from another ticket, on this or another open instance…", key: "", go: "#install" },
     { group: "Catalog",  name: "Variable Values",  desc: "Inspect current catalog-variable values",                    key: "",        go: "#variable-values" },
     { group: "Catalog",  name: "Catalog Logic",    desc: "Inspect catalog client scripts and UI policies",             key: "",        go: "#catalog-insight" },
@@ -3771,475 +3798,6 @@ a { color: var(--teal); }
   pill.className = "store-you";
   pill.textContent = "Your browser";
   card.appendChild(pill);
-})();
-
-/* ---------------------------------------------------------------------------
-   Demo 5 — "Record Lens" (record_search_ui.js + record_search.js).
-
-   Mirrors the real panel: a bounded table combobox that matches on label AND
-   technical name, an explicit field picker capped at six with sensitive fields
-   marked "manual only", and results that are re-verified against the complete
-   term before they render. All data is fabricated.
-
-   Two rules copied from the engine rather than approximated, because they are
-   the point of the feature:
-     - KNOWN_TABLE_PRESETS choose the default fields, intersected with the
-       fields this table actually has.
-     - SENSITIVE_AUTO_FIELD_PATTERN never auto-selects value/body/content/
-       script/password-ish fields. sys_properties.value is the visible proof.
-   --------------------------------------------------------------------------- */
-(function () {
-  "use strict";
-
-  var root = document.getElementById("dmRl");
-  if (!root) return;
-
-  /* Straight from record_search.js. Keep in step if it changes there. */
-  var SENSITIVE = /(^|_)(value|body|html|content|script|password|passwd|secret|token|credential|api_key)($|_)/i;
-  var PRESETS = {
-    incident: ["number", "short_description"],
-    change_request: ["number", "short_description"],
-    sc_req_item: ["number", "short_description"],
-    sys_user: ["user_name", "name", "first_name", "last_name", "email"],
-    cmdb_ci: ["name", "asset_tag", "serial_number", "short_description"],
-    sys_properties: ["name", "description"]
-  };
-  var MAX_FIELDS = 6;
-  var RESULT_LIMIT = 20;
-
-  function f(name, label, type) {
-    return { name: name, label: label, auto: !SENSITIVE.test(name) && !/journal|password/i.test(type || "") };
-  }
-
-  var TABLES = [
-    {
-      name: "incident", label: "Incident",
-      fields: [f("number", "Number"), f("short_description", "Short description"),
-        f("description", "Description"), f("caller_id", "Caller"),
-        f("assignment_group", "Assignment group"),
-        f("work_notes", "Work notes", "journal_input"), f("close_notes", "Close notes")],
-      rows: [
-        { sysId: "a41f2b7c9d4e4c8ab1f0e6d3c2b5a904", number: "INC0010042",
-          short_description: "Laptop will not boot after the overnight patch",
-          description: "Reported after the Tuesday maintenance window. Fans spin, no POST.",
-          caller_id: "Marco Rossi", assignment_group: "Service Desk",
-          work_notes: "Swapped the RAM module; still no POST.", close_notes: "" },
-        { sysId: "c07d9e1a6b3f45219c8d2e7f0a1b4c63", number: "INC0009871",
-          short_description: "Replacement laptop for new starter",
-          description: "Standard build required before the start date.",
-          caller_id: "Dan Okoro", assignment_group: "End User Compute",
-          work_notes: "", close_notes: "Issued from the spare pool." },
-        { sysId: "5e2a8f4b7c1d40e39a6b5c8d2f1e0937", number: "INC0009644",
-          short_description: "Docking station not detecting the second monitor",
-          description: "Second display stays blank on the dock but works direct.",
-          caller_id: "Marco Rossi", assignment_group: "End User Compute",
-          work_notes: "Firmware update pending.", close_notes: "" }
-      ]
-    },
-    {
-      name: "sys_user", label: "User",
-      fields: [f("user_name", "User ID"), f("name", "Name"), f("first_name", "First name"),
-        f("last_name", "Last name"), f("email", "Email"), f("phone", "Phone"),
-        f("user_password", "Password", "password")],
-      rows: [
-        { sysId: "9b1c4d7e2a5f48c0b3d6e9f1a2c5b807", user_name: "marco.rossi",
-          name: "Marco Rossi", first_name: "Marco", last_name: "Rossi",
-          email: "marco.rossi@example.com", phone: "+44 20 7946 0102", user_password: "" },
-        { sysId: "3f8e5d2c9b6a41d78e0f3a1b4c7d2e59", user_name: "dan.okoro",
-          name: "Dan Okoro", first_name: "Dan", last_name: "Okoro",
-          email: "dan.okoro@example.com", phone: "+44 20 7946 0187", user_password: "" }
-      ]
-    },
-    {
-      name: "change_request", label: "Change Request",
-      fields: [f("number", "Number"), f("short_description", "Short description"),
-        f("description", "Description"), f("assignment_group", "Assignment group")],
-      rows: [
-        { sysId: "7c3b9a1f5e8d42069b4c7e0a3d6f1b28", number: "CHG0030118",
-          short_description: "Database failover rehearsal",
-          description: "Quarterly rehearsal of the standby failover runbook.",
-          assignment_group: "Platform Engineering" }
-      ]
-    },
-    {
-      name: "sys_properties", label: "System Property",
-      fields: [f("name", "Name"), f("description", "Description"), f("value", "Value")],
-      rows: [
-        { sysId: "1a4d7b0c3e6f4928d5b8c1e4f7a0b36c",
-          name: "glide.ui.list.refresh_interval",
-          description: "Seconds between automatic list refreshes.", value: "30" },
-        { sysId: "6d9f2c5b8a1e40739c2d5f8b1a4e7c03",
-          name: "glide.ui.forms.hide_empty_related_lists",
-          description: "Hides related lists that contain no rows.", value: "true" }
-      ]
-    }
-  ];
-
-  var tableInput = document.getElementById("dmrlTable");
-  var tableMenu = document.getElementById("dmrlTableMenu");
-  var termInput = document.getElementById("dmrlTerm");
-  var goBtn = document.getElementById("dmrlGo");
-  var fieldsBtn = document.getElementById("dmrlFields");
-  var fieldMenu = document.getElementById("dmrlFieldMenu");
-  var summary = document.getElementById("dmrlSummary");
-  var statusEl = document.getElementById("dmrlStatus");
-  var rowsEl = document.getElementById("dmrlRows");
-  var openListBtn = document.getElementById("dmrlOpenList");
-
-  var selectedTable = null;
-  var selected = [];          // field names
-  var activeOpt = -1;
-  var lastResults = [];
-
-  function setStatus(text, kind) {
-    statusEl.textContent = text;
-    statusEl.className = "dm-rl-status" + (kind ? " is-" + kind : "");
-  }
-
-  function empty(title, hint) {
-    rowsEl.textContent = "";
-    var box = document.createElement("div");
-    box.className = "dm-empty";
-    var strong = document.createElement("div");
-    strong.textContent = title;
-    var small = document.createElement("div");
-    small.style.cssText = "margin-top:5px;font-size:11.5px;color:#6e6e88";
-    small.textContent = hint;
-    box.appendChild(strong);
-    box.appendChild(small);
-    rowsEl.appendChild(box);
-  }
-
-  /* Bounded: matches label OR technical name, exactly as findTables does. */
-  function matchTables(q) {
-    var needle = q.trim().toLowerCase();
-    if (needle.length < 2) return [];
-    return TABLES.filter(function (t) {
-      return t.label.toLowerCase().indexOf(needle) !== -1 ||
-             t.name.toLowerCase().indexOf(needle) !== -1;
-    });
-  }
-
-  function renderTableMenu(list) {
-    tableMenu.textContent = "";
-    if (!list.length) {
-      var msg = document.createElement("div");
-      msg.className = "dm-rl-msg";
-      msg.textContent = tableInput.value.trim().length < 2
-        ? "Type two characters to query a bounded set of matching table labels and names."
-        : "No matching readable tables.";
-      tableMenu.appendChild(msg);
-    } else {
-      list.forEach(function (t, i) {
-        var b = document.createElement("button");
-        b.type = "button";
-        b.className = "dm-rl-opt" + (i === activeOpt ? " active" : "");
-        b.setAttribute("role", "option");
-        b.setAttribute("aria-selected", i === activeOpt ? "true" : "false");
-        var lab = document.createElement("span");
-        lab.textContent = t.label;
-        var nm = document.createElement("span");
-        nm.className = "dm-rl-tname";
-        nm.textContent = t.name;
-        b.appendChild(lab);
-        b.appendChild(nm);
-        b.addEventListener("mouseenter", function () { activeOpt = i; paintOpts(); });
-        b.addEventListener("click", function () { selectTable(t); });
-        tableMenu.appendChild(b);
-      });
-    }
-    tableMenu.hidden = false;
-    tableInput.setAttribute("aria-expanded", "true");
-  }
-
-  function paintOpts() {
-    var opts = tableMenu.querySelectorAll(".dm-rl-opt");
-    for (var i = 0; i < opts.length; i++) {
-      opts[i].classList.toggle("active", i === activeOpt);
-      opts[i].setAttribute("aria-selected", i === activeOpt ? "true" : "false");
-    }
-  }
-
-  function closeTableMenu() {
-    tableMenu.hidden = true;
-    tableInput.setAttribute("aria-expanded", "false");
-  }
-
-  /* Preset intersected with this table's real fields, sensitive fields excluded, capped. */
-  function defaultFields(t) {
-    var preset = PRESETS[t.name] || [];
-    var have = {};
-    t.fields.forEach(function (fl) { have[fl.name] = fl; });
-    var chosen = preset
-      .map(function (n) { return have[n]; })
-      .filter(function (fl) { return fl && fl.auto; });
-    if (!chosen.length) chosen = t.fields.filter(function (fl) { return fl.auto; });
-    return chosen.slice(0, MAX_FIELDS).map(function (fl) { return fl.name; });
-  }
-
-  function selectTable(t) {
-    selectedTable = t;
-    selected = defaultFields(t);
-    tableInput.value = t.name;
-    closeTableMenu();
-    renderFieldMenu();
-    updateSummary();
-    lastResults = [];
-    updateOpenList();
-    setStatus("Ready · " + t.label + " (" + t.name + ") · " + selected.length + " fields selected");
-    empty("Find a record without loading a full table list.",
-      "Enter a term to search the selected fields, or paste an exact sys_id.");
-  }
-
-  function renderFieldMenu() {
-    fieldMenu.textContent = "";
-    if (!selectedTable) return;
-    selectedTable.fields.forEach(function (fl) {
-      var lab = document.createElement("label");
-      lab.className = "dm-rl-fopt";
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = selected.indexOf(fl.name) !== -1;
-      var title = document.createElement("span");
-      title.textContent = fl.label;
-      if (!fl.auto) {
-        var m = document.createElement("span");
-        m.className = "dm-rl-manual";
-        m.textContent = "manual only";
-        title.appendChild(document.createTextNode(" "));
-        title.appendChild(m);
-      }
-      var tech = document.createElement("span");
-      tech.className = "dm-rl-ftech";
-      tech.textContent = fl.name;
-      cb.addEventListener("change", function () {
-        if (cb.checked) {
-          if (selected.length >= MAX_FIELDS) {
-            cb.checked = false;
-            setStatus("Select no more than six fields.", "empty");
-            return;
-          }
-          selected.push(fl.name);
-        } else {
-          selected = selected.filter(function (n) { return n !== fl.name; });
-        }
-        lastResults = [];
-        updateOpenList();
-        updateSummary();
-      });
-      lab.appendChild(cb);
-      lab.appendChild(title);
-      lab.appendChild(tech);
-      fieldMenu.appendChild(lab);
-    });
-  }
-
-  function updateSummary() {
-    fieldsBtn.disabled = !selectedTable;
-    fieldsBtn.textContent = selected.length + (selected.length === 1 ? " field" : " fields");
-    summary.textContent = "";
-    if (!selectedTable) {
-      summary.textContent = "Choose a table to load verified fields.";
-      return;
-    }
-    var byName = {};
-    selectedTable.fields.forEach(function (fl) { byName[fl.name] = fl; });
-    var t = document.createElement("span");
-    t.className = "dm-rl-tsel";
-    t.textContent = selectedTable.label + " (" + selectedTable.name + ") · ";
-    var strong = document.createElement("strong");
-    strong.textContent = selected.length
-      ? "Searching: " + selected.map(function (n) {
-          return byName[n].label + " [" + n + "]";
-        }).join(", ")
-      : "No fields selected";
-    summary.appendChild(t);
-    summary.appendChild(strong);
-  }
-
-  function updateOpenList() {
-    openListBtn.disabled = !lastResults.length;
-    openListBtn.textContent = lastResults.length
-      ? "Open " + lastResults.length + " in list"
-      : "Open results in list";
-  }
-
-  function search() {
-    if (!selectedTable) {
-      setStatus("Choose a verified table before searching.", "empty");
-      return;
-    }
-    var term = termInput.value.trim();
-    if (!term) {
-      setStatus("Enter a search term or an exact sys_id.", "empty");
-      return;
-    }
-    if (!selected.length && !/^[0-9a-f]{32}$/i.test(term)) {
-      setStatus("Select at least one verified field to search.", "empty");
-      return;
-    }
-
-    var isSysId = /^[0-9a-f]{32}$/i.test(term);
-    var needle = term.toLowerCase();
-
-    /* The verification step: a row only renders if the COMPLETE term is present
-       in one of the selected summary values. The server prefilter is broader. */
-    var hits = selectedTable.rows.filter(function (r) {
-      if (isSysId) return r.sysId.toLowerCase() === needle;
-      return selected.some(function (n) {
-        return String(r[n] || "").toLowerCase().indexOf(needle) !== -1;
-      });
-    }).slice(0, RESULT_LIMIT);
-
-    lastResults = hits;
-    updateOpenList();
-    render(hits, isSysId);
-  }
-
-  function render(hits, isSysId) {
-    rowsEl.textContent = "";
-    var byName = {};
-    selectedTable.fields.forEach(function (fl) { byName[fl.name] = fl; });
-
-    var sortSuffix = isSysId || !selected.length
-      ? ""
-      : " · sorted by relevance, then " + byName[selected[0]].label;
-    setStatus(hits.length + (hits.length === 1 ? " verified record" : " verified records") +
-      " in " + selectedTable.label + sortSuffix, hits.length ? "ok" : "empty");
-
-    if (!hits.length) {
-      empty("No verified matches in the selected fields.",
-        "Try another term, select different verified fields, or use an exact sys_id.");
-      return;
-    }
-
-    hits.forEach(function (r) {
-      var row = document.createElement("div");
-      row.className = "dm-rl-row";
-
-      var top = document.createElement("div");
-      top.className = "dm-rl-top";
-      var title = document.createElement("span");
-      title.className = "dm-rl-title";
-      var titleText = String(r[selected[0]] || r.sysId);
-      title.textContent = titleText;
-      var sid = document.createElement("span");
-      sid.className = "dm-rl-sysid";
-      sid.textContent = r.sysId;
-      top.appendChild(title);
-      top.appendChild(sid);
-      row.appendChild(top);
-
-      var vals = document.createElement("div");
-      vals.className = "dm-rl-values";
-      selected.forEach(function (n, i) {
-        var v = String(r[n] || "");
-        if (!v || (i === 0 && v === titleText)) return;
-        var span = document.createElement("span");
-        var lab = document.createElement("span");
-        lab.className = "dm-rl-vlab";
-        lab.textContent = byName[n].label + ": ";
-        span.appendChild(lab);
-        span.appendChild(document.createTextNode(v));
-        vals.appendChild(span);
-      });
-      if (vals.childNodes.length) row.appendChild(vals);
-
-      var acts = document.createElement("div");
-      acts.className = "dm-rl-acts";
-      [["Open record", function () {
-        setStatus("Opens " + selectedTable.name + ".do in ServiceNow — inert in this demo.");
-      }], ["Copy sys_id", function () { copy(r.sysId, "sys_id"); }],
-        ["Copy URL", function () {
-          copy("https://example.service-now.com/" + selectedTable.name + ".do?sys_id=" + r.sysId, "Record URL");
-        }]].forEach(function (pair) {
-        var b = document.createElement("button");
-        b.type = "button";
-        b.className = "dm-rl-act";
-        b.textContent = pair[0];
-        b.addEventListener("click", pair[1]);
-        acts.appendChild(b);
-      });
-      row.appendChild(acts);
-      rowsEl.appendChild(row);
-    });
-  }
-
-  function copy(text, label) {
-    var done = function () { setStatus(label + " copied to the clipboard.", "ok"); };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(done, function () {
-        setStatus("Clipboard access was blocked.", "empty");
-      });
-    } else {
-      setStatus("Clipboard access was blocked.", "empty");
-    }
-  }
-
-  tableInput.addEventListener("input", function () {
-    if (selectedTable && tableInput.value.trim() !== selectedTable.name) {
-      selectedTable = null;
-      selected = [];
-      lastResults = [];
-      updateSummary();
-      updateOpenList();
-      setStatus("Search for a table to begin.");
-    }
-    activeOpt = -1;
-    renderTableMenu(matchTables(tableInput.value));
-  });
-  tableInput.addEventListener("focus", function () {
-    if (tableInput.value.trim().length >= 2) renderTableMenu(matchTables(tableInput.value));
-  });
-  tableInput.addEventListener("keydown", function (e) {
-    var list = matchTables(tableInput.value);
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      if (tableMenu.hidden) renderTableMenu(list);
-      if (!list.length) return;
-      activeOpt = (activeOpt + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
-      paintOpts();
-    } else if (e.key === "Home" || e.key === "End") {
-      if (tableMenu.hidden || !list.length) return;
-      e.preventDefault();
-      activeOpt = e.key === "Home" ? 0 : list.length - 1;
-      paintOpts();
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (!tableMenu.hidden && activeOpt >= 0 && list[activeOpt]) selectTable(list[activeOpt]);
-      else if (selectedTable) search();
-    } else if (e.key === "Escape") {
-      closeTableMenu();
-    }
-  });
-
-  fieldsBtn.addEventListener("click", function () {
-    var open = fieldMenu.hidden;
-    fieldMenu.hidden = !open;
-    fieldsBtn.setAttribute("aria-expanded", open ? "true" : "false");
-  });
-
-  termInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") { e.preventDefault(); search(); }
-  });
-  goBtn.addEventListener("click", search);
-  openListBtn.addEventListener("click", function () {
-    setStatus("Opens the " + lastResults.length +
-      " verified sys_ids as a platform list — inert in this demo.");
-  });
-
-  root.addEventListener("click", function (e) {
-    if (!e.target.closest(".dm-rl-combo")) closeTableMenu();
-    if (!e.target.closest(".dm-rl-fieldpick")) {
-      fieldMenu.hidden = true;
-      fieldsBtn.setAttribute("aria-expanded", "false");
-    }
-  });
-
-  /* Start on Incident, the way a classic incident page would preselect it. */
-  selectTable(TABLES[0]);
-  termInput.value = "laptop";
-  search();
 })();
 
 /* ---------------------------------------------------------------------------
