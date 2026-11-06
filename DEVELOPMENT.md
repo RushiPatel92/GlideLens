@@ -837,16 +837,17 @@ popup's design tokens. Assets must live inside `docs/`; parent-relative assets
 are outside the Pages root.
 
 The landing page's command list mirrors `content.js`, including each command's
-label and its action description. Its Record Lens, Code Search, Catalog Logic,
-Variable Values, and Debug Timeline demonstrations must match their real panels,
-down to the panel headings.
+label and its action description. Its Code Search, Catalog Logic, Variable
+Values, and Debug Timeline demonstrations must match their real panels, down to
+the panel headings.
 
-The Record Lens demo additionally copies two engine rules verbatim rather than
-approximating them, because they are the point of the feature: the known-table
-presets that choose default fields, and `SENSITIVE_AUTO_FIELD_PATTERN`, which
-keeps value/body/content/script/password-like fields out of the automatic
-selection. If either changes in `record_search.js`, change the demo too —
-`sys_properties.value` showing as "manual only" is the visible proof. Read the source rather than recreating panel behavior from memory,
+Update Set Lens and Record Lens are shown as screenshots in `docs/shots/`, not
+as recreated panels. Capture them on a personal developer instance with
+synthetic or stock demo data only, never on a customer instance, and check every
+frame for a hostname, account or other identifying detail before committing it.
+Recapture one when its panel changes visibly. The Impersonate demo is built on
+the search-form classes the old Record Lens demo introduced, so those styles
+stay. For the recreated panels, read the source rather than recreating panel behavior from memory,
 including grouping, search fields, counts, buckets, and category labels.
 Change a panel and its demonstration in the same change. Give each demo its
 own id prefix: `getElementById` returns the first match in the document, so an
