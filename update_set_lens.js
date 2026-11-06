@@ -60,10 +60,12 @@
     remoteSets: 1000,
   });
 
+  /* completed_on is for Version Lens, which shows when a set was completed;
+   * this panel ignores it. */
   const SET_FIELDS = [
     "sys_id", "name", "state", "is_default", "application", "parent", "base_update_set",
     "merged_to", "remote_sys_id", "origin_sys_id", "sys_created_by", "sys_created_on",
-    "sys_updated_on",
+    "sys_updated_on", "completed_on",
   ].join(",");
   const MEMBER_FIELDS = [
     "sys_id", "name", "update_set", "remote_update_set", "action", "type", "target_name",
@@ -90,6 +92,7 @@
   ]);
   const PREVIEWED_STATES = new Set(["previewed", "previewed_in_hierarchy"]);
   const BACKED_OUT_STATES = new Set(["backedout", "backedout_in_hierarchy"]);
+  const NOT_APPLIED_NOTE = "Its updates aren't applied here, so there's nothing to call stale.";
   /* The tables whose page may be an update set's form. Any other concrete
    * table is some other record and costs no read. nav_to is here because
    * recordContextFromText returns it for a top-frame nav_to.do URL. */
@@ -355,6 +358,7 @@
       createdOn: shown(row, "sys_created_on"),
       updatedOn: shown(row, "sys_updated_on"),
       updatedOnRaw: raw(row, "sys_updated_on"),
+      completedOn: shown(row, "completed_on"),
     };
   }
 
@@ -940,9 +944,12 @@
       read.found.forEach((set, id) => sets.set(id, set));
     }
     const versionsRefused = Array.from(current.failed.values()).some((error) => error && error.code === "access");
+    /* `current` is the version read itself ({ byName, failed, saturated }),
+     * for Version Lens's "Runs here" line. This panel ignores it. */
     return {
       rows: rows.map((row) => presentRow(row, outcomes.get(row.key), sets, ctx.origin)),
       versionsRefused,
+      current,
     };
   }
 
@@ -1106,14 +1113,19 @@
     const openRetrieved = { label: "Open retrieved set", url: origin + "/sys_remote_update_set.do?sys_id=" + remote.sysId };
     const state = remote.state;
     let message;
+    /* Said only where it is true. A committed set's updates are applied
+     * here, and any other state is shown by its label with no claim. */
+    let note = "";
     if (state === "committed") {
       message = remote.updateSet
         ? "Committed here, but its local set can't be read."
         : "Committed here; its local set isn't linked.";
     } else if (NOT_COMMITTED_STATES.has(state)) {
       message = "Not committed on this instance; ServiceNow's Preview checks it here.";
+      note = NOT_APPLIED_NOTE;
     } else if (BACKED_OUT_STATES.has(state)) {
       message = "Backed out on this instance; its updates are no longer applied here.";
+      note = NOT_APPLIED_NOTE;
     } else {
       message = (remote.stateLabel || state || "Unknown state") + ".";
     }
@@ -1131,6 +1143,7 @@
       loadedOn: remote.createdOn,
       source: remote.updateSource,
       message,
+      note,
       links,
     };
   }
@@ -1883,5 +1896,32 @@
     remoteView,
     remoteProblem,
     retrievedScreen,
+    /* Shared with Version Lens (version_lens.js), which reads through the
+     * same route and words its verdicts the same way. Names unchanged. */
+    TABLE_NAME,
+    NAMED_RECORD,
+    SET_FIELDS,
+    MEMBER_FIELDS,
+    VERSION_FIELDS,
+    readTable,
+    raw,
+    shown,
+    isSysId,
+    foldName,
+    decodedVariants,
+    inClause,
+    linkIn,
+    normalizeVersion,
+    normalizeMember,
+    readCurrentVersions,
+    readSetsById,
+    staleText,
+    lowerFirst,
+    presenceWords,
+    savedWords,
+    bestCopy,
+    remoteLinks,
+    presenceFailureText,
+    contentFailureText,
   };
 })();

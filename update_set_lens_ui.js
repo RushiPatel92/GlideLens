@@ -292,6 +292,7 @@
       }
       let outcome = null;
       if (link.record && isFn(callbacks.onOpenRecord)) outcome = callbacks.onOpenRecord(str(link.record));
+      else if (link.versionLens && isFn(callbacks.onOpenVersionLens)) outcome = callbacks.onOpenVersionLens(str(link.versionLens));
       else if (link.remote && isFn(callbacks.onOpenRemote)) outcome = callbacks.onOpenRemote(Object.assign({}, link.remote));
       if (!outcome || noteKey == null) return;
       Promise.resolve(outcome).then((result) => {
@@ -668,9 +669,12 @@
       }
       if (row.notes && row.notes.length) detail.appendChild(el("div", "notes", row.notes.join(" · ")));
       if (row.who) detail.appendChild(el("div", "who", row.who));
-      if (row.links && row.links.length) {
+      /* Version Lens on this update's record: every set that captured it. */
+      const rowLinks = (row.links || []).concat(row.name && isFn(callbacks.onOpenVersionLens)
+        ? [{ label: "Other sets holding it", versionLens: row.name }] : []);
+      if (rowLinks.length) {
         const links = el("div", "links");
-        row.links.forEach((link, index) => links.appendChild(remember(linkButton(link, row.key), "link:" + row.key + ":" + index)));
+        rowLinks.forEach((link, index) => links.appendChild(remember(linkButton(link, row.key), "link:" + row.key + ":" + index)));
         detail.appendChild(links);
       }
       if (tag) detail.appendChild(tag);
@@ -723,7 +727,7 @@
     if (view.retrieved) {
       const empty = el("div", "empty");
       empty.appendChild(el("div", null, view.retrieved.message));
-      empty.appendChild(el("div", null, "Its updates aren't applied here, so there's nothing to call stale."));
+      if (view.retrieved.note) empty.appendChild(el("div", null, view.retrieved.note));
       if (view.retrieved.links && view.retrieved.links.length) {
         const links = el("div", "links");
         view.retrieved.links.forEach((link, index) => links.appendChild(remember(linkButton(link), "retrieved-link:" + index)));
@@ -1009,9 +1013,10 @@
   /*
    * open({ view, origins, callbacks, opener })
    *   callbacks: onToggleBatch(on), onContinue(), onCheckRemote(origin, token),
-   *   onOpenUrl(url), onOpenRecord(updateName) and
-   *   onOpenRemote({ origin, table, sysId } | { origin, name }), the last two
-   *   -> Promise<{ ok, message }>, onCopy(text) -> Promise<boolean>, onClose()
+   *   onOpenUrl(url), onOpenRecord(updateName), onOpenVersionLens(updateName)
+   *   and onOpenRemote({ origin, table, sysId } | { origin, name }), the last
+   *   three -> Promise<{ ok, message }>, onCopy(text) -> Promise<boolean>,
+   *   onClose()
    */
   function open(options) {
     close();

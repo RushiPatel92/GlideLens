@@ -46,6 +46,10 @@ walkthrough.
   one is — then check, on another instance open in your browser, whether the
   set got there and whether that instance runs the same versions. Read-only on
   both.
+- **Version Lens**: from one record — a business rule, script include, UI
+  policy, catalog item, translation, dictionary entry — see which update sets
+  captured it, who saved it there and when, whether two open sets hold
+  different versions of it, and which version runs now. Read-only.
 
 ---
 
@@ -200,6 +204,16 @@ Some commands accept an argument in an inline input field; the field is labelled
 with what it expects and is rebuilt each time, so a label or placeholder never
 carries over from the command you looked at before.
 
+Admin commands are listed only for accounts that can use them. Update Set
+Lens, Version Lens, Customer Updates, Playbook Updates, Playbooks, Search
+Sources and the Dev Links appear only when your session can read ServiceNow's
+update history, which a stock instance opens to admins only. The palette asks
+once per page, the first time you open it, and shows **Checking this account's
+access…** until it knows; an `Enter` pressed meanwhile runs once the list
+appears. If the answer takes longer than a second and a half, the full list is
+shown, and only a refusal removes them. Impersonating from the same tab updates
+the list; a change of account made in another tab shows after you reload.
+
 ### Command palette commands
 
 The **Command** column is the label as it appears in the palette; the *italic*
@@ -310,6 +324,53 @@ history link. A record with no readable current version there
 is reported as exactly that, never as missing. **Copy summary** copies counts
 only: no set, record or person name, id or link.
 
+An opened row also offers **Other sets holding it**, which opens Version Lens
+on that update's record.
+
+#### Version Lens
+
+Open the palette on a configuration record — a classic form, a Workspace
+record, a playbook, or an update's or version's own form — and choose
+**Version Lens**; it opens on that record. On a list, a new record or an
+update set it asks instead: paste the record's link, its `sys_id`, or an
+update name such as `sys_script_include_<sys_id>`.
+
+The record is found by the update name ServiceNow stored on it. Where that is
+blank, as on many translations and baseline dictionary rows, or the record is
+data outside the metadata tables, a fallback name is used only once an update
+or version with exactly that name is read back, and the panel always shows
+the name it used. A choice is tracked per field, as its choice list; a form
+or list layout's elements are captured with their layout, and the panel says
+which one to open.
+
+The panel answers, on this instance only:
+
+- **Potential collision** — two or more open update sets hold different
+  versions of the record, so whichever is promoted last overwrites the other.
+  Sets holding the same content are **No competing versions**: either order
+  promotes the same thing.
+- **No competing sets** — one open set holds it. **History only** — no open set
+  does. **Captured only outside a named set** — only a Default set holds it,
+  and that change won't be promoted.
+
+Only open named sets compete; Default, Ignore and complete sets are listed but
+never counted. Amber lines under the verdict say when an open set holds a
+version that no longer runs here, when the version that runs was saved in a
+Default set or sits in an ignored one, and when an open set can't be told. A
+**Runs here** line says which set the running version came from, and who
+recorded it when. The rows share columns: the set, when and by whom it last
+saved the record, the set's state, and its version against what runs here.
+An opened row links to the update, the set and **Check this set** (Update Set
+Lens on that set). A tick shows only when every capture and set was read and nothing
+needs attention.
+
+**Check on** asks another instance open in your browser whether it runs the
+same version, and where each set has got there. The answer adds a column for
+that instance: each set's state there (Committed, Previewed, Not found…) and
+**Runs there** on the set whose update is the version running there, with the
+states counted above the list. Copies loaded here from other instances are
+counted, not listed. **Copy summary** copies counts only.
+
 **Record**
 
 | Command | Description |
@@ -320,6 +381,7 @@ only: no set, record or person name, id or link.
 | Playbooks | *Open playbook executions for this record* Opens Process Automation playbook executions for the current record. |
 | Playbook Updates | *Open captured updates for this playbook activity.* Listed only on a playbook (process definition) page; opens the related `sys_update_xml` customer updates. |
 | Customer Updates | *Open captured customer updates by sys_id…* Enter a record sys_id or ServiceNow URL to open its customer updates. |
+| Version Lens | *See which update sets hold this record, and which version runs…* On a record's page it opens on that record; anywhere else it asks for the record's link, `sys_id` or update name. Lists every update set on this instance that captured the record, with who saved it there and when, flags a **Potential collision** when two or more open sets hold different versions, and says which version runs now. **Check on** compares with another instance open in your browser. Read-only. See *Version Lens* above. |
 
 #### Record Lens
 
@@ -513,7 +575,7 @@ could not contact a third party if it tried. Four small things are kept in
 local extension storage: your pinned palette command, two per-instance maps of
 what code search can reach, and the Record Lens tables you starred on each
 instance with the names of their search fields, filter fields and shown columns.
-Update Set Lens keeps what it reads in the open panel only.
+Update Set Lens and Version Lens keep what they read in the open panel only.
 Translation Assistant is the one feature that
 produces something meant to leave your browser: a JSON file of a catalog
 item's field text, which you upload to an AI tool of your own choosing. GlideLens
