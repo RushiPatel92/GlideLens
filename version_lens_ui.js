@@ -291,21 +291,38 @@
     paint();
   }
 
+  /* As with a link: a middle-click (auxclick, button 1), or a click with
+   * Ctrl or Cmd held, opens the page in a tab behind this one. "Check this
+   * set" replaces this panel rather than opening a page, so a middle-click
+   * leaves it alone. A middle press is held from starting the browser's
+   * autoscroll. */
   function linkButton(link, noteKey) {
-    return button("link", link.label, (event) => {
+    const open = (event, background) => {
       if (event && isFn(event.stopPropagation)) event.stopPropagation();
+      const opts = { background };
       if (link.url) {
-        if (sameOrigin(link.url) && isFn(callbacks.onOpenUrl)) callbacks.onOpenUrl(link.url);
+        if (sameOrigin(link.url) && isFn(callbacks.onOpenUrl)) callbacks.onOpenUrl(link.url, opts);
         return;
       }
       let outcome = null;
-      if (link.set && isFn(callbacks.onOpenSetLens)) outcome = callbacks.onOpenSetLens(link.set);
-      else if (link.remote && isFn(callbacks.onOpenRemote)) outcome = callbacks.onOpenRemote(Object.assign({}, link.remote));
+      if (link.set) {
+        if ((!background || !event || event.button !== 1) && isFn(callbacks.onOpenSetLens)) outcome = callbacks.onOpenSetLens(link.set);
+      } else if (link.remote && isFn(callbacks.onOpenRemote)) outcome = callbacks.onOpenRemote(Object.assign({}, link.remote), opts);
       if (!outcome || noteKey == null) return;
       Promise.resolve(outcome).then((result) => {
         if (result && result.ok === false) showLinkNote(noteKey, result.message || "Couldn't open that.");
       }, () => showLinkNote(noteKey, "Couldn't open that."));
+    };
+    const node = button("link", link.label, (event) => open(event, Boolean(event && (event.ctrlKey || event.metaKey))));
+    node.addEventListener("auxclick", (event) => {
+      if (!event || event.button !== 1) return;
+      if (isFn(event.preventDefault)) event.preventDefault();
+      open(event, true);
     });
+    node.addEventListener("mousedown", (event) => {
+      if (event && event.button === 1 && isFn(event.preventDefault)) event.preventDefault();
+    });
+    return node;
   }
 
   function linkRow(links, keyPrefix, noteKey) {

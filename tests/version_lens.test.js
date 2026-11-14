@@ -160,7 +160,7 @@ test("1: a form's sys_id resolves through sys_metadata to its own name; another 
   assert.strictEqual(resolution.target.scope, "Global");
   assert.deepStrictEqual(plain(instance.requests[0]), {
     table: "sys_metadata", query: "sys_id=" + REC, fields: "sys_id,sys_class_name,sys_update_name,sys_name,sys_scope",
-    limit: 2, options: { displayAll: true, suppressPagination: true },
+    limit: 2, options: { displayAll: true, suppressPagination: true, expectedOrigin: ORIGIN },
   });
   assert.ok(!tables(instance).includes("sys_script_include"), "the concrete table is never queried");
 
@@ -517,7 +517,7 @@ test("20: the capture read is exact: name, customer, newest first, 201 rows, a t
     fields: "sys_id,name,update_set,remote_update_set,action,type,target_name,update_guid,payload_hash,application,category," +
       "sys_created_by,sys_created_on,sys_updated_by,sys_updated_on",
     limit: 201,
-    options: { displayAll: true, suppressPagination: true, withTotal: true },
+    options: { displayAll: true, suppressPagination: true, expectedOrigin: ORIGIN, withTotal: true },
   });
   assert.strictEqual(view.rows.length, 3);
 
@@ -1155,6 +1155,292 @@ test("49: the copy summary holds counts and the state word only", async () => {
   }
   const identityOnly = await runOn({ metadata: [Object.assign({}, META, { sys_update_name: "a^b" })] });
   assert.strictEqual(lens.copySummary(identityOnly.view, null), "Version Lens: one record.\nCan't identify this record.");
+});
+
+/* ------------------------------------------------------------------ *
+ * Check on: whether promoting the version that runs here replaces
+ * anything changed there, placed in its update's own history
+ * ------------------------------------------------------------------ */
+
+const RECORDED = (n) => "1a1b" + String(n).padStart(14, "0");
+const historyOf = (...ns) => ns.map((n) => guid(n) + ":" + n).join(",");
+
+/* "Open 1" saved the record twice (11, then 12, which runs here) on top of
+ * 9 from "Done 2", which was itself saved on top of 7 from "Done 3". */
+function placingWorld() {
+  const version = (setId, state, n, created) =>
+    versionRow(NAME, setId, state, guid(n), String(n), created, { sys_recorded_at: RECORDED(n * 10) });
+  return {
+    sets: [openSet(1), doneSet(2), doneSet(3)],
+    xml: [
+      cap(id(1), guid(12), "12", { update_guid_history: historyOf(12, 11, 9, 7), sys_updated_on: "2026-10-05 10:00:00" }),
+      cap(id(2), guid(9), "9", { sys_updated_on: "2026-10-03 10:00:00" }),
+      cap(id(3), guid(7), "7", { sys_updated_on: "2026-10-01 10:00:00" }),
+    ],
+    versions: [
+      version(id(1), "current", 12, "2026-10-05 10:00:00"),
+      version(id(1), "previous", 11, "2026-10-04 10:00:00"),
+      version(id(2), "previous", 9, "2026-10-03 10:00:00"),
+      version(id(3), "previous", 7, "2026-10-01 10:00:00"),
+    ],
+  };
+}
+
+/* The other instance's answer: `there` ("guid:hash") runs in place of the
+ * version that runs here, or that version itself when there is none; a
+ * capture runs there when it is exactly that version. `moved` is whether the
+ * running version was ever there: false, read and never, unless given. */
+function placingReply(request, there, moved) {
+  const content = request.records.map((record, index) => {
+    if (!there) return index === 0 ? "runs" : "other";
+    return index > 0 && record.guid + ":" + record.hash === there ? "runs" : "other";
+  });
+  return {
+    copies: [],
+    clones: [],
+    content,
+    running: content.map((status, index) => (index === 0 && there ? there : null)),
+    moved: content.map((status, index) => (index === 0 && there ? (moved === undefined ? false : moved) : null)),
+  };
+}
+
+test("49b: after a check, the version that runs here is placed in its update's own history, read here by sys_id and name", async () => {
+  const { view, session, instance } = await runOn(placingWorld());
+  const open = view.rows.find((row) => row.setName === "Open 1");
+  assert.strictEqual(open.verdict, "current");
+  const request = session.remoteRequest();
+  assert.deepStrictEqual(plain(request.subject), {
+    key: open.key, sysId: open.sysId, name: NAME, guid: guid(12), hash: "12", setId: id(1), setName: "Open 1", verdict: "current",
+    savedIn: id(1),
+  });
+  assert.deepStrictEqual(plain(lens.collisionRemoteRequest(view)), plain(request), "the same request from the snapshot");
+
+  const reply = placingReply(request, guid(9) + ":9");
+  const before = instance.requests.length;
+  let told = 0;
+  const placed = await session.placeRemote(reply, request, () => { told += 1; });
+  assert.deepStrictEqual(plain(placed), { kind: "built", byContent: false });
+  assert.strictEqual(told, 1, "told once, before its first read");
+  const reads = instance.requests.slice(before);
+  assert.deepStrictEqual(reads.map((read) => read.table), ["sys_update_xml", "sys_update_version"]);
+  assert.strictEqual(reads[0].query, "sys_id=" + open.sysId, "one update's history, by sys_id");
+  assert.strictEqual(reads[0].fields, "sys_id,update_guid,update_guid_history");
+  assert.strictEqual(reads[1].query, "name=" + NAME, "every state of its versions, by name");
+  assert.ok(reads[1].fields.split(",").includes("sys_recorded_at"));
+  assert.ok(reads.every((read) => !/(?:^|\^)(?:update_guid|payload_hash)(?:=|IN)/.test(read.query)));
+
+  const shown = plain(lens.collisionRemoteView(reply, request, view, "TEST", ORIGIN, placed));
+  assert.deepStrictEqual(shown.lines, [
+    { kind: "ok", text: "Promoting “Open 1” replaces nothing changed on TEST: it runs the version that set was built on." },
+    { kind: "content", text: "TEST runs another version: the one in “Done 2” here (Complete)." },
+  ]);
+  assert.ok(shown.copyLine.startsWith("On the other instance: runs another version (the one the version here was built on);"));
+  const summary = lens.copySummary(view, shown);
+  for (const secret of ["Open 1", "Done 2", "TEST", guid(9)]) assert.ok(!summary.includes(secret), "the summary names nothing: " + secret);
+});
+
+test("49c: each placing has its line, and safe needs that instance's word that it never had this version", async () => {
+  const { view, session, instance } = await runOn(placingWorld());
+  const request = session.remoteRequest();
+  const answer = async (there, moved) => {
+    const reply = placingReply(request, there, moved);
+    const placed = await session.placeRemote(reply, request);
+    return plain(lens.collisionRemoteView(reply, request, view, "TEST", ORIGIN, placed));
+  };
+
+  const earlier = await answer(guid(11) + ":11");
+  assert.deepStrictEqual(earlier.lines, [
+    { kind: "ok", text: "Promoting “Open 1” replaces nothing changed on TEST: it runs an earlier save of that set." },
+    { kind: "content", text: "TEST runs another version." },
+  ]);
+
+  const older = await answer(guid(7) + ":7");
+  assert.deepStrictEqual(older.lines, [
+    { kind: "differs", text: "TEST runs an older version, missing the change saved here in “Done 2”; promoting “Open 1” brings it too." },
+    { kind: "differs", text: "TEST runs another version: the one in “Done 3” here (Complete)." },
+  ]);
+  assert.ok(older.copyLine.startsWith("On the other instance: runs another version (an older one);"));
+
+  const diverged = await answer(guid(99) + ":99");
+  assert.deepStrictEqual(diverged.lines, [
+    { kind: "differs", text: "TEST runs a version that isn't in this update's history: promoting “Open 1” replaces it." },
+    { kind: "differs", text: "TEST runs another version." },
+  ]);
+
+  /* A history is commit order here: without that instance's word, the
+   * version this set was built on may be newer work there. */
+  const unread = await answer(guid(9) + ":9", null);
+  assert.deepStrictEqual(unread.lines, [{ kind: "differs", text: "TEST runs another version: the one in “Done 2” here (Complete)." }]);
+  assert.ok(unread.copyLine.startsWith("On the other instance: runs another version;"));
+
+  /* It had this version and changed it since: said whatever the history
+   * says, and nothing is read. */
+  const before = instance.requests.length;
+  const moved = await answer(guid(9) + ":9", true);
+  assert.strictEqual(instance.requests.length, before, "no read");
+  assert.deepStrictEqual(moved.lines[0], {
+    kind: "differs", text: "TEST had the version that runs here and has since changed it: promoting “Open 1” again undoes that change.",
+  });
+  assert.strictEqual(moved.lines[1].kind, "differs");
+  assert.ok(moved.copyLine.startsWith("On the other instance: runs another version (had it and changed it since);"));
+});
+
+test("49d: nothing to place reads nothing; a Default or ignored set, the newest-capture stand-in, a failed read or a later save leave it unplaced", async () => {
+  /* It runs this version there. */
+  const quiet = await runOn(placingWorld());
+  const quietRequest = quiet.session.remoteRequest();
+  const quietBefore = quiet.instance.requests.length;
+  let told = 0;
+  assert.strictEqual(await quiet.session.placeRemote(placingReply(quietRequest, null), quietRequest, () => { told += 1; }), null);
+  assert.strictEqual(quiet.instance.requests.length, quietBefore);
+  assert.strictEqual(told, 0);
+
+  /* No named set would promote what runs here. */
+  for (const [label, set] of [["Default", defaultSet(1)], ["ignored", ignoreSet(1)]]) {
+    const world = placingWorld();
+    world.sets[0] = set;
+    const run = await runOn(world);
+    const request = run.session.remoteRequest();
+    assert.strictEqual(request.zero, "current");
+    assert.strictEqual(request.subject, null, label);
+    const reply = placingReply(request, guid(9) + ":9", true);
+    const before = run.instance.requests.length;
+    assert.strictEqual(await run.session.placeRemote(reply, request), null, label);
+    assert.strictEqual(run.instance.requests.length, before, label);
+    const shown = plain(lens.collisionRemoteView(reply, request, run.view, "TEST", "", null));
+    assert.deepStrictEqual(shown.lines, [{ kind: "differs", text: "TEST runs another version: the one in “Done 2” here (Complete)." }], label);
+  }
+
+  /* No current version here: the newest capture stands in, and is never placed. */
+  const noCurrent = placingWorld();
+  noCurrent.versions = noCurrent.versions.filter((version) => version.state !== "current");
+  const fallback = await runOn(noCurrent);
+  const fallbackRequest = fallback.session.remoteRequest();
+  assert.strictEqual(fallbackRequest.zero, "newest");
+  assert.strictEqual(fallbackRequest.subject, null);
+  const fallbackReply = placingReply(fallbackRequest, guid(9) + ":9", true);
+  assert.strictEqual(await fallback.session.placeRemote(fallbackReply, fallbackRequest), null);
+  assert.strictEqual(plain(lens.collisionRemoteView(fallbackReply, fallbackRequest, fallback.view, "TEST", "",
+    { kind: "built", byContent: false })).lines.length, 1, "a placing handed in for a stand-in is ignored");
+  const forged = Object.assign({}, fallbackRequest, { subject: { key: "k", setName: "Open 1" } });
+  assert.strictEqual(plain(lens.collisionRemoteView(placingReply(forged, guid(9) + ":9"), forged, fallback.view, "TEST", "",
+    { kind: "built", byContent: false })).lines.length, 1, "even with a subject, a stand-in is never what promoting is about");
+
+  /* The history can't be read. */
+  const failing = await runOn(placingWorld(), {
+    answer: (read) => (read.table === "sys_update_xml" && /update_guid_history/.test(read.fields)
+      ? { ok: false, status: 500, error: "HTTP 500" } : undefined),
+  });
+  const failingRequest = failing.session.remoteRequest();
+  assert.strictEqual(await failing.session.placeRemote(placingReply(failingRequest, guid(9) + ":9"), failingRequest), null);
+
+  /* Saved again since the run: the row on screen is no longer this update. */
+  const world = placingWorld();
+  const later = await runOn(world);
+  world.xml[0].update_guid = guid(13);
+  const laterRequest = later.session.remoteRequest();
+  assert.strictEqual(await later.session.placeRemote(placingReply(laterRequest, guid(9) + ":9"), laterRequest), null);
+});
+
+test("49e: a placing matched by content says so; an older version names two sets and counts the rest; anything else is no placing", async () => {
+  const { view, session } = await runOn(placingWorld());
+  const request = plain(session.remoteRequest());
+  const reply = placingReply(request, guid(9) + ":99");
+  const lines = (placed) => plain(lens.collisionRemoteView(reply, request, view, "TEST", "", placed)).lines;
+  assert.strictEqual(lines({ kind: "built", byContent: true })[0].text,
+    "Promoting “Open 1” replaces nothing changed on TEST: it runs the version that set was built on (matched by content).");
+  assert.strictEqual(lines({ kind: "behind", byContent: true, since: { count: 4, sources: ["“A”", "“B”", "“C”"] } })[0].text,
+    "TEST runs an older version (matched by content), missing 4 changes saved here since, in “A”, “B” and 1 more; " +
+    "promoting “Open 1” brings them too.");
+  assert.deepStrictEqual(lines({ kind: "something else" }), [{ kind: "differs", text: "TEST runs another version." }]);
+  assert.deepStrictEqual(lines(null), [{ kind: "differs", text: "TEST runs another version." }]);
+});
+
+test("49f: which capture a placing is about: a complete set or an open merged one is placed; a finished merge, an unreadable set or the version held twice is not", async () => {
+  const subjectOf = async (world) => plain((await runOn(world)).session.remoteRequest().subject);
+
+  const complete = placingWorld();
+  complete.sets[0] = doneSet(1, { name: "Open 1" });
+  assert.strictEqual((await subjectOf(complete)).setId, id(1), "a complete set promotes too");
+
+  const mergingStill = placingWorld();
+  mergingStill.sets[0] = openSet(1, { merged_to: id(5) });
+  assert.strictEqual((await subjectOf(mergingStill)).setId, id(1), "still in progress: open, as everywhere in this lens");
+
+  const merged = placingWorld();
+  merged.sets[0] = doneSet(1, { name: "Open 1", merged_to: id(5) });
+  assert.strictEqual(await subjectOf(merged), null, "a finished merge handed its captures on");
+
+  const unreadable = placingWorld();
+  unreadable.sets.shift();
+  assert.strictEqual(await subjectOf(unreadable), null, "a set that can't be read can't be named");
+
+  const twice = placingWorld();
+  twice.sets.push(openSet(4));
+  twice.xml.push(cap(id(4), guid(12), "12", { sys_updated_on: "2026-10-05 11:00:00" }));
+  assert.strictEqual(await subjectOf(twice), null, "the running version held twice: which set promotes it is not one answer");
+});
+
+test("49g: a capture moved to another set is placed there, its saves in the set it was saved in counting as its own", async () => {
+  /* Saved in "Open 1" (11, then 12), then moved to "Open 4": its versions
+   * still name "Open 1", which holds no capture of it now. */
+  const world = placingWorld();
+  world.sets.push(openSet(4));
+  world.xml[0].update_set = id(4);
+  const { view, session } = await runOn(world);
+  const request = session.remoteRequest();
+  assert.deepStrictEqual([request.subject.setId, request.subject.setName, request.subject.savedIn], [id(4), "Open 4", id(1)]);
+
+  const reply = placingReply(request, guid(9) + ":9");
+  const placed = await session.placeRemote(reply, request);
+  assert.strictEqual(plain(placed).kind, "built", "11 is its own earlier save, not a change it is missing");
+  assert.deepStrictEqual(plain(lens.collisionRemoteView(reply, request, view, "TEST", "", placed)).lines[0], {
+    kind: "ok", text: "Promoting “Open 4” replaces nothing changed on TEST: it runs the version that set was built on.",
+  });
+
+  const movedThere = placingReply(request, guid(9) + ":9", true);
+  assert.strictEqual(plain(lens.collisionRemoteView(movedThere, request, view, "TEST", "",
+    await session.placeRemote(movedThere, request))).lines[0].text,
+    "TEST had the version that runs here and has since changed it: promoting “Open 4” again undoes that change.");
+});
+
+test("49h: unread `moved` withholds only the safe placings; a placing matched by content comes through the real read", async () => {
+  const { view, session } = await runOn(placingWorld());
+  const request = session.remoteRequest();
+  const first = async (there, moved) => {
+    const reply = placingReply(request, there, moved);
+    return plain(lens.collisionRemoteView(reply, request, view, "TEST", "", await session.placeRemote(reply, request))).lines[0];
+  };
+  assert.deepStrictEqual(await first(guid(11) + ":11", null), { kind: "differs", text: "TEST runs another version." },
+    "an earlier save, unconfirmed: not said");
+  assert.strictEqual((await first(guid(7) + ":7", null)).text,
+    "TEST runs an older version, missing the change saved here in “Done 2”; promoting “Open 1” brings it too.");
+  assert.strictEqual((await first(guid(99) + ":99", null)).text,
+    "TEST runs a version that isn't in this update's history: promoting “Open 1” replaces it.");
+  /* Another guid there with the parent's content, and no version of it here. */
+  assert.deepStrictEqual(await first(guid(55) + ":9"), {
+    kind: "ok",
+    text: "Promoting “Open 1” replaces nothing changed on TEST: it runs the version that set was built on (matched by content).",
+  });
+});
+
+test("49i: a set named only in a placing's note is read for its name and never joins the panel's sets", async () => {
+  /* "Done 6" saved 8 between 9 and this set's first save, and holds no
+   * capture of the record now, so the run never read it. */
+  const world = placingWorld();
+  world.sets.push(doneSet(6));
+  world.versions.push(versionRow(NAME, id(6), "previous", guid(8), "8", "2026-10-03 12:00:00", { sys_recorded_at: RECORDED(95) }));
+  world.xml[0].update_guid_history = historyOf(12, 11, 8, 9, 7);
+  const { view, session, instance } = await runOn(world);
+  assert.ok(!session.state.sets.has(id(6)), "precondition: the run never read it");
+  const request = session.remoteRequest();
+  const reply = placingReply(request, guid(9) + ":9");
+  const before = instance.requests.length;
+  const placed = await session.placeRemote(reply, request);
+  assert.deepStrictEqual(plain(placed), { kind: "behind", byContent: false, since: { count: 1, sources: ["“Done 6”"] } });
+  assert.ok(instance.requests.slice(before).some((read) => read.table === "sys_update_set" && read.query.includes(id(6))));
+  assert.ok(!session.state.sets.has(id(6)), "the panel's sets are unchanged");
+  assert.deepStrictEqual(plain(session.view().counts), view.counts);
 });
 
 /* ------------------------------------------------------------------ *

@@ -10,6 +10,89 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## Unreleased
+
+### Added
+- **Update Set Lens: what the other instance runs, placed in the update's
+  own history.** Where **Check on** finds a record running another version, it
+  now looks that version up in the update's own history (the earlier versions
+  ServiceNow keeps on each update, across update sets). **Previous version
+  there** and **Earlier save there** are teal: the instance runs the version
+  this set was built on, or an earlier save of it, so promoting overwrites
+  nothing made there. When every record qualifies, a teal line says so.
+  **Older version there** names the update sets whose changes that instance is
+  missing. **Diverged there** means its version isn't in the update's history
+  at all, so promoting replaces it. **Changed there since** (amber) means that
+  instance already had this set's version and has since replaced or backed it
+  out; it overrides any placing. A row marked **In this batch** is not judged
+  on its own, because promoting the batch leaves its newest update of that
+  record. When the instance runs another update of the same batch, the row
+  says **Batch version there** in grey. The batch's newest update, finding an
+  older update of the same batch there with nothing else saved between, says
+  **Earlier save there**. A history records the order changes were
+  committed on its own instance, so a set committed after a newer one names
+  that newer version as its parent. For that reason the teal badges need that
+  instance to confirm it never had this set's version. The history is used only
+  when it agrees with the order versions ran in here. Otherwise the row keeps
+  **Other version there**. The extra reads are made here, only for the rows
+  that differ, plus one read on that instance per 10 of them.
+- **Version Lens: whether promoting the version that runs here is safe
+  there.** When **Check on** finds the other instance running another
+  version, it looks that version up in the history of the update that runs
+  here, by the same rules as Update Set Lens. A teal line says promoting that
+  update's set replaces nothing changed there (the instance runs the version
+  it was built on, or an earlier save of the same set). Otherwise, amber lines
+  name the sets whose changes the instance is missing, say its version isn't
+  in the update's history, or say it had this version and has since changed
+  it. An update moved to another set since it was saved is named by the set
+  holding it now. Nothing is said when no one named set holds the version that
+  runs here. The extra reads are made here, only after such an answer: the
+  update's history, the record's versions, and any set they name that the
+  panel hasn't read.
+
+### Changed
+- **Update Set Lens: an opened row is a card per instance.** This instance's
+  card and, after **Check on**, the checked instance's card, each headed by
+  the instance's name in bold and edged in its verdict's colour. Each gives
+  the verdict, then labelled facts (child set, retrieved copy, when and by
+  whom a newer version was saved; when and in which set the version there was
+  saved), then what promoting would do, then that instance's own links. The
+  cards sit side by side on a wide panel and stack on a narrow one. A closed
+  row's note names the checked instance in bold.
+- **Update Set Lens and Version Lens: middle-click opens a link behind.** A
+  middle-click, or a click with Ctrl (Cmd on a Mac) held, opens the link's
+  page in a new tab without switching to it, as it would for a link on a web
+  page; a plain click still switches to it. **Other sets holding it** and
+  **Check this set** change the panel rather than open a page, so a
+  middle-click leaves them alone.
+
+### Fixed
+- **Update Set Lens: no teal for a later revert.** When the other instance
+  runs a version saved here after this set began, with the content of the
+  version this set was built on (a revert, say), the row said **Previous
+  version there** in teal; promoting would undo that revert. It now says
+  **Diverged there**. An update whose own history entry has other content than
+  the update is no longer placed at all.
+- **Update Set Lens: "matches" only when the whole set was read.** A batch
+  past 1,000 sets or 6 levels, a membership read that couldn't be trusted, or
+  fewer updates read than the set's count (a page cut short by access rules,
+  say) now gives "matches so far". The last of these also now raises the
+  "list may be incomplete" banner, so the panel no longer says nothing needs
+  attention.
+- **Update Set Lens: a row marked In this batch keeps "Changed there since"**
+  when the other instance had its version and moved off it to something
+  outside the batch.
+- **Update Set Lens: rows past the 2,000 a check compares** say **Not
+  compared there** in grey instead of looking like rows that match.
+- **Update Set Lens and Version Lens: reads name the instance they expect**,
+  so a frame embedded from another instance can't answer for this one.
+- **Update Set Lens: Check on** no longer reports an older set as not found
+  when a newer one has more than 1,000 retrieved copies there, and an answer
+  that can't be drawn shows an error instead of leaving the panel busy.
+- **Update Set Lens: accessibility.** Only a row's head opens and folds it, so
+  screen readers keep the cards' links and facts, and selecting text in a card
+  no longer folds the row. A link that can't open is announced.
+
 ## [0.18.0] - 2026-11-06
 
 ### Added

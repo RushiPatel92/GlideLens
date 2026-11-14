@@ -487,6 +487,40 @@ test("53: links open same-origin URLs only; Check this set hands the set; links 
   assert.deepStrictEqual(remote, [{ origin: "https://test.service-now.com", table: "sys_script_include", sysId: id(9) }]);
 });
 
+test("53b: a middle-click or Ctrl-click opens a link's page behind this tab; Check this set ignores a middle-click", async () => {
+  const harness = load();
+  const calls = [];
+  const shadow = open(harness, snapshot([row("open", "current", {
+    links: [
+      { label: "Open update", url: ORIGIN + "/sys_update_xml.do?sys_id=" + id(1) },
+      { label: "Check this set", set: { sysId: id(1), name: "Set 1" } },
+    ],
+  })]), {
+    onOpenUrl: (url, opts) => calls.push(["url", plain(opts)]),
+    onOpenSetLens: () => { calls.push(["set"]); return Promise.resolve({ ok: true }); },
+    onOpenRemote: (target, opts) => { calls.push(["remote", plain(opts)]); return Promise.resolve({ ok: true }); },
+    onCheckRemote: () => {},
+  }, { origins: [{ origin: "https://test.service-now.com", label: "TEST" }] });
+  const link = (label) => buttons(harness.shadow(), label)[0];
+  link("Open update").click();
+  assert.ok(link("Open update").fire("auxclick", { button: 1 }).defaultPrevented);
+  link("Open update").fire("click", { ctrlKey: true });
+  link("Open update").fire("auxclick", { button: 2 });
+  assert.ok(link("Open update").fire("mousedown", { button: 1 }).defaultPrevented, "no autoscroll");
+  link("Check this set").fire("auxclick", { button: 1 });
+  assert.deepStrictEqual(calls, [["url", { background: false }], ["url", { background: true }], ["url", { background: true }]]);
+  link("Check this set").fire("click", { ctrlKey: true });
+  assert.deepStrictEqual(calls[calls.length - 1], ["set"], "a Ctrl-click on a panel link just follows it");
+
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({ state: "done", lines: [], perRow: {},
+    links: [{ label: "Open record", remote: { origin: "https://test.service-now.com", table: "sys_script_include", sysId: id(9) } }] }, 1);
+  calls.length = 0;
+  link("Open record").fire("auxclick", { button: 1 });
+  await flush();
+  assert.deepStrictEqual(calls, [["remote", { background: true }]]);
+});
+
 /* ------------------------------------------------------------------ *
  * 54. Check on
  * ------------------------------------------------------------------ */

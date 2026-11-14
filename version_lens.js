@@ -60,7 +60,9 @@
 
   const METADATA_FIELDS = "sys_id,sys_class_name,sys_update_name,sys_name,sys_scope";
   /* Never payload (up to 4 MB a row), table (the configuration's target
-   * table, not the record's) or update_guid_history (up to 22 KB a row). */
+   * table, not the record's) or update_guid_history (up to 22 KB a row).
+   * The one history read is Update Set Lens's placing, after a check, for
+   * the single update that runs here. */
   const CAPTURE_FIELDS = [
     "sys_id", "name", "update_set", "remote_update_set", "action", "type", "target_name",
     "update_guid", "payload_hash", "application", "category", "sys_created_by", "sys_created_on",
@@ -1002,6 +1004,38 @@
     return lines.join("\n");
   }
 
+  /*
+   * After a check that found another version running there: where that
+   * version sits in the history of the update that runs here, by Update Set
+   * Lens's own placing, unchanged, on a state of that one row. It reads here
+   * only, and only then: the update's update_guid_history by sys_id, every
+   * version of its name, and any set between that this panel hasn't read, by
+   * id. `request.subject` is the row, taken from the same snapshot as the
+   * request; `sets` is copied so the sets read for a placing's note never
+   * change this panel's counts. Returns the placing ({ kind, byContent,
+   * since }) or null.
+   *
+   * A capture moved since it was saved has versions credited to the set it
+   * was saved in, and those are its own earlier saves. Update Set Lens counts
+   * a batch's sets as one set's own, so the two sets go in as a batch; its
+   * `batch` mark on the placing is not used here.
+   */
+  async function placeRunning(sets, ctx, reply, request, onRead) {
+    const subject = request && request.zero === "current" ? request.subject : null;
+    if (!subject || typeof USL.placeRemote !== "function") return null;
+    const first = (field) => (Array.isArray(reply && reply[field]) ? [reply[field][0]] : []);
+    const relocated = isSysId(subject.savedIn) && subject.savedIn !== subject.setId;
+    const scope = relocated ? [{ sysId: subject.setId }, { sysId: subject.savedIn }] : [];
+    const placed = await USL.placeRemote(
+      { rows: [subject], sets: new Map(sets), includeChildren: relocated, scope },
+      ctx,
+      { content: first("content"), running: first("running"), moved: first("moved") },
+      { keys: [subject.key] },
+      onRead
+    );
+    return placed.get(subject.key) || null;
+  }
+
   /* ------------------------------------------------------------------ *
    * The session: one panel's worth of state
    * ------------------------------------------------------------------ */
@@ -1016,6 +1050,9 @@
    * session.onChange(fn) called with a fresh snapshot after every step
    * session.cancel()
    * session.remoteRequest()
+   * session.placeRemote(reply, request, onRead)
+   *                      where what runs there sits in the history of the
+   *                      update that runs here, for collisionRemoteView
    */
   function createSession(resolution, ctx) {
     const listeners = [];
@@ -1195,6 +1232,7 @@
       onChange: (fn) => { if (typeof fn === "function") listeners.push(fn); },
       cancel: () => { cancelled = true; },
       remoteRequest: () => collisionRemoteRequest(view()),
+      placeRemote: (reply, request, onRead) => placeRunning(state.sets, sessionCtx, reply, request, onRead),
       get state() { return state; },
     };
   }
@@ -1208,9 +1246,39 @@
       REMOTE_HASH.test(str(record.hash));
   }
 
+  /*
+   * The capture that holds the version running here, in a set that would
+   * promote it: what a check's placing is about. Exactly one row whose guid
+   * and hash are the running version's and whose own verdict is Current, in
+   * an open or complete set. A Default or ignored set promotes nothing; a
+   * merged set no longer in progress has handed its captures on; an
+   * unreadable set can't be named: none of them is placed. A merged set still
+   * in progress is open, as everywhere in this lens, and is placed.
+   *
+   * The row may sit in another set than the one the version names
+   * (`savedIn`), as a capture moved after it was saved would if its versions
+   * keep their source (not yet checked on an instance). The set holding it
+   * now is what would promote it.
+   */
+  function promotedCapture(view) {
+    const c = view && view.current;
+    if (!c || c.sourceTable !== "sys_update_set" || !isSysId(c.source) || !passes(c)) return null;
+    const rows = ((view && view.rows) || []).filter((row) => row.guid === c.guid && row.hash === c.hash);
+    if (rows.length !== 1) return null;
+    const row = rows[0];
+    if (row.verdict !== "current" || (row.group !== "open" && row.group !== "complete") || !isSysId(row.sysId) ||
+      !isSysId(row.setId)) return null;
+    return {
+      key: row.key, sysId: row.sysId, name: row.name, guid: row.guid, hash: row.hash,
+      setId: row.setId, setName: row.setName, verdict: row.verdict, savedIn: c.source,
+    };
+  }
+
   /* Index 0 is the version that runs here, or the newest capture when that
    * is missing or fails its pattern; then one record per capture. A record
-   * that fails its pattern is not sent, and its answer there is Can't tell. */
+   * that fails its pattern is not sent, and its answer there is Can't tell.
+   * `subject` is the capture a placing is about, when index 0 is the running
+   * version and a set would promote it; it never leaves this tab. */
   function collisionRemoteRequest(view) {
     const rows = (view && view.rows) || [];
     const placed = rows.filter((row) => isSysId(row.setId));
@@ -1251,6 +1319,7 @@
       filtered,
       zero,
       offset,
+      subject: zero === "current" ? promotedCapture(view) : null,
       defaults: Array.from(defaults),
       blocked: setIds.length && records.length ? "" : NOTHING_TO_CHECK,
     };
@@ -1310,12 +1379,82 @@
     unknown: "can't tell",
   };
 
+  /* What a placing says the version there is missing, as Update Set Lens
+   * words it: how many versions here lie between, and in which sets. */
+  function missingWords(since) {
+    const count = since && Number.isInteger(since.count) ? since.count : 0;
+    const sources = since && Array.isArray(since.sources) ? since.sources.map(str).filter(Boolean) : [];
+    let where = "";
+    if (sources.length) {
+      const named = sources.slice(0, 2);
+      const more = sources.length - named.length;
+      where = " in " + (more ? named.join(", ") + " and " + more + " more" : named.join(" and "));
+    }
+    return count <= 1
+      ? { text: "the change saved here" + where, them: "it" }
+      : { text: count + " changes saved here since," + where, them: "them" };
+  }
+
+  /*
+   * Whether promoting the set that holds the version running here would
+   * replace anything changed there, from the reply's `moved` and the
+   * placing: { kind, line, word } or null. Built and earlier, which read as
+   * safe, need that instance's word that it never had this version (moved
+   * false): a history is the order changes were committed here, so a set
+   * committed after a newer one names that newer version as its parent.
+   * Moved true overrides any placing: that instance had this version and
+   * replaced it, and promoting again undoes that.
+   */
+  function promotionLine(subject, place, moved, instance) {
+    if (!subject) return null;
+    const set = "“" + (subject.setName || "its set") + "”";
+    if (moved === true) {
+      return {
+        kind: "moved",
+        line: { kind: "differs", text: instance + " had the version that runs here and has since changed it: promoting " + set + " again undoes that change." },
+        word: "had it and changed it since",
+      };
+    }
+    if (!place) return null;
+    const matched = place.byContent ? " (matched by content)" : "";
+    if ((place.kind === "built" || place.kind === "earlier") && moved === false) {
+      const what = place.kind === "built" ? "the version that set was built on" : "an earlier save of that set";
+      return {
+        kind: place.kind,
+        line: { kind: "ok", text: "Promoting " + set + " replaces nothing changed on " + instance + ": it runs " + what + matched + "." },
+        word: place.kind === "built" ? "the one the version here was built on" : "an earlier save of its set",
+      };
+    }
+    if (place.kind === "behind") {
+      const missing = missingWords(place.since);
+      return {
+        kind: "behind",
+        line: {
+          kind: "differs",
+          text: instance + " runs an older version" + matched + ", missing " + missing.text + "; promoting " + set +
+            " brings " + missing.them + " too.",
+        },
+        word: "an older one",
+      };
+    }
+    if (place.kind === "diverged") {
+      return {
+        kind: "diverged",
+        line: { kind: "differs", text: instance + " runs a version that isn't in this update's history: promoting " + set + " replaces it." },
+        word: "one not in this update's history",
+      };
+    }
+    return null;
+  }
+
   /*
    * The other instance's answer as text. `reply` is what the worker returned,
    * already rebuilt from its allowlist; `request` what was sent; `view` the
-   * snapshot it was sent from; `origin` the instance checked, for its links.
+   * snapshot it was sent from; `origin` the instance checked, for its links;
+   * `placed` what session.placeRemote found for the version that runs here,
+   * or null.
    */
-  function collisionRemoteView(reply, request, view, instance, origin) {
+  function collisionRemoteView(reply, request, view, instance, origin, placed) {
     const lines = [];
     const perRow = {};
     let links = [];
@@ -1326,6 +1465,7 @@
     const newest = request.zero === "newest";
     const subject = newest ? "the newest capture here" : "this instance";
     let zeroStatus = null;
+    let promotion = null;
 
     if (!content) {
       if (reply.contentFailure) {
@@ -1343,6 +1483,14 @@
       } else if (zeroStatus === "other") {
         const runs = captureStatus.find((entry) => entry.status === "runs");
         const same = captureStatus.find((entry) => entry.status === "same");
+        const moved = Array.isArray(reply.moved) ? reply.moved[0] : null;
+        promotion = promotionLine(newest ? null : request.subject || null,
+          placed && typeof placed === "object" ? placed : null, moved, instance);
+        /* What promoting would do comes first, as Update Set Lens puts its
+         * own line first. Another version there that promoting moves forward
+         * is said, not flagged, as Update Set Lens counts it. */
+        if (promotion) lines.push(promotion.line);
+        const kind = promotion && promotion.line.kind === "ok" ? "content" : "differs";
         let text;
         if (runs && byKey.get(runs.key)) {
           const row = byKey.get(runs.key);
@@ -1353,7 +1501,7 @@
         } else {
           text = instance + " runs another version" + than + saved + ".";
         }
-        lines.push({ kind: "differs", text });
+        lines.push({ kind, text });
       } else if (zeroStatus === "same") {
         lines.push({ kind: "content", text: instance + " runs the same content as " + subject + ", under another update" + saved + "." });
       } else if (zeroStatus === "conflict") {
@@ -1420,7 +1568,8 @@
 
     const contentWord = !content ? "versions not compared"
       : !request.zero ? "can't tell"
-        : (CONTENT_WORDS[zeroStatus] || "can't tell") + (zeroStatus === "runs" && newest ? " as the newest capture" : "");
+        : (CONTENT_WORDS[zeroStatus] || "can't tell") + (zeroStatus === "runs" && newest ? " as the newest capture" : "") +
+          (promotion ? " (" + promotion.word + ")" : "");
     const short = (word) => (word === "not found or not visible" ? "not found" : word);
     const setsThere = Array.from(tally.entries()).map(([word, count]) => short(word) + " " + count).join(", ");
     return {

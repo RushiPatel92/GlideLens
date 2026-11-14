@@ -247,6 +247,50 @@ test("the reply is rebuilt from an allowlist: a wrong type refuses it, an unknow
   assert.strictEqual(worker.checkedUpdateSetExport(tooMany, many), null, "over 200 copies");
 });
 
+test("whether this update's own version was there is kept as a boolean on an 'other' answer only", () => {
+  const worker = loadWorker();
+  const request = worker.checkedUpdateSetRequest(check());
+  [
+    okReply({ content: ["other"], moved: true }),
+    okReply({ content: ["other"], moved: [true, false] }),
+    okReply({ content: null, moved: [true] }),
+    okReply({ content: ["other"], moved: ["true"] }),
+    okReply({ content: ["other"], moved: [1] }),
+    okReply({ content: ["other"], moved: [{}] }),
+  ].forEach((reply) => assert.strictEqual(worker.checkedUpdateSetExport(reply, request), null, JSON.stringify(reply).slice(0, 120)));
+  const kept = (content, moved) => plain(worker.checkedUpdateSetExport(okReply({ content, moved }), request).moved);
+  assert.deepStrictEqual(kept(["other"], [true]), [true]);
+  assert.deepStrictEqual(kept(["other"], [false]), [false]);
+  assert.deepStrictEqual(kept(["other"], [null]), [null]);
+  ["same", "runs", "none", "conflict", "unknown"].forEach((status) =>
+    assert.deepStrictEqual(kept([status], [true]), [null], "only a record that runs another version says so: " + status));
+  assert.strictEqual(worker.checkedUpdateSetExport(okReply({ content: ["other"] }), request).moved, null, "absent stays absent");
+});
+
+test("what runs there is kept as guid:hash on an 'other' answer only; any other shape refuses the reply", () => {
+  const worker = loadWorker();
+  const request = worker.checkedUpdateSetRequest(check());
+  const entry = guid(2) + ":-2147483648";
+  [
+    okReply({ content: ["other"], running: "x" }),
+    okReply({ content: ["other"], running: [entry, null] }),
+    okReply({ content: null, running: [null] }),
+    okReply({ content: ["other"], running: [{ guid: guid(2), hash: "1" }] }),
+    okReply({ content: ["other"], running: [guid(2)] }),
+    okReply({ content: ["other"], running: [guid(2).toUpperCase() + ":1"] }),
+    okReply({ content: ["other"], running: [guid(2) + ":0x1f"] }),
+    okReply({ content: ["other"], running: [guid(2) + ":12345678901"] }),
+    okReply({ content: ["other"], running: [guid(2) + ":1,"] }),
+  ].forEach((reply) => assert.strictEqual(worker.checkedUpdateSetExport(reply, request), null, JSON.stringify(reply).slice(0, 120)));
+  assert.deepStrictEqual(plain(worker.checkedUpdateSetExport(okReply({ content: ["other"], running: [entry] }), request).running), [entry],
+    "a signed decimal kept as the exact string");
+  ["same", "runs", "none"].forEach((status) => assert.deepStrictEqual(
+    plain(worker.checkedUpdateSetExport(okReply({ content: [status], running: [entry] }), request).running), [null],
+    "only a record that runs another version names it: " + status));
+  assert.deepStrictEqual(plain(worker.checkedUpdateSetExport(okReply({ content: ["other"], running: [null] }), request).running), [null]);
+  assert.strictEqual(worker.checkedUpdateSetExport(okReply({ content: ["other"] }), request).running, null);
+});
+
 test("status codes: not open, asleep, signed out, busy, switching, changed under the read", async () => {
   assert.strictEqual((await loadWorker({ tabs: [] }).checkUpdateSetOnOtherInstance(check(), SENDER)).code, "not-open");
   assert.strictEqual((await loadWorker({ tabs: [otherTab({ discarded: true })] }).checkUpdateSetOnOtherInstance(check(), SENDER)).code, "asleep");
@@ -295,6 +339,11 @@ test("a link there opens only a URL the worker builds, and only on an instance o
       active: true, windowId: 4, index: 3, openerTabId: 1,
     },
   ]);
+  /* A middle-click or Ctrl-click: the same page, in a tab behind this one. */
+  const behind = loadWorker();
+  assert.deepStrictEqual(await behind.openOnOtherInstance(open({ table: "sys_script_fix", sysId: id(5), background: true }), placed), { ok: true });
+  assert.deepStrictEqual(await behind.openOnOtherInstance(open({ table: "sys_script_fix", sysId: id(5), background: false }), placed), { ok: true });
+  assert.deepStrictEqual(plain(behind.state.created).map((tab) => tab.active), [false, true]);
 
   const refused = loadWorker();
   const refusals = [
@@ -312,6 +361,7 @@ test("a link there opens only a URL the worker builds, and only on an instance o
     open({ name: RECORD.name, table: "sys_script_fix", sysId: id(5) }),
     open({ url: THERE + "/sys_user_list.do" }),
     open({ table: "sys_script_fix", sysId: id(5), query: "active=true" }),
+    open({ table: "sys_script_fix", sysId: id(5), background: "yes" }),
   ];
   for (const msg of refusals) {
     assert.deepStrictEqual(await refused.openOnOtherInstance(msg, SENDER), { ok: false, code: "invalid" }, JSON.stringify(msg));
@@ -480,7 +530,12 @@ function loadExporter(data, options) {
   const source = between(contentSource, "const UPDATE_SET_EXPORT_PROGRESS_MS",
     "/* =====================================================================\n * IMPERSONATE");
   assert.ok(source.includes(limit), "the links time limit is where the suite expects it");
-  const block = opts.linksByMs == null ? source : source.replace(limit, "const UPDATE_SET_EXPORT_LINKS_BY_MS = " + opts.linksByMs + ";");
+  const replacedLimit = "const UPDATE_SET_EXPORT_REPLACED_BY_MS = 90 * 1000;";
+  assert.ok(source.includes(replacedLimit), "the replaced-version time limit is where the suite expects it");
+  let block = opts.linksByMs == null ? source : source.replace(limit, "const UPDATE_SET_EXPORT_LINKS_BY_MS = " + opts.linksByMs + ";");
+  if (opts.replacedByMs != null) {
+    block = block.replace(replacedLimit, "const UPDATE_SET_EXPORT_REPLACED_BY_MS = " + opts.replacedByMs + ";");
+  }
   const api = new Function("chrome", "location", block + "\nreturn { exportUpdateSetStatus, updateSetExportStatus };")(
     chrome, { origin: THERE }
   );
@@ -556,7 +611,16 @@ test("the export reads only through the timed route, with this origin and a toke
   NAMES.forEach((name) => assert.ok(!text.includes(name), "names are never echoed back"));
 
   assert.deepStrictEqual(plain(reply.content), ["runs", "same", "other", "conflict", "none", "unknown"]);
-  assert.ok(reads.filter((read) => read.table === "sys_update_version").every((read) => read.options.displayAll === true));
+  assert.deepStrictEqual(plain(reply.running), [null, null, guid(9) + ":99", null, null, null],
+    "only a record that runs another version says which, as guid:hash");
+  assert.deepStrictEqual(plain(reply.moved), [null, null, false, null, null, null],
+    "only a record that runs another version says whether its own version was there");
+  assert.ok(reads.filter((read) => read.table === "sys_update_version" && read.query.startsWith("state=current^"))
+    .every((read) => read.options.displayAll === true));
+  const replacedReads = reads.filter((read) => read.table === "sys_update_version" && read.query.startsWith("stateIN"));
+  assert.deepStrictEqual(replacedReads.map((read) => [read.query, read.fields, read.options.displayAll]),
+    [["stateINprevious,backedout^name=" + NAMES[2], "name,state,update_guid", false]],
+    "what was there before: by name, only for a record that runs another version, never by guid");
   assert.deepStrictEqual(plain(reply.saved), [
     null,
     { on: "30-10-2026 12:32:27", set: "Fixes: phase 2" },
@@ -586,6 +650,45 @@ test("the export reads only through the timed route, with this origin and a toke
   assert.deepStrictEqual(bySet(1).map((copy) => copy.match), ["origin"]);
   assert.deepStrictEqual(plain(reply.clones), [2], "the same id as a set there");
   assert.strictEqual(reply.presenceFailure, null);
+});
+
+test("a presence read that comes back full is split, so an older set's copies are never lost to a newer one's", async () => {
+  const data = exportData();
+  data.remote = Array.from({ length: 1000 }, (_, index) =>
+    remoteRow(1, { sys_id: id(5000 + index), sys_created_on: "2026-10-25 10:00:00" }))
+    .concat([remoteRow(2, { sys_id: id(4999), remote_sys_id: id(2), origin_sys_id: id(2), sys_created_on: "2026-09-01 10:00:00" })]);
+  const exporter = loadExporter(data);
+  const reply = await exporter.exportUpdateSetStatus({ requestId: "r", setIds: [id(1), id(2)], records: [] });
+  assert.strictEqual(reply.ok, true);
+  const presence = exporter.sent.filter((msg) => msg.type === "SN_UPDATE_SET_LENS_GET" && msg.table === "sys_remote_update_set");
+  assert.deepStrictEqual(presence.map((read) => read.query.split("^")[0]),
+    ["remote_sys_idIN" + id(1) + "," + id(2), "remote_sys_id=" + id(1), "remote_sys_id=" + id(2)],
+    "the full answer is read again, a set at a time");
+  assert.ok(presence.every((read) => read.limit === 1000));
+  assert.deepStrictEqual(plain(reply.copies.filter((copy) => copy.set === 1).map((copy) => copy.match)), ["remote"],
+    "the older set is found, not reported missing");
+  assert.strictEqual(reply.copies.filter((copy) => copy.set === 0).length, 20, "a set keeps its newest 20");
+});
+
+test("an answer that can't be drawn says so, and never leaves the panel busy", async () => {
+  const block = between(contentSource, "async function checkUpdateSetElsewhere(", "/* Open record: one lookup");
+  const shown = [];
+  const ui = { isOpen: () => true, showRemote: (remote, token) => shown.push([remote, token]) };
+  const run = (remoteView) => new Function(
+    "globalThis", "chrome", "prefillInstanceLabel", "claimUpdateSetCheckPanel", "updateSetLensPanelSequence",
+    "UPDATE_SET_REMOTE_REPLY_CEILING_MS", block + "\nreturn checkUpdateSetElsewhere;"
+  )(
+    { SNUpdateSetLens: { remoteView, remoteProblem: (reply, instance) => reply.code + " on " + instance }, SNUpdateSetLensUI: ui },
+    { runtime: { sendMessage: async () => ({ ok: true, copies: [], clones: [], content: [] }) } },
+    () => "exampletest", () => {}, 1, 60000
+  )({ remoteRequest: () => ({ setIds: [], records: [] }), placeRemote: async () => null, view: () => ({ rows: [] }) },
+    "https://exampletest.service-now.com", 7, 1);
+  await run(() => { throw new Error("an answer this build can't draw"); });
+  assert.deepStrictEqual(plain(shown), [[{ state: "error", message: "malformed on exampletest" }, 7]]);
+  shown.length = 0;
+  await run(() => ({ lines: [], perRow: {}, parts: { k: { kind: "runs" } }, counts: {}, links: {} }));
+  assert.deepStrictEqual(plain(shown), [[{ state: "done", lines: [], perRow: {}, parts: { k: { kind: "runs" } }, counts: {}, links: {} }, 7]],
+    "a drawn answer carries its parts to the panel");
 });
 
 test("the export beats before its first read and after reads, without snGetMany's listeners", async () => {
@@ -638,6 +741,45 @@ test("a 401 is signed out; a refused presence read still compares content; every
   assert.deepStrictEqual(plain(unlinked.found), [{ version: id(800) }, { version: id(801) }, { version: id(802) }, null, null, null]);
 });
 
+test("whether a record's own version was there: replaced or backed out is true, read and absent false, unread null", async () => {
+  const rec = (n) => ({ name: "sys_script_include_" + id(2000 + n), guid: guid(n), hash: String(n) });
+  const records = [1, 2, 3, 4, 5, 6, 7].map(rec);
+  const current = (n) => ({ sys_id: id(3000 + n), name: rec(n).name, state: "current", update_guid: guid(90 + n), payload_hash: "9" + n });
+  const versions = [1, 2, 3, 4, 5, 6, 7].map(current).concat([
+    /* 1: this version ran there, then was replaced. 2: it was backed out. */
+    { name: rec(1).name, state: "previous", update_guid: guid(1), payload_hash: "1" },
+    { name: rec(2).name, state: "backedout", update_guid: guid(2), payload_hash: "2" },
+    /* 3: other versions only. 4: this guid, but never loaded there. */
+    { name: rec(3).name, state: "previous", update_guid: guid(33), payload_hash: "33" },
+    { name: rec(4).name, state: "history", update_guid: guid(4), payload_hash: "4" },
+    /* 5: so many versions that even read alone it is full. */
+  ], Array.from({ length: 1600 }, (_, index) => ({
+    name: rec(5).name, state: "previous", update_guid: guid(5000 + index), payload_hash: String(index),
+  })), [
+    /* 6 runs this set's version there; 7's read fails. */
+  ]);
+  versions[5] = { sys_id: id(3006), name: rec(6).name, state: "current", update_guid: guid(6), payload_hash: "6" };
+  const exporter = loadExporter({ versions }, {
+    fail: (msg) => (msg.query === "stateINprevious,backedout^name=" + rec(7).name ? { ok: false, status: 500, error: "HTTP 500" } : null),
+  });
+  const reply = await exporter.exportUpdateSetStatus({ requestId: "r", setIds: [id(1)], records });
+  assert.deepStrictEqual(plain(reply.content), ["other", "other", "other", "other", "other", "runs", "other"]);
+  assert.deepStrictEqual(plain(reply.moved), [true, true, false, false, null, null, null]);
+  const reads = exporter.sent.filter((msg) => msg.table === "sys_update_version" && msg.query.startsWith("stateIN"));
+  assert.ok(reads.every((read) => /^stateINprevious,backedout\^name(IN|=)[^^]+$/.test(read.query)));
+  assert.ok(reads.every((read) => read.query.replace(/^stateINprevious,backedout\^name(IN|=)/, "").split(",").length <= 10));
+  assert.ok(reads.every((read) => !read.query.includes(rec(6).name)), "a record that runs this version there isn't asked about");
+  assert.ok(reads.some((read) => read.query === "stateINprevious,backedout^name=" + rec(5).name && read.limit === 1001),
+    "a full read is split until one name is read alone, with more room");
+
+  /* Past the time limit nothing is read, and every row that differs is unknown. */
+  const late = loadExporter({ versions }, { replacedByMs: 0 });
+  const unread = await late.exportUpdateSetStatus({ requestId: "r", setIds: [id(1)], records });
+  assert.ok(!late.sent.some((msg) => msg.table === "sys_update_version" && msg.query.startsWith("stateIN")));
+  assert.deepStrictEqual(plain(unread.moved), [null, null, null, null, null, null, null]);
+  assert.deepStrictEqual(plain(unread.content), plain(reply.content), "the statuses stand");
+});
+
 test("content reads hold at most 40 names, and a record that fails its pattern is never queried", async () => {
   const names = Array.from({ length: 95 }, (_, index) => "sys_script_include_" + id(1000 + index));
   const records = names.map((name, index) => ({ name, guid: guid(index + 1), hash: String(index) }))
@@ -676,11 +818,54 @@ test("where-saved notes and link ids stop at their budgets, so 2,000 differing r
   assert.deepStrictEqual(plain(reply.found[0]), { table: "x_" + "a".repeat(78), record: id(7000), version: id(5000) });
   assert.strictEqual(reply.found[1999], null, "past the budget a row loses only its links");
   assert.ok(JSON.stringify(reply.found).length < 80 * 1024);
+  assert.strictEqual(reply.running[0], guid(2) + ":2");
+  assert.strictEqual(reply.running[1999], null, "past the budget a row loses only its placing");
+  assert.ok(JSON.stringify(reply.running).length < 40 * 1024);
   const worker = loadWorker();
   const checked = worker.checkedUpdateSetExport(reply, worker.checkedUpdateSetRequest(check({ records })));
   assert.ok(checked, "under the 256 KiB cap");
   assert.strictEqual(checked.saved.length, 2000);
   assert.strictEqual(checked.found.length, 2000);
+  assert.strictEqual(checked.running.length, 2000);
+  assert.ok(checked.moved.every((entry) => entry === false), "read for every row, and none was there before");
+});
+
+test("Check on places what runs there before it draws, and a failed placing still draws the answer", () => {
+  const flow = between(contentSource, "async function checkUpdateSetElsewhere(", "/* Open record: one lookup when clicked");
+  const placing = flow.indexOf("session.placeRemote(reply, request,");
+  const drawing = flow.indexOf("engine.remoteView(reply, request, session.view().rows, instance, origin, placed)");
+  assert.ok(placing > 0 && drawing > placing);
+  assert.match(flow.slice(placing - 200, drawing), /catch \(error\) \{\s*placed = null;\s*\}\s*if \(!live\(\)\) return;/);
+});
+
+test("should every part of the reply fill its budget at once, the placing goes and the check still lands", async () => {
+  const block = between(contentSource, "const UPDATE_SET_EXPORT_PROGRESS_MS", "/* =====================================================================\n * IMPERSONATE");
+  assert.match(block, /const UPDATE_SET_EXPORT_REPLY_ROOM = 248 \* 1024;/);
+  assert.match(block, /if \(running && JSON\.stringify\(reply\)\.length > UPDATE_SET_EXPORT_REPLY_ROOM\) reply\.running = null;\s*if \(moved && JSON\.stringify\(reply\)\.length > UPDATE_SET_EXPORT_REPLY_ROOM\) reply\.moved = null;/,
+    "the placing goes first, then what was there before; without either no row reads as safe");
+  const names = Array.from({ length: 2000 }, (_, index) => "sys_script_include_" + id(3000 + index));
+  /* Long notes everywhere, plus 200 retrieved copies with long labels. */
+  const exporter = loadExporter({
+    remote: Array.from({ length: 200 }, (_, index) => remoteRow(1, {
+      sys_id: id(9000 + index), remote_sys_id: id(1 + (index % 10)), display: { state: "L".repeat(190) },
+    })),
+    versions: names.map((name, index) => ({
+      sys_id: id(5000 + index), name, state: "current", update_guid: guid(2), payload_hash: "-2147483648", source: id(700),
+      source_table: "sys_update_set", sys_created_on: "2026-10-30 12:32:27", display: { source: "Update Set: " + "S".repeat(300) },
+    })),
+    metadata: names.map((name, index) => ({
+      sys_id: id(7000 + index), sys_class_name: "x_" + "a".repeat(78), sys_update_name: name, sys_updated_on: "2026-10-30 12:32:27",
+    })),
+  });
+  const setIds = Array.from({ length: 10 }, (_, index) => id(1 + index));
+  const records = names.map((name) => ({ name, guid: guid(1), hash: "1" }));
+  const reply = await exporter.exportUpdateSetStatus({ requestId: "r", setIds, records });
+  const worker = loadWorker();
+  const checked = worker.checkedUpdateSetExport(reply, worker.checkedUpdateSetRequest(check({ setIds, records })));
+  assert.ok(checked, "the worker still takes it");
+  assert.strictEqual(reply.running, null, "the placing went");
+  assert.ok(reply.content.every((status) => status === "other"), "every status stands");
+  assert.strictEqual(checked.saved.length, 2000, "and the notes with it");
 });
 
 test("the content-script listener answers the export only for the extension, from the top frame", () => {

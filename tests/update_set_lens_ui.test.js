@@ -290,6 +290,11 @@ function open(harness, theView, callbacks, extra) {
 }
 
 const visibleRows = (shadow) => byClass(shadow, "row");
+/* What opens and folds a row: its head, never the whole row. */
+const headOf = (node) => byClass(node, "row-head")[0];
+/* An opened row's card for the instance checked. */
+const thereCards = (node) => byClass(node, "side").filter((card) => /checked instance$/.test(card.getAttribute("aria-label") || ""));
+const factsOf = (node) => byClass(node, "facts")[0].children.map((child) => child.textContent);
 const chip = (shadow, label) => findAll(shadow, (node) => hasClass(node, "chip") && node.textContent.startsWith(label + " "))[0];
 
 /* ------------------------------------------------------------------ *
@@ -381,12 +386,23 @@ test("Stale and Can't tell show their details; other rows are one line and open 
   assert.ok(staleNode.textContent.includes("In progress"));
   assert.strictEqual(byClass(staleNode, "b-stale").length, 1, "a coloured badge with its word");
   assert.ok(!currentNode.textContent.includes("later save in this set"));
-  assert.strictEqual(currentNode.getAttribute("aria-expanded"), "false");
-  currentNode.click();
+  assert.strictEqual(headOf(currentNode).getAttribute("aria-expanded"), "false");
+  assert.strictEqual(headOf(currentNode).getAttribute("role"), "button");
+  assert.strictEqual(headOf(staleNode).getAttribute("role"), null, "a row that is always open is no button");
+  headOf(currentNode).click();
   const opened = visibleRows(shadow)[1];
   assert.ok(opened.textContent.includes("later save in this set"));
-  assert.strictEqual(opened.getAttribute("aria-expanded"), "true");
-  opened.fire("keydown", { key: "Enter" });
+  assert.strictEqual(headOf(opened).getAttribute("aria-expanded"), "true");
+  /* The cards are the head's sibling, which it names as what it controls. */
+  const detail = byClass(opened, "r-detail")[0];
+  assert.strictEqual(detail.parentNode, opened);
+  assert.strictEqual(headOf(opened).getAttribute("aria-controls"), detail.id);
+  assert.ok(detail.id);
+  assert.strictEqual(byClass(headOf(opened), "side").length + byClass(headOf(opened), "link").length, 0,
+    "no card or link inside the button");
+  opened.click();
+  assert.strictEqual(headOf(visibleRows(shadow)[1]).getAttribute("aria-expanded"), "true", "a click on the cards folds nothing");
+  headOf(opened).fire("keydown", { key: "Enter" });
   assert.ok(!visibleRows(shadow)[1].textContent.includes("later save in this set"));
 });
 
@@ -406,10 +422,65 @@ test("a link opens only a same-origin URL, through the callback", () => {
   assert.deepStrictEqual(opened, [ORIGIN + "/sys_update_xml.do?sys_id=1"]);
 });
 
-test("a batch row names its child set, and a retrieved-only row says so", () => {
+test("a middle-click or Ctrl-click opens a link's page behind this tab; a middle press never starts autoscroll", async () => {
   const harness = load();
-  const shadow = open(harness, view([row("stale", { childSet: "Child A", asRetrieved: true })]));
-  assert.ok(byClass(shadow, "r-sub")[0].textContent === "in Child A · as retrieved");
+  const there = "https://exampletest.service-now.com";
+  const record = "sys_script_include_" + "7".padStart(32, "0");
+  const calls = [];
+  const stale = row("stale", { links: [
+    { label: "Open update", url: ORIGIN + "/sys_update_xml.do?sys_id=1" },
+    { label: "Open record", record },
+  ] });
+  const shadow = open(harness, view([stale]), {
+    onOpenUrl: (url, opts) => calls.push(["url", plain(opts)]),
+    onOpenRecord: (name, opts) => { calls.push(["record", plain(opts)]); return Promise.resolve({ ok: true }); },
+    onOpenRemote: (target, opts) => { calls.push(["remote", plain(opts)]); return Promise.resolve({ ok: true }); },
+    onOpenVersionLens: () => { calls.push(["lens"]); return Promise.resolve({ ok: true }); },
+    onCheckRemote: () => {},
+  }, { origins: [{ origin: there, label: "exampletest" }] });
+  const link = (label) => buttons(harness.shadow(), label)[0];
+  link("Open update").click();
+  link("Open update").fire("click", { ctrlKey: true });
+  link("Open update").fire("click", { metaKey: true });
+  assert.ok(link("Open update").fire("auxclick", { button: 1 }).defaultPrevented);
+  link("Open update").fire("auxclick", { button: 2 });
+  assert.ok(link("Open update").fire("mousedown", { button: 1 }).defaultPrevented, "no autoscroll from a middle press");
+  assert.ok(!link("Open update").fire("mousedown", { button: 0 }).defaultPrevented, "a left press is left alone");
+  link("Open record").fire("auxclick", { button: 1 });
+  link("Other sets holding it").fire("auxclick", { button: 1 });
+  assert.deepStrictEqual(calls, [
+    ["url", { background: false }],
+    ["url", { background: true }],
+    ["url", { background: true }],
+    ["url", { background: true }],
+    ["record", { background: true }],
+  ], "a right-click opens nothing; Other sets holding it replaces the panel, so a middle-click leaves it alone");
+
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done", lines: [], perRow: {}, parts: {}, counts: {},
+    links: { [stale.key]: [{ label: "Open version", remote: { origin: there, table: "sys_update_version", sysId: "8".padStart(32, "0") } }] },
+  }, 1);
+  calls.length = 0;
+  link("Open version").fire("auxclick", { button: 1 });
+  link("Open version").click();
+  link("Other sets holding it").fire("click", { ctrlKey: true });
+  await flush();
+  assert.deepStrictEqual(calls, [["remote", { background: true }], ["remote", { background: false }], ["lens"]],
+    "a link there too; a Ctrl-click on a panel link just follows it");
+});
+
+test("a batch row names its child set, and a retrieved-only row says so: beside its name when closed, in its card when open", () => {
+  const harness = load();
+  const shadow = open(harness, view([
+    row("stale", { childSet: "Child A", asRetrieved: true }),
+    row("current", { childSet: "Child B", asRetrieved: true }),
+  ]));
+  chip(shadow, "All").click();
+  const [opened, closed] = visibleRows(shadow);
+  assert.strictEqual(byClass(opened, "r-sub").length, 0, "opened, the set moves into the card");
+  assert.deepStrictEqual(factsOf(opened), ["Set", "Child A", "Read from", "the retrieved copy"]);
+  assert.strictEqual(byClass(closed, "r-sub")[0].textContent, "in Child B · as retrieved");
 });
 
 /* ------------------------------------------------------------------ *
@@ -421,12 +492,12 @@ test("a new snapshot keeps the filter, the open rows and the focus", () => {
   const first = [row("current"), row("stale")];
   const shadow = open(harness, view(first, { busy: true, phase: "running", progress: "Checking versions… 2 read" }));
   chip(shadow, "Current").click();
-  visibleRows(shadow)[0].click();
-  assert.strictEqual(visibleRows(shadow)[0].getAttribute("aria-expanded"), "true");
+  headOf(visibleRows(shadow)[0]).click();
+  assert.strictEqual(headOf(visibleRows(shadow)[0]).getAttribute("aria-expanded"), "true");
   chip(shadow, "Current").focus();
   harness.ui.update(view(first.concat([row("current"), row("current")]), { busy: true, phase: "running" }));
   assert.strictEqual(visibleRows(shadow).length, 3, "still filtered to Current");
-  assert.deepStrictEqual(visibleRows(shadow).map((node) => node.getAttribute("aria-expanded")), ["true", "false", "false"],
+  assert.deepStrictEqual(visibleRows(shadow).map((node) => headOf(node).getAttribute("aria-expanded")), ["true", "false", "false"],
     "the row that was open is still open, and only it");
   const focused = shadow.activeElement;
   assert.ok(focused && focused.textContent === "Current 3", "focus is on the redrawn chip");
@@ -436,20 +507,19 @@ test("Enter or Space on a link inside an open row is the link's: the row stays o
   const harness = load();
   const current = row("current");
   const shadow = open(harness, view([current]));
-  const node = visibleRows(shadow)[0];
-  node.fire("keydown", { key: "Enter" });
+  headOf(visibleRows(shadow)[0]).fire("keydown", { key: "Enter" });
   const opened = visibleRows(shadow)[0];
-  assert.strictEqual(opened.getAttribute("aria-expanded"), "true");
+  assert.strictEqual(headOf(opened).getAttribute("aria-expanded"), "true");
   const link = buttons(opened, "Open update")[0];
   for (const key of ["Enter", " "]) {
-    /* The shim does not bubble, so the row's handler is fired as the
-     * browser would reach it: with the link as the target. */
-    const event = visibleRows(shadow)[0].fire("keydown", { key, target: link });
+    /* The link sits outside the head; were a key on it to reach the head,
+     * it is still the link's. */
+    const event = headOf(visibleRows(shadow)[0]).fire("keydown", { key, target: link });
     assert.ok(!event.defaultPrevented, "the link's own click is not cancelled");
-    assert.strictEqual(visibleRows(shadow)[0].getAttribute("aria-expanded"), "true", JSON.stringify(key) + " keeps the row open");
+    assert.strictEqual(headOf(visibleRows(shadow)[0]).getAttribute("aria-expanded"), "true", JSON.stringify(key) + " keeps the row open");
   }
-  visibleRows(shadow)[0].fire("keydown", { key: " " });
-  assert.strictEqual(visibleRows(shadow)[0].getAttribute("aria-expanded"), "false", "on the row itself it still folds");
+  headOf(visibleRows(shadow)[0]).fire("keydown", { key: " " });
+  assert.strictEqual(headOf(visibleRows(shadow)[0]).getAttribute("aria-expanded"), "false", "on the head itself it still folds");
 });
 
 test("the progress line is polite and reads Checked N of up to M until exact", () => {
@@ -545,11 +615,21 @@ test("a check shows the other instance's answer, and on a row only where it diff
     state: "done",
     lines: [{ kind: "state", text: "Previewed, not committed on exampletest." }],
     perRow: { [stale.key]: { kind: "other", text: "On exampletest: runs another version (already stale here)" } },
+    parts: {
+      [stale.key]: { kind: "other", say: "Runs another version", notes: ["already stale here"], saved: null, then: "" },
+      [current.key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" },
+      [other.key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" },
+    },
     counts: { runs: 2, same: 0, other: 1, otherStale: 1, none: 0, cant: 0 },
   }, 1);
   assert.ok(harness.text().includes("Previewed, not committed on exampletest."));
-  assert.strictEqual(byClass(shadow, "remote-tag").length, 1);
-  assert.strictEqual(byClass(shadow, "remote-tag")[0].textContent, "On exampletest: runs another version (already stale here)");
+  /* The Stale row is open, so its card says it. */
+  const cards = thereCards(shadow);
+  assert.strictEqual(cards.length, 1);
+  assert.strictEqual(cards[0].getAttribute("aria-label"), "exampletest, checked instance");
+  assert.strictEqual(byClass(cards[0], "say")[0].textContent, "Runs another version. (already stale here)");
+  assert.ok(hasClass(cards[0], "t-amber"));
+  assert.strictEqual(byClass(shadow, "remote-tag").length, 0, "an opened row has no one-line note");
   /* Progress that arrives after the answer never replaces it. */
   harness.ui.showRemote({ state: "busy", message: "late" }, 1);
   assert.ok(!harness.text().includes("late"));
@@ -632,6 +712,88 @@ test("where the other instance differs, the row says so in amber with its own ba
   assert.strictEqual(chip(harness.shadow(), "All").getAttribute("aria-pressed"), "true");
 });
 
+test("placed in its history: the version it was built on and an earlier save are teal, older, diverged and changed since amber", async () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const built = row("current");
+  const earlier = row("current");
+  const behind = row("current");
+  const diverged = row("current");
+  const moved = row("current");
+  const copied = [];
+  const shadow = open(harness, view([built, earlier, behind, diverged, moved]), {
+    onCheckRemote: () => {},
+    onCopy: async (text) => { copied.push(text); return true; },
+  }, { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "differs", text: "exampletest runs this set's version for 0 of 4 records." }],
+    perRow: {
+      [built.key]: { kind: "built", text: "On exampletest: runs the version this set was built on" },
+      [earlier.key]: { kind: "earlier", text: "On exampletest: runs an earlier save of this set" },
+      [behind.key]: { kind: "behind", text: "On exampletest: runs an older version of this update" },
+      [diverged.key]: { kind: "diverged", text: "On exampletest: runs a version that isn't in this update's history" },
+      [moved.key]: { kind: "moved", text: "On exampletest: had this set's version, and it has since been changed" },
+    },
+    counts: { runs: 0, same: 0, built: 1, earlier: 1, behind: 1, diverged: 1, moved: 1, other: 0, otherStale: 0, none: 0, cant: 0 },
+  }, 1);
+  const rowFor = (fixture) => visibleRows(harness.shadow()).find((node) => byClass(node, "r-name")[0].textContent === fixture.target);
+  const badge = (fixture) => byClass(rowFor(fixture), "b-there")[0];
+  const tag = (fixture) => byClass(rowFor(fixture), "remote-tag")[0];
+  assert.strictEqual(badge(built).textContent, "PREVIOUS VERSION THERE");
+  assert.strictEqual(badge(earlier).textContent, "EARLIER SAVE THERE");
+  assert.strictEqual(badge(behind).textContent, "OLDER VERSION THERE");
+  assert.strictEqual(badge(diverged).textContent, "DIVERGED THERE");
+  assert.strictEqual(badge(moved).textContent, "CHANGED THERE SINCE");
+  [built, earlier].forEach((fixture) => {
+    assert.ok(hasClass(badge(fixture), "ok") && !hasClass(badge(fixture), "same"), "teal");
+    assert.ok(hasClass(tag(fixture), "ok") && !hasClass(tag(fixture), "warn"));
+  });
+  [behind, diverged, moved].forEach((fixture) => {
+    assert.ok(!hasClass(badge(fixture), "ok") && !hasClass(badge(fixture), "same"), "amber");
+    assert.ok(hasClass(tag(fixture), "warn"));
+  });
+  buttons(shadow, "Copy summary")[0].click();
+  await flush();
+  assert.match(copied[0], /On the other instance: runs this set's version 0, same content 0, the version it was built on 1, an earlier save of it 1, an older version 1, a version not in its history 1, had this set's version, since changed 1, another version 0, no readable current version 0, can't tell 0\./);
+});
+
+test("a row its batch replaces, where the other instance runs another update of the batch, is grey", async () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const replaced = row("batch");
+  const elsewhere = row("batch");
+  const copied = [];
+  const shadow = open(harness, view([replaced, elsewhere]), {
+    onCheckRemote: () => {},
+    onCopy: async (text) => { copied.push(text); return true; },
+  }, { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "differs", text: "exampletest runs this set's version for 0 of 2 records." }],
+    perRow: {
+      [replaced.key]: { kind: "inbatch", text: "On exampletest: runs this batch's newest update of it" },
+      [elsewhere.key]: { kind: "other", text: "On exampletest: runs another version" },
+    },
+    counts: { runs: 0, same: 0, inBatch: 1, inBatchNewest: 1, built: 0, earlier: 0, behind: 0, diverged: 0, moved: 0, other: 1,
+      otherStale: 0, none: 0, cant: 0 },
+  }, 1);
+  chip(shadow, "All").click();
+  const rowFor = (fixture) => visibleRows(harness.shadow()).find((node) => byClass(node, "r-name")[0].textContent === fixture.target);
+  const badge = (fixture) => byClass(rowFor(fixture), "b-there")[0];
+  const tag = (fixture) => byClass(rowFor(fixture), "remote-tag")[0];
+  assert.strictEqual(badge(replaced).textContent, "BATCH VERSION THERE");
+  assert.ok(hasClass(badge(replaced), "same") && !hasClass(badge(replaced), "ok"), "grey");
+  assert.ok(!hasClass(tag(replaced), "warn") && !hasClass(tag(replaced), "ok"));
+  assert.strictEqual(badge(elsewhere).textContent, "OTHER VERSION THERE");
+  assert.ok(hasClass(tag(elsewhere), "warn"));
+  buttons(shadow, "Copy summary")[0].click();
+  await flush();
+  assert.match(copied[0], /On the other instance: runs this set's version 0, same content 0, another update of this batch 1, another version 1,/);
+});
+
 test("an opened row links to its record and, after a check, to the record, version and history there", async () => {
   const harness = load();
   const records = [];
@@ -669,11 +831,12 @@ test("an opened row links to its record and, after a check, to the record, versi
     },
   }, 1);
   const staleNode = visibleRows(shadow)[0];
-  const there = byClass(staleNode, "links-on");
+  const there = thereCards(staleNode);
   assert.strictEqual(there.length, 1);
-  assert.strictEqual(there[0].textContent, "exampletest:");
-  assert.ok(there[0].parentNode.textContent.endsWith("exampletest:Open recordOpen versionVersion history"));
-  there[0].parentNode.children.find((child) => child.textContent === "Open version").click();
+  const thereLinks = byClass(there[0], "link");
+  assert.deepStrictEqual(thereLinks.map((link) => link.textContent), ["Open record", "Open version", "Version history"],
+    "that instance's links sit in its own card");
+  thereLinks.find((child) => child.textContent === "Open version").click();
   assert.deepStrictEqual(plain(remotes), [{ origin: other, table: "sys_update_version", sysId: "8".padStart(32, "0") }]);
   remotes.length = 0;
   buttons(staleNode, "Open record")[1].click();
@@ -681,11 +844,116 @@ test("an opened row links to its record and, after a check, to the record, versi
   await flush();
   assert.strictEqual(byClass(shadow, "link-note").length, 0, "an open that worked says nothing");
 
-  /* A closed row shows its links only once it is opened, like its own. */
+  /* A closed row shows its links only once it is opened, like its own; one
+   * that matches there says so in teal. */
   const closed = visibleRows(shadow)[1];
-  assert.strictEqual(byClass(closed, "links-on").length, 0);
-  closed.click();
-  assert.strictEqual(byClass(visibleRows(shadow)[1], "links-on").length, 1);
+  assert.strictEqual(thereCards(closed).length, 0);
+  headOf(closed).click();
+  const matched = thereCards(visibleRows(shadow)[1]);
+  assert.strictEqual(matched.length, 1);
+  assert.strictEqual(byClass(matched[0], "say")[0].textContent, "Runs this set's version.");
+  assert.ok(hasClass(matched[0], "t-teal"));
+});
+
+test("an opened row has a card for this instance and one for the instance checked, each named in bold and edged in its colour", () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const stale = row("stale", {
+    explain: "Newer version in “Next release”",
+    newerSave: { by: "dev.two", on: "21-10-2026 10:02:47", committedHere: false },
+  });
+  const cant = row("cant", { explain: "Couldn't read versions." });
+  const shadow = open(harness, view([stale, cant]), { onCheckRemote: () => {} },
+    { origins: [{ origin: there, label: "exampletest" }], here: "examplehere" });
+  const [staleNode, cantNode] = visibleRows(shadow);
+  /* Before a check: this instance's card alone, at reading width. */
+  assert.strictEqual(byClass(staleNode, "side").length, 1);
+  assert.ok(hasClass(byClass(staleNode, "sides")[0], "single"));
+  const here = byClass(staleNode, "side")[0];
+  assert.strictEqual(here.getAttribute("role"), "group");
+  assert.strictEqual(here.getAttribute("aria-label"), "examplehere, this instance");
+  assert.strictEqual(findAll(here, (node) => node.tagName === "B")[0].textContent, "examplehere");
+  assert.strictEqual(byClass(here, "role")[0].textContent, "this instance");
+  assert.ok(hasClass(here, "t-pink"));
+  const verdict = byClass(here, "v")[0];
+  assert.strictEqual(verdict.textContent, "Stale.");
+  assert.ok(hasClass(verdict, "pink"));
+  assert.ok(byClass(here, "say")[0].textContent.startsWith("Stale. Newer version in “Next release”"));
+  assert.ok(byClass(here, "say")[0].textContent.includes("In progress"), "the newer set's flags follow");
+  assert.deepStrictEqual(factsOf(here), ["Saved", "21-10-2026 10:02:47", "By", "dev.two"]);
+  assert.ok(hasClass(byClass(here, "facts")[0].children[1], "time"));
+  assert.ok(!here.textContent.includes("Version by dev.two"), "the facts replace the sentence");
+  const cantCard = byClass(cantNode, "side")[0];
+  assert.ok(hasClass(cantCard, "t-amber"));
+  assert.strictEqual(byClass(cantCard, "say")[0].textContent, "Can't tell. Couldn't read versions.");
+
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [],
+    perRow: {
+      [stale.key]: { kind: "behind", text: "On exampletest: runs an older version of this update (matched by content)" },
+      [cant.key]: { kind: "earlier", text: "On exampletest: runs an earlier save of this set" },
+    },
+    parts: {
+      [stale.key]: {
+        kind: "behind", say: "Runs an older version of this update", notes: ["matched by content"],
+        saved: { on: "18-10-2025 10:23:56", set: "Earlier work", from: "" },
+        then: "Missing the change saved here in “Earlier work”; promoting this set brings it too",
+      },
+      [cant.key]: { kind: "earlier", say: "Runs an earlier save of this set", notes: [], saved: { on: "", set: "", from: "an upgrade" }, then: "" },
+    },
+    counts: { runs: 0, same: 0, built: 0, earlier: 1, behind: 1, diverged: 0, moved: 0, other: 0, otherStale: 0, none: 0, cant: 0 },
+    links: { [stale.key]: [{ label: "Version history", remote: { origin: there, name: stale.name } }] },
+  }, 1);
+  const behindRow = visibleRows(shadow)[0];
+  assert.ok(!hasClass(byClass(behindRow, "sides")[0], "single"), "side by side once there is a second card");
+  const behind = thereCards(behindRow)[0];
+  assert.strictEqual(behind.getAttribute("aria-label"), "exampletest, checked instance");
+  assert.strictEqual(findAll(behind, (node) => node.tagName === "B")[0].textContent, "exampletest");
+  assert.ok(hasClass(behind, "t-amber"));
+  assert.strictEqual(byClass(behind, "say")[0].textContent, "Runs an older version of this update. (matched by content)");
+  assert.deepStrictEqual(factsOf(behind), ["Saved", "18-10-2025 10:23:56", "Set", "Earlier work"]);
+  assert.strictEqual(byClass(behind, "then")[0].textContent,
+    "Missing the change saved here in “Earlier work”; promoting this set brings it too.");
+  assert.deepStrictEqual(byClass(behind, "link").map((link) => link.textContent), ["Version history"]);
+  const earlier = thereCards(visibleRows(shadow)[1])[0];
+  assert.ok(hasClass(earlier, "t-teal"));
+  assert.deepStrictEqual(factsOf(earlier), ["From", "an upgrade"]);
+  assert.strictEqual(byClass(earlier, "then").length, 0);
+});
+
+test("a closed row's note names the instance checked in bold, and an answer in grey gets a grey card", () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const other = row("current");
+  const twin = row("batch");
+  const shadow = open(harness, view([other, twin]), { onCheckRemote: () => {} }, { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [],
+    perRow: {
+      [other.key]: { kind: "other", text: "On exampletest: runs another version (already stale here)" },
+      [twin.key]: { kind: "inbatch", text: "On exampletest: runs this batch's newest update of it" },
+    },
+    parts: {
+      [other.key]: { kind: "other", say: "Runs another version", notes: ["already stale here"], saved: null, then: "" },
+      [twin.key]: { kind: "inbatch", say: "Runs this batch's newest update of it", notes: [], saved: null, then: "" },
+    },
+    counts: { runs: 0, same: 0, inBatch: 1, other: 1, otherStale: 1, none: 0, cant: 0 },
+  }, 1);
+  const rowFor = (fixture) => visibleRows(harness.shadow()).find((node) => byClass(node, "r-name")[0].textContent === fixture.target);
+  const note = byClass(rowFor(other), "remote-tag")[0];
+  assert.strictEqual(note.textContent, "exampletest runs another version (already stale here)");
+  assert.strictEqual(findAll(note, (node) => node.tagName === "B")[0].textContent, "exampletest");
+  assert.ok(hasClass(note, "warn"));
+  headOf(rowFor(twin)).click();
+  const card = thereCards(rowFor(twin))[0];
+  assert.ok(!hasClass(card, "t-amber") && !hasClass(card, "t-teal"), "grey");
+  assert.strictEqual(byClass(card, "v")[0].textContent, "Runs this batch's newest update of it.");
+  assert.ok(hasClass(byClass(card, "v")[0], "grey"));
+  assert.strictEqual(byClass(rowFor(twin), "remote-tag").length, 0, "opened, the card says it");
 });
 
 test("a link that can't open says why beside the row's links, then clears", async () => {
@@ -699,11 +967,52 @@ test("a link that can't open says why beside the row's links, then clears", asyn
   const notes = byClass(shadow, "link-note");
   assert.strictEqual(notes.length, 1);
   assert.strictEqual(notes[0].textContent, "No record found for this update.");
-  assert.strictEqual(notes[0].getAttribute("role"), "status");
   assert.ok(visibleRows(shadow)[0].textContent.includes("No record found for this update."), "on the row it was clicked on");
   assert.strictEqual(buttons(shadow, "Open record").length, 1, "the link keeps its label");
+  /* Read out by the panel's one live region, which no repaint replaces. */
+  const liveRegion = () => byClass(shadow, "sr-only").filter((node) => node.getAttribute("role") === "status");
+  const live = liveRegion();
+  assert.strictEqual(live.length, 1);
+  assert.strictEqual(live[0].getAttribute("aria-live"), "polite");
+  assert.strictEqual(live[0].textContent, "No record found for this update.");
+  assert.strictEqual(byClass(shadow, "link-note")[0].getAttribute("role"), null, "the visible note isn't a second live region");
+  harness.ui.update(view([stale]));
+  assert.strictEqual(liveRegion()[0], live[0], "the same node after a repaint");
   harness.runTimers();
   assert.strictEqual(byClass(shadow, "link-note").length, 0);
+  assert.strictEqual(live[0].textContent, "");
+});
+
+test("rows past what a check compared are marked Not compared there, in grey, and never counted as differing", () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const compared = row("current");
+  const past = row("current");
+  const shadow = open(harness, view([compared, past]), { onCheckRemote: () => {} }, { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "note", text: "Compared the first 2,000 checked updates there." }],
+    perRow: {},
+    parts: {
+      [compared.key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" },
+      [past.key]: { kind: "unsent", say: "Not compared", notes: [], saved: null, then: "Check on compares the first 2,000 updates checked here" },
+    },
+    counts: { runs: 1, same: 0, other: 0, otherStale: 0, none: 0, cant: 0 },
+    links: { [compared.key]: [{ label: "Version history", remote: { origin: there, name: compared.name } }] },
+  }, 1);
+  const rowFor = (fixture) => visibleRows(harness.shadow()).find((node) => byClass(node, "r-name")[0].textContent === fixture.target);
+  assert.deepStrictEqual(byClass(rowFor(compared), "badge").map((badge) => badge.textContent), ["CURRENT"], "a match needs no mark");
+  const mark = byClass(rowFor(past), "b-there")[0];
+  assert.strictEqual(mark.textContent, "NOT COMPARED THERE");
+  assert.ok(hasClass(mark, "same"), "grey");
+  assert.strictEqual(mark.title, "Check on compares the first 2,000 updates checked here");
+  assert.ok(!chip(shadow, "Differs on exampletest"), "not a difference");
+  headOf(rowFor(past)).click();
+  const card = thereCards(rowFor(past))[0];
+  assert.strictEqual(byClass(card, "say")[0].textContent, "Not compared.");
+  assert.strictEqual(byClass(card, "then")[0].textContent, "Check on compares the first 2,000 updates checked here.");
+  assert.ok(!hasClass(card, "t-amber") && !hasClass(card, "t-teal"));
 });
 
 test("an answer for an earlier press, or after the instance was changed, is dropped", () => {
@@ -759,19 +1068,19 @@ test("switching the batch or checking the next 2,000 drops the other instance's 
     onCheckRemote: () => {}, onToggleBatch: () => {}, onContinue: () => {},
   }, { origins: [{ origin: there, label: "exampletest" }] });
   chip(shadow, "All").click();
-  visibleRows(shadow)[0].click();
+  headOf(visibleRows(shadow)[0]).click();
 
   buttons(shadow, "Check")[0].click();
   answer(1);
   assert.ok(harness.text().includes("Base and 2 child sets on exampletest: committed 3."));
-  assert.strictEqual(byClass(shadow, "remote-tag").length, 1);
+  assert.strictEqual(thereCards(shadow).length, 1);
   const box = findAll(shadow, (node) => node.tagName === "INPUT" && node.getAttribute("type") === "checkbox")[0];
   box.checked = false;
   box.fire("change");
   harness.ui.update(batchView(false, { canContinue: true }));
   assert.ok(!harness.text().includes("Base and 2 child sets"), "the old scope's presence line is gone");
   assert.strictEqual(byClass(shadow, "remote-tag").length, 0);
-  assert.strictEqual(byClass(shadow, "links-on").length, 0);
+  assert.strictEqual(thereCards(shadow).length, 0);
   assert.strictEqual(buttons(shadow, "Check")[0].disabled, false, "a new check can start");
 
   buttons(shadow, "Check")[0].click();
@@ -780,6 +1089,7 @@ test("switching the batch or checking the next 2,000 drops the other instance's 
   answer(inFlight);
   assert.ok(!harness.text().includes("Base and 2 child sets"), "an answer for the rows before Continue is dropped");
   assert.strictEqual(byClass(shadow, "remote-tag").length, 0);
+  assert.strictEqual(thereCards(shadow).length, 0);
 });
 
 test("Check the next 2,000 shows only when more rows wait", () => {

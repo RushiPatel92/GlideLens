@@ -7905,14 +7905,14 @@ function startUpdateSetLens(resolution, options) {
   ui.open({
     view: session.view(),
     origins: [],
+    /* This instance's name, as Check on names the other one. */
+    here: prefillInstanceLabel(location.origin),
     callbacks: {
       onToggleBatch: (on) => session.setIncludeChildren(on),
       onContinue: () => session.continue(),
       onCheckRemote: (origin, remoteToken) => checkUpdateSetElsewhere(session, origin, remoteToken, token),
-      onOpenUrl: (url) => {
-        chrome.runtime.sendMessage({ type: "OPEN_URL", url }).catch(() => {});
-      },
-      onOpenRecord: (name) => openUpdateRecord(name),
+      onOpenUrl: (url, opts) => openLensUrl(url, opts),
+      onOpenRecord: (name, opts) => openUpdateRecord(name, opts),
       /* "Other sets holding it": Version Lens on that update's name, in
        * place of this panel. */
       onOpenVersionLens: async (name) => {
@@ -7925,7 +7925,7 @@ function startUpdateSetLens(resolution, options) {
         release();
         return openVersionLensOnName(name);
       },
-      onOpenRemote: (target) => openOnCheckedInstance(target),
+      onOpenRemote: (target, opts) => openOnCheckedInstance(target, opts),
       onCopy: (text) => copyText(text).then(() => true, () => false),
       onClose: release,
     },
@@ -7977,28 +7977,54 @@ async function checkUpdateSetElsewhere(session, origin, remoteToken, panelToken)
     ui.showRemote({ state: "error", message: engine.remoteProblem(reply, instance, host) }, remoteToken);
     return;
   }
-  const shown = engine.remoteView(reply, request, session.view().rows, instance, origin);
-  ui.showRemote({
-    state: "done",
-    lines: shown.lines,
-    perRow: shown.perRow,
-    counts: shown.counts,
-    links: shown.links,
-  }, remoteToken);
+  /* Rows that run another version there: where that version sits in each
+   * update's own history, read here. A failure only leaves them unplaced. */
+  let placed = null;
+  try {
+    placed = await session.placeRemote(reply, request, () => {
+      if (live()) ui.showRemote({ state: "busy", message: "Finding what " + instance + " runs in this set's history…" }, remoteToken);
+    });
+  } catch (error) {
+    placed = null;
+  }
+  if (!live()) return;
+  /* An answer that can't be drawn says so: left alone, the panel would stay
+   * busy, with Check disabled, until another instance was chosen. */
+  try {
+    const shown = engine.remoteView(reply, request, session.view().rows, instance, origin, placed);
+    ui.showRemote({
+      state: "done",
+      lines: shown.lines,
+      perRow: shown.perRow,
+      parts: shown.parts,
+      counts: shown.counts,
+      links: shown.links,
+    }, remoteToken);
+  } catch (error) {
+    if (live()) ui.showRemote({ state: "error", message: engine.remoteProblem({ ok: false, code: "malformed" }, instance, host) }, remoteToken);
+  }
+}
+
+/* A lens link's OPEN_URL. `opts.background` (a middle-click or Ctrl-click)
+ * opens the tab without switching to it; the flag is sent only then. */
+function openLensUrl(url, opts) {
+  const message = { type: "OPEN_URL", url };
+  if (opts && opts.background === true) message.background = true;
+  chrome.runtime.sendMessage(message).catch(() => {});
 }
 
 /* Open record: one lookup when clicked, then the same-origin OPEN_URL. */
-async function openUpdateRecord(name) {
+async function openUpdateRecord(name, opts) {
   const engine = globalThis.SNUpdateSetLens;
   const found = await engine.recordUrl(name, updateSetLensContext());
   if (!found.ok) return found;
-  chrome.runtime.sendMessage({ type: "OPEN_URL", url: found.url }).catch(() => {});
+  openLensUrl(found.url, opts);
   return { ok: true };
 }
 
 /* A page on the instance checked. Only an origin and ids cross: the worker
  * builds the URL, and opens it only on an instance open in a tab here. */
-async function openOnCheckedInstance(target) {
+async function openOnCheckedInstance(target, opts) {
   const instance = prefillInstanceLabel(target && target.origin) || "that instance";
   const message = { type: "UPDATE_SET_REMOTE_OPEN", origin: target && target.origin };
   if (target && target.name) message.name = target.name;
@@ -8006,6 +8032,7 @@ async function openOnCheckedInstance(target) {
     message.table = target && target.table;
     message.sysId = target && target.sysId;
   }
+  if (opts && opts.background === true) message.background = true;
   let reply;
   try {
     reply = await chrome.runtime.sendMessage(message);
@@ -8023,21 +8050,25 @@ async function openOnCheckedInstance(target) {
  * Check on, answered in a tab of the instance being checked
  * (UPDATE_SET_EXPORT_STATUS: from the worker only, top frame only).
  *
- * Update Set Lens may never have run in this tab, so this builds its six
+ * Update Set Lens may never have run in this tab, so this builds its seven
  * fixed reads itself and reads ONLY through SN_UPDATE_SET_LENS_GET, which
  * bounds each read: never snGetMany or the fan-out SN_TABLE_GET. Every read
  * carries this tab's origin and requires a token, because a token-less read
  * raises the browser's own sign-in dialog. It beats after every read itself:
  * snGetManyListeners hears only snGetMany. Record names are never echoed
  * back; each record's answer is its status, by index; for one that runs
- * something else there, when that version was saved and in which set; and
- * the ids its links need: its record's table and sys_id, and its version's.
+ * something else there, when that version was saved and in which set,
+ * that version's "guid:hash", and whether this update's own version was
+ * there and has since been replaced; and the ids its links need: its
+ * record's table and sys_id, and its version's.
  */
 const UPDATE_SET_EXPORT_PROGRESS_MS = 250;
 const UPDATE_SET_EXPORT_URL_CAP = 6000;
 const UPDATE_SET_EXPORT_NAMES_PER_READ = 40;
 const UPDATE_SET_EXPORT_SETS_PER_READ = 80;
 const UPDATE_SET_EXPORT_COPIES_PER_SET = 20;
+/* Retrieved copies one presence read asks for; a full answer is split. */
+const UPDATE_SET_EXPORT_COPIES_PER_READ = 1000;
 const UPDATE_SET_EXPORT_COPIES = 200;
 const UPDATE_SET_EXPORT_RETRIEVED_FIELDS =
   "sys_id,state,remote_sys_id,origin_sys_id,update_set,commit_date,collisions,sys_created_on";
@@ -8048,6 +8079,24 @@ const UPDATE_SET_EXPORT_RECORD_FIELDS = "sys_id,sys_class_name,sys_update_name";
  * keep their status and lose only the note or the links. */
 const UPDATE_SET_EXPORT_SAVED_CHARS = 64 * 1024;
 const UPDATE_SET_EXPORT_FOUND_CHARS = 64 * 1024;
+/* Which version runs there, for a record that runs another one, as the
+ * "guid:hash" an update's own history lists. The asking instance places it
+ * in that history. Its own budget, smaller because each entry is: past it a
+ * row keeps "runs another version" and loses only the placing. */
+const UPDATE_SET_EXPORT_RUNNING_CHARS = 32 * 1024;
+/* The worker refuses a reply over 256 KiB. Should every part fill its
+ * budget at once, the placing goes first, so the check itself still lands. */
+const UPDATE_SET_EXPORT_REPLY_ROOM = 248 * 1024;
+/* Whether a record that runs another version there once had this update's
+ * own version there: replaced (previous) or backed out. Read by name, never
+ * by guid, few names a read because a record can have hundreds of versions;
+ * one name alone may return more. No read starts this long into the export,
+ * so the links still have their turn inside the worker's ceiling. */
+const UPDATE_SET_EXPORT_REPLACED_STATES = "previous,backedout";
+const UPDATE_SET_EXPORT_REPLACED_NAMES_PER_READ = 10;
+const UPDATE_SET_EXPORT_REPLACED_PER_NAME = 250;
+const UPDATE_SET_EXPORT_REPLACED_ONE_NAME = 1000;
+const UPDATE_SET_EXPORT_REPLACED_BY_MS = 90 * 1000;
 const UPDATE_SET_EXPORT_SAVED_FIELD = 200;
 /* The record lookup only adds links, so it starts no read this long into
  * the export: with each read held to 30 s, the statuses still reach the
@@ -8078,7 +8127,7 @@ function updateSetExportFailure(error) {
   return out;
 }
 
-function updateSetExportChunks(names, limitFor) {
+function updateSetExportChunks(names, limitFor, perRead = UPDATE_SET_EXPORT_NAMES_PER_READ) {
   const measure = (group) => {
     const params = new URLSearchParams();
     params.set("sysparm_query", "state=current^nameIN" + group.join(","));
@@ -8091,7 +8140,7 @@ function updateSetExportChunks(names, limitFor) {
   let current = [];
   names.forEach((name) => {
     const next = current.concat([name]);
-    if (current.length && (next.length > UPDATE_SET_EXPORT_NAMES_PER_READ || measure(next) > UPDATE_SET_EXPORT_URL_CAP)) {
+    if (current.length && (next.length > perRead || measure(next) > UPDATE_SET_EXPORT_URL_CAP)) {
       chunks.push(current);
       current = [name];
     } else {
@@ -8227,29 +8276,44 @@ async function exportUpdateSetStatus(msg) {
         updateSet: /^[0-9a-f]{32}$/.test(updateSet) ? updateSet : "",
       });
     };
+    /* Retrieved copies of `ids` by `field`, newest first. A full answer may
+     * have left an older set's copies out, which would read as "not found",
+     * so a full group is split and each half read again, down to one set,
+     * whose newest copies are all that is kept anyway. */
+    const readCopies = async (field, ids, take) => {
+      const queue = chunked(ids, UPDATE_SET_EXPORT_SETS_PER_READ);
+      while (queue.length) {
+        const group = queue.shift();
+        const rows = await read("sys_remote_update_set",
+          inList(field, group) + "^ORDERBYDESCsys_created_on", UPDATE_SET_EXPORT_RETRIEVED_FIELDS,
+          UPDATE_SET_EXPORT_COPIES_PER_READ, true);
+        if (rows.length >= UPDATE_SET_EXPORT_COPIES_PER_READ && group.length > 1) {
+          const middle = Math.ceil(group.length / 2);
+          queue.unshift(group.slice(0, middle), group.slice(middle));
+          continue;
+        }
+        take(group, rows);
+      }
+    };
     try {
       report("Reading retrieved copies…");
       /* 1. Retrieved copies of these sets, newest first. */
-      for (const group of chunked(setIds, UPDATE_SET_EXPORT_SETS_PER_READ)) {
-        const rows = await read("sys_remote_update_set",
-          inList("remote_sys_id", group) + "^ORDERBYDESCsys_created_on", UPDATE_SET_EXPORT_RETRIEVED_FIELDS, 1000, true);
+      await readCopies("remote_sys_id", setIds, (group, rows) => {
         rows.forEach((row) => {
           const index = setIds.indexOf(updateSetExportRaw(row, "remote_sys_id").toLowerCase());
           if (index < 0 || !group.includes(setIds[index])) return;
           pushCopy(row, index, "remote");
         });
-      }
+      });
       /* 2. By origin, for the sets not found by id. */
       const missing = setIds.filter((id, index) => !perSet.has(index));
-      for (const group of chunked(missing, UPDATE_SET_EXPORT_SETS_PER_READ)) {
-        const rows = await read("sys_remote_update_set",
-          inList("origin_sys_id", group) + "^ORDERBYDESCsys_created_on", UPDATE_SET_EXPORT_RETRIEVED_FIELDS, 1000, true);
+      await readCopies("origin_sys_id", missing, (group, rows) => {
         rows.forEach((row) => {
           const origin = updateSetExportRaw(row, "origin_sys_id").toLowerCase();
           if (!group.includes(origin)) return;
           pushCopy(row, setIds.indexOf(origin), "origin");
         });
-      }
+      });
       /* 3. The local sets committed copies point at, validated first: a
        * missing link once built `sys_id=undefined`. */
       const localIds = Array.from(new Set(copies
@@ -8330,6 +8394,8 @@ async function exportUpdateSetStatus(msg) {
      * records "unknown" and the rest stand. */
     let content = null;
     let saved = null;
+    let running = null;
+    let moved = null;
     let found = null;
     let contentFailure = null;
     if (names.length > 0 && failedNames.size === names.length) {
@@ -8346,8 +8412,66 @@ async function exportUpdateSetStatus(msg) {
         if (note) spent += JSON.stringify(note).length;
         return note;
       });
+      let runningSpent = 0;
+      running = content.map((status, index) => {
+        if (status !== "other" || runningSpent > UPDATE_SET_EXPORT_RUNNING_CHARS) return null;
+        const version = byName.get(records[index].name)[0];
+        if (!/^[0-9a-f]{32}$/.test(version.guid) || !/^-?[0-9]{1,10}$/.test(version.hash)) return null;
+        const entry = version.guid + ":" + version.hash;
+        runningSpent += entry.length + 3;
+        return entry;
+      });
 
-      /* 6. Each record's own table and sys_id here, as ServiceNow's Show
+      /* 6. For each record that runs another version: whether this update's
+       * own version was here and has since been replaced or backed out. A
+       * history is the order changes were committed on its own instance, so
+       * a version it calls this set's parent can be newer work here; this is
+       * what tells. true: it was here; false: read, and it wasn't; null: not
+       * read (a failed or overfull read, or past the time limit), which the
+       * asking instance must treat as unknown. Matched by guid in code. */
+      const otherNames = Array.from(new Set(records
+        .filter((record, index) => record && content[index] === "other")
+        .map((record) => record.name)));
+      const replacedLimitFor = (count) => (count === 1
+        ? UPDATE_SET_EXPORT_REPLACED_ONE_NAME
+        : count * UPDATE_SET_EXPORT_REPLACED_PER_NAME) + 1;
+      const replacedQueue = updateSetExportChunks(otherNames, replacedLimitFor, UPDATE_SET_EXPORT_REPLACED_NAMES_PER_READ);
+      const replacedGuids = new Map();
+      const replacedRead = new Set();
+      if (replacedQueue.length) report("Checking what was here before…");
+      while (replacedQueue.length && Date.now() - startedAt < UPDATE_SET_EXPORT_REPLACED_BY_MS) {
+        const group = replacedQueue.shift();
+        const limit = replacedLimitFor(group.length);
+        let rows;
+        try {
+          rows = await read("sys_update_version",
+            "stateIN" + UPDATE_SET_EXPORT_REPLACED_STATES + "^" + inList("name", group), "name,state,update_guid", limit, false);
+        } catch (error) {
+          if (error && error.status === 401) throw error;
+          continue;
+        }
+        if (rows.length >= limit) {
+          if (group.length > 1) {
+            replacedQueue.push(group.slice(0, Math.ceil(group.length / 2)), group.slice(Math.ceil(group.length / 2)));
+          }
+          continue;
+        }
+        rows.forEach((row) => {
+          const name = updateSetExportRaw(row, "name");
+          const state = updateSetExportRaw(row, "state");
+          if (!group.includes(name) || (state !== "previous" && state !== "backedout")) return;
+          if (!replacedGuids.has(name)) replacedGuids.set(name, new Set());
+          replacedGuids.get(name).add(updateSetExportRaw(row, "update_guid"));
+        });
+        group.forEach((name) => replacedRead.add(name));
+      }
+      moved = content.map((status, index) => {
+        if (status !== "other" || !replacedRead.has(records[index].name)) return null;
+        const guids = replacedGuids.get(records[index].name);
+        return Boolean(guids && guids.has(records[index].guid));
+      });
+
+      /* 7. Each record's own table and sys_id here, as ServiceNow's Show
        * Related Record finds them: sys_metadata by sys_update_name, latest
        * updated first. Its URL is shorter than the version read's, so the
        * same chunks fit. A failed read, or one the time limit leaves out,
@@ -8396,7 +8520,7 @@ async function exportUpdateSetStatus(msg) {
         return out;
       });
     }
-    return {
+    const reply = {
       ok: true,
       copies: copies.map((copy) => {
         const out = {
@@ -8418,10 +8542,17 @@ async function exportUpdateSetStatus(msg) {
       clones,
       content,
       saved,
+      running,
+      moved,
       found,
       presenceFailure,
       contentFailure,
     };
+    /* Over the room, the placing goes first, then what was here before:
+     * without either, no row can be shown as safe, only as different. */
+    if (running && JSON.stringify(reply).length > UPDATE_SET_EXPORT_REPLY_ROOM) reply.running = null;
+    if (moved && JSON.stringify(reply).length > UPDATE_SET_EXPORT_REPLY_ROOM) reply.moved = null;
+    return reply;
   } catch (error) {
     // Every read here carried a token, so a 401 is the session, not the token.
     if (error && error.status === 401) {
@@ -8927,9 +9058,7 @@ function startVersionLens(resolution) {
     origins: [],
     callbacks: {
       onCheckRemote: (origin, remoteToken) => checkVersionsElsewhere(session, origin, remoteToken, token),
-      onOpenUrl: (url) => {
-        chrome.runtime.sendMessage({ type: "OPEN_URL", url }).catch(() => {});
-      },
+      onOpenUrl: (url, opts) => openLensUrl(url, opts),
       /* "Check this set": Update Set Lens on the set already read, in place
        * of this panel. */
       onOpenSetLens: async (set) => {
@@ -8943,7 +9072,7 @@ function startVersionLens(resolution) {
         startUpdateSetLens({ kind: "set", set }, {});
         return { ok: true };
       },
-      onOpenRemote: (target) => openOnCheckedInstance(target),
+      onOpenRemote: (target, opts) => openOnCheckedInstance(target, opts),
       onCopy: (text) => copyText(text).then(() => true, () => false),
       onClose: release,
     },
@@ -8995,15 +9124,31 @@ async function checkVersionsElsewhere(session, origin, remoteToken, panelToken) 
     ui.showRemote({ state: "error", message: engine.remoteProblem(reply, instance, host) }, remoteToken);
     return;
   }
-  const shown = engine.collisionRemoteView(reply, request, view, instance, origin);
-  ui.showRemote({
-    state: "done",
-    lines: shown.lines,
-    perRow: shown.perRow,
-    tally: shown.tally,
-    links: shown.links,
-    copyLine: shown.copyLine,
-  }, remoteToken);
+  /* Another version there: where it sits in the history of the update that
+   * runs here, read here. A failure only leaves it unplaced. */
+  let placed = null;
+  try {
+    placed = await session.placeRemote(reply, request, () => {
+      if (live()) ui.showRemote({ state: "busy", message: "Finding what " + instance + " runs in this update's history…" }, remoteToken);
+    });
+  } catch (error) {
+    placed = null;
+  }
+  if (!live()) return;
+  /* An answer that can't be drawn says so, rather than leave the panel busy. */
+  try {
+    const shown = engine.collisionRemoteView(reply, request, view, instance, origin, placed);
+    ui.showRemote({
+      state: "done",
+      lines: shown.lines,
+      perRow: shown.perRow,
+      tally: shown.tally,
+      links: shown.links,
+      copyLine: shown.copyLine,
+    }, remoteToken);
+  } catch (error) {
+    ui.showRemote({ state: "error", message: engine.remoteProblem({ ok: false, code: "malformed" }, instance, host) }, remoteToken);
+  }
 }
 
 /* =====================================================================

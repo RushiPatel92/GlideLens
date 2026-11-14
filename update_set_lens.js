@@ -58,7 +58,18 @@
     concurrency: 2,
     remoteRecords: 2000,
     remoteSets: 1000,
+    /* Placing what runs there: update_guid_history reaches about 22 KB a
+     * row, so few rows to a read, and every version of a name is read. */
+    lineageRowsPerRead: 20,
+    lineageNamesPerRead: 10,
+    lineageVersionsPerName: 250,
   });
+  /* An update's own history: "guid:hash", newest first, across sets. */
+  const LINEAGE_ENTRY = /^([0-9a-f]{32}):(-?[0-9]{1,10})$/;
+  const LINEAGE_XML_FIELDS = "sys_id,update_guid,update_guid_history";
+  const LINEAGE_VERSION_FIELDS = "name,state,source,source_table,update_guid,payload_hash,sys_recorded_at";
+  /* The states that mean a version ran here. */
+  const LOADED_STATES = new Set(["previous", "current"]);
 
   /* completed_on is for Version Lens, which shows when a set was completed;
    * this panel ignores it. */
@@ -240,7 +251,11 @@
       query,
       fields,
       limit,
-      options: Object.assign({ displayAll: true, suppressPagination: true }, options || {}),
+      /* expectedOrigin: the tab's token frame can be a frame embedded from
+       * another instance, whose rows would be taken for this one's; the page
+       * reader refuses it and the read fails instead. */
+      options: Object.assign({ displayAll: true, suppressPagination: true },
+        ctx.origin ? { expectedOrigin: ctx.origin } : {}, options || {}),
     };
     let response;
     try {
@@ -670,18 +685,18 @@
   /* Reads by name in URL-capped chunks, splitting any chunk that fills its
    * limit, down to single names. A single name that still fills it is
    * `saturated`: its answer is incomplete, and never a verdict. */
-  async function readByNames(ctx, table, entries, keyOf, buildQuery, fields, limitFor) {
+  async function readByNames(ctx, table, entries, keyOf, buildQuery, fields, limitFor, per, options) {
     const out = { rows: [], failed: new Map(), saturated: new Set() };
     const measure = (group) => readUrlLength(ctx.origin, table, buildQuery(group), fields, limitFor(group.length));
     const queue = [];
     const listed = entries.filter((entry) => nameQueryKind(keyOf(entry)) === "list");
-    chunkForUrl(listed, LIMITS.namesPerRead, measure).forEach((group) => queue.push(group));
+    chunkForUrl(listed, per || LIMITS.namesPerRead, measure).forEach((group) => queue.push(group));
     entries.filter((entry) => nameQueryKind(keyOf(entry)) === "alone").forEach((entry) => queue.push([entry]));
     await drain(queue, LIMITS.concurrency, async (group) => {
       const limit = limitFor(group.length);
       let answer;
       try {
-        answer = await readTable(ctx, table, buildQuery(group), fields, limit);
+        answer = await readTable(ctx, table, buildQuery(group), fields, limit, options);
       } catch (error) {
         if (error && error.code === "stale") return;
         group.forEach((entry) => out.failed.set(keyOf(entry), error));
@@ -856,6 +871,14 @@
       newerSetState: newerSet ? (newerSet.isDefault ? "default set" : newerSet.stateLabel || newerSet.state) : "",
       guid: row.guid,
       hash: row.hash,
+      /* For the panel's card: the text without its verdict word, and the
+       * newer version's save as facts (`who` says the same in a sentence). */
+      explain: outcome.verdict === "cant" ? (CANT_TELL[outcome.reason] || CANT_TELL["versions-failed"]) + "." : text,
+      newerSave: who ? {
+        by: c.createdBy || "",
+        on: c.createdOn || "",
+        committedHere: Boolean(newerSet && newerSet.remoteSysId),
+      } : null,
     };
   }
 
@@ -1161,6 +1184,10 @@
    * session.view()         the panel's snapshot
    * session.onChange(fn)   called with a fresh snapshot after every step
    * session.cancel()
+   * session.remoteRequest()            what Check on sends
+   * session.placeRemote(reply, request, onRead)
+   *                        places what runs there in each differing row's
+   *                        own history, for remoteView
    */
   function createSession(resolution, ctx, options) {
     const opts = options || {};
@@ -1427,6 +1454,9 @@
         if (list.suspect) state.countsDisagree = true;
         else if (total != null && total > 0 && list.yielded === 0) state.membershipUnreadable = true;
         else if (total === 0 && list.yielded > 0) state.countsDisagree = true;
+        /* Fewer rows than the count: a page that came back short (rows an
+         * ACL removed, say) ended its chunk early, so some were never read. */
+        else if (total != null && total > list.yielded) state.countsDisagree = true;
       });
       state.busy = false;
       state.phase = "done";
@@ -1566,6 +1596,7 @@
       onChange: (fn) => { if (typeof fn === "function") listeners.push(fn); },
       cancel: () => { cancelled = true; },
       remoteRequest: () => remoteRequest(state),
+      placeRemote: (reply, request, onRead) => placeRemote(state, sessionCtx, reply, request, onRead),
       get state() { return state; },
     };
   }
@@ -1598,9 +1629,256 @@
       keys,
       filtered,
       unsent: Math.max(0, state.rows.length - records.length - filtered.length),
-      /* Updates still to check here: a match is then only a match so far. */
-      partial: state.lists.some((list) => !list.done),
+      /* Updates still to check here, or a membership read that may have
+       * missed some (a batch past its set or depth limit, a list that
+       * couldn't be trusted, counts that disagree): a match is then only a
+       * match so far. */
+      partial: state.lists.some((list) => !list.done) || state.countsDisagree || state.membershipUnreadable ||
+        Boolean(state.includeChildren && state.batch && (state.batch.capped || state.batch.depthCapped)),
     };
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Placing what runs there in this update's own history
+   * ------------------------------------------------------------------ */
+
+  /* update_guid_history as entries, newest first; null when any entry is
+   * malformed, so an odd history never yields a placing. */
+  function parseLineage(text) {
+    const out = [];
+    for (const part of str(text).split(",")) {
+      const value = part.trim();
+      if (!value) continue;
+      const match = LINEAGE_ENTRY.exec(value);
+      if (!match) return null;
+      out.push({ guid: match[1], hash: match[2] });
+    }
+    return out;
+  }
+
+  /* sys_recorded_at is hexadecimal and grows with time: a longer value is
+   * later, and equal lengths compare as text. */
+  function recordedBefore(left, right) {
+    return left.length !== right.length ? left.length < right.length : left < right;
+  }
+
+  function normalizeLineageVersion(row) {
+    return {
+      name: raw(row, "name"),
+      state: raw(row, "state").toLowerCase(),
+      source: raw(row, "source").toLowerCase(),
+      sourceTable: raw(row, "source_table"),
+      guid: raw(row, "update_guid"),
+      hash: raw(row, "payload_hash"),
+      recordedAt: raw(row, "sys_recorded_at").toLowerCase(),
+    };
+  }
+
+  /*
+   * Where the version that runs on the other instance sits in this update's
+   * own history: `history` is its update_guid_history, `versions` every
+   * version of its name here, `ownSets` this set (or the whole batch).
+   * Entry 0 is this capture; the entries after it that are saves in
+   * `ownSets` are its own; the next one is the version it was built on.
+   *
+   *   built    there runs the version this set was built on, or its content
+   *   earlier  there runs an earlier save of this set (or batch)
+   *   behind   there runs an older version, further back in this history;
+   *            `since` holds the versions here between the two
+   *   diverged there runs a version this history doesn't hold
+   *
+   * null when the history can't be trusted. It is trusted only when the
+   * version it names as the parent is also the newest version that ran here
+   * before this set's first save, by sys_recorded_at (or when it names none
+   * and no version ran here before). Measured on 419 updates in 25 sets, the
+   * two agreed for 68 of the 73 with a parent; another set saving the record
+   * between this set's saves, and a parent with no version here, made the
+   * other five, and each is left unplaced rather than guessed.
+   *
+   * One placing needs no parent: what runs there is one of this set's own
+   * saves, guid and hash, with only its own saves between. In a batch that
+   * is the newest update of a record finding there an older update of the
+   * batch; on a test instance's release batches, 12 of the 16 such rows
+   * had a parent the check above refused.
+   *
+   * This capture's own entry must carry its hash (the same instance, so the
+   * same writing). What runs there is matched by guid alone: the same
+   * version is often written differently on another instance.
+   * A version recorded here since this set began that the history doesn't
+   * name is diverged, never matched by content to an older entry (Fable's
+   * second review: a later revert to the parent's content read as built).
+   *
+   * A history is the order changes were committed on this instance, not the
+   * order they were written: a set committed here after a newer one names
+   * that newer version as its parent (seen on a test instance's release
+   * batches, 6 of 9 placings there). So remoteView shows built and earlier,
+   * the placings that read as safe, only when the other instance says this
+   * update's own version was never there.
+   */
+  function placeThere(row, there, history, versions, ownSets) {
+    if (!history || !history.length || history[0].guid !== row.guid || history[0].hash !== str(row.hash)) return null;
+    if (!versions.length || versions.some((version) => !version.recordedAt || !version.guid)) return null;
+    const ownGuids = new Set(versions
+      .filter((version) => version.sourceTable === "sys_update_set" && ownSets.has(version.source))
+      .map((version) => version.guid));
+    ownGuids.add(row.guid);
+    const mine = versions.filter((version) => ownGuids.has(version.guid));
+    if (!mine.length) return null;
+    const firstOwn = mine.reduce((first, version) =>
+      (!first || recordedBefore(version.recordedAt, first) ? version.recordedAt : first), "");
+    let at = 1;
+    while (at < history.length && ownGuids.has(history[at].guid)) at += 1;
+    /* What runs there is one of this set's own saves, exactly: only its own
+     * saves lie between, so it is placed without the parent, whatever came
+     * before them. */
+    if (history.some((entry, index) => index > 0 && index < at && entry.guid === there.guid && entry.hash === there.hash)) {
+      return { kind: "earlier", byContent: false };
+    }
+    const parent = at < history.length ? history[at] : null;
+    const before = versions.filter((version) =>
+      !ownGuids.has(version.guid) && LOADED_STATES.has(version.state) && recordedBefore(version.recordedAt, firstOwn));
+    const newest = before.reduce((best, version) =>
+      (!best || recordedBefore(best.recordedAt, version.recordedAt) ? version : best), null);
+    /* Two versions recorded at the same moment can't be ordered. */
+    if (newest && before.some((version) => version !== newest && version.recordedAt === newest.recordedAt)) return null;
+    if (parent ? !newest || newest.guid !== parent.guid : newest) return null;
+
+    /* By guid, whatever its hash: across instances a version's guid is its
+     * identity and its hash is not. Measured from a development instance to
+     * its sandbox, 28 rows ran a guid of this history with another hash; the
+     * sandbox's own history agreed it ran that version, and the payloads
+     * differed in how they were written (a currency attribute, the order of
+     * related records), not in what they set. */
+    let found = history.findIndex((entry, index) => index > 0 && entry.guid === there.guid);
+    let byContent = false;
+    if (found < 0) {
+      /* A version saved here after this set began, that this history
+       * doesn't name, is a later change (a revert to the parent's content,
+       * say): matching its content to an older entry would call undoing it
+       * safe. */
+      const later = versions.some((version) => version.guid === there.guid && !recordedBefore(version.recordedAt, firstOwn));
+      if (later) return { kind: "diverged" };
+      found = history.findIndex((entry, index) => index > 0 && entry.hash === there.hash);
+      byContent = found >= 0;
+    }
+    if (found < 0) return { kind: "diverged" };
+    if (found < at) return { kind: "earlier", byContent };
+    if (found === at || history[found].hash === parent.hash) return { kind: "built", byContent: byContent || found !== at };
+    const since = history.slice(at, found)
+      .map((entry) => versions.find((version) => version.guid === entry.guid))
+      .filter(Boolean);
+    return { kind: "behind", byContent, since };
+  }
+
+  /* Where a set or other source is named in a placing's note: a set by its
+   * name in quotes, anything else in words. */
+  function sinceSource(version, sets) {
+    if (version.sourceTable === "sys_update_set") {
+      const set = sets.get(version.source) || null;
+      return set && set.name ? "“" + set.name + "”" : setLabel(set, version.source);
+    }
+    if (version.sourceTable === "sys_upgrade_history") return "an upgrade";
+    if (version.sourceTable === "sys_store_app") return "an application install";
+    return version.sourceTable || "another source";
+  }
+
+  /*
+   * After a check on another instance: each row answered "other", with the
+   * version that runs there, placed in that update's own history. Reads here
+   * only: the rows' update_guid_history by sys_id, every version of their
+   * names, and the names of the sets between. Never by guid or hash.
+   * Returns a Map of row key to placing; a row left out keeps "runs another
+   * version". `onRead` is called once, before the first read.
+   */
+  async function placeRemote(state, ctx, reply, request, onRead) {
+    const placed = new Map();
+    const content = Array.isArray(reply && reply.content) ? reply.content : [];
+    const running = Array.isArray(reply && reply.running) ? reply.running : [];
+    const moved = Array.isArray(reply && reply.moved) ? reply.moved : [];
+    const rowsByKey = new Map(state.rows.map((row) => [row.key, row]));
+    const targets = [];
+    (request.keys || []).forEach((key, index) => {
+      /* Nothing to place for a row whose own version was there and has
+       * since been replaced (it is told so whatever its history says), or
+       * for one a newer update of this batch replaces (that update is what
+       * promoting leaves, and it is answered for itself). */
+      const row = rowsByKey.get(key);
+      const match = content[index] === "other" && moved[index] !== true && row && row.verdict !== "batch"
+        ? LINEAGE_ENTRY.exec(str(running[index])) : null;
+      if (!match || !row || !isSysId(row.sysId) || !REMOTE_GUID.test(row.guid)) return;
+      if (nameQueryKind(row.name) === "unsafe") return;
+      targets.push({ key, row, there: { guid: match[1], hash: match[2] } });
+    });
+    if (!targets.length) return placed;
+    if (typeof onRead === "function") onRead();
+
+    const histories = new Map();
+    const ids = Array.from(new Set(targets.map((target) => target.row.sysId)));
+    await drain(chunk(ids, LIMITS.lineageRowsPerRead), LIMITS.concurrency, async (group) => {
+      let answer;
+      try {
+        answer = await readTable(ctx, "sys_update_xml", inClause("sys_id", group), LINEAGE_XML_FIELDS,
+          group.length + 1, { displayAll: false });
+      } catch (error) {
+        return;
+      }
+      answer.rows.forEach((row) => {
+        const sysId = raw(row, "sys_id").toLowerCase();
+        if (!group.includes(sysId)) return;
+        histories.set(sysId, { guid: raw(row, "update_guid"), history: parseLineage(raw(row, "update_guid_history")) });
+      });
+    });
+    if (ctx.shouldStop && ctx.shouldStop()) return placed;
+
+    const names = Array.from(new Set(targets.map((target) => target.row.name)));
+    const read = await readByNames(
+      ctx, "sys_update_version", names, (name) => name, nameCondition, LINEAGE_VERSION_FIELDS,
+      (count) => count * LIMITS.lineageVersionsPerName, LIMITS.lineageNamesPerRead, { displayAll: false }
+    );
+    if (ctx.shouldStop && ctx.shouldStop()) return placed;
+    const byName = new Map();
+    read.rows.map(normalizeLineageVersion).forEach((version) => {
+      /* Checked in code: the exact name. */
+      if (!names.includes(version.name)) return;
+      if (!byName.has(version.name)) byName.set(version.name, []);
+      byName.get(version.name).push(version);
+    });
+
+    const batchIds = state.includeChildren && state.scope.length > 1
+      ? new Set(state.scope.map((set) => set.sysId)) : null;
+    const unknownSets = new Set();
+    targets.forEach((target) => {
+      const { row } = target;
+      const xml = histories.get(row.sysId);
+      if (!xml || xml.guid !== row.guid) return;
+      if (read.failed.has(row.name) || read.saturated.has(row.name)) return;
+      const place = placeThere(row, target.there, xml.history, byName.get(row.name) || [],
+        batchIds || new Set([row.setId]));
+      if (!place) return;
+      if (batchIds) place.batch = true;
+      if (place.since) {
+        place.since.forEach((version) => {
+          if (version.sourceTable === "sys_update_set" && isSysId(version.source) && !state.sets.has(version.source)) {
+            unknownSets.add(version.source);
+          }
+        });
+      }
+      placed.set(target.key, place);
+    });
+    if (unknownSets.size) {
+      const sets = await readSetsById(Array.from(unknownSets), ctx);
+      sets.found.forEach((set, sysId) => state.sets.set(sysId, set));
+    }
+    placed.forEach((place) => {
+      if (!place.since) return;
+      const names = [];
+      place.since.forEach((version) => {
+        const label = sinceSource(version, state.sets);
+        if (!names.includes(label)) names.push(label);
+      });
+      place.since = { count: place.since.length, sources: names };
+    });
+    return placed;
   }
 
   const PRESENCE_RANK = {
@@ -1679,18 +1957,73 @@
     return out;
   }
 
+  /* What an older version there is missing, for its row's note. */
+  function sinceWords(since, instance) {
+    const count = since && Number.isInteger(since.count) ? since.count : 0;
+    const sources = since && Array.isArray(since.sources) ? since.sources.map(str).filter(Boolean) : [];
+    let where = "";
+    if (sources.length) {
+      const named = sources.slice(0, 2);
+      const more = sources.length - named.length;
+      where = " in " + (more ? named.join(", ") + " and " + more + " more" : named.join(" and "));
+    }
+    const body = count <= 1
+      ? "the change saved here" + where + "; promoting this set brings it too"
+      : count + " changes saved here since," + where + "; promoting this set brings them too";
+    return instance == null ? "Missing " + body : "Missing on " + instance + ": " + body;
+  }
+
+  /* ", saved there …" as a fact for the panel's card: when and in which set
+   * (or from where), or null when the other instance sent no note. */
+  function savedFact(note) {
+    if (!note || typeof note !== "object") return null;
+    const fact = { on: str(note.on), set: str(note.set), from: str(note.from) };
+    return fact.on || fact.set || fact.from ? fact : null;
+  }
+
   /*
    * The other instance's answer as text: presence lines and per-row notes.
    * `reply` is what the worker returned, already rebuilt from its allowlist;
    * `request` is what was sent; `rows` the rows on screen; `origin` the
-   * instance checked, for the links on each row.
+   * instance checked, for the links on each row; `placed` what
+   * session.placeRemote found, by row key, for rows that run another
+   * version there.
+   *
+   * A row whose own version was there and has since been replaced (moved
+   * true) says so, whatever its placing: promoting it again undoes a change
+   * made there. Built and earlier, which read as safe, need moved false, the
+   * other instance's word that this version was never there; without it the
+   * row keeps "runs another version".
+   *
+   * A row a newer update of this batch replaces (verdict "batch") is never
+   * placed: promoting leaves that newer update, not this one. When what runs
+   * there is another update of this batch, exactly (guid and hash), the row
+   * says so, in grey, and counts towards a match, whatever `moved` says;
+   * otherwise moved true still says changed there since (that instance moved
+   * off this version, or backed it out, to something outside the batch, and
+   * promoting the batch undoes that too), and anything else keeps "runs
+   * another version", the batch's newest update answering for the record. Measured on a test instance's release batches, 165 of
+   * 273 rows the other instance had once run were such rows, running the
+   * batch's own newer update there. The reverse, the newest update finding
+   * an older update of the batch there, is placed as an earlier save when
+   * its history names that update among the batch's own saves.
    */
-  function remoteView(reply, request, rows, instance, origin) {
+  function remoteView(reply, request, rows, instance, origin, placed) {
     const lines = [];
     const perRow = {};
+    const parts = {};
     const links = {};
-    const counts = { runs: 0, same: 0, other: 0, otherStale: 0, none: 0, cant: 0 };
+    const counts = {
+      runs: 0, same: 0, inBatch: 0, inBatchNewest: 0, built: 0, earlier: 0, behind: 0, diverged: 0, moved: 0, other: 0,
+      otherStale: 0, none: 0, cant: 0,
+    };
+    const placing = placed && typeof placed.get === "function" ? placed : new Map();
     const verdictByKey = new Map(rows.map((row) => [row.key, row.verdict]));
+    /* This view's updates by guid: across the whole batch when it is one. */
+    const byGuid = new Map();
+    rows.forEach((row) => {
+      if (row && REMOTE_GUID.test(str(row.guid))) byGuid.set(row.guid, row);
+    });
     const copies = Array.isArray(reply.copies) ? reply.copies : [];
     const clones = new Set(Array.isArray(reply.clones) ? reply.clones : []);
     const bySet = request.setIds.map(() => []);
@@ -1761,41 +2094,119 @@
       if (reply.contentFailure) {
         lines.push({ kind: "warn", text: contentFailureText(reply.contentFailure, instance, reply.sourceImpersonating) });
       }
-      return { lines, perRow, counts: null, links };
+      return { lines, perRow, parts, counts: null, links };
     }
     const content = reply.content;
     const saved = Array.isArray(reply.saved) ? reply.saved : [];
     const found = Array.isArray(reply.found) ? reply.found : [];
+    const moved = Array.isArray(reply.moved) ? reply.moved : [];
+    const running = Array.isArray(reply.running) ? reply.running : [];
     const sent = Array.isArray(request.records) ? request.records : [];
+    /* What runs there is another update of this view, exactly: the same
+     * record, guid and hash. */
+    const siblingThere = (key, index) => {
+      const there = LINEAGE_ENTRY.exec(str(running[index]));
+      const sibling = there ? byGuid.get(there[1]) : null;
+      return sibling && sibling.key !== key && str(sibling.hash) === there[2] &&
+        sent[index] && sibling.name === sent[index].name ? sibling : null;
+    };
+    /* One answer, said twice from the same pieces: as the row's sentence
+     * (perRow) and in parts for the panel's card, where the instance is the
+     * card's heading. `then` is what promoting would do; `thenHere`, when
+     * given, is how the sentence says it. */
+    const answer = (key, kind, words, options) => {
+      const o = options || {};
+      perRow[key] = {
+        kind,
+        text: "On " + instance + ": " + lowerFirst(words) + (o.already ? " (already stale here)" : "") + savedWords(o.note) +
+          (o.matched ? " (matched by content)" : "") + (o.then ? ". " + (o.thenHere || o.then) : ""),
+      };
+      parts[key] = {
+        kind,
+        say: words,
+        notes: [o.already ? "already stale here" : "", o.matched ? "matched by content" : ""].filter(Boolean),
+        saved: savedFact(o.note),
+        then: o.then || "",
+      };
+    };
     request.keys.forEach((key, index) => {
       const status = content[index] || "unknown";
       if (origin) links[key] = remoteLinks(found[index], sent[index], origin, status);
       if (status === "runs") {
         counts.runs += 1;
+        parts[key] = { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" };
         return;
       }
+      const note = saved[index];
       if (status === "same") {
         counts.same += 1;
-        perRow[key] = { kind: "same", text: "On " + instance + ": same content under another update" + savedWords(saved[index]) };
+        answer(key, "same", "Same content under another update", { note });
       } else if (status === "other") {
-        counts.other += 1;
         const already = verdictByKey.get(key) === "stale";
-        if (already) counts.otherStale += 1;
-        perRow[key] = {
-          kind: "other",
-          text: "On " + instance + ": runs another version" + (already ? " (already stale here)" : "") + savedWords(saved[index]),
-        };
+        const place = placing.get(key) || null;
+        const matched = Boolean(place && place.byContent);
+        const neverThere = moved[index] === false;
+        const replacedInBatch = verdictByKey.get(key) === "batch";
+        const sibling = replacedInBatch ? siblingThere(key, index) : null;
+        if (sibling) {
+          /* Its newest in this batch when nothing in the batch replaces it
+           * and its own reading is sure. */
+          const newest = sibling.verdict !== "batch" && sibling.verdict !== "cant";
+          counts.inBatch += 1;
+          if (newest) counts.inBatchNewest += 1;
+          answer(key, "inbatch", "Runs " + (newest ? "this batch's newest update of it" : "another update of this batch"), { note });
+        } else if (replacedInBatch && moved[index] !== true) {
+          counts.other += 1;
+          answer(key, "other", "Runs another version", { note });
+        } else if (moved[index] === true) {
+          /* Including a row its batch replaces, when what runs there now is
+           * no update of this batch: that instance had this row's version and
+           * moved off it (or backed it out), and promoting the batch undoes
+           * that too. */
+          counts.moved += 1;
+          answer(key, "moved", "Had this set's version, and it has since been changed",
+            { note, already, then: "Promoting this set again undoes that change" });
+        } else if (place && place.kind === "built" && neverThere) {
+          counts.built += 1;
+          answer(key, "built", "Runs the version this set was built on", { note, already, matched });
+        } else if (place && place.kind === "earlier" && neverThere) {
+          counts.earlier += 1;
+          answer(key, "earlier", "Runs an earlier save of this " + (place.batch ? "batch" : "set"), { note, already, matched });
+        } else if (place && place.kind === "behind") {
+          counts.behind += 1;
+          answer(key, "behind", "Runs an older version of this update", {
+            note, already, matched, then: sinceWords(place.since), thenHere: sinceWords(place.since, instance),
+          });
+        } else if (place && place.kind === "diverged") {
+          counts.diverged += 1;
+          answer(key, "diverged", "Runs a version that isn't in this update's history",
+            { note, already, then: "Promoting this set replaces it" });
+        } else {
+          counts.other += 1;
+          if (already) counts.otherStale += 1;
+          answer(key, "other", "Runs another version", { note, already });
+        }
       } else if (status === "none") {
         counts.none += 1;
-        perRow[key] = { kind: "none", text: "On " + instance + ": no readable current version" };
+        answer(key, "none", "No readable current version");
       } else {
         counts.cant += 1;
-        perRow[key] = { kind: "cant", text: "On " + instance + ": can't tell" };
+        answer(key, "cant", "Can't tell");
       }
     });
     request.filtered.forEach((key) => {
       counts.cant += 1;
-      perRow[key] = { kind: "cant", text: "On " + instance + ": can't tell" };
+      answer(key, "cant", "Can't tell");
+    });
+    /* Rows past what a check sends: in parts only, so the panel can mark
+     * them, rather than leave them looking like rows that match there. */
+    const asked = new Set(request.keys.concat(request.filtered));
+    rows.forEach((row) => {
+      if (!row || row.key == null || asked.has(row.key)) return;
+      parts[row.key] = {
+        kind: "unsent", say: "Not compared", notes: [], saved: null,
+        then: "Check on compares the first " + LIMITS.remoteRecords.toLocaleString() + " updates checked here",
+      };
     });
     const compared = request.keys.length + request.filtered.length;
     if (compared && counts.runs === compared) {
@@ -1808,12 +2219,29 @@
           ? instance + " matches so far: it runs this set's version for " + all + " compared."
           : instance + " matches: it runs this set's version for " + all + ".",
       });
+    } else if (compared && counts.runs + counts.inBatchNewest === compared) {
+      /* The rest run the newest update of their record in this batch, which
+       * is what promoting it leaves. */
+      lines.push({
+        kind: "ok",
+        text: request.unsent || request.partial
+          ? instance + " matches so far: every record compared runs this batch's newest update of it."
+          : instance + " matches: every record runs this batch's newest update of it.",
+      });
     } else if (compared) {
       const one = (count, single, plural) => count + " " + (count === 1 ? single : plural);
       const bits = [
         instance + " runs this set's version for " + counts.runs + " of " + one(compared, "record", "records"),
       ];
       if (counts.same) bits.push(one(counts.same, "has", "have") + " the same content under another update");
+      if (counts.inBatch) bits.push(one(counts.inBatch, "runs", "run") + " another update of this batch");
+      if (counts.built) bits.push(one(counts.built, "runs", "run") + " the version this set was built on");
+      if (counts.earlier) {
+        bits.push(one(counts.earlier, "runs", "run") + " an earlier save of this " + (request.setIds.length > 1 ? "batch" : "set"));
+      }
+      if (counts.behind) bits.push(one(counts.behind, "runs", "run") + " an older version, missing changes saved here since");
+      if (counts.diverged) bits.push(one(counts.diverged, "runs", "run") + " a version that isn't in its update's history");
+      if (counts.moved) bits.push(counts.moved + " had this set's version and changed it since");
       if (counts.other) {
         const stale = !counts.otherStale ? ""
           : counts.other === 1 ? " (already stale here)"
@@ -1822,8 +2250,24 @@
       }
       if (counts.none) bits.push(one(counts.none, "has", "have") + " no readable current version there");
       if (counts.cant) bits.push(counts.cant + " can't tell");
+      /* Every record there runs this set's version, its content, or a
+       * version this set was built on: promoting it overwrites nothing made
+       * there. Said only when the history placed at least one, and "so far"
+       * while some updates weren't compared. */
+      const built = counts.built + counts.earlier;
+      if (built && counts.runs + counts.same + counts.inBatch + built === compared) {
+        lines.push({
+          kind: "ok",
+          text: request.unsent || request.partial
+            ? "So far, promoting this set replaces nothing changed on " + instance +
+              ": every record compared runs this set's version or one it was built on."
+            : "Promoting this set replaces nothing changed on " + instance +
+              ": every record there runs this set's version or one it was built on.",
+        });
+      }
       /* Same content there is told, not flagged: the content matches. */
-      lines.push({ kind: counts.other || counts.none || counts.cant ? "differs" : "content", text: bits.join("; ") + "." });
+      const differs = counts.other || counts.behind || counts.diverged || counts.moved || counts.none || counts.cant;
+      lines.push({ kind: differs ? "differs" : "content", text: bits.join("; ") + "." });
     }
     if (request.unsent) {
       lines.push({
@@ -1831,7 +2275,7 @@
         text: "Compared the first " + LIMITS.remoteRecords.toLocaleString() + " checked updates there.",
       });
     }
-    return { lines, perRow, counts, links };
+    return { lines, perRow, parts, counts, links };
   }
 
   function impersonatingNote(flag) {
@@ -1893,6 +2337,8 @@
     walkBatch,
     createSession,
     remoteRequest,
+    parseLineage,
+    placeThere,
     remoteView,
     remoteProblem,
     retrievedScreen,
@@ -1923,5 +2369,9 @@
     remoteLinks,
     presenceFailureText,
     contentFailureText,
+    /* Version Lens places the update that runs here with it, as a state of
+     * one row: { rows, sets, includeChildren, scope }, where scope names the
+     * set holding the update and, when it was moved, the set it was saved in. */
+    placeRemote,
   };
 })();

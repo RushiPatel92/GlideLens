@@ -119,7 +119,8 @@ test("58: the Update Set Lens export surface is a superset; classifyRows adds on
   assert.deepStrictEqual(Object.keys(result.current), ["byName", "failed", "saturated"]);
   const row = plain(result.rows[0]);
   assert.deepStrictEqual(Object.keys(row), ["key", "sysId", "name", "type", "target", "action", "setId", "verdict", "reason",
-    "text", "flags", "who", "notes", "links", "asRetrieved", "newerSetId", "newerSetName", "newerSetState", "guid", "hash"]);
+    "text", "flags", "who", "notes", "links", "asRetrieved", "newerSetId", "newerSetName", "newerSetState", "guid", "hash",
+    "explain", "newerSave"]);
   assert.strictEqual(row.verdict, "stale");
   assert.strictEqual(row.text, "Newer version in “Newer”");
   assert.strictEqual(row.newerSetState, "In progress");
@@ -288,7 +289,14 @@ test("61: records that share a name pass the worker's request check, and the exp
     source: id(700), source_table: "sys_update_set", sys_created_on: "2026-10-30 12:00:00" }] });
   const reply = await exporter.exportUpdateSetStatus({ requestId: "r", setIds: checked.setIds, records: checked.records });
   assert.deepStrictEqual(plain(reply.content), ["runs", "other", "same", "runs"]);
-  assert.ok(worker.checkedUpdateSetExport(reply, checked), "and the reply passes the worker's allowlist");
+  /* What a placing needs comes back by index too: what runs there, and
+   * whether this record's own version was ever there. */
+  assert.deepStrictEqual(plain(reply.running), [null, guid(1) + ":1", null, null]);
+  assert.deepStrictEqual(plain(reply.moved), [null, false, null, null]);
+  const allowed = worker.checkedUpdateSetExport(reply, checked);
+  assert.ok(allowed, "and the reply passes the worker's allowlist");
+  assert.deepStrictEqual(plain(allowed.running), [null, guid(1) + ":1", null, null]);
+  assert.deepStrictEqual(plain(allowed.moved), [null, false, null, null]);
 });
 
 /* ------------------------------------------------------------------ *
@@ -307,7 +315,11 @@ test("62: the section reads only through the shared route, sends the check with 
   assert.ok(!/SN_TABLE_GET|snGetMany|readFromPageFrames/.test(code), "never the fan-out reads");
   assert.ok(!/\bfetch\(|\bmethod\s*:|POST|PATCH|PUT\b/.test(code), "no write");
   const types = Array.from(code.matchAll(/type: "([A-Z_]+)"/g)).map((match) => match[1]);
-  assert.deepStrictEqual(Array.from(new Set(types)).sort(), ["INJECT_VERSION_LENS", "OPEN_URL", "UPDATE_SET_REMOTE_CHECK"]);
+  assert.deepStrictEqual(Array.from(new Set(types)).sort(), ["INJECT_VERSION_LENS", "UPDATE_SET_REMOTE_CHECK"]);
+  /* Links open through Update Set Lens's openLensUrl (OPEN_URL, behind on a
+   * middle-click) and openOnCheckedInstance, both outside this section. */
+  assert.ok(/onOpenUrl: \(url, opts\) => openLensUrl\(url, opts\)/.test(code));
+  assert.ok(/onOpenRemote: \(target, opts\) => openOnCheckedInstance\(target, opts\)/.test(code));
 
   /* Placement: after IMPERSONATE, so the exporter harness's span never holds it. */
   const exporterSpan = between(contentSource, "const UPDATE_SET_EXPORT_PROGRESS_MS", "/* =====================================================================\n * IMPERSONATE");
@@ -373,4 +385,70 @@ test("62: the section reads only through the shared route, sends the check with 
   await section.checkVersionsElsewhere(empty, THERE, 8, section.sequence());
   assert.strictEqual(sent.length, 1);
   assert.deepStrictEqual(ui.calls[1], [{ state: "error", message: "Nothing here to look for there." }, 8]);
+});
+
+test("62b: another version there is placed before the answer is drawn; a failed placing or drawing never leaves the panel busy", async () => {
+  const sandbox = loadEngines();
+  const recorded = (n) => ({ sys_recorded_at: "1a1b" + String(n * 10).padStart(14, "0") });
+  const instance = fakeInstance({
+    metadata: [{ sys_id: id(77), sys_class_name: "sys_script_include", sys_update_name: NAME, sys_name: "x", sys_scope: "global" }],
+    sets: [setRow(1, { state: "in progress", name: "Open 1" }), setRow(2, { state: "complete", name: "Done 2" })],
+    xml: [
+      xmlRow(id(1), NAME, guid(12), "12", { update_guid_history: [12, 9].map((n) => guid(n) + ":" + n).join(","),
+        sys_updated_by: "dev.one", sys_updated_on: "2026-10-05 10:00:00" }),
+      xmlRow(id(2), NAME, guid(9), "9", { sys_updated_by: "dev.two", sys_updated_on: "2026-10-03 10:00:00" }),
+    ],
+    versions: [
+      versionRow(NAME, id(1), "current", guid(12), "12", "2026-10-05 10:00:00", recorded(12)),
+      versionRow(NAME, id(2), "previous", guid(9), "9", "2026-10-03 10:00:00", recorded(9)),
+    ],
+  });
+  const ctx = { origin: HERE, transport: instance.transport };
+  const session = sandbox.SNVersionLens.createSession(await sandbox.SNVersionLens.resolveRecord(id(77), "", ctx), ctx);
+  await session.run();
+
+  const ui = fakeUi();
+  ui.isOpen = () => true;
+  const reply = {
+    ok: true, copies: [], clones: [], content: ["other", "other", "runs"],
+    running: [guid(9) + ":9", null, null], moved: [false, null, null],
+  };
+  const deps = (engine) => ({
+    chrome: { runtime: { sendMessage: async () => reply } },
+    location: { origin: HERE },
+    globalThis: { SNVersionLens: engine, SNVersionLensUI: ui },
+    prefillInstanceLabel: () => "TEST",
+    claimUpdateSetCheckPanel: () => {},
+    releaseUpdateSetCheckPanel: () => {},
+    UPDATE_SET_REMOTE_REPLY_CEILING_MS: 1000,
+  });
+  const section = loadSection(deps(sandbox.SNVersionLens));
+  await section.checkVersionsElsewhere(session, THERE, 7, section.sequence());
+  assert.deepStrictEqual(ui.calls[0], [{ state: "busy", message: "Finding what TEST runs in this update's history…" }, 7]);
+  const [answer, token] = ui.calls[1];
+  assert.strictEqual(token, 7);
+  assert.strictEqual(answer.state, "done");
+  assert.deepStrictEqual(answer.lines[0], {
+    kind: "ok", text: "Promoting “Open 1” replaces nothing changed on TEST: it runs the version that set was built on.",
+  });
+  assert.strictEqual(ui.calls.length, 2);
+
+  /* A placing that throws leaves it unplaced; an answer that can't be drawn says so. */
+  const throwing = Object.assign({}, session, {
+    view: () => session.view(),
+    placeRemote: async () => { throw new Error("read failed"); },
+  });
+  await section.checkVersionsElsewhere(throwing, THERE, 8, section.sequence());
+  assert.strictEqual(ui.calls.length, 3, "one call: the finished answer, nothing left busy");
+  assert.deepStrictEqual([ui.calls[2][0].state, ui.calls[2][1]], ["done", 8]);
+  assert.deepStrictEqual(ui.calls[2][0].lines, [
+    { kind: "differs", text: "TEST runs another version: the one in “Done 2” here (Complete)." },
+  ], "unplaced: today's line only");
+  const broken = loadSection(deps(Object.assign({}, sandbox.SNVersionLens, {
+    collisionRemoteView: () => { throw new Error("bad shape"); },
+  })));
+  await broken.checkVersionsElsewhere(session, THERE, 9, broken.sequence());
+  const last = ui.calls[ui.calls.length - 1];
+  assert.strictEqual(last[0].state, "error");
+  assert.strictEqual(last[1], 9);
 });

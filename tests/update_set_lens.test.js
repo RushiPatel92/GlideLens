@@ -425,6 +425,52 @@ test("the same record captured twice in one set keeps both rows, flagged, each c
   assert.deepStrictEqual(plain(view.rows.map((row) => row.verdict).sort()), ["cant", "current"]);
 });
 
+test("fewer updates read than the count says is a list that may be incomplete, and a check then matches only so far", async () => {
+  /* A page that comes back short (rows an ACL removed, say) ends its chunk:
+   * the count is the only sign some were never read. */
+  const world = staleWorld();
+  world.versions = [versionRow(NAME(77), SET, "current", guid(1), "-1234567", "2026-10-01 10:00:00")];
+  const short = fakeInstance(world, {
+    answer: (request) => (request.table === "sys_update_xml" && request.options.withTotal
+      ? { ok: true, result: [{ sys_id: { value: id(9000), display_value: id(9000) } }], total: 3 }
+      : undefined),
+  });
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(world.sets[0]) }, ctxFor(short), {});
+  await session.prepare();
+  await session.start();
+  const view = session.view();
+  assert.strictEqual(view.rows.length, 1);
+  assert.strictEqual(view.rows[0].verdict, "current");
+  assert.ok(view.banners.some((banner) => /disagree; the list may be incomplete/.test(banner.text)));
+  const request = session.remoteRequest();
+  assert.strictEqual(request.partial, true);
+  assert.ok(short.requests.length && short.requests.every((read) => read.options.expectedOrigin === ORIGIN),
+    "every read here names the instance it expects to answer");
+  const shown = lens.remoteView({ copies: [], clones: [], content: ["runs"] }, request, view.rows, "exampletest", ORIGIN);
+  assert.strictEqual(shown.lines[shown.lines.length - 1].text,
+    "exampletest matches so far: it runs this set's version for its one record compared.");
+  /* The same set, every row read: a match. */
+  const whole = lens.createSession({ kind: "set", set: lens.normalizeSet(world.sets[0]) }, ctxFor(fakeInstance(world)), {});
+  await whole.prepare();
+  await whole.start();
+  assert.strictEqual(whole.remoteRequest().partial, false);
+});
+
+test("a batch past its depth limit is only a match so far", async () => {
+  const chain = [setRow(1, { name: "Release batch" })];
+  for (let level = 2; level <= 9; level += 1) chain.push(setRow(level, { parent: id(level - 1) }));
+  const world = {
+    sets: chain,
+    xml: [xmlRow(id(2), NAME(5), guid(5), "5")],
+    versions: [versionRow(NAME(5), id(2), "current", guid(5), "5", "2026-10-01 10:00:00")],
+  };
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(chain[0]) }, ctxFor(fakeInstance(world)), {});
+  await session.prepare();
+  await session.start();
+  assert.ok(session.view().banners.some((banner) => /nested more than 6 levels/.test(banner.text)));
+  assert.strictEqual(session.remoteRequest().partial, true);
+});
+
 test("a count with no readable rows says the updates can't be read; a refused version read is Partial", async () => {
   const subject = setRow(1);
   const hidden = fakeInstance({ sets: [subject], xml: [] }, {
@@ -967,7 +1013,9 @@ test("content: runs needs guid and hash, conflict and failures are Can't tell, a
   const request = remoteRequestFor(rows);
   const shown = lens.remoteView({ copies: [], clones: [], content: ["other", "runs", "same", "conflict", "none", "unknown"] },
     request, rows, "exampletest");
-  assert.deepStrictEqual(plain(shown.counts), { runs: 1, same: 1, other: 1, otherStale: 1, none: 1, cant: 2 });
+  assert.deepStrictEqual(plain(shown.counts),
+    { runs: 1, same: 1, inBatch: 0, inBatchNewest: 0, built: 0, earlier: 0, behind: 0, diverged: 0, moved: 0, other: 1,
+      otherStale: 1, none: 1, cant: 2 });
   assert.strictEqual(shown.perRow.k0.text, "On exampletest: runs another version (already stale here)");
   assert.ok(!shown.perRow.k1, "Runs this set's version stays in the summary only");
   assert.strictEqual(shown.perRow.k2.text, "On exampletest: same content under another update");
@@ -1124,7 +1172,7 @@ test("Open record falls back to the table and sys_id in the name only when a rea
     { ok: true, url: ORIGIN + "/x_example_data.do?sys_id=" + id(20) });
   assert.deepStrictEqual(instance.requests[1], {
     table: "x_example_data", query: "sys_id=" + id(20), fields: "sys_id", limit: 1,
-    options: { displayAll: false, suppressPagination: true },
+    options: { displayAll: false, suppressPagination: true, expectedOrigin: ORIGIN },
   });
   assert.deepStrictEqual(plain(await lens.recordUrl("x_example_data_" + id(21), ctx)),
     { ok: false, message: "No record found for this update." }, "gone: nothing to open");
@@ -1188,4 +1236,617 @@ test("why a check could not run, by the worker's code", () => {
     assert.match(lens.remoteProblem({ ok: false, code }, "exampletest", "exampletest.service-now.com"), pattern, code);
   }
   assert.match(lens.remoteProblem({ ok: false, code: "refused", sourceImpersonating: true }, "exampletest"), /impersonating someone there/);
+});
+
+/* ------------------------------------------------------------------ *
+ * 11. Placing what runs there in the update's own history
+ * ------------------------------------------------------------------ */
+
+/* sys_recorded_at: hexadecimal, a fixed width here, growing with n. */
+const REC = (n) => "1a1b" + String(n).padStart(14, "0");
+const LV = (n, extra) => Object.assign({
+  name: NAME(77), state: "previous", source: SET, sourceTable: "sys_update_set",
+  guid: guid(n), hash: String(n), recordedAt: REC(n * 10),
+}, extra);
+const HIST = (...ns) => ns.map((n) => ({ guid: guid(n), hash: String(n) }));
+const THIS = { guid: guid(12), hash: "12", setId: SET };
+const OWN = new Set([SET]);
+/* This set saved twice (12, 11) on top of 9 from another set; 8 is a save
+ * made on another instance, so no version here; 7 and 5 are older still. */
+const LINEAGE = HIST(12, 11, 9, 8, 7, 5);
+const LOCAL = [
+  LV(12, { state: "current" }),
+  LV(11),
+  LV(9, { source: OTHER }),
+  LV(7, { source: id(3) }),
+  LV(5, { source: id(4) }),
+];
+const place = (there, history, versions) =>
+  plain(lens.placeThere(THIS, there, history || LINEAGE, versions || LOCAL, OWN));
+
+test("an update's history parses as guid:hash entries, newest first, and an odd entry refuses all of it", () => {
+  const text = guid(2) + ":-2147483648," + guid(1) + ":17,";
+  assert.deepStrictEqual(plain(lens.parseLineage(text)), [{ guid: guid(2), hash: "-2147483648" }, { guid: guid(1), hash: "17" }]);
+  assert.deepStrictEqual(plain(lens.parseLineage("")), []);
+  assert.strictEqual(lens.parseLineage(guid(1) + ":17," + guid(2).toUpperCase() + ":3"), null);
+  assert.strictEqual(lens.parseLineage(guid(1) + ":0x1f"), null, "never hex");
+  assert.strictEqual(lens.parseLineage(guid(1)), null, "a guid without its hash");
+});
+
+test("placing: the version it was built on, an earlier save of this set, an older version, and a diverged one", () => {
+  assert.deepStrictEqual(place({ guid: guid(9), hash: "9" }), { kind: "built", byContent: false });
+  assert.deepStrictEqual(place({ guid: guid(11), hash: "11" }), { kind: "earlier", byContent: false });
+  const one = place({ guid: guid(8), hash: "8" });
+  assert.strictEqual(one.kind, "behind");
+  assert.deepStrictEqual(one.since.map((version) => version.guid), [guid(9)], "a save with no version here is not counted");
+  const two = place({ guid: guid(5), hash: "5" });
+  assert.deepStrictEqual(two.since.map((version) => version.guid), [guid(9), guid(7)]);
+  assert.deepStrictEqual(place({ guid: guid(99), hash: "99" }), { kind: "diverged" });
+});
+
+test("placing by content: the parent's content is built on, an older one is behind, both flagged", () => {
+  assert.deepStrictEqual(place({ guid: guid(99), hash: "9" }), { kind: "built", byContent: true });
+  assert.deepStrictEqual(place({ guid: guid(99), hash: "11" }), { kind: "earlier", byContent: true });
+  const behind = place({ guid: guid(99), hash: "7" });
+  assert.strictEqual(behind.kind, "behind");
+  assert.strictEqual(behind.byContent, true);
+  /* A save made elsewhere with the parent's content is the parent's content. */
+  const twin = HIST(12, 11, 9, 8, 7, 5);
+  twin[3].hash = "9";
+  assert.deepStrictEqual(place({ guid: guid(8), hash: "9" }, twin), { kind: "built", byContent: true });
+});
+
+test("the history is trusted only when its parent is the newest version that ran here before this set's first save", () => {
+  const there = { guid: guid(9), hash: "9" };
+  assert.strictEqual(place(there, HIST(13, 11, 9)), null, "its first entry must be this capture");
+  /* Another set saved the record between this set's two saves. */
+  const interleaved = LOCAL.concat([LV(10, { source: OTHER, recordedAt: REC(115) })]);
+  assert.strictEqual(place(there, HIST(12, 10, 11, 9, 7, 5), interleaved), null);
+  /* The parent it names has no version here. */
+  assert.strictEqual(place(there, HIST(12, 11, 8, 9, 7, 5)), null);
+  /* A version here older than this set that the history doesn't name. */
+  assert.strictEqual(place({ guid: guid(99), hash: "99" }, HIST(12, 11)), null);
+  assert.strictEqual(place(there, LINEAGE, LOCAL.map((version, index) => (index === 2 ? Object.assign({}, version, { recordedAt: "" }) : version))), null,
+    "a version that can't be ordered");
+  assert.strictEqual(place(there, LINEAGE, LOCAL.concat([LV(6, { source: id(5), recordedAt: REC(90) })])), null,
+    "two versions recorded at the same moment can't be ordered");
+  assert.strictEqual(place(there, LINEAGE, []), null);
+  /* A backed-out version between the parent and this set never ran last. */
+  const backedOut = LOCAL.concat([LV(10, { source: id(6), state: "backedout", recordedAt: REC(100) })]);
+  assert.deepStrictEqual(place(there, LINEAGE, backedOut), { kind: "built", byContent: false });
+  /* A record this set creates: no parent and nothing ran here before. */
+  assert.deepStrictEqual(place({ guid: guid(99), hash: "99" }, HIST(12, 11), LOCAL.slice(0, 2)), { kind: "diverged" });
+});
+
+test("in a batch, saves in any of its sets are its own", () => {
+  const batch = new Set([SET, OTHER]);
+  const history = HIST(12, 11, 9, 7, 5);
+  assert.deepStrictEqual(plain(lens.placeThere(THIS, { guid: guid(9), hash: "9" }, history, LOCAL, batch)),
+    { kind: "earlier", byContent: false });
+  assert.deepStrictEqual(plain(lens.placeThere(THIS, { guid: guid(7), hash: "7" }, history, LOCAL, batch)),
+    { kind: "built", byContent: false });
+  /* After the batch's saves comes a save with no version here: not trusted. */
+  assert.strictEqual(lens.placeThere(THIS, { guid: guid(7), hash: "7" }, LINEAGE, LOCAL, batch), null);
+});
+
+test("a version saved here after this set began, that its history doesn't name, is never placed by content", () => {
+  /* 13 reverted the record to its parent's content, after this set's saves;
+   * that instance runs 13 and never had 12. Content-matching it to the
+   * parent would call undoing the revert safe. */
+  const reverted = LOCAL.concat([LV(13, { source: id(7), hash: "9", recordedAt: REC(130) })]);
+  assert.deepStrictEqual(place({ guid: guid(13), hash: "9" }, LINEAGE, reverted), { kind: "diverged" });
+  /* An older copy of the parent's content, from before this set: still the
+   * parent's content. */
+  const copy = LOCAL.concat([LV(6, { source: id(8), hash: "9", recordedAt: REC(60) })]);
+  assert.deepStrictEqual(place({ guid: guid(6), hash: "9" }, LINEAGE, copy), { kind: "built", byContent: true });
+});
+
+test("what runs there is its guid, however that instance wrote it; this capture's own entry must match its content", () => {
+  /* Measured from a development instance to its sandbox: 28 rows ran a guid
+   * of the history with another hash, and the payloads differed only in how
+   * they were written (a currency attribute, the order of related records). */
+  assert.deepStrictEqual(place({ guid: guid(9), hash: "99" }), { kind: "built", byContent: false }, "the parent, written differently");
+  assert.deepStrictEqual(place({ guid: guid(11), hash: "99" }, HIST(12, 11, 8, 9, 7, 5)), null,
+    "with an untrusted parent, an own save placed past the check must match exactly");
+  assert.strictEqual(place({ guid: guid(8), hash: "99" }).kind, "behind");
+  assert.strictEqual(plain(lens.placeThere({ guid: guid(12), hash: "999", setId: SET }, { guid: guid(9), hash: "9" }, LINEAGE, LOCAL, OWN)),
+    null, "a history whose first entry isn't this capture's content: the same instance writes the same way");
+});
+
+test("one of its own saves there, exactly, is an earlier save even when the parent can't be trusted", () => {
+  /* The parent this history names, 8, has no version here: nothing past it is placed. */
+  const untrusted = HIST(12, 11, 8, 9, 7, 5);
+  assert.strictEqual(place({ guid: guid(9), hash: "9" }, untrusted), null);
+  assert.deepStrictEqual(place({ guid: guid(11), hash: "11" }, untrusted), { kind: "earlier", byContent: false });
+  assert.strictEqual(place({ guid: guid(11), hash: "99" }, untrusted), null, "its guid with other content");
+  assert.strictEqual(place({ guid: guid(99), hash: "11" }, untrusted), null, "its content under another guid");
+  assert.strictEqual(place({ guid: guid(12), hash: "12" }, untrusted), null, "this capture itself");
+  /* Another set saved the record between, so 11 is past the first save that isn't its own. */
+  const interleaved = LOCAL.concat([LV(10, { source: OTHER, recordedAt: REC(115) })]);
+  assert.strictEqual(place({ guid: guid(11), hash: "11" }, HIST(12, 10, 11, 8, 7, 5), interleaved), null);
+  /* In a batch: another set's update of the record. */
+  const batch = new Set([SET, OTHER]);
+  assert.deepStrictEqual(plain(lens.placeThere(THIS, { guid: guid(9), hash: "9" }, HIST(12, 9, 8, 7, 5), LOCAL, batch)),
+    { kind: "earlier", byContent: false });
+});
+
+const historyText = (...ns) => ns.map((n) => guid(n) + ":" + n).join(",");
+
+function placingWorld() {
+  const rec = (n) => ({ sys_recorded_at: REC(n) });
+  const v = (name, set, state, n) => versionRow(name, set, state, guid(n), String(n), "2026-10-01 10:00:00", rec(n * 10));
+  return {
+    sets: [setRow(1, { name: "This work" }), setRow(2, { name: "Earlier work" }), setRow(3, { name: "Between work" })],
+    xml: [
+      xmlRow(SET, NAME(301), guid(12), "12", { update_guid_history: historyText(12, 11, 9) }),
+      xmlRow(SET, NAME(302), guid(22), "22", { update_guid_history: historyText(22, 21, 20, 19) }),
+      xmlRow(SET, NAME(303), guid(32), "32", { update_guid_history: historyText(32, 31) }),
+      xmlRow(SET, NAME(304), guid(42), "42", { update_guid_history: historyText(42) }),
+      xmlRow(SET, NAME(305), guid(52), "52", { update_guid_history: historyText(52) }),
+    ],
+    versions: [
+      v(NAME(301), SET, "current", 12), v(NAME(301), SET, "previous", 11), v(NAME(301), id(2), "previous", 9),
+      v(NAME(302), SET, "current", 22), v(NAME(302), id(2), "previous", 21), v(NAME(302), id(3), "previous", 20),
+      v(NAME(302), id(2), "previous", 19),
+      v(NAME(303), SET, "current", 32), v(NAME(303), SET, "previous", 31),
+      v(NAME(304), SET, "current", 42),
+      v(NAME(305), SET, "current", 52),
+    ],
+  };
+}
+
+/* The other instance's answer, by name: a status, what runs there, and
+ * whether this update's own version was there (false, read and never there,
+ * unless given). */
+function placingReply(request, byName) {
+  const content = request.records.map((record) => (byName[record.name] || ["runs"])[0]);
+  return {
+    copies: [],
+    clones: [],
+    content,
+    running: request.records.map((record) => (byName[record.name] || [])[1] || null),
+    moved: request.records.map((record, index) => {
+      const given = (byName[record.name] || [])[2];
+      return given !== undefined ? given : content[index] === "other" ? false : null;
+    }),
+  };
+}
+
+const keyOf = (view, name) => view.rows.find((row) => row.name === name).key;
+
+test("after a check, rows that run another version are placed from reads here, never by guid or hash", async () => {
+  const { session, instance, view } = await classifyWorld(placingWorld());
+  assert.ok(view.rows.every((row) => row.verdict === "current"));
+  const request = session.remoteRequest();
+  const reply = placingReply(request, {
+    [NAME(301)]: ["other", guid(9) + ":9"],
+    [NAME(302)]: ["other", guid(19) + ":19"],
+    [NAME(303)]: ["other", guid(99) + ":99"],
+    [NAME(305)]: ["other", null],
+  });
+  const before = instance.requests.length;
+  let calls = 0;
+  const placed = await session.placeRemote(reply, request, () => { calls += 1; });
+  assert.strictEqual(calls, 1, "told once, before its first read");
+  assert.strictEqual(placed.get(keyOf(view, NAME(301))).kind, "built");
+  const behind = placed.get(keyOf(view, NAME(302)));
+  assert.strictEqual(behind.kind, "behind");
+  assert.deepStrictEqual(plain(behind.since), { count: 2, sources: ["“Earlier work”", "“Between work”"] });
+  assert.strictEqual(placed.get(keyOf(view, NAME(303))).kind, "diverged");
+  assert.ok(!placed.has(keyOf(view, NAME(304))), "runs this set's version: nothing to place");
+  assert.ok(!placed.has(keyOf(view, NAME(305))), "no version named there: nothing to place");
+
+  const reads = instance.requests.slice(before);
+  const xmlReads = reads.filter((read) => read.table === "sys_update_xml");
+  assert.strictEqual(xmlReads.length, 1);
+  assert.match(xmlReads[0].query, /^sys_idIN[0-9a-f,]+$/);
+  assert.strictEqual(xmlReads[0].fields, "sys_id,update_guid,update_guid_history");
+  assert.strictEqual(xmlReads[0].options.displayAll, false);
+  const versionReads = reads.filter((read) => read.table === "sys_update_version");
+  assert.strictEqual(versionReads.length, 1);
+  assert.strictEqual(versionReads[0].query, "nameIN" + [NAME(301), NAME(302), NAME(303)].join(","), "every state, by name");
+  assert.ok(versionReads[0].fields.split(",").includes("sys_recorded_at"));
+  assert.ok(reads.every((read) => !/(?:^|\^)(?:update_guid|payload_hash)(?:=|IN)/.test(read.query)));
+  assert.ok(reads.every((read) => read.options.suppressPagination === true));
+  assert.ok(reads.some((read) => read.table === "sys_update_set" && /sys_id(IN|=)/.test(read.query)), "the sets between, by id");
+
+  const shown = lens.remoteView(reply, request, session.view().rows, "exampletest", ORIGIN, placed);
+  assert.strictEqual(shown.perRow[keyOf(view, NAME(301))].text, "On exampletest: runs the version this set was built on");
+  assert.strictEqual(shown.perRow[keyOf(view, NAME(302))].text,
+    "On exampletest: runs an older version of this update. Missing on exampletest: 2 changes saved here since, " +
+    "in “Earlier work” and “Between work”; promoting this set brings them too");
+  assert.strictEqual(shown.perRow[keyOf(view, NAME(303))].text,
+    "On exampletest: runs a version that isn't in this update's history. Promoting this set replaces it");
+  assert.strictEqual(shown.perRow[keyOf(view, NAME(305))].text, "On exampletest: runs another version");
+});
+
+test("nothing to place reads nothing; a capture saved again since, or a failed read, leaves its row unplaced", async () => {
+  const quiet = await classifyWorld(placingWorld());
+  const request = quiet.session.remoteRequest();
+  const before = quiet.instance.requests.length;
+  let calls = 0;
+  const none = await quiet.session.placeRemote(placingReply(request, {}), request, () => { calls += 1; });
+  assert.strictEqual(none.size, 0);
+  assert.strictEqual(calls, 0);
+  assert.strictEqual(quiet.instance.requests.length, before, "no read at all");
+
+  const world = placingWorld();
+  const moved = await classifyWorld(world);
+  /* Saved again after the run: the row on screen is no longer this capture. */
+  world.xml[0].update_guid = guid(13);
+  const movedRequest = moved.session.remoteRequest();
+  const movedPlaced = await moved.session.placeRemote(
+    placingReply(movedRequest, { [NAME(301)]: ["other", guid(9) + ":9"], [NAME(303)]: ["other", guid(99) + ":99"] }), movedRequest);
+  assert.ok(!movedPlaced.has(keyOf(moved.view, NAME(301))));
+  assert.strictEqual(movedPlaced.get(keyOf(moved.view, NAME(303))).kind, "diverged");
+
+  const failing = fakeInstance(placingWorld(), {
+    answer: (read) => (read.table === "sys_update_xml" && /update_guid_history/.test(read.fields)
+      ? { ok: false, status: 500, error: "HTTP 500" } : undefined),
+  });
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(placingWorld().sets[0]) }, ctxFor(failing), {});
+  await session.prepare();
+  await session.start();
+  const failedRequest = session.remoteRequest();
+  const failed = await session.placeRemote(placingReply(failedRequest, { [NAME(301)]: ["other", guid(9) + ":9"] }), failedRequest);
+  assert.strictEqual(failed.size, 0);
+});
+
+test("placed rows read as such, keep the stale mark and the where-saved note, and say what an older one is missing", () => {
+  const rows = ["stale", "current", "current", "current", "current", "current"].map((verdict, index) => ({ key: "k" + index, verdict }));
+  const placed = new Map([
+    ["k0", { kind: "built", byContent: false }],
+    ["k1", { kind: "earlier", byContent: true }],
+    ["k2", { kind: "behind", byContent: false, since: { count: 1, sources: ["“Earlier work”"] } }],
+    ["k3", { kind: "diverged" }],
+  ]);
+  const shown = lens.remoteView({
+    copies: [],
+    clones: [],
+    content: ["other", "other", "other", "other", "other", "runs"],
+    saved: [{ on: "18-10-2025 10:23:56", set: "Earlier work" }, null, null, { on: "1-11-2026 09:00:00", set: "Default" }, null, null],
+    moved: [false, false, false, false, false, null],
+  }, remoteRequestFor(rows), rows, "exampletest", ORIGIN, placed);
+  assert.strictEqual(shown.perRow.k0.kind, "built");
+  assert.strictEqual(shown.perRow.k0.text,
+    "On exampletest: runs the version this set was built on (already stale here), saved there 18-10-2025 10:23:56 in Earlier work");
+  assert.strictEqual(shown.perRow.k1.text, "On exampletest: runs an earlier save of this set (matched by content)");
+  assert.strictEqual(shown.perRow.k2.text,
+    "On exampletest: runs an older version of this update. Missing on exampletest: the change saved here in “Earlier work”; " +
+    "promoting this set brings it too");
+  assert.strictEqual(shown.perRow.k3.text,
+    "On exampletest: runs a version that isn't in this update's history, saved there 1-11-2026 09:00:00 in Default. " +
+    "Promoting this set replaces it");
+  assert.strictEqual(shown.perRow.k4.text, "On exampletest: runs another version");
+  assert.deepStrictEqual(plain(shown.counts),
+    { runs: 1, same: 0, inBatch: 0, inBatchNewest: 0, built: 1, earlier: 1, behind: 1, diverged: 1, moved: 0, other: 1,
+      otherStale: 0, none: 0, cant: 0 });
+  assert.deepStrictEqual(plain(shown.lines.slice(1)), [{
+    kind: "differs",
+    text: "exampletest runs this set's version for 1 of 6 records; 1 runs the version this set was built on; " +
+      "1 runs an earlier save of this set; 1 runs an older version, missing changes saved here since; " +
+      "1 runs a version that isn't in its update's history; 1 runs another version.",
+  }], "no all-clear while anything is older, diverged or unplaced");
+});
+
+test("each answer also comes in parts for the panel's card: what it runs, notes, where it was saved, and what promoting does", () => {
+  const rows = ["stale", "current", "current", "current", "current", "current", "current", "current"]
+    .map((verdict, index) => ({ key: "k" + index, verdict }));
+  const placed = new Map([
+    ["k0", { kind: "built", byContent: false }],
+    ["k1", { kind: "earlier", byContent: true, batch: true }],
+    ["k2", { kind: "behind", byContent: false, since: { count: 2, sources: ["“A”", "“B”", "“C”"] } }],
+    ["k3", { kind: "diverged" }],
+  ]);
+  const request = remoteRequestFor(rows);
+  request.filtered = ["k8"];
+  const shown = lens.remoteView({
+    copies: [],
+    clones: [],
+    content: ["other", "other", "other", "other", "other", "runs", "same", "none"],
+    saved: [{ on: "18-10-2025 10:23:56", set: "Earlier work" }, null, null, { on: "1-11-2026 09:00:00", from: "an upgrade" }, null, null,
+      { on: "2-11-2026 08:00:00", set: "Twin" }, null],
+    moved: [false, false, false, false, true, null, null, null],
+  }, request, rows.concat([{ key: "k8", verdict: "current" }, { key: "k9", verdict: "current" }]), "exampletest", ORIGIN, placed);
+  assert.deepStrictEqual(plain(shown.parts.k9), { kind: "unsent", say: "Not compared", notes: [], saved: null,
+    then: "Check on compares the first 2,000 updates checked here" }, "a row past what the check sent");
+  assert.strictEqual(shown.perRow.k9, undefined, "and never a difference");
+  const part = (key) => plain(shown.parts[key]);
+  assert.deepStrictEqual(part("k0"), { kind: "built", say: "Runs the version this set was built on", notes: ["already stale here"],
+    saved: { on: "18-10-2025 10:23:56", set: "Earlier work", from: "" }, then: "" });
+  assert.deepStrictEqual(part("k1"), { kind: "earlier", say: "Runs an earlier save of this batch", notes: ["matched by content"],
+    saved: null, then: "" });
+  assert.deepStrictEqual(part("k2"), { kind: "behind", say: "Runs an older version of this update", notes: [], saved: null,
+    then: "Missing 2 changes saved here since, in “A”, “B” and 1 more; promoting this set brings them too" });
+  assert.deepStrictEqual(part("k3"), { kind: "diverged", say: "Runs a version that isn't in this update's history", notes: [],
+    saved: { on: "1-11-2026 09:00:00", set: "", from: "an upgrade" }, then: "Promoting this set replaces it" });
+  assert.deepStrictEqual(part("k4"), { kind: "moved", say: "Had this set's version, and it has since been changed", notes: [],
+    saved: null, then: "Promoting this set again undoes that change" });
+  assert.deepStrictEqual(part("k5"), { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" },
+    "a row that matches has parts, but no sentence");
+  assert.strictEqual(shown.perRow.k5, undefined);
+  assert.deepStrictEqual(part("k6"), { kind: "same", say: "Same content under another update", notes: [],
+    saved: { on: "2-11-2026 08:00:00", set: "Twin", from: "" }, then: "" });
+  assert.deepStrictEqual(part("k7"), { kind: "none", say: "No readable current version", notes: [], saved: null, then: "" });
+  assert.deepStrictEqual(part("k8"), { kind: "cant", say: "Can't tell", notes: [], saved: null, then: "" }, "a row left out of the request");
+  /* The sentence is the same pieces with the instance named first. */
+  assert.strictEqual(shown.perRow.k2.text, "On exampletest: runs an older version of this update. Missing on exampletest: " +
+    "2 changes saved here since, in “A”, “B” and 1 more; promoting this set brings them too");
+  assert.strictEqual(shown.perRow.k3.text, "On exampletest: runs a version that isn't in this update's history, " +
+    "saved there 1-11-2026 09:00:00 from an upgrade. Promoting this set replaces it");
+  assert.strictEqual(shown.perRow.k4.text,
+    "On exampletest: had this set's version, and it has since been changed. Promoting this set again undoes that change");
+  assert.deepStrictEqual(plain(lens.remoteView({ copies: [], clones: [] }, request, rows, "exampletest", ORIGIN).parts), {},
+    "nothing compared, nothing in parts");
+});
+
+test("a row also hands the panel its explanation without the verdict word, and the newer save as facts", async () => {
+  const { view } = await classifyWorld(staleWorld());
+  const stale = view.rows[0];
+  assert.strictEqual(stale.verdict, "stale");
+  assert.strictEqual(stale.explain, stale.text);
+  assert.deepStrictEqual(plain(stale.newerSave), { by: "dev.one", on: "D(2026-10-05 10:00:00)", committedHere: false },
+    "the time as the instance displays it");
+  const committed = (await classifyWorld(staleWorld({ newerSet: { remote_sys_id: id(40) } }))).view.rows[0];
+  assert.strictEqual(committed.newerSave.committedHere, true);
+  const unversioned = staleWorld();
+  unversioned.versions = [];
+  const cant = (await classifyWorld(unversioned)).view.rows[0];
+  assert.strictEqual(cant.verdict, "cant");
+  assert.strictEqual(cant.text, "Can't tell: No readable version history.");
+  assert.strictEqual(cant.explain, "No readable version history.");
+  assert.strictEqual(cant.newerSave, null);
+});
+
+test("when every record there runs this set's version or one it was built on, promoting replaces nothing there", () => {
+  const rows = ["current", "current", "current"].map((verdict, index) => ({ key: "k" + index, verdict }));
+  const placed = new Map([["k1", { kind: "built", byContent: false }], ["k2", { kind: "earlier", byContent: false, batch: true }]]);
+  const reply = { copies: [], clones: [], content: ["runs", "other", "other"], moved: [null, false, false] };
+  const lines = (request) => plain(lens.remoteView(reply, request, rows, "exampletest", ORIGIN, placed).lines.slice(1));
+  assert.deepStrictEqual(lines(remoteRequestFor(rows, [SET, OTHER])), [
+    { kind: "ok", text: "Promoting this set replaces nothing changed on exampletest: every record there runs this set's version or one it was built on." },
+    { kind: "content", text: "exampletest runs this set's version for 1 of 3 records; 1 runs the version this set was built on; 1 runs an earlier save of this batch." },
+  ]);
+  assert.strictEqual(lines(Object.assign(remoteRequestFor(rows), { partial: true }))[0].text,
+    "So far, promoting this set replaces nothing changed on exampletest: every record compared runs this set's version or one it was built on.");
+  const many = lens.remoteView({ copies: [], clones: [], content: ["other"] }, remoteRequestFor(rows.slice(0, 1)), rows.slice(0, 1),
+    "exampletest", ORIGIN, new Map([["k0", { kind: "behind", since: { count: 3, sources: ["“A”", "“B”", "an upgrade"] } }]]));
+  assert.strictEqual(many.perRow.k0.text, "On exampletest: runs an older version of this update. Missing on exampletest: " +
+    "3 changes saved here since, in “A”, “B” and 1 more; promoting this set brings them too");
+  assert.strictEqual(many.lines[1].kind, "differs");
+});
+
+test("a row whose own version was there and has since been changed says so, whatever its history places", () => {
+  /* Measured on a test instance's release batches: a set committed there
+   * after a newer one names that newer version as its parent, so the
+   * history alone showed 7 rows as safe that had run this version first. */
+  const rows = ["stale", "current", "current", "current", "current"].map((verdict, index) => ({ key: "k" + index, verdict }));
+  const placed = new Map([
+    ["k0", { kind: "built", byContent: false }],
+    ["k1", { kind: "earlier", byContent: false }],
+    ["k2", { kind: "diverged" }],
+    ["k3", { kind: "behind", byContent: false, since: { count: 1, sources: ["“A”"] } }],
+  ]);
+  const shown = lens.remoteView({
+    copies: [],
+    clones: [],
+    content: ["other", "other", "other", "other", "other"],
+    saved: [{ on: "12-10-2026 05:44:43", set: "Newer work" }, null, null, null, null],
+    moved: [true, true, true, false, true],
+  }, remoteRequestFor(rows), rows, "exampletest", ORIGIN, placed);
+  assert.deepStrictEqual(["k0", "k1", "k2", "k3", "k4"].map((key) => shown.perRow[key].kind),
+    ["moved", "moved", "moved", "behind", "moved"]);
+  assert.strictEqual(shown.perRow.k0.text,
+    "On exampletest: had this set's version, and it has since been changed (already stale here), " +
+    "saved there 12-10-2026 05:44:43 in Newer work. Promoting this set again undoes that change");
+  assert.strictEqual(shown.counts.moved, 4);
+  assert.strictEqual(shown.counts.built + shown.counts.earlier, 0);
+  assert.deepStrictEqual(plain(shown.lines.slice(1)), [{
+    kind: "differs",
+    text: "exampletest runs this set's version for 0 of 5 records; 1 runs an older version, missing changes saved here since; " +
+      "4 had this set's version and changed it since.",
+  }], "no all-clear");
+});
+
+test("built and earlier need the other instance's word that this version was never there", () => {
+  const rows = ["current", "current"].map((verdict, index) => ({ key: "k" + index, verdict }));
+  const placed = new Map([["k0", { kind: "built", byContent: false }], ["k1", { kind: "earlier", byContent: false }]]);
+  const shown = (moved) => lens.remoteView(Object.assign({ copies: [], clones: [], content: ["other", "other"] }, moved),
+    remoteRequestFor(rows), rows, "exampletest", ORIGIN, placed);
+  const kinds = (view) => [view.perRow.k0.kind, view.perRow.k1.kind];
+  assert.deepStrictEqual(kinds(shown({ moved: [false, false] })), ["built", "earlier"]);
+  assert.strictEqual(shown({ moved: [false, false] }).lines[1].kind, "ok");
+  /* Not read there (a failed or overfull read, or no answer at all): unknown. */
+  assert.deepStrictEqual(kinds(shown({ moved: [null, false] })), ["other", "earlier"]);
+  assert.deepStrictEqual(kinds(shown({})), ["other", "other"]);
+  assert.deepStrictEqual(kinds(shown({ moved: null })), ["other", "other"]);
+  assert.ok(shown({}).lines.every((line) => line.kind !== "ok"), "no all-clear without that word");
+  assert.strictEqual(shown({}).perRow.k0.text, "On exampletest: runs another version");
+});
+
+test("a row whose own version was there is never placed, so it costs no read here", async () => {
+  const { session, instance, view } = await classifyWorld(placingWorld());
+  const request = session.remoteRequest();
+  const before = instance.requests.length;
+  const placed = await session.placeRemote(placingReply(request, {
+    [NAME(301)]: ["other", guid(9) + ":9", true],
+    [NAME(303)]: ["other", guid(99) + ":99"],
+  }), request);
+  assert.ok(!placed.has(keyOf(view, NAME(301))));
+  assert.strictEqual(placed.get(keyOf(view, NAME(303))).kind, "diverged");
+  const versionReads = instance.requests.slice(before).filter((read) => read.table === "sys_update_version");
+  assert.deepStrictEqual(versionReads.map((read) => read.query), ["name=" + NAME(303)], "only the row still to place");
+  const none = await session.placeRemote(placingReply(request, { [NAME(301)]: ["other", guid(9) + ":9", true] }), request);
+  assert.strictEqual(none.size, 0);
+});
+
+/* The other instance's answer for a batch, by each row's own guid: a
+ * status, what runs there, and whether this update's own version was there. */
+function batchReply(request, byGuid, saved) {
+  const at = (record, index) => (byGuid[record.guid] || ["runs", null, null])[index];
+  return {
+    copies: [],
+    clones: [],
+    content: request.records.map((record) => at(record, 0)),
+    running: request.records.map((record) => at(record, 1)),
+    moved: request.records.map((record) => at(record, 2)),
+    saved: request.records.map((record) => (saved && saved[record.guid]) || null),
+  };
+}
+
+test("a row its batch replaces, where the other instance runs the batch's newer update, is told so in grey and costs no read", async () => {
+  /* Measured on a test instance's release batches: 165 of 273 rows that
+   * instance had once run were rows like this one, running the batch's own
+   * newer update, and each was told "changed there since". */
+  const world = batchWorld();
+  const instance = fakeInstance(world);
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(world.sets[0]) }, ctxFor(instance), {});
+  await session.prepare();
+  await session.start();
+  const replaced = session.view().rows.find((row) => row.guid === guid(1));
+  assert.strictEqual(replaced.verdict, "batch");
+  const request = session.remoteRequest();
+  const reply = batchReply(request, { [guid(1)]: ["other", guid(2) + ":2", true] },
+    { [guid(1)]: { on: "29-10-2026 07:34:36", set: "Child B" } });
+  const before = instance.requests.length;
+  let calls = 0;
+  const placed = await session.placeRemote(reply, request, () => { calls += 1; });
+  assert.strictEqual(placed.size, 0);
+  assert.strictEqual(calls, 0);
+  assert.strictEqual(instance.requests.length, before, "no read for a row its batch replaces");
+  /* Nor when that instance never had this update's own version. */
+  const neverThere = batchReply(request, { [guid(1)]: ["other", guid(2) + ":2", false] });
+  assert.strictEqual((await session.placeRemote(neverThere, request)).size, 0);
+  assert.strictEqual(instance.requests.length, before);
+
+  const shown = lens.remoteView(reply, request, session.view().rows, "exampletest", ORIGIN, placed);
+  assert.deepStrictEqual(plain(shown.perRow[replaced.key]), {
+    kind: "inbatch",
+    text: "On exampletest: runs this batch's newest update of it, saved there 29-10-2026 07:34:36 in Child B",
+  });
+  assert.strictEqual(shown.counts.moved, 0, "had this update's version, but the batch itself moved it on");
+  assert.strictEqual(shown.counts.inBatch, 1);
+  assert.deepStrictEqual(plain(shown.lines[shown.lines.length - 1]),
+    { kind: "ok", text: "exampletest matches: every record runs this batch's newest update of it." });
+});
+
+test("a row its batch replaces is never told it changed there, nor placed: only the batch's own update there is grey", () => {
+  const R = (key, verdict, n, g) => ({ key, verdict, name: NAME(n), guid: guid(g), hash: String(g) });
+  const rows = [
+    R("k0", "batch", 1, 200), // there runs k1, the batch's newest
+    R("k1", "current", 1, 201),
+    R("k2", "batch", 2, 210), // there runs k3, which the batch replaces too
+    R("k3", "batch", 2, 211),
+    R("k4", "current", 2, 212), // the newest, and there runs an older one: another version
+    R("k5", "batch", 3, 220), // there runs a version from outside the batch, and once ran this one
+    R("k6", "batch", 4, 230), // k7's guid there, with other content, and once ran this one
+    R("k7", "current", 4, 231),
+    R("k8", "batch", 5, 240), // k1's update there, but k1 is another record
+    R("k9", "batch", 6, 250), // a reply naming this row's own update: not a sibling
+  ];
+  const request = {
+    setIds: [SET, OTHER],
+    records: rows.map((row) => ({ name: row.name, guid: row.guid, hash: row.hash })),
+    keys: rows.map((row) => row.key),
+    filtered: [],
+    unsent: 0,
+  };
+  const there = (g, hash) => guid(g) + ":" + hash;
+  const placed = new Map([["k2", { kind: "built", byContent: false }], ["k5", { kind: "diverged" }]]);
+  const shown = lens.remoteView({
+    copies: [],
+    clones: [],
+    content: ["other", "runs", "other", "runs", "other", "other", "other", "runs", "other", "other"],
+    running: [there(201, 201), null, there(211, 211), null, there(211, 211), there(999, 999), there(231, 999), null,
+      there(201, 201), there(250, 250)],
+    moved: [true, null, false, null, false, true, true, null, false, false],
+  }, request, rows, "exampletest", ORIGIN, placed);
+  assert.deepStrictEqual(["k0", "k2", "k4", "k5", "k6", "k8", "k9"].map((key) => shown.perRow[key].kind),
+    ["inbatch", "inbatch", "other", "moved", "moved", "other", "other"]);
+  assert.strictEqual(shown.perRow.k0.text, "On exampletest: runs this batch's newest update of it");
+  assert.strictEqual(shown.perRow.k2.text, "On exampletest: runs another update of this batch");
+  /* Moved off this version to something outside the batch: said, whatever
+   * its batch does, and never placed (k5's placing is ignored). */
+  assert.strictEqual(shown.perRow.k5.text,
+    "On exampletest: had this set's version, and it has since been changed. Promoting this set again undoes that change");
+  assert.deepStrictEqual(plain(shown.counts), {
+    runs: 3, same: 0, inBatch: 2, inBatchNewest: 1, built: 0, earlier: 0, behind: 0, diverged: 0, moved: 2, other: 3,
+    otherStale: 0, none: 0, cant: 0,
+  });
+  assert.deepStrictEqual(plain(shown.lines.slice(1)), [{
+    kind: "differs",
+    text: "exampletest runs this set's version for 3 of 10 records; 2 run another update of this batch; " +
+      "2 had this set's version and changed it since; 3 run another version.",
+  }]);
+});
+
+test("the batch's own update there counts towards a match, and towards replacing nothing", () => {
+  const R = (key, verdict, g) => ({ key, verdict, name: NAME(1), guid: guid(g), hash: String(g) });
+  const request = (rows, extra) => Object.assign({
+    setIds: [SET, OTHER],
+    records: rows.map((row) => ({ name: row.name, guid: row.guid, hash: row.hash })),
+    keys: rows.map((row) => row.key),
+    filtered: [],
+    unsent: 0,
+  }, extra);
+  const reply = (content, running, moved) => ({ copies: [], clones: [], content, running, moved });
+
+  const newest = [R("k0", "batch", 300), R("k1", "current", 301)];
+  const matched = reply(["other", "runs"], [guid(301) + ":301", null], [true, null]);
+  assert.deepStrictEqual(plain(lens.remoteView(matched, request(newest), newest, "exampletest", ORIGIN).lines.slice(1)),
+    [{ kind: "ok", text: "exampletest matches: every record runs this batch's newest update of it." }]);
+  assert.strictEqual(lens.remoteView(matched, request(newest, { partial: true }), newest, "exampletest", ORIGIN).lines[1].text,
+    "exampletest matches so far: every record compared runs this batch's newest update of it.");
+  /* There runs an update the batch replaces, and the newest wasn't compared:
+   * not a match, even so far. */
+  const older = [R("k0", "batch", 320), R("k1", "batch", 321)];
+  const unsure = lens.remoteView(reply(["runs", "other"], [null, guid(320) + ":320"], [null, false]),
+    request(older, { unsent: 1 }), older, "exampletest", ORIGIN);
+  assert.strictEqual(unsure.perRow.k1.kind, "inbatch");
+  assert.ok(unsure.lines.every((line) => line.kind !== "ok"));
+
+  /* There runs the batch's first update: no match, but promoting moves it
+   * forward through the batch's own work. */
+  const first = [R("k0", "batch", 310), R("k1", "batch", 311), R("k2", "current", 312)];
+  const shown = lens.remoteView(
+    reply(["runs", "other", "other"], [null, guid(310) + ":310", guid(310) + ":310"], [null, false, false]),
+    request(first), first, "exampletest", ORIGIN, new Map([["k2", { kind: "earlier", byContent: false, batch: true }]]));
+  assert.deepStrictEqual(plain(shown.lines.slice(1)), [
+    { kind: "ok", text: "Promoting this set replaces nothing changed on exampletest: every record there runs this set's version or one it was built on." },
+    { kind: "content", text: "exampletest runs this set's version for 1 of 3 records; 1 runs another update of this batch; 1 runs an earlier save of this batch." },
+  ]);
+});
+
+test("the batch's newest update, where the other instance runs an older update of the batch, is an earlier save of it", async () => {
+  /* Measured on a test instance's release batches: 12 of 16 such rows named
+   * a parent with no version here, and kept "runs another version". */
+  const check = async (history) => {
+    const world = batchWorld();
+    world.xml[1].update_guid_history = history;
+    world.versions.forEach((version, index) => { version.sys_recorded_at = REC([20, 10, 30][index]); });
+    const session = lens.createSession({ kind: "set", set: lens.normalizeSet(world.sets[0]) }, ctxFor(fakeInstance(world)), {});
+    await session.prepare();
+    await session.start();
+    const rows = session.view().rows;
+    const newest = rows.find((row) => row.guid === guid(2));
+    assert.strictEqual(newest.verdict, "current");
+    assert.strictEqual(rows.find((row) => row.guid === guid(1)).verdict, "batch");
+    const request = session.remoteRequest();
+    const reply = batchReply(request, { [guid(2)]: ["other", guid(1) + ":1", false] });
+    const placed = await session.placeRemote(reply, request);
+    return { placed, newest, shown: lens.remoteView(reply, request, rows, "exampletest", ORIGIN, placed) };
+  };
+  const placedIt = await check(historyText(2, 1, 8));
+  assert.deepStrictEqual(plain(placedIt.placed.get(placedIt.newest.key)), { kind: "earlier", byContent: false, batch: true });
+  assert.deepStrictEqual(plain(placedIt.shown.perRow[placedIt.newest.key]),
+    { kind: "earlier", text: "On exampletest: runs an earlier save of this batch" });
+  assert.deepStrictEqual(plain(placedIt.shown.lines.slice(1)), [
+    { kind: "ok", text: "Promoting this set replaces nothing changed on exampletest: every record there runs this set's version or one it was built on." },
+    { kind: "content", text: "exampletest runs this set's version for 2 of 3 records; 1 runs an earlier save of this batch." },
+  ]);
+  /* A save from outside the batch between the two: promoting would also
+   * bring that save, so the row is not placed. */
+  const between = await check(historyText(2, 8, 1));
+  assert.strictEqual(between.placed.size, 0);
+  assert.strictEqual(between.shown.perRow[between.newest.key].kind, "other");
 });
