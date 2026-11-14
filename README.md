@@ -44,12 +44,15 @@ walkthrough.
 - **Update Set Lens**: before you promote an update set, see which of its
   updates are no longer the version this instance runs, and where the newer
   one is — then check, on another instance open in your browser, whether the
-  set got there and whether that instance runs the same versions. Read-only on
-  both.
+  set got there and whether that instance runs the same versions, or the ones
+  this set was built on, so promoting it overwrites nothing made there.
+  Read-only on both.
 - **Version Lens**: from one record — a business rule, script include, UI
   policy, catalog item, translation, dictionary entry — see which update sets
   captured it, who saved it there and when, whether two open sets hold
-  different versions of it, and which version runs now. Read-only.
+  different versions of it, and which version runs now — then check another
+  instance, and whether promoting the version that runs here would overwrite
+  anything changed there. Read-only.
 
 ---
 
@@ -303,7 +306,9 @@ Stale or Can't tell row says nothing needs attention. A batch parent that holds 
 updates itself checks its child sets, nested ones included, which you can
 switch off. A run checks up to 2,000 updates and offers **Check the next
 2,000**. Only captured changes are compared: a change made without an update
-set capturing it has no version to compare. An opened row links to the
+set capturing it has no version to compare. An opened row shows a card for
+this instance, headed by its name: the verdict and why, the facts behind it
+(the child set, when and by whom a newer version was saved) and links to the
 update, its **record** (found the way ServiceNow's own Show Related Record
 finds it) and its version history.
 
@@ -317,7 +322,51 @@ line turns amber, each such row gets an amber badge, and a **Differs on**
 filter lists just those rows (same content under another update is shown in
 grey, since the content matches). Where it runs another version, the row says when that version was saved
 there and in which update set, so a change made there after the commit is
-easy to spot. An opened row then also links, on that instance, to the
+easy to spot. Once checked, an opened row gets a second card beside the first,
+headed by the other instance's name and edged in its badge's colour: what it
+runs, when and in which set that was saved, what promoting would do, and its
+links there. The cards sit side by side on a wide panel and stack on a narrow
+one.
+
+It also places that version in the update's own history, the list of earlier
+versions ServiceNow keeps on each update, across update sets:
+
+- **Previous version there** (teal) — the instance runs the version this set
+  was built on, so promoting the set moves it forward and overwrites nothing
+  made there. **Earlier save there** (teal) is the same for an earlier save of
+  this set, or, on a batch's newest update of a record, an older update of
+  the same batch.
+- **Older version there** (amber) — it runs a version further back. The row
+  names the update sets whose changes it is missing; promoting this set brings
+  those changes along.
+- **Diverged there** (amber) — it runs a version that isn't in the update's
+  history: changed there, or arrived another way. Promoting this set replaces
+  it.
+- **Changed there since** (amber) — that instance already had this set's
+  version, and it has since been replaced or backed out there. This overrides
+  any placing above: promoting the set again would undo that change.
+- **Batch version there** (grey) — on a row marked **In this batch**, the
+  instance runs another update of the same batch. Promoting the batch leaves
+  its newest update of that record, not this one, so the row is not judged on
+  its own: the batch's newest update answers for the record. If that instance
+  had this row's version and moved off it to something outside the batch, the
+  row still says **Changed there since**.
+- **Not compared there** (grey) — a check compares the first 2,000 updates
+  checked here; rows after those are marked rather than left looking like
+  rows that match.
+
+When every record there runs this set's version or one it was built on, a
+teal line says promoting replaces nothing changed there. Both that line and
+"matches" say "so far" while any of the set may be unread: updates not yet
+checked, a batch past 1,000 sets or 6 levels, or fewer updates read than the
+set's count. A history records the
+order changes were committed on its own instance, not the order they were
+written, so the teal badges are shown only when that instance confirms it
+never had this set's version. The history is used only when it agrees with the
+order the versions ran in here; when it doesn't (another set saved the record
+between this set's saves, say), the row keeps **Other version there**, unless
+that instance runs one of this set's (or batch's) own saves with nothing else
+saved between. That instance's card links, there, to the
 record, the version that runs there and the record's version history, where
 you can compare its versions; a record with no current version there gets no
 history link. A record with no readable current version there
@@ -325,7 +374,8 @@ is reported as exactly that, never as missing. **Copy summary** copies counts
 only: no set, record or person name, id or link.
 
 An opened row also offers **Other sets holding it**, which opens Version Lens
-on that update's record.
+on that update's record. In both lenses a middle-click (or Ctrl/Cmd-click) on
+a link opens its page in a tab behind the current one.
 
 #### Version Lens
 
@@ -371,6 +421,36 @@ that instance: each set's state there (Committed, Previewed, Not found…) and
 states counted above the list. Copies loaded here from other instances are
 counted, not listed. **Copy summary** copies counts only.
 
+When that instance runs another version, Check on also looks it up in the
+history of the update that runs here, as Update Set Lens does for a set, and
+says first what promoting that update's set would do there:
+
+- **Replaces nothing changed** (teal) — the instance runs the version that set
+  was built on, or an earlier save of the same set.
+- **Runs an older version** (amber) — it is missing changes saved here since,
+  in the sets named, and promoting the set brings them along.
+- **Runs a version that isn't in this update's history** (amber) — promoting
+  the set replaces it.
+- **Had the version that runs here and has since changed it** (amber) —
+  promoting the set again undoes that change.
+
+The same rules apply as in Update Set Lens: the teal line needs that instance
+to confirm it never had this version, and the history is used only when it
+agrees with the order the versions ran in here; otherwise the answer stays
+"runs another version". An update moved to another set since it was saved is
+named by the set that holds it now. Nothing more is said when no named set
+holds the version that runs here (it sits in a Default, ignored or finished
+merged set, or came from an upgrade or an application install), when two sets
+hold it, or when no current version could be read here.
+
+One case stays open, as in Update Set Lens. A history records the order sets
+were committed on this instance, not the order they were written. If this
+instance committed an older set after a newer one, the older set's update
+names the newer version as the one it was built on. When the other instance
+runs that newer version and never had the older one, the line is teal, yet
+promoting brings back the older content. Keep this in mind when checking from
+an instance that receives its sets by commit, such as a test instance.
+
 **Record**
 
 | Command | Description |
@@ -381,7 +461,7 @@ counted, not listed. **Copy summary** copies counts only.
 | Playbooks | *Open playbook executions for this record* Opens Process Automation playbook executions for the current record. |
 | Playbook Updates | *Open captured updates for this playbook activity.* Listed only on a playbook (process definition) page; opens the related `sys_update_xml` customer updates. |
 | Customer Updates | *Open captured customer updates by sys_id…* Enter a record sys_id or ServiceNow URL to open its customer updates. |
-| Version Lens | *See which update sets hold this record, and which version runs…* On a record's page it opens on that record; anywhere else it asks for the record's link, `sys_id` or update name. Lists every update set on this instance that captured the record, with who saved it there and when, flags a **Potential collision** when two or more open sets hold different versions, and says which version runs now. **Check on** compares with another instance open in your browser. Read-only. See *Version Lens* above. |
+| Version Lens | *See which update sets hold this record, and which version runs…* On a record's page it opens on that record; anywhere else it asks for the record's link, `sys_id` or update name. Lists every update set on this instance that captured the record, with who saved it there and when, flags a **Potential collision** when two or more open sets hold different versions, and says which version runs now. **Check on** compares with another instance open in your browser, and says whether promoting the version that runs here would overwrite anything changed there. Read-only. See *Version Lens* above. |
 
 #### Record Lens
 

@@ -250,7 +250,39 @@ The suites cover:
   Static and run-time refusals of guid or hash reads, `payload`, `category=`
   and any `fetch`. Reading the other instance's answer: every presence state,
   several copies, origin-only, clone, not found, and the content statuses,
-  which never say "not there" or claim newer or older.
+  which never say "not there" or claim newer or older. Placing what runs
+  there in the update's own history: `guid:hash` parsing that refuses an odd
+  entry; built, an earlier own save, behind (only saves with a version here
+  counted) and diverged, by guid and by content; the cross-check refusing a
+  capture that isn't the history's head, interleaved saves, a parent with no
+  version here, a history that leaves out an older version, a blank or tied
+  `sys_recorded_at`, while a backed-out version in between is ignored; batch
+  saves as the batch's own; the session's reads (one `sys_update_xml` read by
+  `sys_id`, versions by name in every state, the sets between by id, never by
+  guid or hash), nothing read when nothing differs, a capture saved again
+  since and a failed read left unplaced; and the wording, the stale mark, the
+  where-saved note and the all-clear line, "so far" while partial. A row whose
+  own version was there and has since been changed overrides any placing,
+  costs no placing read, and stops the all-clear; built and earlier need the
+  other instance's word that this version was never there, and without it read
+  as "runs another version". A row a newer update of its batch replaces is
+  never placed (no read) and never "changed there since": another update of
+  the batch running there, matched by record, guid and hash and never the row
+  itself, is grey; anything else is "runs another version". Only the batch's
+  newest update counts towards a match, and any update of the batch counts
+  towards replacing nothing. One of its own saves there, named exactly with
+  only its own saves between, is an earlier save even when the parent can't
+  be trusted, so the batch's newest update finding an older one of the batch
+  there is teal; a save from outside the batch between them leaves it
+  unplaced. Each answer also comes in `parts` for the panel's card, built
+  from the same pieces as its sentence, and a row hands over its explanation
+  without the verdict word and its newer save as facts. From the second Fable
+  review: a later revert is never placed by content, a history whose own
+  entry has other content is never placed (what runs there is still matched
+  by guid alone), a membership that may be incomplete (fewer rows
+  than the count, a depth- or set-capped batch) matches only so far, a row
+  its batch replaces keeps Changed there since, rows past the 2,000 sent are
+  Not compared, and every read names the instance it expects.
 - `update_set_lens_ui.test.js` — the panel on the Impersonate suite's DOM
   shim: a closed shadow root with no markup path, hostile names as text,
   opening on Needs attention (or All), badges that count and filter, 100 rows
@@ -260,7 +292,22 @@ The suites cover:
   hidden until another instance is open, the other instance's answer on a row
   only where it differs, late answers and late progress dropped, the batch
   checkbox, Continue, the counts-only copy summary, the retrieved-set screen
-  and banners.
+  and banners. The placed answers' badges: Previous version and Earlier save
+  there in teal, Older version, Diverged and Changed there since in amber,
+  Batch version there in grey, and their counts in the copy summary. An
+  opened row's two cards: each instance named in bold with its role, edged in
+  its colour, alone before a check and side by side after; the verdict word,
+  the facts (child set, retrieved copy, newer save; saved time and set there)
+  and what promoting would do; each instance's links in its own card; and a
+  closed row's note naming the instance in bold. Only a row's head is a
+  button (cards and links are its sibling, named by `aria-controls`), one
+  live region announces a link that can't open, and rows past what a check
+  compared show Not compared there in grey. A middle-click or Ctrl/Cmd-click
+  on a link asks for a background tab (a right-click asks for nothing, a
+  middle press never starts autoscroll, and Other sets holding it ignores a
+  middle-click); `version_lens_ui.test.js` checks the same in Version Lens,
+  `open_url.test.js` the worker's `active: false`, and the integration suite
+  `UPDATE_SET_REMOTE_OPEN`'s boolean-only `background`.
 - `update_set_lens_integration.test.js` — the runtime boundary. The worker's
   real Check on route against simulated tabs: every refusal (a table or query
   field, sizes, a comma name, guid case and length, hex, blank, decimal and
@@ -275,7 +322,16 @@ The suites cover:
   invalid local-set id never queried, names never echoed, a beat before the
   first read and after reads without `snGetManyListeners`, signed out, a
   refused presence read, refused version reads, 40 names a read, and the
-  listener answering only the extension from the top frame.
+  listener answering only the extension from the top frame. The `running`
+  field: `guid:hash` kept on an `other` answer only and every other shape
+  refusing the reply; its budget; and, when every part of a reply fills its
+  budget at once, the placing dropped so the check still lands. The `moved`
+  field: kept as a boolean on an `other` answer only, any other type refusing
+  the reply; the exporter's read of `previous` and `backedout` versions by
+  name, 10 names a read, an overfull read split until one name is read alone,
+  replaced or backed out as true, read and absent as false, a failed, overfull
+  or late read as null. Check on places before it draws, and draws even when
+  placing fails.
 - `update_set_sim.js` — not a suite: the simulated instance both update-set
   engines run against. In-memory `sys_update_set`, `sys_update_xml`,
   `sys_update_version`, `sys_remote_update_set`, `sys_metadata` and

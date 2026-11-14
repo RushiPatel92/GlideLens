@@ -2181,6 +2181,19 @@ never used to order captures across sets: import time is not change time.
 - **The 2,000-row cap.** A run checks at most 2,000 rows and continues from the cursor on
   request; nothing pages silently to the end. A full page whose rows all
   belong to other sets stops the list instead of walking the table.
+- **The count is checked against what was read.** A page shorter than its
+  limit ends its chunk, and one that comes back short for another reason
+  (rows an ACL removed, say) would end it early. So a finished list that read
+  fewer rows than `X-Total-Count` says sets `countsDisagree`: its banner
+  says the list may be incomplete, nothing is called all clear, and a check
+  on another instance matches only "so far". The same goes for a batch past
+  its set or depth limit, a list stopped as suspect, and an unreadable
+  membership (`remoteRequest().partial`).
+- **Every read names the instance it expects.** `readTable` sends
+  `expectedOrigin: ctx.origin`, as the exporter always did: the tab's token
+  frame can be a frame embedded from another instance, and the page reader
+  refuses it instead of taking its rows for this one's. Version Lens reads
+  through the same function.
 - **Names match like the server**: `name=` ignores case and trailing spaces,
   so the code-side check folds both. Several matches go to a chooser in the
   palette and are never picked silently; Default is read from `is_default`.
@@ -2222,7 +2235,7 @@ helpers. Feature routes, never a proxy:
 | Where | Message | Carries |
 | --- | --- | --- |
 | worker | `PREFILL_SOURCE_INSTANCES` | reused as it is: origins only |
-| worker | `UPDATE_SET_REMOTE_CHECK` | an origin, up to 1,000 set ids and up to 2,000 `{ name, guid, hash }` records in; presence, per-record statuses, where-saved notes and link ids out |
+| worker | `UPDATE_SET_REMOTE_CHECK` | an origin, up to 1,000 set ids and up to 2,000 `{ name, guid, hash }` records in; presence, per-record statuses, where-saved notes, the `guid:hash` that runs instead, whether this update's own version was there and has since been replaced, and link ids out |
 | other tab, frame 0 | `UPDATE_SET_EXPORT_STATUS` | the same ids and records, and a worker-made request id, from the extension only |
 | worker | `REMOTE_READ_PROGRESS` → `UPDATE_SET_LENS_PROGRESS` | the other tab's progress, relayed to the panel's top frame |
 | worker | `UPDATE_SET_REMOTE_OPEN` | an origin and a `{ table, sysId }` or an update's `name`; opens one tab there |
@@ -2234,12 +2247,17 @@ helpers. Feature routes, never a proxy:
   that fails, and that row's answer is Can't tell, so one odd row never sinks
   the check. The worker refuses a request that still holds a failing record or
   any field it does not take: that is a bug or a forged message.
-- **The exporter builds its own six reads**: retrieved copies by
-  `remote_sys_id`, then by `origin_sys_id`, the local sets committed copies
+- **The exporter builds its own seven reads**: retrieved copies by
+  `remote_sys_id`, then by `origin_sys_id` (1,000 a read, newest first; a
+  read that comes back full is split down to single sets, so an older set's
+  copies are never crowded out and reported not found), the local sets committed copies
   point at (each id validated first), the same sys_id as a set there (clone
-  lineage, not promotion), current versions 40 names a read, and, once those
-  compared, each record's own row in `sys_metadata` by `sys_update_name`,
-  latest updated first, in the same chunks. That last read only adds links,
+  lineage, not promotion), current versions 40 names a read, then, for the
+  records answered `other`, their `previous` and `backedout` versions by name
+  (10 names a read, 250 versions a name, 1,000 for a name read alone; no read
+  starts 90 s into the export), and each record's own row in `sys_metadata` by
+  `sys_update_name`, latest updated first, in the same chunks as the current
+  versions. That last read only adds links,
   so it starts no read two minutes into the export: with each read held to
   30 s, the statuses still beat the worker's 180 s ceiling. It makes
   every one through `SN_UPDATE_SET_LENS_GET` from its own tab, with
@@ -2268,7 +2286,87 @@ helpers. Feature routes, never a proxy:
   captured history, or its history may be hidden from that account, so the
   panel says "no readable current version", never "not there". Versions on
   two instances are not ordered, so "runs another version" claims nothing
-  about which is newer.
+  about which is newer — unless the update's own history places it (below).
+- **What runs there is placed in the update's own history.** For an `other`
+  record the reply also carries that version's `"guid:hash"` (`running`, by
+  index, an `other` answer only, 32 KiB budget; dropped first if the whole
+  reply would pass 248 KiB). The asking tab then reads, here and only for
+  those rows, each update's `sys_update_xml.update_guid_history` by `sys_id`
+  (20 rows a read; it reaches about 22 KB a row) and every version of its name
+  (10 names a read, 250 versions a name, `sys_recorded_at` included). That
+  history is `guid:hash`, newest first, across sets. Entry 0 is this capture.
+  The entries after it that are saves in this set (or batch) are its own, and
+  the next one is the **parent**, the version this set was built on.
+  `placeThere` gives **built** (there runs the parent or its content),
+  **earlier** (an earlier own save), **behind** (further back; the versions
+  here between are named by set) or **diverged** (not in the history). It
+  trusts the history only when the parent is also the newest `previous` or
+  `current` version recorded here before this set's first save (or when there
+  is no parent and none). Measured on 419 updates in 25 sets of a customer
+  instance, the two agreed for 68 of the 73 that had a parent. The other five
+  were three saves interleaved with another set's and two parents with no
+  version here. All 249 updates with no parent had no older version here.
+  One placing skips that check: an own save named exactly (guid and hash)
+  before the first entry that isn't one, so only this set's (or batch's)
+  saves lie between, is **earlier** whatever the parent. In a batch that is
+  the newest update of a record finding an older update of the batch there;
+  on a test instance's release batches 12 of the 16 such rows named a parent
+  the check refused. The other 4 had a save from outside the batch between
+  the two and stay unplaced.
+  Entry 0 must carry this capture's hash as well as its guid (one instance
+  writes one version one way). What runs there is matched by guid alone: on
+  another instance the same version is often written differently. From a
+  development instance to its sandbox, 28 rows ran a guid of this history
+  with another hash; the sandbox's own history agreed it ran that version,
+  and the payloads differed only in how they were written (a currency
+  attribute, the order of related records). Requiring the hash there, as a
+  review suggested, turned 9 correct teal placings and 19 correct older ones
+  into "runs another version", so it was taken back out.
+  Content matching (`byContent`) is refused for a version this instance
+  recorded at or after this set's first save that the history doesn't name:
+  that is a later change, a revert to the parent's content say, and matching
+  it to the parent would call undoing it safe. It is **diverged** instead.
+  Anything else, a malformed entry, a capture saved again since the run, or a
+  failed read leaves the row as plain "runs another version". When every
+  record there runs this set's version, its content, the parent or an earlier
+  own save, a teal line says promoting replaces nothing changed there.
+- **A history is commit order, not authoring order, so the safe placings
+  need the other instance's word.** Committing an update prepends it to the
+  record's history on that instance. A set committed after a newer one
+  therefore names the newer version as its parent. On a test instance's
+  release batches, checked against the development instance they came from, 7
+  of 9 rows the history placed as built had once run this exact capture there.
+  In 6 the newer version was committed first; in 1 a later "restore" set had
+  put the old value back. So the reply also carries `moved`, by index, on an
+  `other` answer only: `true` when that instance holds this update's own guid
+  as a `previous` or `backedout` version (it was there and has since been
+  replaced or undone), `false` when read and not, and `null` when not read (a
+  failed or overfull read, or past its time limit). The worker keeps it as a
+  boolean on `other` only and refuses any other type. `true` shows **Changed
+  there since** whatever the placing, and such a row is never placed. **Built**
+  and **earlier**, the teal ones, need `false`; without it the row keeps "runs
+  another version". `moved` is dropped after `running` if the reply would pass
+  248 KiB, which leaves nothing teal. One case stays open: a target that never
+  had this capture, checked from a source whose sets were committed out of
+  order.
+- **A row its own batch replaces answers through the batch.** An update that
+  a newer update of the same batch replaces (verdict `batch`, In this batch)
+  is not what promoting the batch leaves, so `moved` and the placings say
+  nothing true about it. In the same release batches, 165 of 273 rows with
+  `moved` true were such rows, and the version that instance ran was the
+  batch's own newer update: it had committed both sets, in order. So such a
+  row is never placed (no read). When `running` names another row of this
+  view with the same record name, guid and hash, it shows **Batch version
+  there** in grey, whatever `moved` says. Otherwise `moved` true still shows
+  **Changed there since**: that instance had this row's version and moved off
+  it, or backed it out, to something outside the batch, and promoting the
+  batch undoes that too (4 rows in those release batches). Anything else keeps
+  "runs another version", and the batch's newest update for that record
+  carries the answer. The grey rows count
+  towards replacing nothing. Towards a match they count only when that
+  update is the batch's newest for the record, its own verdict being neither
+  `batch` nor `cant`. Then the line reads "every record runs this batch's
+  newest update of it".
 - **Links there are ids, never URLs.** `OPEN_URL` opens only the sender's own
   origin, so a row's links on the other instance go to
   `UPDATE_SET_REMOTE_OPEN` as an origin and either `{ table, sysId }` (the
@@ -2292,7 +2390,16 @@ ServiceNow's own Show Related Record does: `sys_metadata` by
 `sys_metadata`, so a `<table>_<sys_id>` name is tried next and opened only
 once a read finds that row. A link on the other instance carries an origin
 and ids for `UPDATE_SET_REMOTE_OPEN`. A link that can't open says why
-beside the row's links for six seconds.
+beside the row's links for six seconds. Because the links are buttons, a
+middle-click arrives as `auxclick` (button 1), never `click`: the panel takes
+it, and a Ctrl/Cmd-click, as "open behind" and passes `{ background: true }`
+to the callback. content.js adds `background: true` to `OPEN_URL` or
+`UPDATE_SET_REMOTE_OPEN` only then, and the worker (which accepts only a
+boolean there) opens the tab with `active: false` in the same place. A middle
+press is `preventDefault`ed on `mousedown` so Windows' autoscroll never
+starts. The links that change the panel (Other sets holding it, and Version
+Lens's Check this set) ignore a middle-click. Version Lens's panel does the
+same.
 
 The panel draws snapshots from the engine's session and owns only how they
 are looked at. It opens on Needs attention (Stale and Can't tell) when there
@@ -2306,7 +2413,12 @@ compared runs this set's version says the instance matches ("so far" while
 some updates weren't compared). A difference is said in amber: the check's
 count line, the row's note, a second badge on the row, and a **Differs on**
 filter chip that lapses with the check. Same content there stays grey,
-because the content matches. A run is bound to its panel:
+because the content matches, and a version this set was built on (Previous
+version there, Earlier save there) is teal, because promoting moves it
+forward. Changed there since, where that instance had this set's version and
+has replaced it, is amber like every other difference. Batch version there,
+on a row its batch replaces where that instance runs another update of the
+same batch, is grey like same content. A run is bound to its panel:
 closing it, opening another, or choosing another instance drops late results.
 A check answers for the rows it was sent, so switching the batch or checking
 the next 2,000 clears it too, and drops an answer still on its way. Enter
@@ -2314,6 +2426,42 @@ and Space on a link inside a row belong to the link, never the row's
 fold. **Copy summary** holds counts only. An opened row also offers **Other
 sets holding it**, which closes this panel and opens Version Lens on that
 update's name.
+
+An opened row is two cards, one per instance, each a `role="group"` headed
+by the instance's name in bold and its role ("this instance", "checked
+instance"), and edged in its verdict's colour: pink Stale, amber Can't tell
+or a difference there, teal where promoting replaces nothing made there
+(this set's version, Previous version, Earlier save), grey otherwise. They sit
+side by side where two fit (300 px each) and stack where they don't; before
+a check, this instance's card stands alone at reading width. The cards take
+their words in pieces, not by parsing sentences. A presented row carries
+`explain` (its text without the verdict word) and `newerSave` (`by`, `on`,
+`committedHere`), so the card says "Stale." in colour, then why, then the
+facts: the child set, "Read from the retrieved copy", and when and by whom the
+newer version was saved. `remoteView` returns `parts` beside `perRow`, keyed
+the same, built from the same pieces as each sentence: `say`, `notes`
+("already stale here", "matched by content"), `saved` (`on` plus `set` or
+`from`) and `then` (what promoting would do). Only `parts` has an entry,
+kind `runs`, for a row that matches there, so a matching row's card says so
+in teal while `perRow`, and the Differs on filter, stay as they were. This
+instance's name comes from content.js (`here`, the host's first label, as
+Check on names the other). A closed row keeps one line: its child set beside
+its name, and where it differs there, the instance's name in bold and what
+it runs. In a narrow panel the type and action move under the name.
+
+What opens and folds a row is its head (the row's line, and a closed row's
+note), the `role="button"` with `aria-expanded` and `aria-controls` naming
+the detail. The cards are the head's sibling: inside a button their links and
+labelled facts would be flattened for a screen reader, and selecting a set
+name to copy it would fold the row. A link that can't open is said beside the
+row and read out once by the panel's single live region (`role="status"`,
+visually hidden), which no repaint replaces; a region created already filled,
+as the row's note is on every paint, is often not announced. A row past the
+2,000 a check sends gets a grey **Not compared there** badge and card (a
+`parts` entry of kind `unsent`, never in `perRow`, so never a difference),
+rather than looking like a row that matches. content.js draws the answer
+inside a try: one that can't be drawn shows the "wasn't in the expected
+shape" error instead of leaving the panel busy with Check disabled.
 
 ## Version Lens
 
@@ -2405,7 +2553,52 @@ running version's set when there is no capture), and the records are the
 version that runs here, then each capture, as `{ name, guid, hash }` that may
 share one name. The exporter answers by index. When the running version is
 missing or fails its pattern, the newest capture stands in and the answer
-names it. Progress from the other tab arrives as `UPDATE_SET_LENS_PROGRESS`,
+names it.
+
+**What promoting the running version would do there.** When index 0 is the
+running version and the answer is `other`, the request's `subject` (built in
+this tab and never sent) is the one capture holding that version: the only
+row with its guid and hash, verdict Current, in an open or complete set. A
+Default or ignored set promotes nothing; a merged set no longer in progress
+has handed its captures on; an unreadable set can't be named; two rows with
+the version give no one set. None of them, nor the newest-capture stand-in,
+is placed. A merged set still in progress is open here, as everywhere in
+Version Lens, and is placed. The row may sit in another set than the one the
+version names (`savedIn`), as a capture moved after it was saved would if its
+versions keep their source (not yet checked on an instance). That set's
+versions are then its own earlier saves, so both sets go to `placeRemote` as a
+batch scope (its `batch` mark is unused); otherwise an earlier save in the old
+set would read as a change it is missing.
+`session.placeRemote` hands that one row, a copy of the
+sets read, and index 0 of `content`, `running` and `moved` to Update Set
+Lens's own `placeRemote`, unchanged, so every rule above holds: the history
+read by `sys_id` (here a single row, so its 22 KB costs nothing), every
+version of the name, any set between that the panel hasn't read (into the
+copy, so the panel's counts never change), the parent cross-check, matching by
+guid there, and **built** and **earlier** only on `moved` false. `moved` true
+says the instance had this version and changed it since, and is never placed.
+The open case above applies unchanged: checked from an instance that committed
+an older set after a newer one, a target that runs the newer version and never
+had the older one gets the teal line, and the panel's "runs another version:
+the one in …" line under it names the newer set. A guard on the captures'
+Last saved (withhold teal when the capture running there was saved after the
+one running here) was measured and dropped: on an instance that receives sets
+by commit, every capture of a committed set carries that commit's own time,
+one timestamp for the whole set, just after its versions were recorded. Of 155
+sampled from 40 committed sets, none kept the time it was written; so Last
+saved there is commit order, the same order as the history, and the guard
+would never fire where it is needed. The
+answer's first line then says what promoting the subject's set does: teal
+"replaces nothing changed" (and the "runs another version" line under it turns
+grey, as Update Set Lens counts it), amber "runs an older version, missing…"
+naming the sets between, amber "isn't in this update's history", or amber
+"had the version that runs here and has since changed it". An unplaced answer
+keeps today's lines. The copy line adds the placing's words, which name
+nothing. content.js shows "Finding what … runs in this update's history…"
+only once a read starts, treats a failed placing as unplaced, and draws the
+answer inside a try, as Update Set Lens does.
+
+Progress from the other tab arrives as `UPDATE_SET_LENS_PROGRESS`,
 which content.js hands to the panel whose check is running: a slot `{ kind,
 ui, token, remoteToken }` that a check claims when it starts and a panel
 releases on close only when both its ui and its token match, because the two

@@ -29,6 +29,18 @@ test("a destination opens immediately after the originating tab", () => {
   );
 });
 
+test("a middle-click or Ctrl-click opens the destination behind the originating tab, in the same place", () => {
+  const sender = { tab: { id: 41, windowId: 7, index: 3 } };
+  assert.deepStrictEqual(openUrlTabOptions("https://example.service-now.com/incident.do", sender, true), {
+    url: "https://example.service-now.com/incident.do",
+    active: false,
+    windowId: 7,
+    index: 4,
+    openerTabId: 41,
+  });
+  assert.strictEqual(openUrlTabOptions("https://example.service-now.com/", sender, "yes").active, true, "only true means behind");
+});
+
 test("a message without tab context keeps Chrome's normal placement fallback", () => {
   assert.deepStrictEqual(
     openUrlTabOptions("https://example.service-now.com/sys_script_list.do", {}),

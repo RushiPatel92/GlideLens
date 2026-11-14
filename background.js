@@ -5980,8 +5980,10 @@ async function handleRecordLensFavorites(msg, sender, now) {
   });
 }
 
-function openUrlTabOptions(url, sender) {
-  const options = { url, active: true };
+/* `background`: a middle-click or Ctrl-click, which opens the tab without
+ * switching to it, as the browser does for a link. */
+function openUrlTabOptions(url, sender, background) {
+  const options = { url, active: background !== true };
   const sourceTab = sender && sender.tab;
   if (!sourceTab) return options;
 
@@ -7306,8 +7308,10 @@ async function readPrefillFromOtherInstance(msg, sender) {
    updates checked here as { name, guid, hash }. Out: where those sets have
    got to there, and, by index, whether that instance runs each update's
    version, with when and in which set the version it runs instead was saved,
-   and the ids its links there need. Nothing sent there names a table, query,
-   URL, method or tab: the other tab builds its six fixed reads itself, and
+   which version that is ("guid:hash") and whether this update's own version
+   was there and has since been replaced, and the ids its links there need.
+   Nothing sent there names a table, query,
+   URL, method or tab: the other tab builds its seven fixed reads itself, and
    never echoes a record name back.
    --------------------------------------------------------------------------- */
 const UPDATE_SET_REMOTE_MAX_SETS = 1000;
@@ -7330,6 +7334,9 @@ const UPDATE_SET_SAVED_FIELDS = ["on", "set", "from"];
 /* What a row's links there are built from: its record's table and sys_id,
  * and the sys_id of the version that runs there. Ids, never a URL. */
 const UPDATE_SET_FOUND_FIELDS = ["table", "record", "version"];
+/* The version that runs there instead, as an update's own history lists it:
+ * "guid:hash", the hash a signed decimal. Only on an "other" answer. */
+const UPDATE_SET_REMOTE_RUNNING = /^[0-9a-f]{32}:-?[0-9]{1,10}$/;
 const UPDATE_SET_REMOTE_TABLE = /^[a-z][a-z0-9_]{0,79}$/;
 const UPDATE_SET_COPY_FIELDS = [
   "state", "stateLabel", "retrievedOn", "committedOn", "collisions", "localState", "localStateLabel",
@@ -7431,6 +7438,29 @@ function checkedUpdateSetExport(reply, request) {
       saved.push(shown ? out : null);
     }
   }
+  let running = null;
+  if (reply.running != null) {
+    if (!content || !Array.isArray(reply.running) || reply.running.length !== content.length) return null;
+    running = [];
+    for (let index = 0; index < reply.running.length; index += 1) {
+      const entry = reply.running[index];
+      if (entry != null && (typeof entry !== "string" || !UPDATE_SET_REMOTE_RUNNING.test(entry))) return null;
+      /* On any other answer it would name a version the answer says isn't the point. */
+      running.push(entry != null && content[index] === "other" ? entry : null);
+    }
+  }
+  /* Whether this update's own version was there and has since been replaced:
+   * true, false (read, and it wasn't) or null (not read), only on "other". */
+  let moved = null;
+  if (reply.moved != null) {
+    if (!content || !Array.isArray(reply.moved) || reply.moved.length !== content.length) return null;
+    moved = [];
+    for (let index = 0; index < reply.moved.length; index += 1) {
+      const entry = reply.moved[index];
+      if (entry != null && typeof entry !== "boolean") return null;
+      moved.push(typeof entry === "boolean" && content[index] === "other" ? entry : null);
+    }
+  }
   let found = null;
   if (reply.found != null) {
     if (!content || !Array.isArray(reply.found) || reply.found.length !== content.length) return null;
@@ -7455,6 +7485,8 @@ function checkedUpdateSetExport(reply, request) {
     clones: Array.from(new Set(clones)),
     content,
     saved,
+    running,
+    moved,
     found,
     presenceFailure,
     contentFailure,
@@ -7529,12 +7561,13 @@ async function checkUpdateSetOnOtherInstance(msg, sender) {
    browsing context: OPEN_URL's same-origin rule, widened by exactly the
    instances Check on can choose.
    --------------------------------------------------------------------------- */
-const UPDATE_SET_REMOTE_OPEN_KEYS = ["type", "origin", "table", "sysId", "name"];
+const UPDATE_SET_REMOTE_OPEN_KEYS = ["type", "origin", "table", "sysId", "name", "background"];
 
 /* The path to open, or "" for a message of the wrong shape. */
 function updateSetRemotePath(msg) {
   if (!isPlainRecord(msg)) return "";
   if (Object.keys(msg).some((key) => !UPDATE_SET_REMOTE_OPEN_KEYS.includes(key))) return "";
+  if (msg.background != null && typeof msg.background !== "boolean") return "";
   if (msg.name != null) {
     if (msg.table != null || msg.sysId != null) return "";
     if (typeof msg.name !== "string" || !UPDATE_SET_REMOTE_NAME.test(msg.name)) return "";
@@ -7555,7 +7588,7 @@ async function openOnOtherInstance(msg, sender) {
   }
   const open = await otherInstanceOrigins(sender);
   if (!open.origins.some((entry) => entry.origin === origin)) return { ok: false, code: "not-open" };
-  await chrome.tabs.create(openUrlTabOptions(origin + path, sender));
+  await chrome.tabs.create(openUrlTabOptions(origin + path, sender, msg.background === true));
   return { ok: true };
 }
 
@@ -7580,7 +7613,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg && msg.type === "OPEN_URL" && msg.url) {
     const safeUrl = resolveOpenUrl(msg.url, sender);
-    if (safeUrl) chrome.tabs.create(openUrlTabOptions(safeUrl, sender));
+    if (safeUrl) chrome.tabs.create(openUrlTabOptions(safeUrl, sender, msg.background === true));
   }
   /* The popup is not a content script, so it cannot announce frames or be
    * announced to. It asks the worker for the same discovered list instead,

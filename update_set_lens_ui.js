@@ -20,7 +20,19 @@
  * Check on right under the summary, details shown for Stale and Can't tell,
  * and the other instance's answer on a row only where it differs. That
  * answer is amber, with its own badge and a Differs on chip, except Same
- * content there, which is grey because the content matches.
+ * content there, which is grey because the content matches, and a version
+ * this set was built on (or an earlier save of it), which is teal because
+ * promoting it replaces nothing made there. A row whose own version was
+ * there and has since been changed is amber, whatever its history says. A
+ * row a newer update of its batch replaces, where that instance runs
+ * another update of the same batch, is grey too: promoting leaves the
+ * batch's newest update, not this one.
+ *
+ * An opened row is a card per instance (owner's pick, 2026-11-12, of an
+ * independent design): this instance's, and after a check the checked
+ * instance's, each headed by its name in bold and edged in its colour, side
+ * by side where both fit. The engine hands over the pieces (a row's explain
+ * and newerSave, the check's parts), so no sentence is taken apart here.
  */
 (() => {
   if (globalThis.SNUpdateSetLensUI) return;
@@ -40,13 +52,39 @@
     current: "CURRENT",
   };
   /* The checked instance's answer as a row's second badge. Same content
-   * there is grey: the content matches. */
+   * there is grey: the content matches. A version this set was built on is
+   * teal: promoting moves it forward and replaces nothing made there. */
   const THERE_WORDS = {
+    built: "PREVIOUS VERSION THERE",
+    earlier: "EARLIER SAVE THERE",
+    behind: "OLDER VERSION THERE",
+    diverged: "DIVERGED THERE",
+    moved: "CHANGED THERE SINCE",
     other: "OTHER VERSION THERE",
     none: "NO CURRENT VERSION THERE",
     cant: "CAN'T TELL THERE",
     same: "SAME CONTENT THERE",
+    inbatch: "BATCH VERSION THERE",
+    unsent: "NOT COMPARED THERE",
   };
+  const THERE_OK = new Set(["built", "earlier"]);
+  /* Grey: the content matches, what runs there is this batch's own, or the
+   * row was past what a check compares. */
+  const THERE_GREY = new Set(["same", "inbatch", "unsent"]);
+  const thereTone = (kind) => (THERE_GREY.has(kind) ? " same" : THERE_OK.has(kind) ? " ok" : "");
+  /* An opened row's card for this instance: the verdict in words, and the
+   * colour of its edge. */
+  const VERDICT_SAY = {
+    stale: "Stale",
+    cant: "Can't tell",
+    batch: "In this batch",
+    same: "Same content",
+    current: "Current",
+  };
+  const VERDICT_TONE = { stale: "pink", cant: "amber" };
+  /* The card for the instance checked: teal where promoting replaces
+   * nothing made there, grey where the content matches, amber otherwise. */
+  const thereCardTone = (kind) => (kind === "runs" || THERE_OK.has(kind) ? "teal" : THERE_GREY.has(kind) ? "grey" : "amber");
   const SUMMARY_WORDS = {
     stale: "stale",
     cant: "can't tell",
@@ -133,10 +171,13 @@
     .chip.there{border-color:var(--amber-line);color:var(--amber)}
     .chip[aria-pressed="true"]{background:#173d3a;border-color:var(--teal);color:#d9fbf7}
     .rows{flex:1;overflow:auto;min-height:0}
-    .row{padding:9px 20px;border-bottom:1px solid #282841;outline:none}
-    .row.click{cursor:pointer}
-    .row.click:hover{background:#262640}
-    .row:focus-visible{outline:2px solid var(--teal);outline-offset:-2px}
+    .row{padding:9px 20px;border-bottom:1px solid #282841}
+    .row.click .row-head{cursor:pointer}
+    .row.click:has(> .row-head:hover){background:#262640}
+    .row-head{outline:none;border-radius:4px}
+    .row-head:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
+    .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+      clip:rect(0 0 0 0);white-space:nowrap;border:0}
     .row-top{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr) auto auto;gap:10px;align-items:baseline}
     .r-type{color:#9a9ab3;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .r-name{color:#f0f0fa;font-size:13px;font-weight:600;min-width:0;overflow:hidden;
@@ -152,6 +193,7 @@
     .badges{display:inline-flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}
     .b-there{background:#2c2619;border-color:var(--amber-line);color:var(--amber)}
     .b-there.same{background:transparent;border-color:#4a4a6e;color:#b9b3e8}
+    .b-there.ok{background:#173d3a;border-color:#2f6f68;color:#8fe0d6}
     .sum-badge{font-size:12px;font-weight:650;letter-spacing:0;padding:3px 9px;cursor:pointer;
       font-variant-numeric:tabular-nums}
     .sum-badge:hover{filter:brightness(1.18)}
@@ -166,10 +208,41 @@
     .links{display:flex;flex-wrap:wrap;gap:12px;margin-top:3px}
     .link{border:0;background:transparent;color:#8fd6cf;padding:0;cursor:pointer;font-size:11.5px;
       text-decoration:underline;text-underline-offset:2px}
+    .link:hover{color:#d9fbf7}
     .remote-tag{display:block;margin-top:2px;color:#b9b3e8;font-size:11.5px}
     .remote-tag.warn{color:var(--amber)}
-    .links-on{color:var(--muted);font-size:11.5px}
-    .link-note{margin-top:3px;color:var(--amber);font-size:11.5px}
+    .remote-tag.ok{color:#8fe0d6}
+    .remote-tag b{font-weight:650;color:#f5f5ff}
+    .link-note{margin-top:6px;color:var(--amber);font-size:11.5px}
+    /* An opened row: a card for this instance and one for the instance
+       checked, side by side where they fit, each edged in its verdict's
+       colour and headed by its instance's name. */
+    .row.open .r-name{white-space:normal;overflow-wrap:anywhere}
+    .r-detail.open{max-width:none}
+    .r-meta{display:none;color:#9a9ab3;font-size:11px;margin-bottom:6px}
+    .sides{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;max-width:1240px}
+    .sides.single{grid-template-columns:minmax(0,640px)}
+    .side{background:#24243c;border:1px solid #33334f;border-left:3px solid #5b5b86;border-radius:8px;
+      padding:8px 11px 9px;min-width:0}
+    .side.t-amber{border-left-color:var(--amber)}
+    .side.t-pink{border-left-color:var(--pink)}
+    .side.t-teal{border-left-color:var(--teal)}
+    .side-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:7px;font-size:13px;color:#f5f5ff;
+      padding-bottom:5px;margin-bottom:6px;border-bottom:1px solid #33334f}
+    .side-head b{font-weight:650}
+    .role{font-size:10.5px;color:#9a9ab3;letter-spacing:.05em;text-transform:uppercase}
+    .say{margin:0;font-size:12.5px;line-height:1.45;color:var(--text);overflow-wrap:anywhere}
+    .say .v{font-weight:650}
+    .v.amber{color:var(--amber)}.v.pink{color:#ffb3d3}.v.teal{color:#8fe0d6}.v.grey{color:#c3c3d8}
+    .say .aside{color:#9a9ab3}
+    .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin:6px 0 0;
+      font-size:12px;line-height:1.45}
+    .facts dt{color:#9a9ab3;font-size:11px;padding-top:1px}
+    .facts dd{margin:0;color:var(--text);overflow-wrap:anywhere}
+    .facts dd.time{font-variant-numeric:tabular-nums}
+    .then{margin:6px 0 0;font-size:12px;line-height:1.45;color:#f0d9a6}
+    .side .notes,.side .who{margin-top:5px;font-size:12px}
+    .side .links{gap:4px 14px;margin-top:8px}
     .more{display:flex;justify-content:center;padding:12px}
     .empty{padding:40px 24px;text-align:center;color:var(--muted);font-size:13px;line-height:1.6;
       max-width:90ch;margin:0 auto}
@@ -180,7 +253,7 @@
     button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
     @media(max-width:680px){.overlay{padding:8px}.panel{width:100%;height:calc(100vh - 16px)}
       .row-top{grid-template-columns:minmax(0,1fr) auto}.r-type,.r-action{display:none}
-      .r-detail{padding-left:0}}
+      .r-detail{padding-left:0}.r-meta{display:block}}
   `;
 
   /* ------------------------------------------------------------------ *
@@ -272,33 +345,55 @@
     if (!panel) return;
     const owner = panel;
     owner.linkNote = { key, text: str(text) };
+    if (els && els.live) els.live.textContent = str(text);
     clearTimeout(noteTimer);
     noteTimer = setTimeout(() => {
       if (panel !== owner || !owner.linkNote || owner.linkNote.key !== key) return;
       owner.linkNote = null;
+      if (els && els.live) els.live.textContent = "";
       paint();
     }, LINK_NOTE_MS);
     paint();
   }
 
   /* `noteKey` is the row a refusal is said on; a link without one opens
-   * a URL and has nothing to report. */
+   * a URL and has nothing to report.
+   *
+   * As with a link: a middle-click (auxclick, button 1), or a click with
+   * Ctrl or Cmd held, opens the page in a tab behind this one. "Other sets
+   * holding it" replaces this panel rather than opening a page, so a
+   * middle-click leaves it alone. A middle press is held from starting the
+   * browser's autoscroll. */
   function linkButton(link, noteKey) {
-    return button("link", link.label, (event) => {
+    const open = (event, background) => {
       if (event && isFn(event.stopPropagation)) event.stopPropagation();
+      const opts = { background };
       if (link.url) {
-        if (sameOrigin(link.url) && isFn(callbacks.onOpenUrl)) callbacks.onOpenUrl(link.url);
+        if (sameOrigin(link.url) && isFn(callbacks.onOpenUrl)) callbacks.onOpenUrl(link.url, opts);
         return;
       }
       let outcome = null;
-      if (link.record && isFn(callbacks.onOpenRecord)) outcome = callbacks.onOpenRecord(str(link.record));
-      else if (link.versionLens && isFn(callbacks.onOpenVersionLens)) outcome = callbacks.onOpenVersionLens(str(link.versionLens));
-      else if (link.remote && isFn(callbacks.onOpenRemote)) outcome = callbacks.onOpenRemote(Object.assign({}, link.remote));
+      if (link.record && isFn(callbacks.onOpenRecord)) outcome = callbacks.onOpenRecord(str(link.record), opts);
+      else if (link.versionLens) {
+        if (!background || !event || event.button !== 1) {
+          if (isFn(callbacks.onOpenVersionLens)) outcome = callbacks.onOpenVersionLens(str(link.versionLens));
+        }
+      } else if (link.remote && isFn(callbacks.onOpenRemote)) outcome = callbacks.onOpenRemote(Object.assign({}, link.remote), opts);
       if (!outcome || noteKey == null) return;
       Promise.resolve(outcome).then((result) => {
         if (result && result.ok === false) showLinkNote(noteKey, result.message || "Couldn't open that.");
       }, () => showLinkNote(noteKey, "Couldn't open that."));
+    };
+    const node = button("link", link.label, (event) => open(event, Boolean(event && (event.ctrlKey || event.metaKey))));
+    node.addEventListener("auxclick", (event) => {
+      if (!event || event.button !== 1) return;
+      if (isFn(event.preventDefault)) event.preventDefault();
+      open(event, true);
     });
+    node.addEventListener("mousedown", (event) => {
+      if (event && event.button === 1 && isFn(event.preventDefault)) event.preventDefault();
+    });
+    return node;
   }
 
   /* ------------------------------------------------------------------ *
@@ -332,6 +427,15 @@
   }
 
   const differsThere = (row) => Boolean(remoteAnswer(row));
+
+  /* The same answer in pieces, for the card, and for a row that runs this
+   * set's version there too. */
+  function remoteParts(row) {
+    const remote = panel.remote;
+    if (remote.state !== "done" || !remote.parts) return null;
+    const parts = remote.parts[row.key];
+    return parts && typeof parts === "object" ? parts : null;
+  }
 
   /* U2: Needs attention while there is any and nothing has been picked. A
    * pick of Differs there lapses with the check that answered it. */
@@ -383,9 +487,20 @@
         ", same content " + c.same + ", current " + c.current + ".",
     ];
     if (remoteCounts) {
+      /* What the update's own history placed, only when it placed any, so a
+       * check that placed nothing reads as it always did. */
+      const placed = [
+        ["the version it was built on", remoteCounts.built],
+        ["an earlier save of it", remoteCounts.earlier],
+        ["an older version", remoteCounts.behind],
+        ["a version not in its history", remoteCounts.diverged],
+        ["had this set's version, since changed", remoteCounts.moved],
+      ].filter((part) => part[1]).map((part) => ", " + part[0] + " " + part[1]).join("");
       lines.push(
         "On the other instance: runs this set's version " + remoteCounts.runs +
-        ", same content " + remoteCounts.same + ", another version " + remoteCounts.other +
+        ", same content " + remoteCounts.same +
+        (remoteCounts.inBatch ? ", another update of this batch " + remoteCounts.inBatch : "") +
+        placed + ", another version " + remoteCounts.other +
         ", no readable current version " + remoteCounts.none + ", can't tell " + remoteCounts.cant + "."
       );
     }
@@ -612,16 +727,137 @@
     });
   }
 
+  /* A closed row's one-line note where the instance checked differs: its
+   * name in bold, then what it runs. */
   function remoteTag(row) {
     const answer = remoteAnswer(row);
-    return answer ? el("span", "remote-tag" + (answer.kind === "same" ? "" : " warn"), answer.text) : null;
+    if (!answer) return null;
+    const tone = THERE_GREY.has(answer.kind) ? "" : THERE_OK.has(answer.kind) ? " ok" : " warn";
+    const parts = remoteParts(row);
+    if (!parts || !str(parts.say)) return el("span", "remote-tag" + tone, answer.text);
+    const tag = el("span", "remote-tag" + tone);
+    tag.appendChild(el("b", null, panel.remote.instance || "There"));
+    const notes = Array.isArray(parts.notes) ? parts.notes.map(str).filter(Boolean) : [];
+    tag.appendChild(document.createTextNode(" " + lowerFirst(parts.say) + (notes.length ? " (" + notes.join(", ") + ")" : "")));
+    return tag;
+  }
+
+  function lowerFirst(text) {
+    const value = str(text);
+    return value ? value.charAt(0).toLowerCase() + value.slice(1) : value;
+  }
+
+  /* A card's labelled facts; a fact with no value is left out. */
+  function factList(facts) {
+    const shown = facts.filter((fact) => str(fact[1]));
+    if (!shown.length) return null;
+    const list = el("dl", "facts");
+    shown.forEach(([label, value, className]) => {
+      list.appendChild(el("dt", null, label));
+      list.appendChild(el("dd", className || null, value));
+    });
+    return list;
+  }
+
+  /* A card: an instance's name in bold and its role, then what it says. */
+  function sideCard(tone, name, role) {
+    const card = el("div", "side" + (tone && tone !== "grey" ? " t-" + tone : ""));
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", (name ? name + ", " : "") + role);
+    const head = el("div", "side-head");
+    if (name) head.appendChild(el("b", null, name));
+    head.appendChild(el("span", "role", role));
+    card.appendChild(head);
+    return card;
+  }
+
+  function linkRow(links, row, prefix) {
+    const node = el("div", "links");
+    links.forEach((link, index) => node.appendChild(remember(linkButton(link, row.key), prefix + row.key + ":" + index)));
+    return node;
+  }
+
+  /* This instance's card: the verdict, why, the facts behind it, and the
+   * row's own links. */
+  function hereCard(row) {
+    const card = sideCard(VERDICT_TONE[row.verdict] || "grey", panel.here, "this instance");
+    const say = el("p", "say");
+    if (row.explain != null) {
+      say.appendChild(el("span", "v " + (VERDICT_TONE[row.verdict] || "grey"), (VERDICT_SAY[row.verdict] || row.verdict) + "."));
+      say.appendChild(document.createTextNode(" " + str(row.explain)));
+    } else {
+      say.appendChild(document.createTextNode(str(row.text)));
+    }
+    if (row.flags && row.flags.length) {
+      const flags = el("span", "flags");
+      row.flags.forEach((flag) => flags.appendChild(el("span", "flag" + (flag.kind ? " " + flag.kind : ""), flag.label)));
+      say.appendChild(flags);
+    }
+    card.appendChild(say);
+    const save = row.newerSave && typeof row.newerSave === "object" ? row.newerSave : null;
+    const facts = factList([
+      ["Set", row.childSet],
+      ["Read from", row.asRetrieved ? "the retrieved copy" : ""],
+      [save && save.committedHere ? "Committed here" : "Saved", save ? save.on : "", "time"],
+      ["By", save ? save.by : ""],
+    ]);
+    if (facts) card.appendChild(facts);
+    if (row.notes && row.notes.length) card.appendChild(el("div", "notes", row.notes.join(" · ")));
+    if (row.who && !save) card.appendChild(el("div", "who", row.who));
+    /* Version Lens on this update's record: every set that captured it. */
+    const links = (row.links || []).concat(row.name && isFn(callbacks.onOpenVersionLens)
+      ? [{ label: "Other sets holding it", versionLens: row.name }] : []);
+    if (links.length) card.appendChild(linkRow(links, row, "link:"));
+    return card;
+  }
+
+  /* The checked instance's card, once a check has finished: what it runs,
+   * when and where that was saved, what promoting would do, and its links.
+   * None for a row the check didn't compare. */
+  function thereCard(row) {
+    const parts = remoteParts(row);
+    const answer = remoteAnswer(row);
+    const links = remoteLinksFor(row);
+    if (!parts && !answer && !links.length) return null;
+    const kind = parts ? str(parts.kind) : answer ? answer.kind : "runs";
+    const tone = thereCardTone(kind);
+    const card = sideCard(tone, panel.remote.instance || "", "checked instance");
+    const say = el("p", "say");
+    if (parts && str(parts.say)) {
+      say.appendChild(el("span", "v " + tone, str(parts.say) + "."));
+      const notes = Array.isArray(parts.notes) ? parts.notes.map(str).filter(Boolean) : [];
+      if (notes.length) say.appendChild(el("span", "aside", " (" + notes.join(", ") + ")"));
+    } else {
+      say.appendChild(el("span", "v " + tone, answer ? answer.text : "Runs this set's version."));
+    }
+    card.appendChild(say);
+    const saved = parts && parts.saved && typeof parts.saved === "object" ? parts.saved : {};
+    const facts = factList([
+      ["Saved", saved.on, "time"],
+      [saved.set ? "Set" : "From", saved.set || saved.from],
+    ]);
+    if (facts) card.appendChild(facts);
+    if (parts && str(parts.then)) card.appendChild(el("p", "then", str(parts.then) + "."));
+    if (links.length) card.appendChild(linkRow(links, row, "remote-link:"));
+    return card;
   }
 
   function thereBadge(answer) {
     const kind = THERE_WORDS[answer.kind] ? answer.kind : "cant";
-    const badge = el("span", "badge b-there" + (kind === "same" ? " same" : ""), THERE_WORDS[kind]);
+    const badge = el("span", "badge b-there" + thereTone(kind), THERE_WORDS[kind]);
     badge.title = str(answer.text);
     return badge;
+  }
+
+  /* A row past what the check compared: without a mark it would look like
+   * one that matches there. */
+  function notCompared(row) {
+    const parts = remoteParts(row);
+    return Boolean(parts && parts.kind === "unsent");
+  }
+
+  function notComparedBadge(row) {
+    return thereBadge({ kind: "unsent", text: str(remoteParts(row).then) });
   }
 
   /* The checked instance's links for a row, after its check finished. */
@@ -642,12 +878,18 @@
   function buildRow(row) {
     const attention = needsAttention(row);
     const open = attention || panel.expanded.has(row.key);
-    const node = el("div", "row" + (attention ? "" : " click"));
+    const node = el("div", "row" + (attention ? "" : " click") + (open ? " open" : ""));
+    /* The head (the row's line, and a closed row's note) is what opens and
+     * folds it. The cards are its sibling: inside a button, their links and
+     * labelled facts would be flattened for a screen reader, and selecting a
+     * set name to copy it would fold the row. */
+    const head = el("div", "row-head");
     const top = el("div", "row-top");
     top.appendChild(el("span", "r-type", row.type || ""));
     const name = el("span", "r-name", row.target || row.name);
     name.title = row.name;
-    const sub = rowSub(row);
+    /* Opened, the set and copy move into this instance's card. */
+    const sub = open ? "" : rowSub(row);
     if (sub) name.appendChild(el("span", "r-sub", sub));
     top.appendChild(name);
     top.appendChild(el("span", "r-action", row.action || ""));
@@ -655,69 +897,56 @@
     badges.appendChild(el("span", "badge b-" + row.verdict, BADGE_WORDS[row.verdict] || row.verdict));
     const answer = remoteAnswer(row);
     if (answer) badges.appendChild(thereBadge(answer));
+    else if (notCompared(row)) badges.appendChild(notComparedBadge(row));
     top.appendChild(badges);
-    node.appendChild(top);
+    head.appendChild(top);
+    node.appendChild(head);
 
-    const tag = remoteTag(row);
+    let detailId = "";
     if (open) {
-      const detail = el("div", "r-detail");
-      detail.appendChild(document.createTextNode(row.text));
-      if (row.flags && row.flags.length) {
-        const flags = el("span", "flags");
-        row.flags.forEach((flag) => flags.appendChild(el("span", "flag" + (flag.kind ? " " + flag.kind : ""), flag.label)));
-        detail.appendChild(flags);
-      }
-      if (row.notes && row.notes.length) detail.appendChild(el("div", "notes", row.notes.join(" · ")));
-      if (row.who) detail.appendChild(el("div", "who", row.who));
-      /* Version Lens on this update's record: every set that captured it. */
-      const rowLinks = (row.links || []).concat(row.name && isFn(callbacks.onOpenVersionLens)
-        ? [{ label: "Other sets holding it", versionLens: row.name }] : []);
-      if (rowLinks.length) {
-        const links = el("div", "links");
-        rowLinks.forEach((link, index) => links.appendChild(remember(linkButton(link, row.key), "link:" + row.key + ":" + index)));
-        detail.appendChild(links);
-      }
-      if (tag) detail.appendChild(tag);
-      const elsewhere = remoteLinksFor(row);
-      if (elsewhere.length) {
-        const links = el("div", "links");
-        links.appendChild(el("span", "links-on", (panel.remote.instance || "There") + ":"));
-        elsewhere.forEach((link, index) =>
-          links.appendChild(remember(linkButton(link, row.key), "remote-link:" + row.key + ":" + index)));
-        detail.appendChild(links);
-      }
-      if (panel.linkNote && panel.linkNote.key === row.key) {
-        const note = el("div", "link-note", panel.linkNote.text);
-        note.setAttribute("role", "status");
-        detail.appendChild(note);
-      }
+      const detail = el("div", "r-detail open");
+      detailId = "snh-usl-detail-" + (panel.detailSeq += 1);
+      detail.id = detailId;
+      /* The type and action columns hide in a narrow panel; said here then. */
+      const meta = [row.type, row.action].map(str).filter(Boolean).join(" · ");
+      if (meta) detail.appendChild(el("div", "r-meta", meta));
+      const there = thereCard(row);
+      const sides = el("div", "sides" + (there ? "" : " single"));
+      sides.appendChild(hereCard(row));
+      if (there) sides.appendChild(there);
+      detail.appendChild(sides);
+      /* Shown here; read out once by the panel's live region. */
+      if (panel.linkNote && panel.linkNote.key === row.key) detail.appendChild(el("div", "link-note", panel.linkNote.text));
       node.appendChild(detail);
-    } else if (tag) {
-      const detail = el("div", "r-detail");
-      detail.appendChild(tag);
-      node.appendChild(detail);
+    } else {
+      const tag = remoteTag(row);
+      if (tag) {
+        const note = el("div", "r-detail");
+        note.appendChild(tag);
+        head.appendChild(note);
+      }
     }
 
     if (!attention) {
-      node.setAttribute("tabindex", "0");
-      node.setAttribute("role", "button");
-      node.setAttribute("aria-expanded", open ? "true" : "false");
+      head.setAttribute("tabindex", "0");
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+      if (detailId) head.setAttribute("aria-controls", detailId);
       const toggle = () => {
         if (panel.expanded.has(row.key)) panel.expanded.delete(row.key);
         else panel.expanded.add(row.key);
         paint();
       };
-      node.addEventListener("click", toggle);
-      node.addEventListener("keydown", (event) => {
-        /* A key pressed on a link inside the row is the link's: taking it
-         * here would cancel the link's click and fold the row away. */
-        if (event.target && event.target !== node) return;
+      head.addEventListener("click", toggle);
+      head.addEventListener("keydown", (event) => {
+        /* Only a key pressed on the head itself folds the row. */
+        if (event.target && event.target !== head) return;
         if (event.key === "Enter" || event.key === " ") {
           if (isFn(event.preventDefault)) event.preventDefault();
           toggle();
         }
       });
-      remember(node, "row:" + row.key);
+      remember(head, "row:" + row.key);
     }
     return node;
   }
@@ -938,6 +1167,12 @@
     footer.appendChild(continueButton);
     footer.appendChild(footerClose);
     section.appendChild(footer);
+    /* One live region for the whole panel, never redrawn: a note created
+     * already filled, as a row's is on every paint, is often not read out. */
+    const live = el("div", "sr-only");
+    live.setAttribute("role", "status");
+    live.setAttribute("aria-live", "polite");
+    section.appendChild(live);
 
     overlay.appendChild(section);
     shadow.appendChild(overlay);
@@ -945,7 +1180,7 @@
     els = {
       overlay, section, subtitle, banners, batch, summary, sumMain, sumNewer, progress,
       check, checkRow, select, checkButton, checkHint, checkOut, chips, rows, footer,
-      copyButton, continueButton, footerClose, closeButton,
+      copyButton, continueButton, footerClose, closeButton, live,
     };
   }
 
@@ -1011,7 +1246,8 @@
   }
 
   /*
-   * open({ view, origins, callbacks, opener })
+   * open({ view, origins, here, callbacks, opener })
+   *   here: this instance's name, for the heading of its card
    *   callbacks: onToggleBatch(on), onContinue(), onCheckRemote(origin, token),
    *   onOpenUrl(url), onOpenRecord(updateName), onOpenVersionLens(updateName)
    *   and onOpenRemote({ origin, table, sysId } | { origin, name }), the last
@@ -1033,6 +1269,10 @@
       remote: { state: "idle" },
       remoteToken: 0,
       linkNote: null,
+      /* This instance's name, for the heading of its card. */
+      here: str(opts.here),
+      /* Ids for an opened row's detail, which its head controls. */
+      detailSeq: 0,
     };
     host = document.createElement("div");
     host.id = HOST_ID;
