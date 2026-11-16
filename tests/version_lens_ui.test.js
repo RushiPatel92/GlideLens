@@ -255,11 +255,18 @@ function row(group, verdict, extra) {
     verdict,
     reason: "",
     text: verdict === "stale" ? "Newer version in “Set 1”" : "This set's version is the one that runs here.",
+    explain: verdict === "stale" ? "Newer version in “Set 1”" : "This set's version is the one that runs here.",
+    flags: [],
+    newerSave: null,
     action: "Update",
-    line1: "Last saved by dev.one on 21 Oct 2026",
-    line2: "",
     savedOn: "21 Oct 2026 10:00",
     savedBy: "dev.one",
+    firstCaptured: null,
+    captureScope: "",
+    completedOn: "",
+    committedHere: false,
+    batchName: "",
+    mergedIntoName: "",
     notes: [],
     links: [
       { label: "Open update", url: ORIGIN + "/sys_update_xml.do?sys_id=" + id(500 + counter) },
@@ -323,7 +330,7 @@ test("50: a closed shadow root headed Version Lens, with no markup path; hostile
     return realAttach.call(this, init);
   };
   const hostile = "<img src=x onerror=alert(1)>";
-  const shadow = open(harness, snapshot([row("open", "current", { setName: hostile, line1: "Last saved by " + hostile })], {
+  const shadow = open(harness, snapshot([row("open", "current", { setName: hostile, savedBy: hostile, explain: hostile })], {
     target: { name: NAME, how: "record", cls: "x", display: hostile, scope: hostile, howWords: [] },
     headline: { id: "H7", lead: "No competing sets:", rest: "only “" + hostile + "” holds it open.", mark: "ok" },
   }));
@@ -384,33 +391,50 @@ test("52: groups in order with their counts; badges filter and dim at zero; open
   const rows = [row("open", "current"), row("open", "stale"), row("default", "same"), row("complete", "stale"), row("unreadable", "cant")];
   const shadow = open(harness, snapshot(rows));
   assert.deepStrictEqual(byClass(shadow, "group").map((node) => node.textContent),
-    ["Open sets (2)", "Default sets (1)", "Complete (1)", "Can't read (1)"]);
+    ["Open sets (2)", "Complete (1)", "Default sets (1)", "Can't read (1)"], "Default after the history: never promoted");
   const badges = byClass(shadow, "sum-badge");
-  assert.deepStrictEqual(badges.map((node) => node.textContent), ["2 Open", "1 Default", "1 Complete", "0 Ignored", "1 Can't read"]);
+  assert.deepStrictEqual(badges.map((node) => node.textContent), ["2 Open", "1 Complete", "1 Default", "0 Ignored", "1 Can't read"]);
   assert.ok(hasClass(badges[3], "zero"));
   assert.ok(!badges.some((node) => node.textContent.endsWith("Merged")), "Merged only when there is one");
 
-  /* Open rows are always open; the others are one line until clicked. */
+  /* Open rows are always open; the others are one line until their head is
+   * clicked. Only the head is a button: the row itself takes nothing. */
   const rowNodes = byClass(shadow, "row");
+  const headOf = (node) => byClass(node, "row-head")[0];
   assert.strictEqual(rowNodes.length, 5);
   assert.strictEqual(byClass(rowNodes[0], "r-detail").length, 1);
-  assert.strictEqual(rowNodes[0].getAttribute("tabindex"), null);
+  assert.strictEqual(headOf(rowNodes[0]).getAttribute("tabindex"), null);
+  assert.strictEqual(headOf(rowNodes[0]).getAttribute("role"), null, "an open set's row never folds");
   assert.strictEqual(byClass(rowNodes[2], "r-detail").length, 0);
-  assert.strictEqual(rowNodes[2].getAttribute("aria-expanded"), "false");
-  rowNodes[2].click();
+  assert.strictEqual(headOf(rowNodes[2]).getAttribute("role"), "button");
+  assert.strictEqual(headOf(rowNodes[2]).getAttribute("aria-expanded"), "false");
+  assert.strictEqual(headOf(rowNodes[2]).getAttribute("aria-controls"), null, "nothing to name while folded");
+  rowNodes.forEach((node) => {
+    assert.strictEqual(node.getAttribute("role"), null);
+    assert.strictEqual(node.getAttribute("tabindex"), null);
+    assert.strictEqual((node.handlers.click || []).length, 0, "a click on a card never folds its row");
+  });
+  headOf(rowNodes[2]).click();
   const reopened = byClass(harness.shadow(), "row")[2];
-  assert.strictEqual(byClass(reopened, "r-detail").length, 1);
-  assert.strictEqual(reopened.getAttribute("aria-expanded"), "true");
-  const enter = reopened.fire("keydown", { key: "Enter" });
+  const detail = byClass(reopened, "r-detail")[0];
+  assert.ok(detail);
+  assert.ok(hasClass(reopened, "open"));
+  assert.strictEqual(headOf(reopened).getAttribute("aria-expanded"), "true");
+  assert.ok(detail.id, "the detail has an id");
+  assert.strictEqual(headOf(reopened).getAttribute("aria-controls"), detail.id);
+  assert.strictEqual(detail.parentNode, reopened, "the cards are the head's sibling, not inside the button");
+  const enter = headOf(reopened).fire("keydown", { key: "Enter" });
   assert.ok(enter.defaultPrevented);
   assert.strictEqual(byClass(byClass(harness.shadow(), "row")[2], "r-detail").length, 0, "Enter folds it again");
 
-  /* Enter or Space on a link inside an opened row belongs to the link. */
-  byClass(harness.shadow(), "row")[3].click();
+  /* A link sits in the card, outside the head; a key the head sees from
+   * anywhere else is not its own. */
+  headOf(byClass(harness.shadow(), "row")[3]).click();
   const opened = byClass(harness.shadow(), "row")[3];
   const link = buttons(opened, "Open update")[0];
+  assert.strictEqual(buttons(headOf(opened), "Open update").length, 0);
   for (const key of ["Enter", " "]) {
-    const pressed = opened.fire("keydown", { key, target: link });
+    const pressed = headOf(opened).fire("keydown", { key, target: link });
     assert.ok(!pressed.defaultPrevented, key);
   }
   assert.strictEqual(byClass(byClass(harness.shadow(), "row")[3], "r-detail").length, 1, "the row stays open");
@@ -423,16 +447,86 @@ test("52: groups in order with their counts; badges filter and dim at zero; open
   assert.strictEqual(byClass(harness.shadow(), "group").length, 4);
 });
 
-test("52b: a Delete is said in the row, and the second line and notes show when there are any", () => {
+/* A card's facts as [label, value] pairs. */
+const factsOf = (card) => {
+  const list = findAll(card, (node) => node.tagName === "DL")[0];
+  if (!list) return [];
+  const out = [];
+  for (let index = 0; index < list.children.length; index += 2) {
+    out.push([list.children[index].textContent, list.children[index + 1].textContent]);
+  }
+  return out;
+};
+
+test("52b: this instance's card: its name in bold, the verdict in its colour and why, each fact labelled, a Delete marked, notes and links", () => {
   const harness = load();
-  const shadow = open(harness, snapshot([row("open", "current", {
-    action: "Delete", line2: "First captured by dev.two on 1 Oct 2026 · scope x_app", notes: ["merged into “Release”", "captured 2 times in this set"],
+  const shadow = open(harness, snapshot([row("open", "stale", {
+    action: "Delete",
+    explain: "Newer version is in “Set 9”.",
+    flags: [{ label: "matched by content", kind: "" }],
+    newerSave: { by: "dev.three", on: "22 Oct 2026 09:00", committedHere: false },
+    newerSet: { state: "In progress", isDefault: false },
+    firstCaptured: { by: "dev.two", on: "1 Oct 2026 08:00" },
+    captureScope: "x_app",
+    completedOn: "",
+    committedHere: true,
+    batchName: "Release batch",
+    mergedIntoName: "Release",
+    notes: ["captured 2 times in this set"],
+  })]), {}, { here: "DEV" });
+  const cards = byClass(shadow, "side");
+  assert.strictEqual(cards.length, 1, "before a check, this instance's card stands alone");
+  assert.ok(hasClass(byClass(shadow, "sides")[0], "single"));
+  const card = cards[0];
+  assert.strictEqual(card.getAttribute("role"), "group");
+  assert.strictEqual(card.getAttribute("aria-label"), "DEV, this instance");
+  assert.ok(hasClass(card, "t-pink"), "edged in Stale's colour");
+  const head = byClass(card, "side-head")[0];
+  assert.strictEqual(findAll(head, (node) => node.tagName === "B")[0].textContent, "DEV");
+  assert.strictEqual(byClass(head, "role")[0].textContent, "this instance");
+  const say = byClass(card, "say")[0];
+  assert.strictEqual(byClass(say, "v")[0].textContent, "Stale.");
+  assert.ok(hasClass(byClass(say, "v")[0], "pink"));
+  assert.ok(say.textContent.startsWith("Stale. Newer version is in “Set 9”."));
+  assert.deepStrictEqual(byClass(say, "flag").map((node) => node.textContent), ["matched by content"]);
+  assert.deepStrictEqual(factsOf(card), [
+    ["Last saved", "21 Oct 2026 10:00"],
+    ["By", "dev.one"],
+    ["Action", "Delete"],
+    ["First captured", "1 Oct 2026 08:00 by dev.two"],
+    ["Batch", "Release batch"],
+    ["Merged into", "Release"],
+    ["Scope", "x_app"],
+    ["Source", "Committed here from another instance"],
+    ["Newer saved", "22 Oct 2026 09:00 by dev.three"],
+    ["Newer set", "In progress"],
+  ], "each fact on its own line; Completed has no value, so no line");
+  const values = findAll(card, (node) => node.tagName === "DD");
+  assert.ok(hasClass(values[2], "del"), "a Delete stands out");
+  assert.ok(!hasClass(values[values.length - 1], "warn"), "a named newer set is plain");
+  assert.strictEqual(byClass(card, "notes")[0].textContent, "captured 2 times in this set");
+  assert.deepStrictEqual(findAll(byClass(card, "links")[0], (node) => node.tagName === "BUTTON").map((node) => node.textContent),
+    ["Open update", "Open set", "Check this set"]);
+
+  /* A plain Update, a committed newer version, and no name for this instance. */
+  const bare = load();
+  const plainShadow = open(bare, snapshot([row("complete", "current", {
+    completedOn: "20 Sep 2026 10:00", newerSave: { by: "", on: "23 Oct 2026", committedHere: true },
+    newerSet: { state: "Default set: changed outside a named set", isDefault: true },
   })]));
-  const detail = byClass(shadow, "r-detail")[0];
-  assert.ok(detail.textContent.startsWith("Last saved by dev.one on 21 Oct 2026 · Delete"));
-  assert.strictEqual(findAll(detail, (node) => node.tagName === "B")[0].textContent, "Delete");
-  assert.ok(detail.textContent.includes("First captured by dev.two on 1 Oct 2026 · scope x_app"));
-  assert.ok(detail.textContent.includes("merged into “Release” · captured 2 times in this set"));
+  assert.strictEqual(byClass(plainShadow, "side").length, 0, "a complete set's row is folded");
+  byClass(plainShadow, "row-head")[0].click();
+  const plainCard = byClass(bare.shadow(), "side")[0];
+  assert.ok(!hasClass(plainCard, "t-pink") && !hasClass(plainCard, "t-amber"), "Current is grey");
+  assert.strictEqual(plainCard.getAttribute("aria-label"), "this instance");
+  assert.strictEqual(findAll(byClass(plainCard, "side-head")[0], (node) => node.tagName === "B").length, 0);
+  assert.deepStrictEqual(factsOf(plainCard), [
+    ["Last saved", "21 Oct 2026 10:00"], ["By", "dev.one"], ["Action", "Update"],
+    ["Completed", "20 Sep 2026 10:00"], ["Newer committed here", "23 Oct 2026"],
+    ["Newer set", "Default set: changed outside a named set"],
+  ]);
+  const plainValues = findAll(plainCard, (node) => node.tagName === "DD");
+  assert.ok(hasClass(plainValues[plainValues.length - 1], "warn"), "a newer change outside a named set is amber");
 });
 
 test("52c: a run with no rows says why in the list, and a busy run says it is checking", () => {
@@ -521,6 +615,29 @@ test("53b: a middle-click or Ctrl-click opens a link's page behind this tab; Che
   assert.deepStrictEqual(calls, [["remote", { background: true }]]);
 });
 
+test("53c: a link that can't open is said beside its row and read out once by the panel's one live region", async () => {
+  const harness = load();
+  open(harness, snapshot([row("open", "current")]), {
+    onOpenSetLens: () => Promise.resolve({ ok: false, message: "Couldn't load Update Set Lens." }),
+  });
+  const regions = () => findAll(harness.shadow(), (node) => node.getAttribute && node.getAttribute("aria-live") === "polite" && hasClass(node, "sr"));
+  assert.strictEqual(regions().length, 1);
+  const live = regions()[0];
+  assert.strictEqual(live.getAttribute("role"), "status");
+  assert.strictEqual(live.textContent, "");
+  buttons(harness.shadow(), "Check this set")[0].click();
+  await flush();
+  const note = byClass(harness.shadow(), "link-note")[0];
+  assert.strictEqual(note.textContent, "Couldn't load Update Set Lens.");
+  assert.strictEqual(note.getAttribute("role"), null, "the note beside the row is redrawn, so it isn't the one read out");
+  assert.strictEqual(byClass(harness.shadow(), "row")[0], note.parentNode.parentNode, "beside its own row");
+  assert.strictEqual(live.textContent, "Couldn't load Update Set Lens.");
+  assert.strictEqual(regions()[0], live, "never redrawn");
+  harness.runTimers();
+  assert.strictEqual(byClass(harness.shadow(), "link-note").length, 0);
+  assert.strictEqual(live.textContent, "");
+});
+
 /* ------------------------------------------------------------------ *
  * 54. Check on
  * ------------------------------------------------------------------ */
@@ -550,6 +667,7 @@ test("54: Check on is hidden with its hint until an instance is open; late, earl
     state: "done",
     lines: [{ kind: "differs", text: "TEST runs another version." }, { kind: "state", text: "Sets on TEST: committed 1, not found or not visible 1." }],
     perRow: { [rows[0].key]: { content: "runs", presence: "On TEST: committed on 30 Oct" } },
+    parts: { [rows[0].key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "", set: { there: "committed", text: "Committed on 30 Oct" } } },
     links: [],
     copyLine: "On the other instance: runs another version; sets there: committed 1, not found 1.",
   }, 1);
@@ -557,9 +675,12 @@ test("54: Check on is hidden with its hint until an instance is open; late, earl
   assert.ok(!harness.text().includes("late progress"));
   assert.ok(harness.text().includes("TEST runs another version."));
   assert.strictEqual(byClass(harness.shadow(), "differs")[0].textContent, "≠TEST runs another version.");
-  /* The first row's answer there. */
+  /* The first row's answer there, in the checked instance's card. */
   const first = byClass(harness.shadow(), "row")[0];
-  assert.strictEqual(byClass(first, "there")[0].textContent, "On TEST: committed on 30 Oct · runs this set's version there");
+  const there = byClass(first, "side")[1];
+  assert.strictEqual(there.getAttribute("aria-label"), "TEST, checked instance");
+  assert.strictEqual(byClass(there, "say")[0].textContent, "Runs this set's version.");
+  assert.deepStrictEqual(factsOf(there), [["This set", "Committed on 30 Oct"]]);
 
   /* An answer to an earlier press is dropped. */
   harness.ui.showRemote({ state: "done", lines: [{ kind: "ok", text: "stale answer" }], perRow: {} }, 0);
@@ -569,6 +690,7 @@ test("54: Check on is hidden with its hint until an instance is open; late, earl
   select.value = "https://uat.service-now.com";
   select.fire("change");
   assert.ok(!harness.text().includes("TEST runs another version."));
+  assert.strictEqual(byClass(byClass(harness.shadow(), "row")[0], "side").length, 1, "the checked instance's card goes with its answer");
   harness.ui.showRemote({ state: "done", lines: [{ kind: "ok", text: "late for TEST" }], perRow: {} }, 1);
   assert.ok(!harness.text().includes("late for TEST"));
 });
@@ -578,16 +700,19 @@ test("54a: one column header for every row; Last saved always; the checked insta
   const rows = [row("open", "current"), row("default", "same"), row("complete", "stale", { savedOn: "", savedBy: "" }), row("complete", "current")];
   open(harness, snapshot(rows), { onCheckRemote: () => {} }, { origins: [{ origin: "https://test.service-now.com", label: "TEST" }] });
   const header = () => byClass(harness.shadow(), "cols")[0];
-  const cellsOf = (index) => byClass(byClass(harness.shadow(), "row")[index], "row-top")[0].children;
+  /* The panel groups rows, so each is found by its set's name. */
+  const rowAt = (index) => byClass(harness.shadow(), "row")
+    .find((node) => byClass(node, "r-name")[0].textContent === rows[index].setName);
+  const cellsOf = (index) => byClass(rowAt(index), "row-top")[0].children;
   assert.deepStrictEqual(header().children.map((node) => node.textContent), ["Update set", "Last saved", "Set state", "Version here", ""]);
   assert.strictEqual(header().getAttribute("aria-hidden"), "true");
   assert.ok(!hasClass(byClass(harness.shadow(), "rows")[0], "there"));
   /* Each row has as many cells as the header, so the columns line up. */
   rows.forEach((entry, index) => assert.strictEqual(cellsOf(index).length, header().children.length, entry.setName));
-  const saved = byClass(byClass(harness.shadow(), "row")[0], "r-saved")[0];
+  const saved = byClass(rowAt(0), "r-saved")[0];
   assert.strictEqual(saved.textContent, "Last saved 21 Oct 2026 10:00dev.one");
   assert.ok(hasClass(saved.children[0], "sr"), "the column's name is there for a screen reader");
-  assert.strictEqual(byClass(byClass(harness.shadow(), "row")[2], "r-saved")[0].textContent, "Last saved —");
+  assert.strictEqual(byClass(rowAt(2), "r-saved")[0].textContent, "Last saved —");
 
   /* A failed check adds no column. */
   buttons(harness.shadow(), "Check")[0].click();
@@ -611,7 +736,7 @@ test("54a: one column header for every row; Last saved always; the checked insta
   assert.ok(hasClass(byClass(harness.shadow(), "rows")[0], "there"));
   assert.deepStrictEqual(header().children.map((node) => node.textContent), ["Update set", "Last saved", "Set state", "Version here", "On TEST", ""]);
   rows.forEach((entry, index) => assert.strictEqual(cellsOf(index).length, header().children.length, entry.setName));
-  const there = (index) => byClass(byClass(harness.shadow(), "row")[index], "r-there")[0];
+  const there = (index) => byClass(rowAt(index), "r-there")[0];
   const badgesIn = (node) => byClass(node, "badge").map((badge) => badge.textContent);
   assert.deepStrictEqual(badgesIn(there(0)), ["NOT FOUND"]);
   assert.ok(hasClass(byClass(there(0), "badge")[0], "missing"));
@@ -668,6 +793,161 @@ test("54c: Copy summary copies the engine's lines and the check's, counts only",
     "On the other instance: runs the same version.",
   ].join("\n"));
   assert.strictEqual(buttons(harness.shadow(), "✓ Copied").length, 1);
+});
+
+test("54d: after a check each opened row has the checked instance's card beside its own, in the colour of what it says", () => {
+  const harness = load();
+  const rows = [
+    row("open", "current"), row("open", "stale"), row("open", "current"),
+    row("complete", "stale"), row("complete", "current"), row("default", "same"), row("complete", "current"),
+  ];
+  open(harness, snapshot(rows), { onCheckRemote: () => {} }, { here: "DEV", origins: [{ origin: "https://test.service-now.com", label: "TEST" }] });
+  /* Open every row (an open set's row already is, and takes no click). */
+  byClass(harness.shadow(), "row-head").forEach((head) => head.click());
+  buttons(harness.shadow(), "Check")[0].click();
+  const committed = { there: "committed", text: "Committed on 30 Oct" };
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "differs", text: "TEST runs an older version." }],
+    perRow: {},
+    parts: {
+      [rows[0].key]: {
+        kind: "behind", say: "Runs an older version of this update", notes: ["matched by content"], saved: { on: "28 Oct", set: "Hotfix", from: "" },
+        then: "Missing the change saved here in “Set 4”; promoting this set brings it too", set: committed,
+      },
+      [rows[1].key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "", set: committed },
+      [rows[2].key]: { kind: "built", say: "Runs the version this set was built on", notes: [], saved: { on: "", set: "", from: "UAT" },
+        then: "Promoting this set replaces nothing changed there", set: committed },
+      [rows[3].key]: { set: { there: "backed-out", text: "Backed out" } },
+      [rows[4].key]: { set: { there: "missing", text: "Not found or not visible" } },
+      [rows[6].key]: { kind: "same", say: "Runs the same content, under another update", notes: [], saved: null, then: "" },
+    },
+    links: [],
+    copyLine: "",
+  }, 1);
+  /* The panel groups rows, so each is found by its set's name. */
+  const thereOf = (index) => {
+    const node = byClass(harness.shadow(), "row").find((candidate) => byClass(candidate, "r-name")[0].textContent === rows[index].setName);
+    const cards = byClass(node, "side");
+    assert.strictEqual(cards.length, 2, "two cards on " + rows[index].setName);
+    assert.ok(!hasClass(byClass(node, "sides")[0], "single"));
+    assert.strictEqual(byClass(cards[1], "role")[0].textContent, "checked instance");
+    assert.strictEqual(findAll(byClass(cards[1], "side-head")[0], (node) => node.tagName === "B")[0].textContent, "TEST");
+    return cards[1];
+  };
+  const tone = (card) => ["t-teal", "t-amber", "t-pink"].find((name) => hasClass(card, name)) || "grey";
+  const sayOf = (card) => byClass(card, "say")[0].textContent;
+  const thenOf = (card) => (byClass(card, "then")[0] || { textContent: "" }).textContent;
+
+  /* An older version there: amber, its note aside, the facts, and what promoting does. */
+  assert.strictEqual(tone(thereOf(0)), "t-amber");
+  assert.strictEqual(sayOf(thereOf(0)), "Runs an older version of this update. (matched by content)");
+  assert.deepStrictEqual(factsOf(thereOf(0)), [["This set", "Committed on 30 Oct"], ["Saved", "28 Oct"], ["Set", "Hotfix"]]);
+  assert.strictEqual(thenOf(thereOf(0)), "Missing the change saved here in “Set 4”; promoting this set brings it too.");
+  assert.ok(!hasClass(byClass(thereOf(0), "then")[0], "teal"));
+  /* This set's version, or one promoting moves forward: teal. */
+  assert.strictEqual(tone(thereOf(1)), "t-teal");
+  assert.strictEqual(sayOf(thereOf(1)), "Runs this set's version.");
+  assert.strictEqual(tone(thereOf(2)), "t-teal");
+  assert.deepStrictEqual(factsOf(thereOf(2)), [["This set", "Committed on 30 Oct"], ["From", "UAT"]]);
+  assert.ok(hasClass(byClass(thereOf(2), "then")[0], "teal"));
+  assert.strictEqual(thenOf(thereOf(2)), "Promoting this set replaces nothing changed there.");
+  /* The set's state alone: grey, or amber when it was backed out. */
+  assert.strictEqual(tone(thereOf(3)), "t-amber");
+  assert.strictEqual(sayOf(thereOf(3)), "Backed out.");
+  assert.deepStrictEqual(factsOf(thereOf(3)), []);
+  assert.strictEqual(tone(thereOf(4)), "grey");
+  assert.strictEqual(sayOf(thereOf(4)), "Not found or not visible.");
+  /* A Default set, never looked for there. */
+  assert.strictEqual(tone(thereOf(5)), "grey");
+  assert.strictEqual(sayOf(thereOf(5)), "Not checked. Default sets are never promoted, so the check doesn't look for them.");
+  /* The same content without a set state: grey, with no empty facts. */
+  assert.strictEqual(tone(thereOf(6)), "grey");
+  assert.strictEqual(findAll(thereOf(6), (node) => node.tagName === "DL").length, 0);
+
+  /* A finished check that sent no pieces still says each row wasn't checked, never a match. */
+  harness.ui.showRemote({ state: "done", lines: [], perRow: {}, links: [] }, 1);
+  assert.strictEqual(sayOf(thereOf(4)), "Not checked. This set wasn't part of the check.");
+});
+
+test("54e: every kind of answer has its colour on the checked instance's card; a backed-out set is amber wherever it is said", () => {
+  const cases = [
+    ["runs", "t-teal"], ["built", "t-teal"], ["earlier", "t-teal"], ["same", "grey"],
+    ["behind", "t-amber"], ["diverged", "t-amber"], ["moved", "t-amber"], ["other", "t-amber"], ["cant", "t-amber"], ["none", "t-amber"],
+    ["a kind not listed", "t-amber"],
+  ];
+  const tone = (card) => ["t-teal", "t-amber", "t-pink"].find((name) => hasClass(card, name)) || "grey";
+  for (const [kind, expected] of cases) {
+    const harness = load();
+    const entry = row("open", "current");
+    open(harness, snapshot([entry]), { onCheckRemote: () => {} }, { origins: [{ origin: "https://test.service-now.com", label: "TEST" }] });
+    buttons(harness.shadow(), "Check")[0].click();
+    harness.ui.showRemote({ state: "done", lines: [], perRow: {}, links: [],
+      parts: { [entry.key]: { kind, say: "Says " + kind, notes: [], saved: null, then: kind === "built" ? "Promoting this set replaces nothing changed there" : "" } } }, 1);
+    const card = byClass(harness.shadow(), "side")[1];
+    assert.strictEqual(tone(card), expected, kind);
+    const word = byClass(card, "v")[0];
+    assert.ok(hasClass(word, expected === "grey" ? "grey" : expected.slice(2)), kind + ": the answer's own word wears it too");
+    if (kind === "built") assert.ok(hasClass(byClass(card, "then")[0], "teal"));
+  }
+
+  /* Running this set's version, in a set backed out there: the card is teal
+   * for what runs, and the set's state is amber, as the column's badge is. */
+  const harness = load();
+  const entry = row("open", "current");
+  open(harness, snapshot([entry]), { onCheckRemote: () => {} }, { origins: [{ origin: "https://test.service-now.com", label: "TEST" }] });
+  buttons(harness.shadow(), "Check")[0].click();
+  harness.ui.showRemote({ state: "done", lines: [], links: [],
+    perRow: { [entry.key]: { content: "runs", there: "backed-out", thereWord: "Backed out", presence: "On TEST: backed out" } },
+    parts: { [entry.key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "", set: { there: "backed-out", text: "Backed out" } } },
+  }, 1);
+  const card = byClass(harness.shadow(), "side")[1];
+  assert.strictEqual(tone(card), "t-teal");
+  assert.deepStrictEqual(factsOf(card), [["This set", "Backed out"]]);
+  assert.ok(hasClass(findAll(card, (node) => node.tagName === "DD")[0], "warn"));
+  assert.ok(hasClass(byClass(harness.shadow(), "b-there")[0], "backed-out"), "the column's badge says the same");
+  harness.ui.showRemote({ state: "done", lines: [], links: [], perRow: {},
+    parts: { [entry.key]: { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "", set: { there: "committed", text: "Committed on 30 Oct" } } },
+  }, 1);
+  assert.ok(!hasClass(findAll(byClass(harness.shadow(), "side")[1], (node) => node.tagName === "DD")[0], "warn"), "a committed set is plain");
+});
+
+test("54f: a link under the check's answer that can't open is read out there, once, not by the panel's live region too", async () => {
+  const harness = load();
+  open(harness, snapshot([row("open", "current")]), {
+    onCheckRemote: () => {},
+    onOpenRemote: () => Promise.resolve({ ok: false, message: "TEST isn't open in this browser." }),
+  }, { origins: [{ origin: "https://test.service-now.com", label: "TEST" }] });
+  buttons(harness.shadow(), "Check")[0].click();
+  harness.ui.showRemote({ state: "done", lines: [], perRow: {}, parts: {},
+    links: [{ label: "Open record", remote: { origin: "https://test.service-now.com", table: "sys_script_include", sysId: id(9) } }] }, 1);
+  buttons(harness.shadow(), "Open record")[0].click();
+  await flush();
+  const checkOut = byClass(harness.shadow(), "check-out")[0];
+  assert.strictEqual(checkOut.getAttribute("aria-live"), "polite");
+  assert.strictEqual(byClass(checkOut, "link-note")[0].textContent, "TEST isn't open in this browser.", "said inside the check's own live region");
+  const live = findAll(harness.shadow(), (node) => node.getAttribute && node.getAttribute("role") === "status" && hasClass(node, "sr"))[0];
+  assert.strictEqual(live.textContent, "", "and not a second time");
+  harness.runTimers();
+  assert.strictEqual(byClass(harness.shadow(), "link-note").length, 0);
+});
+
+test("54g: opening or folding a row by its head keeps the focus on that row's new head", () => {
+  const harness = load();
+  const rows = [row("open", "current"), row("complete", "stale"), row("complete", "current")];
+  open(harness, snapshot(rows));
+  const headFor = (entry) => byClass(byClass(harness.shadow(), "row")
+    .find((node) => byClass(node, "r-name")[0].textContent === entry.setName), "row-head")[0];
+  const before = headFor(rows[1]);
+  before.focus();
+  before.click();
+  const after = headFor(rows[1]);
+  assert.notStrictEqual(after, before, "the row was drawn again");
+  assert.strictEqual(harness.dom.document.activeElement, after, "focus is on its new head, not lost to the page");
+  assert.strictEqual(after.getAttribute("aria-expanded"), "true");
+  after.fire("keydown", { key: " " });
+  assert.strictEqual(harness.dom.document.activeElement, headFor(rows[1]));
+  assert.strictEqual(headFor(rows[1]).getAttribute("aria-expanded"), "false");
 });
 
 /* ------------------------------------------------------------------ *

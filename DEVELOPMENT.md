@@ -363,17 +363,32 @@ The suites cover:
   source, the tick's conditions, row order, and per-capture verdicts equal to
   Update Set Lens's own. Check on: the request, every content line, presence by
   set index with Default left out, the worker's codes, and a counts-only copy
-  summary. And, over every request the suite made, no `nameLIKE`-style scan,
-  no dot-walk and no `payload`.
+  summary. The cards' pieces: each fact on its own with no joined lines, an
+  unreadable batch or merge name as "another set", Update Set Lens's
+  `explain` and `newerSave` passed on (a Can't tell row's reason without its
+  word), its newer-set flags turned into `newerSet` on Stale rows only, each
+  row's set state there, `runs` and `same`, Can't tell for a capture never
+  sent, nothing for a Default row, and the running capture's card for every
+  placing, unplaced, running there, conflict, none and unknown, taking index
+  0's answer and never a stand-in's. And, over every request the suite made, no `nameLIKE`-style
+  scan, no dot-walk and no `payload`.
 - `version_lens_ui.test.js` — the panel on the same DOM shim: a closed shadow
   root with no markup path, hostile names as text, each headline's mark and the
   tick only on a clear run, amber attention lines with their links, groups,
-  count badges that filter, open rows always open and the rest toggling, keys
-  on a link belonging to the link, same-origin links only, Check this set
+  count badges that filter, open rows always open and the rest toggling by
+  their head only (`aria-controls` naming the detail, the cards its sibling),
+  keys on a link belonging to the link, same-origin links only, Check this set
   handing the set object, Check on hidden until another instance is open and
   late or stale answers dropped, the copy summary, Escape, the focus trap, a
   snapshot made by the real engine, and Update Set Lens's **Other sets holding
-  it** handing the update's name over.
+  it** handing the update's name over. The cards: this instance's named in
+  bold, edged in its verdict's colour, every fact labelled, a Delete marked
+  and a Default newer set in amber, alone before a check; the checked
+  instance's beside it with every kind's colour, a backed-out set amber as a
+  fact, what promoting does, and "Not checked" and why for a Default row;
+  focus kept on a row's head through a toggle; and a link that can't open read
+  out once, by one live region or, under the check's lines, by the check's
+  own.
 - `version_lens_integration.test.js` — the runtime boundary: the injection
   route's three files in order, packaging and the manifest; Update Set Lens's
   export surface, `classifyRows`' rows and `normalizeSet` unchanged but for
@@ -382,7 +397,8 @@ The suites cover:
   request through the worker's real request check and the real exporter,
   answered by index; and the content-script section itself, reading nothing on
   its own and sending the check with its four fields only, end to end with the
-  real engine.
+  real engine, handing the cards' `parts` to the panel and opening it with
+  this instance's name.
 - `prefill_cross_instance.test.js` — Prefill from another instance. Parsing:
   a link names its own instance and wins over Read from, a link's sys_id is
   taken from Workspace, classic, `nav_to` and portal routes, and a non-SN,

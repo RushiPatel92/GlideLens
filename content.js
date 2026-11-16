@@ -9056,6 +9056,8 @@ function startVersionLens(resolution) {
   ui.open({
     view: session.view(),
     origins: [],
+    /* This instance's name, as Check on names the other one. */
+    here: prefillInstanceLabel(location.origin),
     callbacks: {
       onCheckRemote: (origin, remoteToken) => checkVersionsElsewhere(session, origin, remoteToken, token),
       onOpenUrl: (url, opts) => openLensUrl(url, opts),
@@ -9142,6 +9144,7 @@ async function checkVersionsElsewhere(session, origin, remoteToken, panelToken) 
       state: "done",
       lines: shown.lines,
       perRow: shown.perRow,
+      parts: shown.parts,
       tally: shown.tally,
       links: shown.links,
       copyLine: shown.copyLine,

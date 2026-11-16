@@ -87,7 +87,12 @@
   const BLANK_NAME = "It has no update name here, which usually means it hasn't been changed since it was installed.";
   const NOTHING_TO_CHECK = "Nothing here to look for there.";
 
-  const GROUP_ORDER = ["open", "default", "complete", "ignore", "merged", "unreadable"];
+  /* Open sets first, then the history that was or will be promoted. Default
+   * sets come after it: they are never promoted and never looked for by Check
+   * on, and an old Default capture above the real sets is noise. When one
+   * holds the version that runs here, the amber line and Runs here say so at
+   * the top. */
+  const GROUP_ORDER = ["open", "complete", "default", "ignore", "merged", "unreadable"];
   const STATE_BADGES = {
     open: "OPEN",
     default: "DEFAULT",
@@ -660,19 +665,46 @@
     return [];
   }
 
+  /* Update Set Lens flags a Stale row with the newer version's set: its
+   * state ("In progress", "Ignore", a Default set, or the set's own label)
+   * and whether it was committed here from another instance. In that panel
+   * every row is in the one set looked at, so the flags can't be misread.
+   * Here each row is a set of its own, so those two are said once, as the
+   * newer set's facts, and only the flags about the version itself stay
+   * ("matched by content", "Revert"). */
+  const NEWER_SET_KINDS = new Set(["default", "progress", "ignore"]);
+  const COMMITTED_HERE_FLAG = "Committed here from another instance";
+
+  function newerSetOf(result) {
+    const flags = Array.isArray(result.flags) ? result.flags.filter((flag) => flag && typeof flag === "object") : [];
+    if (result.verdict !== "stale") return { flags, newerSet: null };
+    const state = str(result.newerSetState);
+    const isSetFlag = (flag) => NEWER_SET_KINDS.has(flag.kind) ||
+      (Boolean(state) && flag.label === state) || flag.label === COMMITTED_HERE_FLAG;
+    const defaultFlag = flags.find((flag) => flag.kind === "default");
+    return {
+      flags: flags.filter((flag) => !isSetFlag(flag)),
+      newerSet: state ? { state: defaultFlag ? str(defaultFlag.label) : upperFirst(state), isDefault: Boolean(defaultFlag) } : null,
+    };
+  }
+
+  /*
+   * The row the panel draws. An opened row is a card, so its words come in
+   * pieces rather than as sentences to take apart: the verdict's text
+   * without its word (`explain`), the newer version's save (`newerSave`)
+   * and set (`newerSet`), and each fact on its own. A first capture is said
+   * only when it adds something: another person, or another day.
+   */
   function rowFor(capture, set, outcome, target, origin, duplicates) {
     const group = setGroup(set);
-    const result = outcome || { verdict: "cant", reason: "versions-failed", text: "Can't tell: " + CANT_TELL["versions-failed"] + ".", notes: [] };
-    const second = [];
-    if (capture.createdBy && (capture.createdBy !== capture.updatedBy || dayOf(capture.createdOnRaw) !== dayOf(capture.updatedOnRaw))) {
-      second.push("First captured by " + capture.createdBy + (capture.createdOn ? " on " + capture.createdOn : ""));
-    }
-    if (capture.scope && target.scope && capture.scope !== target.scope) second.push("scope " + capture.scope);
-    if (set && set.state === "complete" && set.completedOn) second.push("completed " + set.completedOn);
-    if (set && set.remoteSysId) second.push("committed here from another instance");
+    const result = outcome || {
+      verdict: "cant", reason: "versions-failed", text: "Can't tell: " + CANT_TELL["versions-failed"] + ".",
+      explain: CANT_TELL["versions-failed"] + ".", notes: [],
+    };
+    const firstCaptured = capture.createdBy &&
+      (capture.createdBy !== capture.updatedBy || dayOf(capture.createdOnRaw) !== dayOf(capture.updatedOnRaw))
+      ? { by: capture.createdBy, on: capture.createdOn || "" } : null;
     const notes = [];
-    if (set && set.parent) notes.push("in batch “" + (set.parentName || "another set") + "”");
-    if (set && set.mergedTo) notes.push("merged into “" + (set.mergedToName || "another set") + "”");
     (result.notes || []).forEach((note) => notes.push(note));
     if (duplicates > 1) notes.push("captured " + duplicates + " times in this set");
     const links = [];
@@ -681,6 +713,7 @@
     if (set) links.push({ label: "Check this set", set });
     const newer = result.verdict === "stale" && isSysId(result.newerSetId) && result.newerSetId !== capture.setId ? result.newerSetId : "";
     if (newer) links.push({ label: "Open newer set", url: origin + "/sys_update_set.do?sys_id=" + newer });
+    const { flags, newerSet } = newerSetOf(result);
     return {
       key: capture.key,
       sysId: capture.sysId,
@@ -696,12 +729,21 @@
       verdict: result.verdict,
       reason: result.reason || "",
       text: result.text || "",
+      explain: str(result.explain != null ? result.explain : result.text),
+      flags,
+      newerSave: result.newerSave && typeof result.newerSave === "object" ? result.newerSave : null,
+      newerSet,
       action: capture.actionLabel,
-      line1: "Last saved by " + (capture.updatedBy || "unknown") + (capture.updatedOn ? " on " + capture.updatedOn : ""),
-      line2: second.join(" · "),
-      /* The same two facts for the row's Last saved column. */
+      /* The row's Last saved column, and its card's first facts. */
       savedOn: capture.updatedOn || "",
       savedBy: capture.updatedBy || "",
+      firstCaptured,
+      captureScope: capture.scope && target.scope && capture.scope !== target.scope ? capture.scope : "",
+      completedOn: set && set.state === "complete" ? set.completedOn || "" : "",
+      committedHere: Boolean(set && set.remoteSysId),
+      /* A blank name is one this account can't read, not one the set lacks. */
+      batchName: set && set.parent ? set.parentName || "another set" : "",
+      mergedIntoName: set && set.mergedTo ? set.mergedToName || "another set" : "",
       notes,
       links,
       set: set || null,
@@ -981,8 +1023,8 @@
     if (read) {
       const c = result.counts;
       const total = c.open + c.default + c.complete + c.ignore + c.merged + c.unreadable;
-      lines.push("Captured in " + plural(total, "set", "sets") + " on this instance: open " + c.open + ", Default " + c.default +
-        ", complete " + c.complete + ", Ignore " + c.ignore + ", merged " + c.merged +
+      lines.push("Captured in " + plural(total, "set", "sets") + " on this instance: open " + c.open + ", complete " + c.complete +
+        ", Default " + c.default + ", Ignore " + c.ignore + ", merged " + c.merged +
         (c.unreadable ? ", can't read " + c.unreadable : "") + ".");
     }
     const a = result.attentionCounts;
@@ -1447,16 +1489,75 @@
     return null;
   }
 
+  /* A note from there on when and where its version was saved, as a card's
+   * facts; null when it says nothing. */
+  function savedFact(note) {
+    if (!note || typeof note !== "object") return null;
+    const fact = { on: str(note.on), set: str(note.set), from: str(note.from) };
+    return fact.on || fact.set || fact.from ? fact : null;
+  }
+
+  function upperFirst(text) {
+    const value = str(text);
+    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+  }
+
+  /* What a placing says on the card of the capture holding the version that
+   * runs here, in Update Set Lens's words for the same answers. */
+  const PLACED_SAY = {
+    built: "Runs the version this set was built on",
+    earlier: "Runs an earlier save of this set",
+    behind: "Runs an older version of this update",
+    diverged: "Runs a version that isn't in this update's history",
+    moved: "Had this set's version, and it has since been changed",
+  };
+
+  /*
+   * The checked instance's card for the capture holding the version that runs
+   * here, when that instance runs something else: what it runs, and what
+   * promoting this set would do there. The same answer as the check's first
+   * lines, from the same pieces. `promotion` is promotionLine's, `place` the
+   * placing it came from, `note` when and where that version was saved there.
+   */
+  function subjectPart(status, promotion, place, note) {
+    const saved = savedFact(note);
+    if (status === "other") {
+      if (!promotion) return { kind: "other", say: "Runs another version", notes: [], saved, then: "" };
+      const kind = promotion.kind;
+      const matched = place && place.byContent && (kind === "built" || kind === "earlier" || kind === "behind");
+      let then = "";
+      if (kind === "built" || kind === "earlier") then = "Promoting this set replaces nothing changed there";
+      else if (kind === "behind") {
+        const missing = missingWords(place && place.since);
+        then = "Missing " + missing.text + "; promoting this set brings " + missing.them + " too";
+      } else if (kind === "diverged") then = "Promoting this set replaces it";
+      else if (kind === "moved") then = "Promoting this set again undoes that change";
+      return { kind, say: PLACED_SAY[kind] || "Runs another version", notes: matched ? ["matched by content"] : [], saved, then };
+    }
+    if (status === "conflict") {
+      return { kind: "cant", say: "Can't tell: its version shares this one's id but not its content", notes: [], saved: null, then: "" };
+    }
+    if (status === "none") return { kind: "none", say: "No readable current version", notes: [], saved: null, then: "" };
+    return { kind: "cant", say: "Can't tell", notes: [], saved: null, then: "" };
+  }
+
   /*
    * The other instance's answer as text. `reply` is what the worker returned,
    * already rebuilt from its allowlist; `request` what was sent; `view` the
    * snapshot it was sent from; `origin` the instance checked, for its links;
    * `placed` what session.placeRemote found for the version that runs here,
    * or null.
+   *
+   * `parts` is the same answer in pieces for an opened row's card, keyed by
+   * row as `perRow` is: `set` (the set's state there, as an id and words)
+   * and, where there is one, what runs there for that capture (`kind`,
+   * `say`, `notes`, `saved`, `then`). `perRow` and the column stay as they
+   * were.
    */
   function collisionRemoteView(reply, request, view, instance, origin, placed) {
     const lines = [];
     const perRow = {};
+    const parts = {};
     let links = [];
     const rows = (view && view.rows) || [];
     const byKey = new Map(rows.map((row) => [row.key, row]));
@@ -1520,6 +1621,38 @@
           perRow[entry.key] = { content: entry.status };
         }
       });
+      /* The cards: a row whose capture, or its content, runs there; and the
+       * capture holding the version that runs here, which says what runs
+       * there instead. A Default set is never promoted, so its rows carry
+       * nothing from there; nor does the newest capture standing in. */
+      const subjectKey = !newest && request.subject ? request.subject.key : null;
+      const notes = Array.isArray(reply.saved) ? reply.saved : [];
+      const place = placed && typeof placed === "object" ? placed : null;
+      captureStatus.forEach((entry, index) => {
+        const row = byKey.get(entry.key);
+        if (!row || row.group === "default") return;
+        /* The capture holding what runs here is the record sent first, by
+         * the same name, guid and hash: its card takes index 0's answer, as
+         * the check's first lines do. */
+        const isSubject = entry.key === subjectKey;
+        const own = isSubject ? zeroStatus : entry.status;
+        const note = notes[isSubject ? 0 : index + request.offset];
+        if (own === "runs") {
+          parts[entry.key] = { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" };
+        } else if (own === "same") {
+          parts[entry.key] = { kind: "same", say: "Runs the same content, under another update", notes: [], saved: savedFact(note), then: "" };
+        } else if (isSubject) {
+          parts[entry.key] = subjectPart(own, promotion, place, note);
+        }
+      });
+      /* A capture whose name, guid or hash fails its pattern is never sent,
+       * so nothing there answers for it: Can't tell, as Update Set Lens says,
+       * rather than a card that looks like one compared and not running. */
+      (request.filtered || []).forEach((key) => {
+        const row = byKey.get(key);
+        if (!row || row.group === "default") return;
+        parts[key] = { kind: "cant", say: "Can't tell whether this capture runs there", notes: [], saved: null, then: "" };
+      });
       if (origin) {
         links = remoteLinks(Array.isArray(reply.found) ? reply.found[0] : null, request.records[0], origin, zeroStatus);
       }
@@ -1535,6 +1668,7 @@
       rows.forEach((row) => {
         if (!asked.has(row.setId)) return;
         perRow[row.key] = Object.assign({}, perRow[row.key] || {}, { there: "failed", thereWord: "Can't tell" });
+        parts[row.key] = Object.assign({}, parts[row.key] || {}, { set: { there: "failed", text: "Can't tell whether this set is there" } });
       });
     } else {
       const copies = Array.isArray(reply.copies) ? reply.copies : [];
@@ -1557,6 +1691,7 @@
           there: state.there,
           thereWord: state.word,
         });
+        parts[row.key] = Object.assign({}, parts[row.key] || {}, { set: { there: state.there, text: upperFirst(found.text) } });
       });
     }
     /* The sets' states there as count badges; the panel labels them with the
@@ -1575,6 +1710,7 @@
     return {
       lines,
       perRow,
+      parts,
       tally: counted,
       links,
       copyLine: "On the other instance: " + contentWord + (setsThere ? "; sets there: " + setsThere : "") + ".",
