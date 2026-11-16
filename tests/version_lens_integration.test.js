@@ -377,6 +377,8 @@ test("62: the section reads only through the shared route, sends the check with 
   assert.strictEqual(answer.state, "done");
   assert.strictEqual(answer.lines[0].text, "TEST runs the same version as this instance.");
   assert.ok(answer.copyLine.startsWith("On the other instance: runs the same version"));
+  const runningRow = session.view().rows.find((row) => row.setName === "Open 1");
+  assert.strictEqual(answer.parts[runningRow.key].kind, "runs", "the cards' pieces reach the panel");
   const names = JSON.stringify(sent);
   assert.ok(!/Open 1|dev\.one|"x"/.test(names), "only ids and { name, guid, hash } leave");
 
@@ -385,6 +387,31 @@ test("62: the section reads only through the shared route, sends the check with 
   await section.checkVersionsElsewhere(empty, THERE, 8, section.sequence());
   assert.strictEqual(sent.length, 1);
   assert.deepStrictEqual(ui.calls[1], [{ state: "error", message: "Nothing here to look for there." }, 8]);
+});
+
+test("62c: the panel opens with this instance's name for its card, as Check on names the other", () => {
+  const opened = [];
+  const ui = { open: (options) => opened.push(options), isOpen: () => true, update: () => {}, close: () => {} };
+  const engine = {
+    createSession: () => ({ view: () => ({}), onChange: () => {}, run: async () => {}, cancel: () => {} }),
+  };
+  const labelled = [];
+  const section = loadSection({
+    chrome: { runtime: { sendMessage: async () => ({ ok: true }) } },
+    location: { origin: HERE },
+    globalThis: { SNVersionLens: engine, SNVersionLensUI: ui },
+    prefillInstanceLabel: (origin) => { labelled.push(origin); return "DEV"; },
+    claimUpdateSetCheckPanel: () => {},
+    releaseUpdateSetCheckPanel: () => {},
+    loadUpdateSetCheckOrigins: () => {},
+    sysIdFromText: () => "",
+    recordContextFromText: () => ({}),
+    UPDATE_SET_REMOTE_REPLY_CEILING_MS: 1000,
+  });
+  section.startVersionLens({ kind: "target", target: { name: NAME } });
+  assert.strictEqual(opened.length, 1);
+  assert.strictEqual(opened[0].here, "DEV");
+  assert.deepStrictEqual(labelled, [HERE], "named from this page's own origin");
 });
 
 test("62b: another version there is placed before the answer is drawn; a failed placing or drawing never leaves the panel busy", async () => {

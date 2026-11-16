@@ -403,23 +403,31 @@ The panel answers, on this instance only:
   does. **Captured only outside a named set** — only a Default set holds it,
   and that change won't be promoted.
 
-Only open named sets compete; Default, Ignore and complete sets are listed but
-never counted. Amber lines under the verdict say when an open set holds a
+Only open named sets compete; complete, Default and Ignore sets are listed
+after them, in that order, but never counted. Amber lines under the verdict say when an open set holds a
 version that no longer runs here, when the version that runs was saved in a
 Default set or sits in an ignored one, and when an open set can't be told. A
 **Runs here** line says which set the running version came from, and who
 recorded it when. The rows share columns: the set, when and by whom it last
 saved the record, the set's state, and its version against what runs here.
-An opened row links to the update, the set and **Check this set** (Update Set
-Lens on that set). A tick shows only when every capture and set was read and nothing
-needs attention.
+An opened row shows a card for this instance, headed by its name, as in Update
+Set Lens: the verdict and why, the facts behind it (when and by whom the set
+saved the record, when it was first captured, its batch, scope, and when and
+in which state of set a newer version was saved) and links to the update, the
+set and **Check this
+set** (Update Set Lens on that set). A tick shows only when every capture and
+set was read and nothing needs attention.
 
 **Check on** asks another instance open in your browser whether it runs the
 same version, and where each set has got there. The answer adds a column for
 that instance: each set's state there (Committed, Previewed, Not found…) and
 **Runs there** on the set whose update is the version running there, with the
-states counted above the list. Copies loaded here from other instances are
-counted, not listed. **Copy summary** copies counts only.
+states counted above the list. Once checked, an opened row gets a second card
+beside the first, headed by the other instance's name: the set's state there,
+whether that instance runs this set's version or its content, and, on the row
+holding the version that runs here, what promoting its set would do. Copies
+loaded here from other instances are counted, not listed. **Copy summary**
+copies counts only.
 
 When that instance runs another version, Check on also looks it up in the
 history of the update that runs here, as Update Set Lens does for a set, and

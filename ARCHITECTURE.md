@@ -2615,14 +2615,18 @@ set, an open set that can't be told, the running version in an ignored set),
 "Runs here", and count badges that filter the rows. A tick shows only on No
 competing sets or No competing versions with no attention line, no Partial
 banner, every capture and set read, and the versions read; anything partial
-says "so far". Open rows are always expanded. **Check this set** closes the
+says "so far". Rows are grouped open, complete, Default, Ignore, merged and
+can't read, and the count badges keep that order. Default sets come after
+the history because they are never promoted and Check on never looks for
+them; when one holds the version that runs here, the amber line and Runs here
+say so at the top. Open rows are always expanded. **Check this set** closes the
 panel and opens Update Set Lens on the set object already read. **Copy
 summary** holds counts and the verdict's words only.
 
 The rows sit under one sticky column header and share its grid template, with
 fixed tracks so each column lines up down the list: the set, Last saved (the
 capture's `sys_updated_on` display value and `sys_updated_by`, the same facts
-as an opened row's first line), the set's state and the verdict. A finished
+as an opened row's card begins with), the set's state and the verdict. A finished
 check adds the instance's column from `perRow`: a badge for the set's state
 there (an id to style by and a word, from `collisionRemoteView`), **Runs
 there** for `runs` and **Runs same content** for `same`, and "Not checked" for
@@ -2632,6 +2636,51 @@ unchanged. The header is `aria-hidden`; each cell carries its column's name as
 visually hidden text. Narrower panels drop the state column first (the group
 heading says it), then Last saved and the instance's column, which an opened
 row still spells out.
+
+An opened row is two cards, one per instance, built and styled as Update Set
+Lens's: each a `role="group"` headed by the instance's name in bold (`here`
+from content.js, the host's first label) and its role, edged in its colour,
+side by side where two fit and alone at reading width before a check. Only
+the row's head is the `role="button"`, with `aria-expanded` and
+`aria-controls`; the cards are its sibling, and focus stays on the head
+through the repaint. A link that can't open is said beside its row and read
+out once by the panel's single live region. A link under the check's lines is
+the exception: its note is drawn inside the check's answer, which is a live
+region already, so the panel's own region stays quiet for it.
+
+The cards take their words in pieces. `rowFor` passes on Update Set Lens's
+`explain` and `newerSave` from `classifyRows`, and hands each fact on its own
+(`savedOn`, `savedBy`, `action`, `firstCaptured`, `completedOn`, `batchName`,
+`mergedIntoName`, `captureScope`, `committedHere`); there is no sentence of
+facts to take apart. A batch or merge target whose name this account can't
+read is "another set". Update Set Lens's `flags` describe a Stale row's newer
+set (its state, and whether it was committed here from another instance).
+In that panel every row is in one set, so the flags can't be misread. Here
+each row is a set of its own, so the newer set's state becomes `newerSet`
+(`state`, `isDefault`) on Stale rows only. "Committed here" is left to the
+newer save's own label, and only the flags about the version stay ("matched
+by content", "Revert"). This instance's card says the verdict in its colour
+(pink Stale, amber Can't tell, grey otherwise), why, the facts (a Default
+newer set in amber), notes and the row's links. `collisionRemoteView` returns `parts` beside `perRow`,
+keyed the same, and `perRow` and the column are unchanged. Each part may carry
+`set` (the set's state there: its id, and `presenceText` with a capital) and,
+for a row that has one, what runs there: `kind`, `say`, `notes`, `saved`,
+`then`. A capture whose version or content runs there is `runs` (teal) or
+`same` (grey). The capture holding the version that runs here (the request's
+`subject`, never the newest-capture stand-in) takes index 0's answer, as the
+check's first lines do. When that instance runs another version, the placing
+gives its kind, in Update Set Lens's words: `built` and `earlier` in teal,
+with "Promoting this set replaces nothing changed there". `behind`,
+`diverged` and `moved` are amber, each with what promoting does. An unplaced
+answer is amber "Runs another version" with no promise. No other row's card
+says what runs there, because another version there is the record's answer,
+not that capture's. A capture whose name, guid or hash fails its pattern is
+never sent, so its card says in amber that it can't be told, as Update Set
+Lens says. A card with only the set's state is grey, or amber when the set
+was backed out there or couldn't be told; that state is amber as a fact too,
+under a teal answer. A Default set's row, or one the check didn't reach, says
+"Not checked" and why. A Default set is never looked for, so its row carries
+no part.
 
 ## Debug Timeline
 

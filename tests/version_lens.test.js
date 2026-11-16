@@ -673,7 +673,8 @@ test("25: open is in progress and not Default; a merged set counts only while in
   });
   assert.strictEqual(merged.view.headline.id, "H7");
   assert.deepStrictEqual(merged.view.rows.map((row) => [row.setName, row.stateBadge]), [["Open 1", "OPEN"], ["Done 2", "MERGED"]]);
-  assert.ok(merged.view.rows[0].notes.includes("merged into “Destination”"));
+  assert.strictEqual(merged.view.rows[0].mergedIntoName, "Destination", "a fact on the row's card");
+  assert.ok(!merged.view.rows[0].notes.some((note) => /merged into/.test(note)), "said once, as the fact");
   assert.strictEqual(merged.view.counts.merged, 1);
 
   const child = await runOn({
@@ -682,7 +683,8 @@ test("25: open is in progress and not Default; a merged set counts only while in
     versions: [current(id(7), guid(7), "7")],
   });
   assert.strictEqual(headline(child.view), "No competing sets: only “Open 7” holds it open.");
-  assert.ok(child.view.rows[0].notes.includes("in batch “Parked batch”"));
+  assert.strictEqual(child.view.rows[0].batchName, "Parked batch");
+  assert.strictEqual(child.view.rows[0].mergedIntoName, "");
 
   const notOpen = await runOn({
     sets: [defaultSet(1), ignoreSet(2), doneSet(3)],
@@ -932,9 +934,10 @@ test("37: the tick needs H6 or H7, no attention line, no Partial banner, an exac
   assert.strictEqual(lens.verdict([capture], new Map([[id(1), set]]), outcomes, null, { target: { name: NAME }, origin: ORIGIN }).clear, false);
 });
 
-test("38: rows run open (newest save first), Default, complete, Ignore, merged, unreadable; scope only when it differs", async () => {
+test("38: rows run open (newest save first), complete, Default, Ignore, merged, unreadable; each fact on its own, scope only when it differs", async () => {
   const { view } = await runOn({
-    sets: [openSet(1), openSet(2), defaultSet(3), doneSet(4), ignoreSet(5), doneSet(6, { merged_to: id(1) })],
+    sets: [openSet(1), openSet(2), defaultSet(3), doneSet(4, { completed_on: "2026-09-20 10:00:00", remote_sys_id: id(40) }), ignoreSet(5),
+      doneSet(6, { merged_to: id(1) })],
     xml: [
       cap(id(6), guid(6), "6"),
       cap(id(5), guid(5), "5"),
@@ -946,17 +949,42 @@ test("38: rows run open (newest save first), Default, complete, Ignore, merged, 
     ],
     versions: [current(id(1), guid(1), "1")],
   });
-  assert.deepStrictEqual(view.rows.map((row) => row.setName), ["Open 2", "Open 1", "Default", "Done 4", "Ignored 5", "Done 6", "an update set you can't read"]);
+  /* Default after the history: never promoted, and never looked for there. */
+  assert.deepStrictEqual(view.rows.map((row) => row.setName), ["Open 2", "Open 1", "Done 4", "Default", "Ignored 5", "Done 6", "an update set you can't read"]);
   assert.deepStrictEqual(view.rows.map((row) => row.pinned), [true, true, false, false, false, false, false]);
-  assert.strictEqual(view.rows[3].line2, "scope x_app");
-  assert.strictEqual(view.rows[1].line2, "", "same scope, same person, same day");
-  assert.strictEqual(view.rows[0].line2, "First captured by dev.two on D(2026-10-01 09:00:00)");
-  assert.strictEqual(view.rows[0].line1, "Last saved by dev.one on D(2026-10-02 09:00:00)");
+  /* Facts for the card, each on its own: nothing for it to take apart. */
+  const facts = (row) => [row.firstCaptured, row.captureScope, row.completedOn, row.committedHere, row.batchName, row.mergedIntoName];
+  assert.deepStrictEqual(plain(facts(view.rows[2])), [null, "x_app", "D(2026-09-20 10:00:00)", true, "", ""]);
+  assert.deepStrictEqual(plain(facts(view.rows[1])), [null, "", "", false, "", ""], "same scope, same person, same day");
+  assert.deepStrictEqual(plain(view.rows[0].firstCaptured), { by: "dev.two", on: "D(2026-10-01 09:00:00)" });
+  assert.strictEqual(view.rows[5].mergedIntoName, "Open 1");
   assert.deepStrictEqual([view.rows[0].savedOn, view.rows[0].savedBy], ["D(2026-10-02 09:00:00)", "dev.one"],
-    "the Last saved column is the same display value and person");
+    "the Last saved column and the card's first facts");
+  assert.ok(view.rows.every((row) => !("line1" in row) && !("line2" in row)), "no sentence of facts to split");
   assert.deepStrictEqual(view.rows[0].links.map((link) => link.label), ["Open update", "Open set", "Check this set"]);
   assert.strictEqual(view.rows[0].links[2].set.sysId, id(2), "Check this set hands the set already read");
   assert.deepStrictEqual(view.rows[6].links.map((link) => link.label), ["Open update", "Open set"]);
+});
+
+test("38b: a Can't tell row hands its card the reason without the verdict word, read or not", () => {
+  const set = { sysId: id(1), name: "Open 1", state: "in progress", stateLabel: "In progress", isDefault: false,
+    mergedTo: "", parent: "", base: "", remoteSysId: "", completedOn: "" };
+  const capture = { key: "k1", sysId: id(9), name: NAME, setId: id(1), hash: "1", guid: guid(1), action: "INSERT_OR_UPDATE",
+    actionLabel: "Update", updatedBy: "dev.one", updatedOn: "D", updatedOnRaw: "2026-10-01 10:00:00", createdBy: "dev.one",
+    createdOnRaw: "2026-10-01 10:00:00", scope: "" };
+  const rowWith = (outcomes) => lens.verdict([capture], new Map([[id(1), set]]), outcomes, null, { target: { name: NAME }, origin: ORIGIN }).rows[0];
+  /* No outcome for the capture: the engine's own Can't tell. */
+  const unread = rowWith(new Map());
+  assert.strictEqual(unread.verdict, "cant");
+  assert.strictEqual(unread.text, "Can't tell: " + usl.CANT_TELL["versions-failed"] + ".");
+  assert.strictEqual(unread.explain, usl.CANT_TELL["versions-failed"] + ".");
+  /* Update Set Lens's own: its explain is taken as it is. */
+  const refused = rowWith(new Map([["k1", {
+    verdict: "cant", reason: "versions-refused", text: "Can't tell: " + usl.CANT_TELL["versions-refused"] + ".",
+    explain: usl.CANT_TELL["versions-refused"] + ".", notes: [],
+  }]]));
+  assert.strictEqual(refused.explain, usl.CANT_TELL["versions-refused"] + ".");
+  assert.ok(![unread, refused].some((row) => /^Can't tell/.test(row.explain)), "the card says the word once, in colour");
 });
 
 test("39: a record held identically by seven open sets is one quiet line", async () => {
@@ -980,6 +1008,60 @@ test("40: per-capture verdicts are what the Update Set Lens engine gives for the
   const direct = await usl.classifyRows(captures, { origin: ORIGIN, transport: instance.transport }, { sets: new Map() });
   const byKey = new Map(plain(direct.rows).map((row) => [row.sysId, [row.verdict, row.reason, row.text]]));
   view.rows.forEach((row) => assert.deepStrictEqual([row.verdict, row.reason, row.text], byKey.get(row.sysId), row.setName));
+  /* And the card's pieces are Update Set Lens's own: the text without its
+   * verdict word and the newer version's save. Its flags about the newer
+   * set become that set's fact here, where every row is a set of its own. */
+  const pieces = new Map(plain(direct.rows).map((row) => [row.sysId, row]));
+  view.rows.forEach((row) => {
+    const own = pieces.get(row.sysId);
+    assert.deepStrictEqual(plain([row.explain, row.newerSave]), [own.explain, own.newerSave], row.setName);
+  });
+  const stale = view.rows.find((row) => row.verdict === "stale" && row.newerSave);
+  assert.ok(stale, "the world has a stale row with a newer save");
+  assert.deepStrictEqual(plain(pieces.get(stale.sysId).flags), [{ label: "In progress", kind: "progress" }], "Update Set Lens flags the newer set");
+  assert.deepStrictEqual(plain(stale.flags), [], "said once here, as a fact");
+  assert.deepStrictEqual(plain(stale.newerSet), { state: "In progress", isDefault: false });
+  assert.ok(view.rows.filter((row) => row.verdict !== "stale").every((row) => row.newerSet === null),
+    "only a Stale row has a newer set: another verdict's version is this set's own");
+});
+
+test("40b: a Stale row says its newer set's state once, as a fact; the flags left are about the version", () => {
+  const set = { sysId: id(1), name: "Done 1", state: "complete", stateLabel: "Complete", isDefault: false,
+    mergedTo: "", parent: "", base: "", remoteSysId: "", completedOn: "" };
+  const capture = { key: "k1", sysId: id(9), name: NAME, setId: id(1), hash: "1", guid: guid(1), action: "INSERT_OR_UPDATE",
+    actionLabel: "Update", updatedBy: "dev.one", updatedOn: "D", updatedOnRaw: "2026-10-01 10:00:00", createdBy: "dev.one",
+    createdOnRaw: "2026-10-01 10:00:00", scope: "" };
+  const rowWith = (outcome) => plain(lens.verdict([capture], new Map([[id(1), set]]), new Map([["k1", Object.assign({
+    verdict: "stale", reason: "", text: "Newer version in “Next”", explain: "Newer version in “Next”", notes: [],
+  }, outcome)]]), null, { target: { name: NAME }, origin: ORIGIN }).rows[0]);
+  const matched = { label: "matched by content", kind: "" };
+  const revert = { label: "Revert", kind: "" };
+  const committed = { label: "Committed here from another instance", kind: "" };
+  const cases = [
+    [{ newerSetState: "In progress", flags: [{ label: "In progress", kind: "progress" }, committed, revert, matched] },
+      { state: "In progress", isDefault: false }],
+    [{ newerSetState: "Ignore", flags: [{ label: "Ignore", kind: "ignore" }, matched] }, { state: "Ignore", isDefault: false }],
+    [{ newerSetState: "Complete", flags: [{ label: "Complete", kind: "" }] }, { state: "Complete", isDefault: false }],
+    [{ newerSetState: "default set", flags: [{ label: "Default set: changed outside a named set", kind: "default" }] },
+      { state: "Default set: changed outside a named set", isDefault: true }],
+  ];
+  for (const [outcome, newerSet] of cases) {
+    const row = rowWith(outcome);
+    assert.deepStrictEqual(row.newerSet, newerSet, outcome.newerSetState);
+    assert.deepStrictEqual(row.flags, outcome.flags.filter((flag) => flag === matched || flag === revert), outcome.newerSetState);
+  }
+  /* No newer set read (an upgrade, say): no fact, and nothing taken away. */
+  assert.deepStrictEqual([rowWith({ newerSetState: "", flags: [matched] }).newerSet, rowWith({ newerSetState: "", flags: [matched] }).flags],
+    [null, [matched]]);
+  /* Another verdict keeps its flags and has no newer set, whatever Update Set Lens filled in. */
+  const current = rowWith({ verdict: "current", newerSetState: "Complete", flags: [matched] });
+  assert.deepStrictEqual([current.newerSet, current.flags], [null, [matched]]);
+
+  /* A batch or merge target this account can't read the name of is "another
+   * set": a blank name says nothing about the set itself. */
+  const hidden = Object.assign({}, set, { parent: id(5), parentName: "", mergedTo: id(6), mergedToName: "" });
+  const row = plain(lens.verdict([capture], new Map([[id(1), hidden]]), new Map(), null, { target: { name: NAME }, origin: ORIGIN }).rows[0]);
+  assert.deepStrictEqual([row.batchName, row.mergedIntoName], ["another set", "another set"]);
 });
 
 /* ------------------------------------------------------------------ *
@@ -1130,6 +1212,76 @@ test("47b: the count badges keep one order; another state keeps its label; a fai
   }
 });
 
+test("47c: the cards' pieces: each row's set there, what runs there for its capture, nothing for a Default row; perRow as it was", async () => {
+  const data = collisionWorld();
+  data.sets.push(defaultSet(4));
+  data.xml.push(cap(id(4), guid(4), "11"));
+  const { view } = await runOn(data);
+  const request = plain(lens.collisionRemoteRequest(view));
+  const copy = (set, state, extra) => Object.assign({
+    set, match: "remote", state, stateLabel: state, committedOn: "", retrievedOn: "", collisions: "", localState: "", localStateLabel: "",
+  }, extra);
+  const reply = {
+    copies: [copy(0, "committed", { committedOn: "30 Oct" }), copy(1, "previewed", { retrievedOn: "29 Oct" }), copy(2, "backedout")],
+    clones: [],
+    /* Rows run open, complete, Default: the Default row's capture runs there. */
+    content: ["runs", "runs", "same", "other", "runs"],
+    saved: [null, null, { on: "28 Oct", set: "Hotfix" }, null, null],
+  };
+  assert.deepStrictEqual(request.keys.map((entry) => view.rows.find((row) => row.key === entry).setName), ["Open 1", "Open 2", "Done 3", "Default"]);
+  const shown = plain(lens.collisionRemoteView(reply, request, view, "TEST", ""));
+  const key = (name) => view.rows.find((row) => row.setName === name).key;
+  assert.deepStrictEqual(shown.parts[key("Open 1")], {
+    kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "",
+    set: { there: "committed", text: "Committed on 30 Oct" },
+  });
+  assert.deepStrictEqual(shown.parts[key("Open 2")], {
+    kind: "same", say: "Runs the same content, under another update", notes: [], saved: { on: "28 Oct", set: "Hotfix", from: "" }, then: "",
+    set: { there: "previewed", text: "Previewed, not committed (retrieved 29 Oct)" },
+  });
+  assert.deepStrictEqual(shown.parts[key("Done 3")], { set: { there: "backed-out", text: "Backed out" } },
+    "another version there is the record's answer, not this capture's");
+  assert.strictEqual(shown.parts[key("Default")], undefined, "a Default row carries nothing from there");
+  /* The column's answer is unchanged by the cards. */
+  assert.deepStrictEqual(shown.perRow[key("Open 1")], {
+    content: "runs", presence: "On TEST: committed on 30 Oct", there: "committed", thereWord: "Committed",
+  });
+  assert.deepStrictEqual(Object.keys(shown.perRow).sort(), [key("Open 1"), key("Open 2"), key("Done 3")].sort());
+
+  /* A failed presence read can't tell each set. */
+  const failed = plain(lens.collisionRemoteView({ presenceFailure: { code: "refused" }, content: ["other", "other", "other", "other", "other"] },
+    request, view, "TEST", ""));
+  assert.deepStrictEqual(failed.parts[key("Done 3")], { set: { there: "failed", text: "Can't tell whether this set is there" } });
+  assert.strictEqual(failed.parts[key("Default")], undefined);
+  /* Nothing compared: the sets' states only. */
+  const unread = plain(lens.collisionRemoteView({ copies: [], clones: [], content: null, contentFailure: { code: "refused" } }, request, view, "TEST", ""));
+  assert.ok(Object.values(unread.parts).every((part) => Object.keys(part).join() === "set"));
+});
+
+test("47d: a capture never sent, its hash or guid failing its pattern, can't be told there; a Default one carries nothing", async () => {
+  const { view } = await runOn({
+    sets: [openSet(1), openSet(2), defaultSet(3)],
+    xml: [cap(id(1), guid(1), "1"), cap(id(2), guid(2), "not-a-hash"), cap(id(3), "bad", "3")],
+    versions: [current(id(1), guid(1), "1")],
+  });
+  const request = plain(lens.collisionRemoteRequest(view));
+  const key = (name) => view.rows.find((row) => row.setName === name).key;
+  assert.deepStrictEqual(request.filtered.slice().sort(), [key("Open 2"), key("Default")].sort());
+  const committed = { set: 1, match: "remote", state: "committed", stateLabel: "Committed", committedOn: "30 Oct",
+    retrievedOn: "", collisions: "", localState: "", localStateLabel: "" };
+  const shown = plain(lens.collisionRemoteView({ copies: [committed], clones: [], content: ["runs", "runs"] }, request, view, "TEST", ""));
+  assert.deepStrictEqual(shown.parts[key("Open 2")], {
+    kind: "cant", say: "Can't tell whether this capture runs there", notes: [], saved: null, then: "",
+    set: { there: "committed", text: "Committed on 30 Oct" },
+  }, "not the grey card of a capture compared and not running");
+  assert.strictEqual(shown.parts[key("Default")], undefined);
+  assert.strictEqual(shown.perRow[key("Open 2")].content, undefined, "the column is unchanged");
+  /* Nothing compared at all: the set's state only, for every row alike. */
+  const unread = plain(lens.collisionRemoteView({ copies: [committed], clones: [], content: null, contentFailure: { code: "refused" } },
+    request, view, "TEST", ""));
+  assert.deepStrictEqual(Object.keys(unread.parts[key("Open 2")]), ["set"]);
+});
+
 test("48: why a check could not run reaches the panel's words", () => {
   assert.strictEqual(lens.remoteProblem({ code: "not-open" }, "TEST", "test.service-now.com"),
     "test.service-now.com isn't open in this browser. Open it in a tab, sign in, then try again.");
@@ -1146,7 +1298,7 @@ test("49: the copy summary holds counts and the state word only", async () => {
   const text = lens.copySummary(view, remote);
   assert.strictEqual(text, [
     "Version Lens: one record.",
-    "Captured in 3 sets on this instance: open 2, Default 0, complete 1, Ignore 0, merged 0.",
+    "Captured in 3 sets on this instance: open 2, complete 1, Default 0, Ignore 0, merged 0.",
     "Potential collision. Needs attention: 1 open set holds a version that no longer runs here.",
     "On the other instance: runs another version; sets there: not found 3.",
   ].join("\n"));
@@ -1402,6 +1554,75 @@ test("49g: a capture moved to another set is placed there, its saves in the set 
   assert.strictEqual(plain(lens.collisionRemoteView(movedThere, request, view, "TEST", "",
     await session.placeRemote(movedThere, request))).lines[0].text,
     "TEST had the version that runs here and has since changed it: promoting “Open 4” again undoes that change.");
+});
+
+test("49j: the card of the capture holding what runs here says what runs there and what promoting its set does; no other row's card does", async () => {
+  const { view, session } = await runOn(placingWorld());
+  const request = session.remoteRequest();
+  const subject = request.subject.key;
+  const SAVED = { on: "28 Oct", set: "Hotfix" };
+  const answer = async (there, moved) => {
+    const reply = Object.assign(placingReply(request, there, moved), { saved: request.records.map((_, index) => (index === 0 ? SAVED : null)) });
+    const placed = await session.placeRemote(reply, request);
+    return plain(lens.collisionRemoteView(reply, request, view, "TEST", ORIGIN, placed));
+  };
+  const card = async (there, moved) => {
+    const part = Object.assign({}, (await answer(there, moved)).parts[subject]);
+    assert.deepStrictEqual(part.set, { there: "missing", text: "Not found or not visible" });
+    delete part.set;
+    return part;
+  };
+  const saved = { on: "28 Oct", set: "Hotfix", from: "" };
+  assert.deepStrictEqual(await card(guid(9) + ":9"), {
+    kind: "built", say: "Runs the version this set was built on", notes: [], saved, then: "Promoting this set replaces nothing changed there",
+  });
+  assert.deepStrictEqual(await card(guid(11) + ":11"), {
+    kind: "earlier", say: "Runs an earlier save of this set", notes: [], saved, then: "Promoting this set replaces nothing changed there",
+  });
+  assert.deepStrictEqual(await card(guid(7) + ":7"), {
+    kind: "behind", say: "Runs an older version of this update", notes: [], saved,
+    then: "Missing the change saved here in “Done 2”; promoting this set brings it too",
+  });
+  assert.deepStrictEqual(await card(guid(99) + ":99"), {
+    kind: "diverged", say: "Runs a version that isn't in this update's history", notes: [], saved, then: "Promoting this set replaces it",
+  });
+  assert.deepStrictEqual(await card(guid(9) + ":9", true), {
+    kind: "moved", say: "Had this set's version, and it has since been changed", notes: [], saved, then: "Promoting this set again undoes that change",
+  });
+  assert.deepStrictEqual(await card(guid(9) + ":9", null), { kind: "other", say: "Runs another version", notes: [], saved, then: "" },
+    "unplaced: what runs there, and no promise about promoting");
+  assert.deepStrictEqual((await card(guid(55) + ":9")).notes, ["matched by content"]);
+  assert.deepStrictEqual(await card(null), { kind: "runs", say: "Runs this set's version", notes: [], saved: null, then: "" },
+    "running this version there: index 0's answer, as the first line says");
+
+  /* That instance can't answer for it: each says so, and promises nothing. */
+  const unanswered = async (status) => {
+    const reply = { copies: [], clones: [], content: request.records.map((_, index) => (index === 0 ? status : "other")), saved: [SAVED] };
+    const part = Object.assign({}, plain(lens.collisionRemoteView(reply, request, view, "TEST", ORIGIN,
+      await session.placeRemote(reply, request))).parts[subject]);
+    delete part.set;
+    return part;
+  };
+  assert.deepStrictEqual(await unanswered("conflict"), {
+    kind: "cant", say: "Can't tell: its version shares this one's id but not its content", notes: [], saved: null, then: "",
+  });
+  assert.deepStrictEqual(await unanswered("none"), { kind: "none", say: "No readable current version", notes: [], saved: null, then: "" });
+  assert.deepStrictEqual(await unanswered("unknown"), { kind: "cant", say: "Can't tell", notes: [], saved: null, then: "" });
+
+  /* Another row's card says only whether its own capture runs there ("Done
+   * 2" holds the version running there); none says what promoting does. A
+   * stand-in is never placed. */
+  const shown = await answer(guid(9) + ":9");
+  const others = Object.fromEntries(view.rows.filter((row) => row.key !== subject)
+    .map((row) => [row.setName, Object.keys(shown.parts[row.key]).filter((name) => name !== "set").length ? shown.parts[row.key].kind : ""]));
+  assert.deepStrictEqual(others, { "Done 2": "runs", "Done 3": "" });
+  const noCurrent = placingWorld();
+  noCurrent.versions = noCurrent.versions.filter((version) => version.state !== "current");
+  const fallback = await runOn(noCurrent);
+  const fallbackRequest = plain(fallback.session.remoteRequest());
+  const forged = Object.assign({}, fallbackRequest, { subject: { key: fallback.view.rows[0].key, setName: "Open 1" } });
+  const stand = plain(lens.collisionRemoteView(placingReply(forged, guid(9) + ":9"), forged, fallback.view, "TEST", "", { kind: "built", byContent: false }));
+  assert.deepStrictEqual(Object.keys(stand.parts[fallback.view.rows[0].key]), ["set"]);
 });
 
 test("49h: unread `moved` withholds only the safe placings; a placing matched by content comes through the real read", async () => {

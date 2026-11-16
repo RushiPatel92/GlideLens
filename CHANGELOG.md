@@ -59,6 +59,23 @@ reconstructed version by version.
   saved), then what promoting would do, then that instance's own links. The
   cards sit side by side on a wide panel and stack on a narrow one. A closed
   row's note names the checked instance in bold.
+- **Version Lens: an opened row is a card per instance**, as in Update Set
+  Lens. This instance's card gives the verdict, then each fact on its own line
+  (when and by whom the set saved the record, the action, when it was first
+  captured, when the set completed, its batch, the set it merged into, the
+  scope, whether it was committed here from another instance, and when and in
+  which state of set a newer version was saved), then the row's links. After
+  **Check on**, the checked instance's card gives the set's state there and
+  whether that instance runs this set's version or its content. On the row
+  holding the version that runs here, it also says what that instance runs
+  instead and what promoting the set would do, in teal or amber. A capture
+  that couldn't be sent says it can't be told there; a Default set's row says
+  it wasn't checked, and why.
+- **Version Lens: Default sets list after complete ones.** Rows now run open,
+  complete, Default, Ignore, merged, can't read, and the count badges and copy
+  summary follow. An old Default capture no longer sits above the sets that
+  were promoted. When a Default set holds the version that runs here, the amber
+  line at the top still says so.
 - **Update Set Lens and Version Lens: middle-click opens a link behind.** A
   middle-click, or a click with Ctrl (Cmd on a Mac) held, opens the link's
   page in a new tab without switching to it, as it would for a link on a web
@@ -92,6 +109,9 @@ reconstructed version by version.
 - **Update Set Lens: accessibility.** Only a row's head opens and folds it, so
   screen readers keep the cards' links and facts, and selecting text in a card
   no longer folds the row. A link that can't open is announced.
+- **Version Lens: accessibility.** The same: only a row's head opens and folds
+  it, so its links are no longer buttons inside a button, and focus stays on
+  the head. A link that can't open is announced once.
 
 ## [0.18.0] - 2026-11-06
 
