@@ -129,6 +129,10 @@ reconstructed version by version.
   couldn't be filled, held back.
 - **Dim text is easier to read.** The dimmest grey in every panel is now about
   6:1 against the panel background.
+- **Site: the demos match the panels again.** Code Search, Catalog Logic,
+  Variable Values, Debug Timeline, Translation Lens and Impersonate on the
+  GlideLens site now draw what the extension draws, and the command list
+  uses Variable Prefill's and Variable Insight's current descriptions.
 
 ### Fixed
 - **Catalog Logic and Variable Values: keyboard focus.** Each panel takes

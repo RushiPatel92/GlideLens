@@ -556,6 +556,11 @@ a { color: var(--teal); }
   font-size: 13px;
   --teal: #31d4c4;
 }
+/* Read by assistive technology, not drawn: the panels' own sr-only. */
+.dm-sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .dm-head { padding: 13px 15px 11px; border-bottom: 1px solid #2e2e4e; }
 .dm-title { margin: 0; font-size: 14.5px; font-weight: 650; color: #f5f5ff; }
 .dm-title span { font: 13px var(--mono); color: #7fded2; }
@@ -682,48 +687,98 @@ a { color: var(--teal); }
 .dm-ta-list .reason { flex: 1; min-width: 0; color: #f3d9a4; font-size: 12px; }
 .dm-ta-list .choice { flex: none; border: 1px solid #4a4a70; background: #2c2c48; color: #f0f0fa; border-radius: 6px; padding: 4px 10px; font-size: 12px; }
 
-/* --- Translation Lens rows --- */
+/* --- Translation Lens rows (translation_lens_ui.js) ---
+   A row: its question text and element, what it is, the coverage bar with
+   "covered/counted pct", any tags, and the caret. An opened row lists each
+   answer once, gaps first, with its languages by name; Missing and Blank
+   languages are links. Where the text is stored follows in the same list,
+   under a rule, so one label column lines every value up. A choices row
+   lists its choices first, each with the same answer list. */
+#dmTr { --ok: #8fd6ab; --gap: #ff9d9d; --flag: #f0d79b; --info: #a9d5ff; --muted: #a3a3ba; }
+.dm-tl-rowsbox { container: dmtr / inline-size; }
 .dm-tl-row {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  padding: 8px 15px; border: 0; border-bottom: 1px solid #23233a;
-  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  display: grid; grid-template-columns: minmax(0, 1fr) 92px 120px minmax(0, 120px) 14px;
+  gap: 12px; align-items: center; width: 100%;
+  padding: 8px 15px; border: 0; border-bottom: 1px solid #292941;
+  background: none; color: #d7d7e8; font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
 }
-.dm-tl-row:hover { background: #26263c; }
-.dm-tl-row .dm-caret { width: 9px; font-size: 9px; color: #7d7d9c; flex: none; }
-.dm-tl-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
-.dm-tl-el { font: 11.5px var(--mono); color: #cfcfe4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dm-tl-lab { font-size: 10.5px; color: #8585a0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dm-tl-cov { flex: none; display: flex; align-items: center; gap: 8px; }
-.dm-tl-bar { width: 60px; height: 6px; border-radius: 3px; background: #3a3a5e; overflow: hidden; }
-.dm-tl-bar span { display: block; height: 100%; background: var(--teal); }
-.dm-tl-bar.part span { background: #e0c187; }
-.dm-tl-bar.none span { background: #e08787; }
-.dm-tl-num { font: 10.5px var(--mono); color: #9d9dba; min-width: 62px; text-align: right; }
-.dm-tl-word { font-size: 10.5px; color: #8585a0; }
-.dm-tl-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 15px 11px 40px; }
-.dm-tl-chip {
-  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
-  border-radius: 9px; font-size: 10.5px; border: 1px solid #34344f;
-  background: #26263c; color: #b9b9d0;
+.dm-tl-row:hover { background: #26263e; }
+.dm-tl-row:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.dm-tl-name { min-width: 0; }
+.dm-tl-title { display: block; overflow: hidden; color: #f0f0fa; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-el { display: block; margin-top: 2px; overflow: hidden; font: 10.5px var(--mono); color: #9a9ab3; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-kind { min-width: 0; overflow: hidden; font-size: 11.5px; color: #c8c8dc; text-overflow: ellipsis; white-space: nowrap; }
+.dm-tl-cov { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dm-tl-bar { height: 5px; border-radius: 3px; background: #33334f; overflow: hidden; }
+.dm-tl-bar span { display: block; height: 100%; border-radius: 3px; background: var(--ok); }
+.dm-tl-bar.part span { background: var(--flag); }
+.dm-tl-bar.none span { background: var(--gap); }
+.dm-tl-num { display: flex; gap: 6px; align-items: baseline; font-size: 10.5px; color: #c6c6d8; }
+.dm-tl-num .pct { font-size: 10px; color: #9a9ab3; }
+.dm-tl-word { font-size: 10.5px; color: var(--muted); }
+.dm-tl-tags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.dm-tl-tag { padding: 2px 6px; border: 1px solid #3a3a58; border-radius: 4px; background: #282840; color: var(--muted); font-size: 9.5px; white-space: nowrap; }
+.dm-tl-tag.gap { color: var(--gap); background: #3a2530; border-color: #5c3a48; }
+.dm-tl-caret { justify-self: end; color: #9a9ab3; font-size: 13px; line-height: 1; }
+.dm-tl-detail { padding: 10px 15px 13px 27px; border-bottom: 1px solid #292941; background: #212134; }
+.dm-tl-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 0; margin: 0; font-size: 11.5px; line-height: 1.5; }
+.dm-tl-facts dt { padding: 1px 14px 0 0; color: #9a9ab3; font-size: 10.5px; }
+.dm-tl-facts dd { margin: 0; min-width: 0; color: #dedeee; overflow-wrap: anywhere; }
+.dm-tl-facts .mono { font: 11px var(--mono); color: #c9c9dc; }
+.dm-tl-facts.answers dt { padding-top: 0; font-size: 11.5px; font-weight: 650; }
+.dm-tl-facts.answers dt .n { color: #9a9ab3; font-weight: 400; }
+.dm-tl-facts dt.gap { color: var(--gap); }
+.dm-tl-facts dt.flag { color: var(--flag); }
+.dm-tl-facts dt.ok { color: var(--ok); }
+.dm-tl-facts dt.muted { color: var(--muted); }
+.dm-tl-facts.answers dt.store { padding-top: 1px; font-size: 10.5px; font-weight: 400; color: #9a9ab3; }
+.dm-tl-facts .rule { margin-top: 6px; padding-top: 9px; border-top: 1px solid #2e2e48; }
+.dm-tl-facts.answers dt.store.rule { padding-top: 10px; }
+.dm-tl-facts.store { margin-top: 10px; padding-top: 9px; border-top: 1px solid #2e2e48; }
+.dm-tl-langs { display: flex; flex-wrap: wrap; gap: 3px 16px; }
+.dm-tl-langs > span { white-space: nowrap; }
+.dm-tl-link {
+  padding: 0; border: 0; background: none; color: var(--info); cursor: pointer;
+  font: 11.5px var(--sans); text-align: left; text-decoration: underline; text-underline-offset: 2px;
 }
-.dm-tl-chip b { font: 10.5px var(--mono); font-weight: 600; }
-.dm-tl-chip.ok { color: #8fe3d6; border-color: #2f5f59; background: #1f3733; }
-.dm-tl-chip.gap { color: #e8a9a9; border-color: #5f3232; background: #3a2323; }
-.dm-tl-chip.na { color: #82829c; border-style: dashed; }
-.dm-tl-choices { display: grid; gap: 6px; padding: 0 15px 11px 40px; }
+.dm-tl-link:hover { color: #d9ecff; }
+.dm-tl-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.dm-tl-line { display: block; max-width: 90ch; margin-top: 2px; font-size: 10.5px; color: #9a9ab3; }
+.dm-tl-rowlink { margin-top: 9px; }
+.dm-tl-choices { margin: 0; }
+.dm-tl-choice-notes { padding: 0 0 4px; }
 .dm-tl-choice {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px;
-  border: 1px solid #2e2e4e; border-radius: 6px; background: #1d1d2e;
+  display: grid; grid-template-columns: minmax(0, 150px) 40px minmax(0, 1fr); gap: 12px;
+  align-items: start; padding: 9px 0; border-bottom: 1px solid #2a2a42;
 }
-.dm-tl-choice-label { display: flex; flex-direction: column; gap: 1px; min-width: 120px; font-size: 11.5px; color: #d6d6ea; }
-.dm-tl-choice-value { font: 10px var(--mono); color: #8585a0; }
-.dm-tl-choice-cov { font: 10.5px var(--mono); color: #9d9dba; min-width: 28px; }
-.dm-tl-choices .dm-tl-chips { padding: 0; }
-.dm-tl-score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.dm-tl-big { font-size: 21px; font-weight: 700; color: #f0f0fa; line-height: 1; }
-.dm-tl-all {
-  font-size: 10.5px; color: #a8a8c4; border: 1px dashed #4a4b70;
-  border-radius: 9px; padding: 2px 8px;
+.dm-tl-choice:first-of-type { padding-top: 0; }
+.dm-tl-choice-label { min-width: 0; font-size: 11.5px; line-height: 1.5; color: #dcdcf0; overflow-wrap: anywhere; }
+.dm-tl-choice-value { display: block; margin-top: 2px; font: 10px var(--mono); color: #9fb9d8; }
+.dm-tl-choice-cov { font-size: 10.5px; line-height: 1.5; color: #a0a0b8; }
+/* One label width for every choice, so the languages start in line. */
+.dm-tl-facts.answers.in-choice { grid-template-columns: minmax(120px, max-content) minmax(0, 1fr); }
+.dm-tl-choices + .dm-tl-facts.store { margin-top: 0; border-top: 0; }
+.dm-tl-evidence { margin: 10px 0 0; padding: 0; list-style: none; }
+.dm-tl-evidence li { position: relative; max-width: 90ch; padding: 2px 0 2px 13px; font-size: 10.5px; line-height: 1.6; color: #a0a0b8; }
+.dm-tl-evidence li::before { content: "•"; position: absolute; left: 0; color: #5b5b7e; }
+/* The summary: the score and what it measures, the row counts as plain
+   text, then an "Also check" line only when there is something on it. */
+.dm-tl-sum { display: grid; gap: 4px; }
+.dm-tl-line1, .dm-tl-line2, .dm-tl-line3 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.dm-tl-big { color: #f0f0fa; font-size: 18px; font-weight: 700; line-height: 1; }
+.dm-tl-words { color: #c8c8dc; font-size: 11.5px; }
+.dm-tl-head { color: #9a9ab3; }
+.dm-tl-all { color: var(--muted); }
+.dm-tl-check { font-size: 10.5px; color: var(--info); }
+.dm-tl-check b { font-weight: 650; }
+.dm-tl-dot { color: #4d4d68; }
+/* Narrow: the kind and tags columns go; the row keeps its name and score. */
+@container dmtr (max-width: 559px) {
+  .dm-tl-row { grid-template-columns: minmax(0, 1fr) 100px 14px; }
+  .dm-tl-kind, .dm-tl-tags { display: none; }
+  .dm-tl-detail { padding-left: 15px; }
+  .dm-tl-choice { grid-template-columns: minmax(0, 1fr) 40px; }
+  .dm-tl-choice > .dm-tl-choice-body { grid-column: 1 / -1; }
 }
 .dm-tl-pop {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
@@ -734,25 +789,40 @@ a { color: var(--teal); }
 .dm-tl-opt code { font: 10.5px var(--mono); color: #7fded2; }
 .dm-tl-note { padding: 9px 15px; font-size: 11px; color: #8f8fa8; border-bottom: 1px solid #23233a; }
 
-/* --- Code search rows --- */
-.dm-hit {
-  padding: 9px 15px;
-  border-bottom: 1px solid #23233a;
-  cursor: default;
+/* --- Code search rows ---
+   One block per record, as code_search_ui.js draws it: the record's name is
+   its one control, and each field it matched in is said once, in a column
+   beside that field's lines. */
+.dm-srows { container: dms / inline-size; }
+.dm-rec { padding: 10px 15px 11px; border-bottom: 1px solid #23233a; }
+.dm-rec:last-child { border-bottom: 0; }
+.dm-rec-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; min-width: 0; }
+.dm-rec-name {
+  flex: 0 1 auto; min-width: 0; border: 0; background: transparent; padding: 0; margin: 0;
+  cursor: pointer; text-align: left; color: #f0f0fa; font: 600 12.5px/1.35 var(--sans);
+  text-decoration: underline; text-decoration-color: #6c6c90; text-underline-offset: 2px;
+  overflow-wrap: anywhere;
 }
-.dm-hit:hover { background: #26264080; }
-.dm-hit-top { display: flex; align-items: baseline; gap: 9px; margin-bottom: 5px; }
-.dm-hit-name { font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
-.dm-hit-sub { font-size: 11px; color: #85859f; }
-.dm-hit-field {
-  margin-left: auto;
-  flex: none;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: #2f2f4e;
-  color: #a9a9c8;
-  font: 10px var(--mono);
+.dm-rec-name:hover { color: #fff; text-decoration-color: var(--teal); }
+.dm-rec-name:focus-visible, .dm-open-list:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.dm-rec-sub { min-width: 0; overflow: hidden; color: #9a9ab3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.dm-fields { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 7px 8px; margin: 0; }
+.dm-fields dt { font: 11px/1.6 var(--mono); color: #9a9ab3; overflow-wrap: anywhere; }
+.dm-fields dd { margin: 0; min-width: 0; }
+/* Narrow: the field name moves above its lines. */
+@container dms (max-width: 539px) {
+  .dm-fields { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .dm-fields dd { margin-bottom: 6px; }
+  .dm-fields dd:last-child { margin-bottom: 0; }
 }
+/* The list button follows the group's records. */
+.dm-open-list {
+  margin: 6px 15px 10px;
+  border: 1px solid #5b5b86; background: #3f4067; color: #e6e6f5; border-radius: 6px;
+  padding: 3px 8px; font: 11px var(--sans); cursor: pointer;
+}
+.dm-open-list:hover { background: #4a4b78; color: #fff; }
+.dm-redacted { color: #d2b779; font-style: italic; }
 .dm-snip {
   display: flex;
   gap: 10px;
@@ -761,7 +831,8 @@ a { color: var(--teal); }
   white-space: pre-wrap;
   word-break: break-word;
 }
-.dm-snip .dm-ln { min-width: 32px; flex: none; text-align: right; color: #63637f; user-select: none; }
+.dm-snip + .dm-snip { margin-top: 2px; }
+.dm-snip .dm-ln { min-width: 32px; flex: none; text-align: right; color: #9a9ab3; user-select: none; }
 .dm-snip mark {
   padding: 0 1px;
   border-radius: 2px;
@@ -799,84 +870,162 @@ a { color: var(--teal); }
 .dm-drow .dm-dstate { margin-left: auto; }
 .dm-drow .dm-dstate.warn { color: #e0c187; }
 
-/* --- Catalog insight rows --- */
-/* Fixed track widths, matching .row in catalog_insight_ui.js. Each row is its
-   own grid container, so an `auto` track resolves per row and the columns
-   drift out of line — which is exactly what went wrong here. Only the name
-   column may flex. */
-.dm-crow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 168px 150px;
-  gap: 12px;
-  align-items: center;
-  padding: 9px 15px;
-  border-bottom: 1px solid #23233a;
-  cursor: default;
+/* --- Catalog Logic rows (catalog_insight_ui.js) ---
+   One verdict per row, facts in labelled columns: Name | Type and trigger |
+   Applies on | Order | On this form. The header and every row's top line
+   share one template, and the three facts sit in one list spanning the
+   middle tracks. The panel's tracks (210/150/44 and 128px) need about 760px
+   beyond the name; this demo is 744px wide, so its tracks are narrower and it
+   stacks below 600px, as the panel does below 760px. */
+.dm-cl-rows { container: dmcl / inline-size; }
+.dm-cl-cols, .dm-cl-top {
+  display: grid; grid-template-columns: minmax(0, 1fr) 312px 112px; column-gap: 12px; align-items: start;
 }
-.dm-crow:hover { background: #26263e; }
-.dm-crow.off { opacity: 0.55; }
-.dm-crow.flag { box-shadow: inset 3px 0 0 #a5842f; }
-.dm-cname { min-width: 0; font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
-.dm-cbound { margin-top: 2px; font-size: 11px; color: #85859f; }
-.dm-ccond { margin-top: 2px; font: 10.5px var(--mono); color: #7d7d95; }
-.dm-kind { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.dm-badge {
-  align-self: flex-start;
-  padding: 2px 7px;
-  border: 1px solid;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 600;
+.dm-cl-vals, .dm-cl-facts {
+  display: grid; grid-template-columns: 150px 110px 28px; column-gap: 12px; margin: 0; min-width: 0;
 }
-.dm-badge.client { color: #a9d5ff; background: #24364a; border-color: #365573; }
-.dm-badge.uip { color: #e6c78f; background: #3a3320; border-color: #5c5031; }
-.dm-subtype { font: 10.5px var(--mono); color: #7d7d95; }
-.dm-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 10.5px; }
-.dm-t {
-  padding: 2px 6px;
-  border: 1px solid #34344f;
-  border-radius: 4px;
-  background: #252539;
-  color: #9d9dba;
-  white-space: nowrap;
+.dm-cl-cols {
+  position: sticky; top: 0; z-index: 2; height: 30px; padding: 7px 15px;
+  border-bottom: 1px solid #2e2e4e; background: #1e1e2e; font-size: 10.5px; color: #9a9ab3;
 }
-.dm-t.on { color: #b5e4c2; background: #263b35; border-color: #39594d; }
-.dm-t.off { color: #ff9d9d; background: #3a2530; border-color: #5c3a48; }
-.dm-t.warn { color: #f0d79b; background: #3a3320; border-color: #5c5031; }
+.dm-cl-cols span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-cl-cols .num { text-align: right; }
+.dm-cl-group { border-bottom: 1px solid #23233a; }
+/* Right below the header, which keeps its place while a group scrolls. */
+.dm-cl-head {
+  display: flex; align-items: center; gap: 9px; width: 100%; margin: 0; padding: 8px 15px;
+  border: 0; border-top: 1px solid color-mix(in srgb, var(--teal) 26%, #262640);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--teal) 20%, #2a2a46), #2a2a46 48%);
+  box-shadow: inset 3px 0 0 var(--teal);
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+  position: sticky; top: 30px; z-index: 1;
+}
+.dm-cl-head:hover { filter: brightness(1.08); }
+.dm-cl-head:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.dm-cl-caret { width: 10px; flex: none; font-size: 10px; color: color-mix(in srgb, var(--teal) 55%, #9a9ab4); }
+.dm-cl-gname { flex: none; font: 600 11.5px var(--mono); color: color-mix(in srgb, var(--teal) 82%, white); white-space: nowrap; }
+/* The form-level group recedes on purpose, though it comes first. */
+.dm-cl-group.none { --teal: #6f6f90; }
+.dm-cl-group.none .dm-cl-gname { font-family: var(--sans); color: #c8c8dc; }
+.dm-cl-glabel { min-width: 0; font-size: 11px; color: #c8c8dc; overflow-wrap: anywhere; }
+.dm-cl-gcount {
+  margin-left: auto; flex: none; padding: 1px 9px; border-radius: 10px; font-size: 11px; font-weight: 600;
+  background: color-mix(in srgb, var(--teal) 26%, #2a2a46);
+  color: color-mix(in srgb, var(--teal) 55%, white);
+  border: 1px solid color-mix(in srgb, var(--teal) 34%, transparent);
+}
+.dm-cl-row { padding: 9px 15px; border-bottom: 1px solid #292941; font-size: 11.5px; color: #d7d7e8; }
+.dm-cl-grows .dm-cl-row { padding-left: 27px; }
+.dm-cl-row:hover { background: #26263e; }
+.dm-cl-row.flagged { box-shadow: inset 3px 0 0 #a5842f; }
+.dm-cl-namecell { min-width: 0; }
+.dm-cl-name {
+  display: block; max-width: 100%; margin: 0; padding: 0; border: 0; background: transparent;
+  cursor: pointer; text-align: left; color: #f0f0fa; font: 600 12.5px/1.35 var(--sans);
+  text-decoration: underline; text-decoration-color: #6c6c90; text-underline-offset: 2px; overflow-wrap: anywhere;
+}
+.dm-cl-name:hover { color: #fff; text-decoration-color: var(--teal); }
+.dm-cl-name:focus-visible, .dm-cl-wontrun:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.dm-cl-row.inactive .dm-cl-name { color: #9a9ab3; text-decoration-color: #55556f; }
+.dm-cl-bound { margin-top: 2px; font-size: 11px; color: #b9b9cf; overflow-wrap: anywhere; }
+.dm-cl-cond, .dm-cl-effect {
+  margin-top: 3px; font-size: 10.5px; line-height: 1.45; color: #c9c9dc; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.dm-cl-cond .if { margin-right: 5px; color: #9a9ab3; }
+.dm-cl-cond code { font: 10.5px var(--mono); color: #c9c9dc; }
+.dm-cl-fact { min-width: 0; }
+.dm-cl-fact dt {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.dm-cl-fact dd { margin: 0; color: #dedeee; line-height: 1.4; overflow-wrap: anywhere; }
+.dm-cl-fact .sub { display: block; margin-top: 1px; font-size: 10.5px; color: #9a9ab3; }
+.dm-cl-fact.order dd { text-align: right; font-variant-numeric: tabular-nums; }
+.dm-cl-none { color: #9a9ab3; }
+.dm-cl-verdict { min-width: 0; }
+.dm-cl-badge {
+  display: inline-block; padding: 2px 6px; border: 1px solid; border-radius: 4px;
+  font: 650 9.5px/1.4 var(--sans); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+}
+.dm-cl-badge.warn { color: #f0d79b; background: #3a3320; border-color: #5c5031; }
+.dm-cl-badge.off { color: #c3c3d8; background: #2c2d4a; border-color: #4a4a6e; }
+.dm-cl-reason { margin: 6px 0 0; max-width: 90ch; font-size: 11.5px; line-height: 1.45; color: #c8c8dc; }
+.dm-cl-reason .v { font-weight: 650; }
+.dm-cl-reason .v.warn { color: #f0d79b; }
+.dm-cl-reason .v.off { color: #c3c3d8; }
+/* The summary's "won't run here" count, pressed: only those rows. */
+.dm-cl-wontrun {
+  padding: 1px 8px; border: 1px solid #5c5031; border-radius: 6px; background: #3a3320;
+  color: #e0c187; font: inherit; cursor: pointer;
+}
+.dm-cl-wontrun strong { color: #f0d79b; }
+.dm-cl-wontrun[aria-pressed="true"] { border-color: #f0d79b; background: #4a4022; }
+.dm-cl-item { margin-left: auto; color: #9a9ab3; }
+/* Narrow: no header; the name and its badge, then the facts as a labelled
+   list. The same nodes as the wide form. */
+@container dmcl (max-width: 599px) {
+  .dm-cl-cols { display: none; }
+  .dm-cl-head { top: 0; }
+  .dm-cl-top { grid-template-columns: minmax(0, 1fr) auto; }
+  .dm-cl-namecell { grid-column: 1; grid-row: 1; }
+  .dm-cl-verdict { grid-column: 2; grid-row: 1; }
+  .dm-cl-facts { grid-column: 1 / -1; grid-row: 2; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin-top: 6px; }
+  .dm-cl-fact { display: contents; }
+  .dm-cl-fact dt { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; white-space: normal; color: #9a9ab3; font-size: 11px; }
+  .dm-cl-fact .sub { display: inline; margin: 0 0 0 6px; }
+  .dm-cl-fact.order dd { text-align: left; }
+}
 
 /* --- Variable values rows (hidden_variables_ui.js) --- */
-.dm-be {
+/* The panels' "Best effort" pill (.best-effort in hidden_variables_ui.js and
+   debug_timeline_ui.js). Under .dm-title so the title's own span rule, which
+   sets the mono teal of a search term, does not win. */
+.dm-title .dm-be {
+  display: inline-flex;
   margin-left: 7px;
-  padding: 2px 6px;
-  border: 1px solid #5c5031;
-  border-radius: 4px;
-  background: #3a3320;
-  color: #e6c78f;
-  font: 600 9.5px/1 var(--sans);
-  vertical-align: middle;
+  padding: 3px 7px;
+  border: 1px solid #4a4271;
+  border-radius: 999px;
+  background: #302b50;
+  color: #c7b9ff;
+  font: 700 9.5px/1 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  vertical-align: 2px;
 }
-.dm-vrow {
+/* Variable Values rows: hidden_variables_ui.js's compared layout, one track
+   per header cell (Variable, Type, Visibility, Stored vs live, Values). The
+   panel's tracks need 954px; this demo is 744px wide, so its tracks are
+   narrower, in the same order, and it stacks each row below 708px, as the
+   panel does below its own fit. */
+.dm-vbody { container: dmv / inline-size; }
+.dm-vcols, .dm-vrow {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) 105px 125px 125px minmax(190px, 1.25fr);
+  grid-template-columns: minmax(120px, 1fr) 88px 158px 104px minmax(160px, 1.35fr);
   gap: 12px;
-  align-items: center;
-  padding: 9px 15px;
-  border-bottom: 1px solid #23233a;
+  padding: 0 15px;
 }
+.dm-vcols {
+  position: sticky; top: 0; z-index: 1;
+  padding-top: 7px; padding-bottom: 7px;
+  border-bottom: 1px solid #2e2e4e; background: #1e1e2e;
+  font-size: 10.5px; color: #9a9ab3;
+}
+.dm-vcols span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-vrow { align-items: center; padding-top: 9px; padding-bottom: 9px; border-bottom: 1px solid #23233a; }
 .dm-vrow:hover { background: #26263e; }
-.dm-vlabel { font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
-.dm-vname { margin-top: 1px; font: 10.5px var(--mono); color: #85859f; }
-.dm-vset { margin-top: 2px; font: 10px var(--mono); color: #6f6f88; }
-.dm-vtype { font-size: 11px; color: #9d9dba; }
-.dm-vvalue {
-  min-width: 0;
-  font: 11px var(--mono);
-  color: #c1c1d6;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* The left edge marks a row that Differs, otherwise a hidden row. */
+.dm-vrow.edge-hidden { box-shadow: inset 3px 0 0 #8ec5ff; }
+.dm-vrow.edge-differs { box-shadow: inset 3px 0 0 #ff9db8; }
+@container dmv (max-width: 707px) {
+  .dm-vcols { display: none; }
+  .dm-vrow { grid-template-columns: 1fr; gap: 4px; }
 }
-.dm-vvalue.empty { color: #5f5f78; font-style: italic; }
+.dm-vlabel { font-size: 12.5px; font-weight: 600; color: #f0f0fa; }
+.dm-vname { margin-top: 1px; font: 10.5px var(--mono); color: #9a9ab3; }
+.dm-vset { margin-top: 2px; font: 10px var(--mono); color: #9a9ab3; }
+.dm-vtype { font-size: 11px; color: #c8c8dc; }
 .dm-mrvs-toggle {
   justify-self: start;
   margin-top: 1px;
@@ -925,34 +1074,43 @@ a { color: var(--teal); }
 .dm-mrvs-table tbody tr:last-child td { border-bottom: none; }
 .dm-mrvs-index { width: 26px; color: #6f6f88; }
 .dm-mrvs-differs { color: #ffb5c5; background: #3a2531; }
+/* A badge is for an exception only: a visible variable has none. Hidden is
+   one blue whichever of the three ways it is hidden, an unknown is grey, and
+   only Differs is rose. */
 .dm-bucket {
   justify-self: start;
-  padding: 2px 7px;
-  border: 1px solid;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 600;
+  padding: 1px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font: 700 10px/1.5 var(--sans);
+  letter-spacing: .04em;
+  text-transform: uppercase;
   white-space: nowrap;
 }
-.dm-bucket.hidden-type { color: #ffb1b1; background: #432a36; border-color: #684050; }
-.dm-bucket.invisible   { color: #a9d5ff; background: #24364a; border-color: #365573; }
-.dm-bucket.absent      { color: #b5e4c2; background: #263b35; border-color: #39594d; }
-.dm-bucket.visible     { color: #8f9bb3; background: #252539; border-color: #34344f; }
-.dm-bucket.mrvs        { color: #e6c78f; background: #3a3320; border-color: #5c5031; }
-.dm-bucket.match       { color: #9de0c0; background: #203a32; border-color: #315b4d; }
-.dm-bucket.differs     { color: #ffb5c5; background: #432936; border-color: #734156; }
-.dm-bucket.not-comparable { color: #d7c896; background: #393422; border-color: #5d5330; }
-.dm-vcompare small { display: block; margin-top: 4px; color: #85859f; font-size: 9.5px; line-height: 1.3; }
+.dm-bucket.b-hidden  { background: #1f3044; border-color: #365573; color: #8ec5ff; }
+.dm-bucket.b-unknown { background: #26263b; border-color: #4a4a6e; color: #c3c3d8; }
+.dm-bucket.b-differs { background: #3a2531; border-color: #734156; color: #ff9db8; }
+.dm-vcompare { min-width: 0; }
+.dm-vplain { color: #9a9ab3; font-size: 11.5px; }
+.dm-vreason { margin-top: 3px; color: #c8c8dc; font-size: 10.5px; line-height: 1.4; }
 .dm-vvalues { display: grid; gap: 4px; min-width: 0; }
 .dm-vside { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 6px; align-items: baseline; }
-.dm-vside b { color: #77778f; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.dm-vside b { color: #9a9ab3; font-size: 9px; font-weight: 400; text-transform: uppercase; letter-spacing: .04em; }
 .dm-vside span { overflow: hidden; color: #c1c1d6; font: 10.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+/* The panel's own words ("(empty)", "Not read (secret)") are the tool
+   talking, so they are not drawn like a value. */
+.dm-vside span.placeholder { font: 11px var(--sans); color: #9a9ab3; }
 
-/* --- Debug Timeline events (debug_timeline_ui.js) --- */
+/* --- Debug Timeline events (debug_timeline_ui.js) ---
+   Time | category | what happened | duration | caret. An opened row lists
+   its facts; a finished GlideAjax call opens as a Request card and a Response
+   card, then its call stack behind a toggle. The panel's opened rows start
+   under the summary column; so do these, at this demo's narrower tracks. */
+.dm-dt-rows { container: dmdt / inline-size; }
 .dm-ev { border-bottom: 1px solid #23233a; }
 .dm-ev-main {
   display: grid;
-  grid-template-columns: 68px 78px minmax(0, 1fr) auto;
+  grid-template-columns: 62px 72px minmax(0, 1fr) 56px 14px;
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -960,11 +1118,56 @@ a { color: var(--teal); }
   border: 0;
   background: transparent;
   color: #d7d7e8;
+  font: inherit;
   text-align: left;
   cursor: pointer;
 }
 .dm-ev-main:hover { background: #26263e; }
-.dm-time { font: 11px var(--mono); color: #76768f; }
+.dm-ev-main:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.dm-time { font: 10.5px var(--mono); color: #9a9ab3; }
+.dm-dur { text-align: right; font-size: 11.5px; color: #dedeee; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 13px: at 11px the glyph reads as a dot and the state is lost. */
+.dm-ev-caret { color: #9a9ab3; font-size: 13px; line-height: 1; text-align: center; }
+.dm-ev.open .dm-evtext { font-weight: 650; color: #f0f0fa; }
+.dm-ev-det { margin: 0 15px 12px 169px; font-size: 11.5px; line-height: 1.45; color: #dedeee; }
+.dm-ev-det[hidden] { display: none; }
+.dm-ev-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 6px 0 0; }
+.dm-ev-facts:first-child { margin-top: 0; }
+.dm-ev-facts dt { color: #9a9ab3; font-size: 10.5px; padding-top: 1px; }
+.dm-ev-facts dd { margin: 0; min-width: 0; color: #dedeee; overflow-wrap: anywhere; }
+.dm-ev-facts .mono { font: 11px var(--mono); }
+.dm-ev-facts dt.mono { color: #b9b9cf; }
+.dm-ev-none { color: #9a9ab3; }
+.dm-ev-redacted { color: #e2c48a; font-style: italic; }
+.dm-ev-sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+.dm-ev-side { min-width: 0; padding: 8px 11px 9px; border: 1px solid #33334f; border-left: 3px solid #5b5b86; border-radius: 8px; background: #24243c; }
+.dm-ev-side h4 {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; margin: 0 0 6px; padding-bottom: 5px;
+  border-bottom: 1px solid #33334f; font-size: 12.5px; font-weight: 400; color: #f5f5ff;
+}
+.dm-ev-side h4 b { font-weight: 650; }
+.dm-ev-role { font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: #9a9ab3; }
+.dm-ev-subhead { margin: 9px 0 3px; font-size: 10.5px; color: #9a9ab3; }
+.dm-ev-json {
+  margin: 4px 0 0; padding: 8px 10px; max-height: 220px; overflow: auto;
+  border: 1px solid #2d2d47; border-radius: 6px; background: #171725;
+  color: #c9c9dc; font: 10.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.dm-ev-link {
+  margin: 8px 0 0; padding: 0; border: 0; background: transparent; cursor: pointer;
+  color: #8fd6cf; font: 11px var(--sans); text-decoration: underline; text-underline-offset: 2px;
+}
+.dm-ev-link:hover { color: #d9fbf7; }
+.dm-ev-link:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.dm-ev-json[hidden] { display: none; }
+.dm-dt-warn { margin-left: auto; color: #d2b779; }
+/* Narrow: the duration column goes, since the Response card and the fact
+   list say it, and an opened row uses the full width. */
+@container dmdt (max-width: 559px) {
+  .dm-ev-main { grid-template-columns: 56px 66px minmax(0, 1fr) 14px; padding: 9px 12px; }
+  .dm-dur { display: none; }
+  .dm-ev-det { margin: 0 12px 10px; }
+}
 .dm-cat {
   justify-self: start;
   padding: 3px 6px;
@@ -989,37 +1192,7 @@ a { color: var(--teal); }
 .dm-cat.glideajax { color: #bfe1ff; background: #26374d; border-color: #3d6488; }
 .dm-cat.field     { color: #c4efce; background: #284037; border-color: #3f6555; }
 .dm-evsum { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
-.dm-evtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
-.dm-ga {
-  flex: 0 0 auto;
-  padding: 2px 6px;
-  border: 1px solid;
-  border-radius: 4px;
-  font: 700 9px/1.4 var(--sans);
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-.dm-ga.started   { color: #bfe1ff; background: #26374d; border-color: #3d6488; }
-.dm-ga.completed { color: #c4efce; background: #284037; border-color: #3f6555; }
-.dm-lowsig {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid #4a4b70;
-  border-radius: 9px;
-  color: #8f8faa;
-  font-size: 9.5px;
-}
-.dm-expand { font-size: 10.5px; color: #85859f; }
-.dm-evdet {
-  display: none;
-  margin: 0;
-  padding: 0 15px 11px 83px;
-  font: 10.5px/1.7 var(--mono);
-  color: #9d9dba;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.dm-ev.open .dm-evdet { display: block; }
+.dm-evtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 
 .dm-empty { padding: 28px 15px; text-align: center; color: #85859f; font-size: 12.5px; }
 
@@ -1309,6 +1482,102 @@ a { color: var(--teal); }
   line-height: 1.6;
   color: #7fded2;
 }
+/* People: one line each under a column header, with impersonate_ui.js's
+   template and placement: [name] [user ID] [values] [role, on a role search]
+   [Impersonate]. The panel stacks a row when its columns no longer fit:
+   three value columns (the role counts as one) below 900px, each more
+   column 120 to 130px later. This demo is far narrower than the panel, so
+   its widths are the panel's times 0.8: 720, 816, 920 and 1016. */
+.dm-im-body { container: dmim / inline-size; }
+.dm-im-cols, .dm-im-row {
+  display: grid; column-gap: 14px; align-items: center; padding: 0 15px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, .9fr) minmax(0, var(--vals, 0fr)) 96px;
+}
+.dm-im-body[data-role="1"] .dm-im-cols, .dm-im-body[data-role="1"] .dm-im-row {
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, .9fr) minmax(0, var(--vals, 0fr)) 112px 96px;
+}
+.dm-im-body[data-values="1"] { --vals: 1fr; }
+.dm-im-body[data-values="2"] { --vals: 2fr; --n: 2; }
+.dm-im-body[data-values="3"] { --vals: 3fr; --n: 3; }
+.dm-im-body[data-values="4"] { --vals: 4fr; --n: 4; }
+.dm-im-body[data-values="5"] { --vals: 5fr; --n: 5; }
+.dm-im-vals, .dm-im-dl {
+  display: grid; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr));
+  column-gap: 14px; margin: 0; min-width: 0;
+}
+.dm-im-cols {
+  position: sticky; top: 0; z-index: 1; background: #1e1e2e;
+  padding-top: 7px; padding-bottom: 7px; border-bottom: 1px solid #2e2e4e;
+  color: #9a9ab3; font-size: 10.5px;
+}
+.dm-im-cols > span, .dm-im-vals > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-im-cname, .dm-im-row > .dm-im-name { grid-column: 1; }
+.dm-im-cuid, .dm-im-row > .dm-im-uid { grid-column: 2; }
+.dm-im-vals, .dm-im-dl { grid-column: 3; }
+.dm-im-crole, .dm-im-row > .dm-im-role { grid-column: 4; }
+.dm-im-row > .dm-im-rgo { grid-column: -2; }
+.dm-im-row { position: relative; padding-top: 8px; padding-bottom: 8px; border-bottom: 1px solid #23233a; outline: none; }
+.dm-im-row:hover, .dm-im-row:focus-within { background: #282842; }
+.dm-im-row:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.dm-im-name {
+  justify-self: start; max-width: 100%; border: 0; background: transparent; padding: 0; margin: 0;
+  cursor: pointer; text-align: left; color: #f0f0fa; font: 600 12.5px/1.35 var(--sans);
+  text-decoration: underline; text-decoration-color: #6c6c90; text-underline-offset: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dm-im-name:hover { color: #fff; text-decoration-color: var(--teal); }
+.dm-im-name:focus-visible, .dm-im-rgo:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
+.dm-im-uid {
+  min-width: 0; color: #9c9cba; font: 10.5px var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dm-im-fact { min-width: 0; }
+.dm-im-fact dt {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.dm-im-fact dd {
+  margin: 0; color: #c9c9dc; font-size: 11.5px; line-height: 1.45;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dm-im-none { color: #9a9ab3; }
+.dm-im-role { min-width: 0; font-size: 11.5px; }
+.dm-im-role .dm-im-badge { margin-left: 0; }
+/* Outlined until its row is hovered or focused, so one row at a time
+   carries the pink. */
+.dm-im-rgo {
+  justify-self: end; border: 1px solid var(--pink, #ff6fae); background: transparent; color: #ff9cc6;
+  border-radius: 7px; padding: 3px 9px; cursor: pointer; font: 600 11px/1.4 var(--sans); white-space: nowrap;
+}
+.dm-im-row:hover .dm-im-rgo, .dm-im-row:focus-within .dm-im-rgo { background: var(--pink, #ff6fae); color: #2a0d1a; }
+.dm-im-row .dm-im-rgo:hover { background: #ff85bb; }
+/* Stacked: the header hides and each row is the name, user ID and role on
+   one line, the values as a labelled list with empty ones left out, then
+   Impersonate. */
+@container dmim (max-width: 719px) {
+  .dm-im-cols { display: none; }
+  .dm-im-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 10px 15px; }
+  .dm-im-row > .dm-im-role { order: 1; margin-left: auto; }
+  .dm-im-dl { order: 2; flex: 1 0 100%; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin-top: 4px; }
+  .dm-im-fact { display: contents; }
+  .dm-im-fact.is-blank, .dm-im-dl.is-blank { display: none; }
+  .dm-im-fact dt { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; white-space: normal; color: #9a9ab3; font-size: 11px; line-height: 1.45; }
+  .dm-im-fact dd { white-space: normal; overflow-wrap: anywhere; }
+  .dm-im-row > .dm-im-rgo { order: 3; margin-top: 6px; }
+}
+@container dmim (max-width: 815px) {
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-cols { display: none; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 10px 15px; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-row > .dm-im-role { order: 1; margin-left: auto; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-dl { order: 2; flex: 1 0 100%; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin-top: 4px; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-fact { display: contents; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) :is(.dm-im-fact.is-blank, .dm-im-dl.is-blank) { display: none; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-fact dt { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; white-space: normal; color: #9a9ab3; font-size: 11px; line-height: 1.45; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-fact dd { white-space: normal; overflow-wrap: anywhere; }
+  .dm-im-body:is([data-width="1"], [data-width="2"], [data-width="3"]) .dm-im-row > .dm-im-rgo { order: 3; margin-top: 6px; }
+}
+/* 920 and 1016 (four and five value columns with a role) are wider than
+   this demo ever draws, so the 816 rule above already covers them. */
 
 
 .dm-foot {
@@ -1320,7 +1589,6 @@ a { color: var(--teal); }
 }
 
 @media (max-width: 620px) {
-  .dm-crow, .dm-vrow { grid-template-columns: 1fr; gap: 5px; }
   .dm-im-filters { grid-template-columns: 1fr; }
   .dm-im-badge, .dm-im-stop { margin-left: 0; }
   .dm-rl-main { grid-template-columns: 1fr; align-items: stretch; }
@@ -1328,11 +1596,7 @@ a { color: var(--teal); }
   .dm-rl-fmenu { width: 100%; }
   .dm-rl-sysid { margin-left: 0; }
   .dm-rl-top { flex-wrap: wrap; gap: 2px 9px; }
-  .dm-meta { justify-content: flex-start; }
   .dm-find { margin-left: 0; }
-  .dm-ev-main { grid-template-columns: 60px 72px minmax(0, 1fr); }
-  .dm-expand { display: none; }
-  .dm-evdet { padding-left: 15px; }
 }
 
 /* --------------------------------------------------------------------------- */
@@ -1470,13 +1734,21 @@ a { color: var(--teal); }
                 <h3 class="dm-title">Translation Lens</h3>
                 <p class="dm-sub">Catalog definition form &middot; <span>sc_cat_item</span> &middot; Base language en</p>
               </div>
-              <div class="dm-sum dm-tl-score">
-                <span class="dm-tl-big" id="dmtrScore">0%</span>
-                <span><strong id="dmtrComplete">0</strong>complete</span>
-                <span><strong id="dmtrPartial">0</strong>partial</span>
-                <span><strong id="dmtrNone">0</strong>missing / none</span>
-                <span id="dmtrShown">0 of 0 languages shown</span>
-                <span class="dm-tl-all" id="dmtrAll" hidden></span>
+              <div class="dm-sum dm-tl-sum">
+                <div class="dm-tl-line1">
+                  <span class="dm-tl-big" id="dmtrScore">0%</span>
+                  <span class="dm-tl-words" id="dmtrShown">of translations exist</span>
+                  <span class="dm-tl-all" id="dmtrAll" hidden></span>
+                </div>
+                <div class="dm-tl-line2">
+                  <span class="dm-tl-head">Rows:</span>
+                  <span><strong id="dmtrNone">0</strong>missing / none</span>
+                  <span class="dm-tl-dot" aria-hidden="true">·</span>
+                  <span><strong id="dmtrPartial">0</strong>partial</span>
+                  <span class="dm-tl-dot" aria-hidden="true">·</span>
+                  <span><strong id="dmtrComplete">0</strong>complete</span>
+                </div>
+                <div class="dm-tl-line3" id="dmtrCheck" hidden></div>
               </div>
               <div class="dm-ctl">
                 <button class="dm-btn on" type="button" data-tlfilter="all" aria-pressed="true">All</button>
@@ -1488,7 +1760,7 @@ a { color: var(--teal); }
                 <button class="dm-tog" type="button" id="dmtrMinor" aria-pressed="false"><span class="dot"></span><span id="dmtrMinorLabel">Minor rows</span></button>
               </div>
               <div class="dm-tl-pop" id="dmtrPicker" hidden></div>
-              <div class="dm-rows" id="dmtrRows"></div>
+              <div class="dm-rows dm-tl-rowsbox" id="dmtrRows"></div>
               <p class="dm-foot">Reports where a translation is missing. It never writes one.</p>
             </div>
           </div>
@@ -1665,7 +1937,7 @@ a { color: var(--teal); }
                 <button class="dm-tog" type="button" id="dmvNonEmpty" aria-pressed="false"><span class="dot"></span>Non-empty</button>
                 <input class="dm-find" id="dmvFind" type="search" placeholder="Search name, label or set…" aria-label="Search variables" autocomplete="off" spellcheck="false" />
               </div>
-              <div class="dm-rows" id="dmvRows"></div>
+              <div class="dm-rows dm-vbody" id="dmvRows" role="list" aria-label="Variables"></div>
               <p class="dm-foot">Read-only inspector — does not modify the live form.</p>
             </div>
           </div>
@@ -1717,6 +1989,7 @@ a { color: var(--teal); }
                 <span><strong id="dmtEvents">0</strong>events</span>
                 <span><strong>2</strong>frames</span>
                 <span><strong>2.4s</strong>duration</span>
+                <span class="dm-dt-warn">Some internal ServiceNow changes may not be captured.</span>
               </div>
               <div class="dm-ctl">
                 <button class="dm-btn on" type="button" data-tfilter="all" aria-pressed="true">All</button>
@@ -1724,10 +1997,9 @@ a { color: var(--teal); }
                 <button class="dm-btn" type="button" data-tfilter="field" aria-pressed="false">Fields</button>
                 <button class="dm-btn" type="button" data-tfilter="glideajax" aria-pressed="false">GlideAjax</button>
                 <button class="dm-btn" type="button" data-tfilter="error" aria-pressed="false">Errors</button>
-                <button class="dm-tog" type="button" id="dmtLowSig" aria-pressed="false"><span class="dot"></span>Show low-signal (2)</button>
                 <input class="dm-find" id="dmtFind" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" autocomplete="off" spellcheck="false" />
               </div>
-              <div class="dm-rows" id="dmtRows"></div>
+              <div class="dm-rows dm-dt-rows" id="dmtRows"></div>
               <p class="dm-foot">Stacks identify runtime calls, not guaranteed Client Script or UI Policy names.</p>
             </div>
           </div>
@@ -1767,24 +2039,26 @@ a { color: var(--teal); }
             <div class="dm" id="dmCat">
               <div class="dm-head">
                 <h3 class="dm-title">Catalog Logic</h3>
-                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Read-only — nothing here runs or edits the logic.</p>
+                <p class="dm-sub">Catalog client scripts and catalog UI policies bound to this item or its variable sets. Open a record from its name. Read-only — nothing here runs or edits the logic.</p>
               </div>
               <div class="dm-sum">
-                <span><strong id="dmcTotal">0</strong>shown</span>
-                <span><strong id="dmcActive">0</strong>active</span>
+                <span><strong id="dmcTotal">0</strong>total</span>
+                <span><strong id="dmcClient">0</strong>client scripts</span>
+                <span><strong id="dmcUip">0</strong>UI policies</span>
                 <span><strong id="dmcInactive">0</strong>inactive</span>
-                <span class="warn" title="Active, but scoped to RITM/Task views — won't run while ordering this item."><strong id="dmcBlocked">0</strong>won't run here</span>
+                <button class="dm-cl-wontrun" type="button" id="dmcWontRun" aria-pressed="false" title="Show only these rows: active, but set to run on Task or RITM views only, so not while ordering this item"><strong id="dmcBlocked">0</strong>won't run here</button>
+                <span class="dm-cl-item">New Starter Laptop Request</span>
               </div>
               <div class="dm-ctl">
                 <button class="dm-btn on" type="button" data-kind="all" aria-pressed="true">All</button>
                 <button class="dm-btn" type="button" data-kind="client" aria-pressed="false">Client scripts</button>
                 <button class="dm-btn" type="button" data-kind="uip" aria-pressed="false">UI policies</button>
                 <button class="dm-tog" type="button" id="dmcActiveOnly" aria-pressed="false"><span class="dot"></span>Active only</button>
-                <button class="dm-tog" type="button" id="dmcGroup" aria-pressed="false"><span class="dot"></span>Group by variable</button>
+                <button class="dm-tog on" type="button" id="dmcGroup" aria-pressed="true"><span class="dot"></span>Group by variable</button>
                 <input class="dm-find" id="dmcFind" type="search" placeholder="Search name, type, variable…" aria-label="Search" autocomplete="off" spellcheck="false" />
               </div>
-              <div class="dm-rows" id="dmcRows"></div>
-              <p class="dm-foot">Rows flagged ⚠ are active but scoped away from the catalog form — the usual answer to "why isn't my script running".</p>
+              <div class="dm-rows dm-cl-rows" id="dmcRows"></div>
+              <p class="dm-foot">Read-only — nothing here runs or edits the logic.</p>
             </div>
           </div>
         </div>
@@ -1998,7 +2272,7 @@ a { color: var(--teal); }
                 </div>
               </div>
               <div class="dm-rl-status" id="dmimStatus" role="status" aria-live="polite">Type a name, choose a role or group, or pick an attribute to begin.</div>
-              <div class="dm-rows" id="dmimRows"></div>
+              <div class="dm-rows dm-im-body" id="dmimRows"></div>
               <div class="dm-rl-bar">
                 <span>GlideLens stores no search term, result, role, group or impersonation history. The recent list is ServiceNow's own, and ServiceNow records impersonation in its audit log.</span>
               </div>
@@ -2054,18 +2328,16 @@ a { color: var(--teal); }
             <div class="dm" id="dmSearch">
               <div class="dm-head">
                 <h3 class="dm-title">Code Search <span>getUserGroups</span></h3>
-                <p class="dm-sub">Verified matches only. Every field was checked against your term in the browser before it was shown.</p>
+                <p class="dm-sub">Configuration source the platform's own code search does not reach — reference qualifiers, catalog variables, transform maps — alongside everyday scripts.</p>
               </div>
               <div class="dm-sum">
-                <span><strong id="dmsMatches">0</strong>matches</span>
-                <span><strong id="dmsRecords">0</strong>records</span>
-                <span><strong>14</strong>sources searched</span>
-                <span class="warn"><strong>1</strong>needs attention</span>
+                <span><strong id="dmsMatches">0</strong>matches in <strong id="dmsRecords">0</strong>records</span>
+                <span><strong>14</strong>sources reported</span>
               </div>
               <div class="dm-ctl">
-                <input class="dm-find" id="dmsFind" type="search" placeholder="Filter these results…" aria-label="Filter these results" autocomplete="off" spellcheck="false" />
+                <input class="dm-find" id="dmsFind" type="search" placeholder="Filter these results…" aria-label="Filter loaded results" autocomplete="off" spellcheck="false" />
               </div>
-              <div class="dm-rows" id="dmsRows"></div>
+              <div class="dm-rows dm-srows" id="dmsRows"></div>
               <div class="dm-drawer">
                 <button class="dm-drawer-head" type="button" id="dmsDrawerBtn" aria-expanded="false" aria-controls="dmsDrawer">
                   <span class="dm-caret" id="dmsDrawerCaret">▶</span><span>Source status — what was searched</span>
@@ -2091,13 +2363,14 @@ a { color: var(--teal); }
           </dl>
         </div>
         <div class="feature-body">
-          <h2>Per-variable insight icons</h2>
+          <h2>Per-variable insight marks</h2>
           <p>
-            An icon beside every variable on the form. Click one and the panel
-            narrows to that variable alone: the onChange scripts watching it, and
-            what each UI policy does to it — <strong>hides, mandatory, read-only,
-            sets value</strong>. Attribution is matched on sys_id, not guessed from
-            script text.
+            A small mark beside each variable that a script or UI policy acts on,
+            with how many do; a variable nothing touches gets none. Click one and
+            the panel narrows to that variable alone: the onChange scripts
+            watching it, and what each UI policy does to it — <strong>hides,
+            mandatory, read-only, sets value</strong>. Attribution is matched on
+            sys_id, not guessed from script text.
           </p>
           <div class="tags">
             <span class="tag">per-variable scope</span>
@@ -2272,10 +2545,10 @@ a { color: var(--teal); }
     { group: "Record",   name: "Playbooks",        desc: "Open playbook executions for this record",                   key: "",        go: "#install" },
     { group: "Record",   name: "Customer Updates", desc: "Open captured customer updates by sys_id…",                   key: "",        go: "#install" },
     { group: "Record",   name: "Version Lens",     desc: "See which update sets hold this record, and which version runs…", key: "",      go: "#update-set-lens" },
-    { group: "Catalog",  name: "Variable Prefill", desc: "Copy catalog-variable values from another ticket, on this or another open instance…", key: "", go: "#install" },
+    { group: "Catalog",  name: "Variable Prefill", desc: "Copy variable values from another ticket…",                   key: "",        go: "#install" },
     { group: "Catalog",  name: "Variable Values",  desc: "Inspect current catalog-variable values",                    key: "",        go: "#variable-values" },
     { group: "Catalog",  name: "Catalog Logic",    desc: "Inspect catalog client scripts and UI policies",             key: "",        go: "#catalog-insight" },
-    { group: "Catalog",  name: "Variable Insight", desc: "Show or hide per-variable insight icons",                    key: "Alt+dbl", go: "#variable-icons" },
+    { group: "Catalog",  name: "Variable Insight", desc: "Mark each variable that scripts or UI policies act on",      key: "Alt+dbl", go: "#variable-icons" },
     { group: "Navigate", name: "Table List",       desc: "Open a list for a named table…",                              key: "",        go: "#install" },
     { group: "Navigate", name: "New Record",       desc: "Open a new record form for a named table…",                   key: "",        go: "#install" }
   ].concat(DEV_LINKS.map(function (label) {
@@ -2300,7 +2573,7 @@ a { color: var(--teal); }
 
   /* Mirrors paletteMatchTier() in content.js; lowest wins. A command's whole
      label can appear inside ANOTHER command's description -- "Variable Values"
-     sits inside Variable Prefill's "Copy catalog-variable values from another
+     sits inside Variable Prefill's "Copy variable values from another
      ticket" -- so a label match must outrank a description match, or Enter
      runs the wrong command. */
   function tierFor(cmd, q) {
@@ -2507,14 +2780,17 @@ a { color: var(--teal); }
           ] }
       ]
     },
+    /* A source that found nothing is not drawn as a group (it is in Source
+       status); one that could not look -- denied, absent, timed out, error --
+       is, with its status and no count. */
     { key: "ccs", label: "Catalog client script", status: "no matches", hits: [] },
     { key: "tf",  label: "Transform script",      status: "timed out", warn: true, hits: [] }
   ];
 
   var DRAWER = [
-    { name: "Script Include",        table: "sys_script_include",  state: "2 records" },
-    { name: "Business rule",         table: "sys_script",          state: "1 record" },
-    { name: "UI action",             table: "sys_ui_action",       state: "1 record · fallback only", warn: false },
+    { name: "Script Include",        table: "sys_script_include",  state: "2 matches" },
+    { name: "Business rule",         table: "sys_script",          state: "1 match" },
+    { name: "UI action",             table: "sys_ui_action",       state: "2 matches" },
     { name: "Client script",         table: "sys_script_client",   state: "no matches" },
     { name: "Catalog client script", table: "catalog_script_client", state: "no matches" },
     { name: "Transform script",      table: "sys_transform_script", state: "timed out", warn: true }
@@ -2565,30 +2841,59 @@ a { color: var(--teal); }
     return line;
   }
 
-  function hitEl(hit) {
+  /* groupHitsByRecord: one entry per record, in the order records first
+     appeared, each holding its fields in order and each field's lines. */
+  function byRecord(hits) {
+    var records = [];
+    var seen = {};
+    hits.forEach(function (hit) {
+      var record = seen[hit.sysId];
+      if (!record) {
+        record = seen[hit.sysId] = { name: hit.name, sub: hit.sub, fields: [] };
+        records.push(record);
+      }
+      var field = record.fields.filter(function (f) { return f.name === hit.field; })[0];
+      if (!field) {
+        field = { name: hit.field, snippets: [] };
+        record.fields.push(field);
+      }
+      field.snippets = field.snippets.concat(hit.snippets);
+    });
+    return records;
+  }
+
+  /* The name is the record's one control; the code under it is plain text
+     that can be selected and copied, and a click on it does nothing. */
+  function recordEl(record) {
     var el = document.createElement("div");
-    el.className = "dm-hit";
+    el.className = "dm-rec";
 
-    var top = document.createElement("div");
-    top.className = "dm-hit-top";
+    var head = document.createElement("div");
+    head.className = "dm-rec-head";
+    var name = document.createElement("button");
+    name.type = "button";
+    name.className = "dm-rec-name";
+    name.title = "Opens the record in ServiceNow — inert in this demo";
+    name.textContent = record.name;
+    head.appendChild(name);
+    if (record.sub) {
+      var sub = document.createElement("span");
+      sub.className = "dm-rec-sub";
+      sub.textContent = record.sub;
+      head.appendChild(sub);
+    }
+    el.appendChild(head);
 
-    var name = document.createElement("span");
-    name.className = "dm-hit-name";
-    name.textContent = hit.name;
-    top.appendChild(name);
-
-    var sub = document.createElement("span");
-    sub.className = "dm-hit-sub";
-    sub.textContent = hit.sub;
-    top.appendChild(sub);
-
-    var field = document.createElement("span");
-    field.className = "dm-hit-field";
-    field.textContent = hit.field;
-    top.appendChild(field);
-
-    el.appendChild(top);
-    hit.snippets.forEach(function (s) { el.appendChild(snippetEl(s)); });
+    var fields = document.createElement("dl");
+    fields.className = "dm-fields";
+    record.fields.forEach(function (field) {
+      var term = document.createElement("dt");
+      term.textContent = field.name;
+      var lines = document.createElement("dd");
+      field.snippets.forEach(function (s) { lines.appendChild(snippetEl(s)); });
+      fields.append(term, lines);
+    });
+    el.appendChild(fields);
     return el;
   }
 
@@ -2603,15 +2908,16 @@ a { color: var(--teal); }
     GROUPS.forEach(function (group) {
       var visible = group.hits.filter(function (h) { return hitMatches(h, q); });
 
-      /* A filter hides empty-but-notable groups; with no filter they stay, so
-         "searched and found nothing" is still visible. */
-      if (q && !visible.length) return;
+      /* Groups with hits, then any source that could not look; a source that
+         looked and found nothing lives only in Source status. */
+      if (!visible.length && !group.warn) return;
       any = true;
 
       shownHits += visible.length;
       var ids = {};
       visible.forEach(function (h) { ids[h.sysId] = 1; });
-      shownRecords += Object.keys(ids).length;
+      var recordCount = Object.keys(ids).length;
+      shownRecords += recordCount;
 
       var isShut = !!collapsed[group.key];
 
@@ -2619,9 +2925,11 @@ a { color: var(--teal); }
       head.type = "button";
       head.className = "dm-grp-head";
       head.setAttribute("aria-expanded", isShut ? "false" : "true");
+      head.setAttribute("aria-controls", "dmsGroup-" + group.key);
 
       var caret = document.createElement("span");
       caret.className = "dm-caret";
+      caret.setAttribute("aria-hidden", "true");
       caret.textContent = isShut ? "▶" : "▼";
       head.appendChild(caret);
 
@@ -2629,19 +2937,19 @@ a { color: var(--teal); }
       label.textContent = group.label;
       head.appendChild(label);
 
+      /* Matches and records are different numbers and both are said; a
+         source that could not look has no count to give. */
       if (visible.length) {
         var n = document.createElement("span");
         n.className = "dm-n";
-        /* Matches and records are genuinely different numbers, so both are
-           printed — same as the real panel. */
         n.textContent = plural(visible.length, "match", "matches") + " in " +
-          plural(Object.keys(ids).length, "record", "records");
+          plural(recordCount, "record", "records");
         head.appendChild(n);
       }
 
-      if (group.status) {
+      if (group.warn) {
         var st = document.createElement("span");
-        st.className = "dm-st" + (group.warn ? " warn" : "");
+        st.className = "dm-st warn";
         st.textContent = group.status;
         head.appendChild(st);
       }
@@ -2652,13 +2960,27 @@ a { color: var(--teal); }
       });
       rows.appendChild(head);
 
-      if (!isShut) visible.forEach(function (h) { rows.appendChild(hitEl(h)); });
+      /* The list the head controls is always drawn, so aria-controls always
+         has a target; a collapsed group's is empty and hidden. */
+      var list = document.createElement("div");
+      list.id = "dmsGroup-" + group.key;
+      list.hidden = isShut;
+      rows.appendChild(list);
+      if (isShut || !visible.length) return;
+      byRecord(visible).forEach(function (record) { list.appendChild(recordEl(record)); });
+      var listButton = document.createElement("button");
+      listButton.type = "button";
+      listButton.className = "dm-open-list";
+      listButton.textContent = recordCount === 1
+        ? "Open this record in a list ↗"
+        : "Open these " + recordCount + " records in a list ↗";
+      list.appendChild(listButton);
     });
 
     if (!any) {
       var empty = document.createElement("div");
       empty.className = "dm-empty";
-      empty.textContent = "Nothing loaded matches “" + find.value.trim() + "”.";
+      empty.textContent = "Nothing in the results matches that filter.";
       rows.appendChild(empty);
     }
 
@@ -2699,198 +3021,337 @@ a { color: var(--teal); }
 /* ---------------------------------------------------------------------------
    Demo 2 — "Catalog Logic".
 
-   The four controls are the real ones: kind filter, active-only, group by
-   variable, and free text. Grouping follows the extension's own rule — onLoad
-   and onSubmit scripts and variable-less policies are form-level, not filed
-   under a variable, because they are not attributable to one.
+   Rows, columns, badges and grouping follow catalog_insight_ui.js. A badge
+   appears only when something stops a row firing on this form -- inactive
+   wins over a Task/RITM-only view -- and the reason sits under the row. The
+   list opens grouped by variable: form-level logic first (onLoad and onSubmit
+   scripts, UI policies that change no variable), then each variable with the
+   onChange scripts watching it and every UI policy that changes it, each
+   policy saying what it does to that variable. A search for a variable finds
+   a policy under that variable, not under the others it changes. Conditions
+   are shown raw, as the panel shows them. Every name, variable and sys_id
+   below is invented.
    --------------------------------------------------------------------------- */
 (function () {
   "use strict";
 
-  var ITEM = "New Starter Laptop Request";
+  var KIND_LABEL = { client: "Client script", uip: "UI policy" };
+  var VIEW_WORDS = { catalog: "Catalog item", task: "Task", ritm: "RITM" };
+  var CATALOG = { catalog: true };
 
+  var VARS = {
+    laptop_model: { sysId: "4b1f0c2e9a7d4e61b3c85f02d9e7a614", label: "Laptop model" },
+    accessories: { sysId: "9e2d4a0c7b1f4c85a6d3e09b2f7c1a58", label: "Accessories" },
+    delivery_address: { sysId: "2c7a9e14d05b4f3e8b61a7c4d9e0f235", label: "Delivery address" },
+    business_justification: { sysId: "7f0b3d29e6c14a5b9d82c1e4a6f07b93", label: "Business justification" },
+    manager: { sysId: "c4e81a6f2b9d4073a5e6d1c08b3f9a27", label: "Reporting manager" },
+    employment_type: { sysId: "5d2e8a91c3f04b7e9a1d6c2b8e4f0a37", label: "Employment type" }
+  };
+
+  /* In the engine's order: item-bound before set-bound, then by order, then
+     by name. A client script has no order to show. */
   var ROWS = [
-    { name: "Set laptop model options", kind: "client", subtype: "onChange",
-      variable: "laptop_model", varLabel: "Laptop model", bound: ITEM,
-      active: true, blocked: false, order: 100 },
     { name: "Clear accessories on model change", kind: "client", subtype: "onChange",
-      variable: "laptop_model", varLabel: "Laptop model", bound: ITEM,
-      active: true, blocked: false, order: 200 },
-    { name: "Hide accessories for contractors", kind: "uip", subtype: "UI policy",
-      variable: "accessories", varLabel: "Accessories",
-      bound: "Variable set: Employment details", active: true,
-      blocked: true, cond: "employment_type is contractor", effect: "hides · read-only" },
-    { name: "Make justification mandatory", kind: "uip", subtype: "UI policy",
-      variable: "business_justification", varLabel: "Business justification",
-      bound: ITEM, active: true, blocked: false,
-      cond: "laptop_model is macbook_pro_16", effect: "mandatory" },
-    { name: "Legacy manager lookup", kind: "client", subtype: "onChange",
-      variable: "manager", varLabel: "Reporting manager", bound: ITEM,
-      active: false, blocked: false },
-    { name: "Validate cost centre", kind: "client", subtype: "onSubmit",
-      variable: "", varLabel: "", bound: ITEM, active: true, blocked: false },
+      watch: "laptop_model", boundTo: "This item", active: true, views: CATALOG },
     { name: "Default the start date", kind: "client", subtype: "onLoad",
-      variable: "", varLabel: "", bound: ITEM, active: true, blocked: false }
+      boundTo: "This item", active: true, views: CATALOG },
+    { name: "Legacy manager lookup", kind: "client", subtype: "onChange",
+      watch: "manager", boundTo: "This item", active: false, views: CATALOG },
+    { name: "Set laptop model options", kind: "client", subtype: "onChange",
+      watch: "laptop_model", boundTo: "This item", active: true, views: CATALOG },
+    { name: "Validate cost centre", kind: "client", subtype: "onSubmit",
+      boundTo: "This item", active: true, views: CATALOG },
+    { name: "Make justification mandatory", kind: "uip", subtype: "on load · reverses · 1 var",
+      boundTo: "This item", active: true, views: CATALOG, order: 100,
+      conditions: "IO:" + VARS.laptop_model.sysId + "=macbook_pro_16^EQ",
+      actions: [{ variable: "business_justification", effect: "mandatory" }] },
+    { name: "Hide accessories for contractors", kind: "uip", subtype: "on load · reverses · 2 vars",
+      boundTo: "Variable set: Employment details", active: true, views: { task: true, ritm: true }, order: 200,
+      conditions: "IO:" + VARS.employment_type.sysId + "=contractor^EQ",
+      actions: [{ variable: "accessories", effect: "hides" }, { variable: "delivery_address", effect: "hides" }] }
   ];
-
-  var NO_VAR = " none";
 
   var host = document.getElementById("dmcRows");
   var find = document.getElementById("dmcFind");
   var activeOnly = document.getElementById("dmcActiveOnly");
   var groupBtn = document.getElementById("dmcGroup");
+  var wontRunBtn = document.getElementById("dmcWontRun");
   if (!host || !find) return;
 
   var kind = "all";
+  var wontRunOnly = false;
+  var collapsed = {};
+  var groupSeq = 0;
 
-  function visibleRows() {
-    var q = find.value.trim().toLowerCase();
-    return ROWS.filter(function (r) {
-      if (kind !== "all" && r.kind !== kind) return false;
-      if (activeOnly.getAttribute("aria-pressed") === "true" && !r.active) return false;
-      if (!q) return true;
-      /* Same haystack as the real panel: name, kind, subtype, variable name and
-         label, what it is bound to, and the condition. The condition matters —
-         it is how you find the policy that keys off a variable it does not
-         itself own. */
-      return [r.name, r.kind === "client" ? "Client script" : "UI policy", r.subtype,
-              r.variable, r.varLabel, r.bound, r.cond]
-        .filter(Boolean).join(" ").toLowerCase().indexOf(q) !== -1;
+  function make(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = String(text);
+    return node;
+  }
+
+  function andList(words) {
+    return words.length < 2 ? words.join("")
+      : words.slice(0, -1).join(", ") + " and " + words[words.length - 1];
+  }
+
+  function viewWords(r) {
+    return ["catalog", "task", "ritm"].filter(function (k) { return r.views[k]; })
+      .map(function (k) { return VIEW_WORDS[k]; });
+  }
+
+  function wontRunHere(r) { return Boolean(r.active && !r.views.catalog); }
+
+  /* "Why isn't this firing?" on the catalog order form. Inactive wins. */
+  function firingIssue(r) {
+    if (!r.active) return { kind: "off", verdict: "Inactive", reason: "This never runs." };
+    if (wontRunHere(r)) {
+      var where = ["task", "ritm"].filter(function (k) { return r.views[k]; })
+        .map(function (k) { return VIEW_WORDS[k]; });
+      return {
+        kind: "warn", verdict: "Won't run here",
+        reason: "It applies on " + andList(where) + " only, not while ordering this item."
+      };
+    }
+    return null;
+  }
+
+  function spellSubtype(subtype) {
+    return String(subtype || "").replace(/\b(\d+) vars?\b/g, function (_, n) {
+      return n + (n === "1" ? " variable" : " variables");
     });
   }
 
-  function rowEl(r) {
-    var el = document.createElement("div");
-    el.className = "dm-crow" + (r.active ? "" : " off") + (r.active && r.blocked ? " flag" : "");
-
-    var left = document.createElement("div");
-    var name = document.createElement("div");
-    name.className = "dm-cname";
-    name.textContent = r.name;
-    left.appendChild(name);
-
-    var bound = document.createElement("div");
-    bound.className = "dm-cbound";
-    bound.textContent = r.bound;
-    left.appendChild(bound);
-
-    if (r.cond) {
-      var cond = document.createElement("div");
-      cond.className = "dm-ccond";
-      cond.textContent = "if: " + r.cond;
-      left.appendChild(cond);
+  /* Where "Group by variable" files a row: an onChange script under the
+     variable it watches, a UI policy under every variable it changes (with
+     what it does there), and the rest in one form-level group. */
+  /* No variable name holds a space, so this key cannot collide with one. */
+  var FORM_LEVEL = " form level";
+  function placeFor(name) {
+    return { key: name, name: name, label: VARS[name].label, acts: [] };
+  }
+  function placesOf(r) {
+    if (r.kind === "client") {
+      return r.watch ? [placeFor(r.watch)] : [{ key: FORM_LEVEL, name: "", label: "", acts: [] }];
     }
-    if (r.effect) {
-      var eff = document.createElement("div");
-      eff.className = "dm-ccond";
-      eff.textContent = "→ " + r.effect;
-      left.appendChild(eff);
+    var places = [];
+    var byKey = {};
+    (r.actions || []).forEach(function (action) {
+      var place = byKey[action.variable];
+      if (!place) {
+        place = byKey[action.variable] = placeFor(action.variable);
+        places.push(place);
+      }
+      place.acts.push(action);
+    });
+    return places.length ? places : [{ key: FORM_LEVEL, name: "", label: "", acts: [] }];
+  }
+
+  /* The search is asked of a row in each place it is filed: the row's own
+     words find it everywhere, a variable's name or label only under it. */
+  function rowOwnText(r) {
+    return [r.name, KIND_LABEL[r.kind], r.subtype, r.boundTo, r.conditions]
+      .filter(Boolean).join(" ").toLowerCase();
+  }
+  function finds(q, r, place) {
+    return !q || rowOwnText(r).indexOf(q) !== -1 ||
+      [place.name, place.label].join(" ").toLowerCase().indexOf(q) !== -1;
+  }
+
+  function visibleRows(q) {
+    return ROWS.filter(function (r) {
+      if (kind !== "all" && r.kind !== kind) return false;
+      if (activeOnly.getAttribute("aria-pressed") === "true" && !r.active) return false;
+      if (wontRunOnly && !wontRunHere(r)) return false;
+      return placesOf(r).some(function (place) { return finds(q, r, place); });
+    });
+  }
+
+  function fact(className, label, fill) {
+    var wrap = make("div", "dm-cl-fact" + (className ? " " + className : ""));
+    wrap.appendChild(make("dt", null, label));
+    var value = make("dd");
+    fill(value);
+    wrap.appendChild(value);
+    return wrap;
+  }
+
+  function dimDash(node, spoken) {
+    var dash = make("span", "dm-cl-none", "–");
+    dash.setAttribute("aria-hidden", "true");
+    node.append(dash, make("span", "dm-sr", spoken));
+  }
+
+  /* For sight: each row's facts carry their own labels for assistive
+     technology, so the header is not read as well. */
+  function header() {
+    var cols = make("div", "dm-cl-cols");
+    cols.setAttribute("aria-hidden", "true");
+    var vals = make("span", "dm-cl-vals");
+    vals.append(make("span", null, "Type and trigger"), make("span", null, "Applies on"),
+      make("span", "num", "Order"));
+    cols.append(make("span", null, "Name"), vals, make("span", null, "On this form"));
+    return cols;
+  }
+
+  function rowEl(r, acts) {
+    var issue = firingIssue(r);
+    var el = make("div", "dm-cl-row" + (r.active ? "" : " inactive") +
+      (issue && issue.kind === "warn" ? " flagged" : ""));
+    var top = make("div", "dm-cl-top");
+
+    var nameCell = make("div", "dm-cl-namecell");
+    var name = make("button", "dm-cl-name", r.name);
+    name.type = "button";
+    name.title = "Opens the " + KIND_LABEL[r.kind].toLowerCase() + " record — inert in this demo";
+    nameCell.appendChild(name);
+    nameCell.appendChild(make("div", "dm-cl-bound", r.boundTo));
+    if (r.conditions) {
+      var cond = make("div", "dm-cl-cond");
+      cond.title = r.conditions;
+      cond.append(make("span", "if", "If"), make("code", null, r.conditions));
+      nameCell.appendChild(cond);
+    }
+    if (acts && acts.length) {
+      var effect = acts.map(function (a) { return a.effect; }).join(" · ");
+      nameCell.appendChild(make("div", "dm-cl-effect", "→ " + effect));
     }
 
-    var mid = document.createElement("div");
-    mid.className = "dm-kind";
-    var badge = document.createElement("span");
-    badge.className = "dm-badge " + r.kind;
-    badge.textContent = r.kind === "client" ? "Client script" : "UI policy";
-    mid.appendChild(badge);
-    var sub = document.createElement("span");
-    sub.className = "dm-subtype";
-    sub.textContent = r.subtype + (r.kind === "client" && r.variable ? " · " + r.variable : "");
-    mid.appendChild(sub);
+    var facts = make("dl", "dm-cl-facts");
+    facts.append(
+      fact("type", "Type and trigger", function (dd) {
+        dd.appendChild(document.createTextNode(KIND_LABEL[r.kind]));
+        var sub = spellSubtype(r.subtype) + (r.watch ? " · " + r.watch : "");
+        if (sub) dd.appendChild(make("span", "sub", sub));
+      }),
+      fact("views", "Applies on", function (dd) {
+        var words = viewWords(r);
+        if (words.length) dd.textContent = words.join(", ");
+        else dimDash(dd, "no view");
+      }),
+      fact("order", "Order", function (dd) {
+        if (r.order != null) dd.textContent = String(r.order);
+        else dimDash(dd, "not known");
+      })
+    );
 
-    var meta = document.createElement("div");
-    meta.className = "dm-meta";
-    var act = document.createElement("span");
-    act.className = "dm-t " + (r.active ? "on" : "off");
-    act.textContent = r.active ? "Active" : "Inactive";
-    meta.appendChild(act);
-
-    if (r.active && r.blocked) {
-      var warn = document.createElement("span");
-      warn.className = "dm-t warn";
-      warn.title = "Won't run while ordering this item — scoped to RITM / Task only.";
-      warn.textContent = "⚠ Not on catalog form";
-      meta.appendChild(warn);
-    }
-    if (r.order) {
-      var ord = document.createElement("span");
-      ord.className = "dm-t";
-      ord.textContent = "#" + r.order;
-      meta.appendChild(ord);
+    /* For sight only: the reason below starts with the same words. */
+    var verdict = make("div", "dm-cl-verdict");
+    if (issue) {
+      var badge = make("span", "dm-cl-badge " + issue.kind, issue.verdict);
+      badge.setAttribute("aria-hidden", "true");
+      verdict.appendChild(badge);
     }
 
-    el.append(left, mid, meta);
+    top.append(nameCell, facts, verdict);
+    el.appendChild(top);
+    if (issue) {
+      var reason = make("p", "dm-cl-reason");
+      reason.append(make("span", "v " + issue.kind, issue.verdict + "."),
+        document.createTextNode(" " + issue.reason));
+      el.appendChild(reason);
+    }
     return el;
   }
 
-  /* Mirrors groupKeyOf() in catalog_insight_ui.js. Only an onChange client
-     script watches one specific variable; onLoad, onSubmit and every UI policy
-     share the "not variable-specific" bucket, because attribution to a single
-     variable would be a guess. */
-  function groupKey(r) {
-    return r.kind === "client" && r.variable ? r.variable : NO_VAR;
+  function countWords(items) {
+    var clients = items.filter(function (item) { return item.row.kind === "client"; }).length;
+    var policies = items.length - clients;
+    return [
+      clients ? clients + (clients === 1 ? " client script" : " client scripts") : "",
+      policies ? policies + (policies === 1 ? " UI policy" : " UI policies") : ""
+    ].filter(Boolean).join(", ");
+  }
+
+  /* The form-level group first, then one group per variable in name order. A
+     policy that changes two variables is in both groups, so the counts can
+     add up to more than the total. A head opens and closes its group in
+     place, and its rows are always drawn, hidden when closed. */
+  function renderGrouped(list, q) {
+    var groups = {};
+    var keys = [];
+    list.forEach(function (r) {
+      placesOf(r).forEach(function (place) {
+        if (!finds(q, r, place)) return;
+        if (!groups[place.key]) {
+          groups[place.key] = { name: place.name, label: place.label, items: [] };
+          keys.push(place.key);
+        }
+        groups[place.key].items.push({ row: r, acts: place.acts });
+      });
+    });
+    keys = keys.filter(function (k) { return k !== FORM_LEVEL; }).sort();
+    if (groups[FORM_LEVEL]) keys.unshift(FORM_LEVEL);
+
+    keys.forEach(function (key) {
+      var g = groups[key];
+      var isNone = key === FORM_LEVEL;
+      var group = make("div", "dm-cl-group" + (isNone ? " none" : ""));
+      var head = make("button", "dm-cl-head");
+      head.type = "button";
+      var caret = make("span", "dm-cl-caret");
+      caret.setAttribute("aria-hidden", "true");
+      head.appendChild(caret);
+      if (isNone) {
+        head.append(make("span", "dm-cl-gname", "Not variable-specific"),
+          make("span", "dm-cl-glabel", "onLoad and onSubmit scripts, and UI policies that change no variable"));
+      } else {
+        head.append(make("span", "dm-cl-gname", g.name), make("span", "dm-cl-glabel", g.label));
+      }
+      var count = make("span", "dm-cl-gcount", g.items.length);
+      count.setAttribute("aria-hidden", "true");
+      head.append(count, make("span", "dm-sr", ", " + countWords(g.items)));
+
+      var body = make("div", "dm-cl-grows");
+      body.id = "dmclGroup" + (++groupSeq);
+      head.setAttribute("aria-controls", body.id);
+      g.items.forEach(function (item) { body.appendChild(rowEl(item.row, item.acts)); });
+
+      function paint() {
+        var shut = Boolean(collapsed[key]);
+        head.setAttribute("aria-expanded", shut ? "false" : "true");
+        caret.textContent = shut ? "▸" : "▾";
+        body.hidden = shut;
+      }
+      head.addEventListener("click", function () {
+        collapsed[key] = !collapsed[key];
+        paint();
+      });
+      paint();
+      group.append(head, body);
+      host.appendChild(group);
+    });
   }
 
   function render() {
-    var list = visibleRows();
+    var q = find.value.trim().toLowerCase();
+    var list = visibleRows(q);
     host.textContent = "";
-
     if (!list.length) {
-      var empty = document.createElement("div");
-      empty.className = "dm-empty";
-      empty.textContent = "Nothing matches those filters.";
-      host.appendChild(empty);
-    } else if (groupBtn.getAttribute("aria-pressed") === "true") {
-      var buckets = {};
-      list.forEach(function (r) {
-        var k = groupKey(r);
-        if (!buckets[k]) buckets[k] = [];
-        buckets[k].push(r);
-      });
-
-      /* Named variables alphabetically, then the catch-all last — least
-         specific answer, so it does not lead. */
-      var order = Object.keys(buckets)
-        .filter(function (k) { return k !== NO_VAR; })
-        .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
-      if (buckets[NO_VAR]) order.push(NO_VAR);
-
-      order.forEach(function (k) {
-        var isNone = k === NO_VAR;
-        var sample = buckets[k][0];
-
-        var head = document.createElement("div");
-        head.className = "dm-grp-head";
-
-        var label = document.createElement("span");
-        label.textContent = isNone ? "Not variable-specific" : k;
-        head.appendChild(label);
-
-        var hint = document.createElement("span");
-        hint.className = "dm-subtype";
-        hint.textContent = isNone ? "onLoad / onSubmit / UI policies" : (sample.varLabel || "");
-        if (hint.textContent) head.appendChild(hint);
-
-        var n = document.createElement("span");
-        n.className = "dm-n";
-        n.textContent = buckets[k].length;
-        head.appendChild(n);
-
-        host.appendChild(head);
-        buckets[k].forEach(function (r) { host.appendChild(rowEl(r)); });
-      });
-    } else {
-      list.forEach(function (r) { host.appendChild(rowEl(r)); });
+      host.appendChild(make("div", "dm-empty", "Nothing matches these filters."));
+      return;
     }
-
-    document.getElementById("dmcTotal").textContent = String(list.length);
-    document.getElementById("dmcActive").textContent =
-      String(list.filter(function (r) { return r.active; }).length);
-    document.getElementById("dmcInactive").textContent =
-      String(list.filter(function (r) { return !r.active; }).length);
-    document.getElementById("dmcBlocked").textContent =
-      String(list.filter(function (r) { return r.active && r.blocked; }).length);
+    host.appendChild(header());
+    if (groupBtn.getAttribute("aria-pressed") === "true") {
+      renderGrouped(list, q);
+    } else {
+      list.forEach(function (r) { host.appendChild(rowEl(r, null)); });
+    }
   }
+
+  /* The summary counts the whole item, as the panel's does; inactive and
+     won't-run counts are left out at zero. */
+  var inactive = ROWS.filter(function (r) { return !r.active; }).length;
+  var blocked = ROWS.filter(wontRunHere).length;
+  document.getElementById("dmcTotal").textContent = String(ROWS.length);
+  document.getElementById("dmcClient").textContent =
+    String(ROWS.filter(function (r) { return r.kind === "client"; }).length);
+  document.getElementById("dmcUip").textContent =
+    String(ROWS.filter(function (r) { return r.kind === "uip"; }).length);
+  document.getElementById("dmcInactive").textContent = String(inactive);
+  document.getElementById("dmcInactive").parentNode.hidden = !inactive;
+  document.getElementById("dmcBlocked").textContent = String(blocked);
+  wontRunBtn.hidden = !blocked;
 
   Array.prototype.forEach.call(
     document.querySelectorAll("#dmCat .dm-btn[data-kind]"),
@@ -2919,6 +3380,12 @@ a { color: var(--teal); }
     });
   });
 
+  wontRunBtn.addEventListener("click", function () {
+    wontRunOnly = !wontRunOnly;
+    wontRunBtn.setAttribute("aria-pressed", wontRunOnly ? "true" : "false");
+    render();
+  });
+
   find.addEventListener("input", render);
   render();
 })();
@@ -2930,6 +3397,12 @@ a { color: var(--teal); }
    "Hidden" is the row's own hidden flag, not a bucket name: Hidden-type,
    hidden by policy and not-rendered are three different reasons for the same
    answer, which is the point of showing the bucket separately.
+
+   The cells follow the panel's: a visible row has no badge (only a word for
+   screen readers), a multi-row set none at all, and hidden is one blue badge.
+   "Match" is a plain word with the engine's stock match sentence left out,
+   while Differs is rose and Not comparable grey, each with its reason.
+   Placeholders such as "(empty)" are the panel's own words, flagged as such.
    --------------------------------------------------------------------------- */
 (function () {
   "use strict";
@@ -2948,7 +3421,8 @@ a { color: var(--teal); }
       bucket: "visible", stored: "13a2…9b10,8c44…2d07", live: "8c44…2d07,13a2…9b10", comparison: "match",
       reason: "Stored and live values match.", hidden: false },
     { label: "Requested for name", name: "name", type: "Single Line Text",
-      bucket: "invisible", stored: "(not read)", live: "(not available)", comparison: "not-comparable",
+      bucket: "invisible", stored: "(not read)", live: "(not available)", placeholder: true,
+      comparison: "not-comparable",
       reason: "The variable name collides with the form API prototype.", hidden: true },
     { label: "Approval chain", name: "approval_chain", type: "Multi-Row Variable Set",
       bucket: "mrvs",
@@ -2958,7 +3432,8 @@ a { color: var(--teal); }
       comparison: "differs",
       reason: "Stored has 1 row; the live form has 2.", hidden: false },
     { label: "Access code", name: "access_code", type: "Masked",
-      bucket: "absent", stored: "Not read (secret)", live: "Not read (secret)", comparison: "not-comparable",
+      bucket: "absent", stored: "Not read (secret)", live: "Not read (secret)", placeholder: true,
+      comparison: "not-comparable",
       reason: "Secret value was not read.", hidden: true, secret: true }
   ];
 
@@ -2969,6 +3444,10 @@ a { color: var(--teal); }
     visible: "Visible",
     mrvs: "Multi-row set"
   };
+  var HIDDEN_BUCKETS = ["hidden-type", "invisible", "absent"];
+  var COLUMNS = ["Variable", "Type", "Visibility", "Stored vs live", "Values"];
+  /* Under the word "Match" these only say it again (STOCK_MATCH_SENTENCES). */
+  var STOCK_MATCH = "Stored and live values match.";
 
   var host = document.getElementById("dmvRows");
   var find = document.getElementById("dmvFind");
@@ -2990,9 +3469,55 @@ a { color: var(--teal); }
     });
   }
 
+  function visibilityCell(v) {
+    var cell = document.createElement("span");
+    if (v.bucket === "visible") {
+      cell.appendChild(Object.assign(document.createElement("span"), {
+        className: "dm-sr", textContent: BUCKET_LABELS.visible
+      }));
+      return cell;
+    }
+    if (v.bucket === "mrvs") return cell;
+    cell.className = "dm-bucket " + (HIDDEN_BUCKETS.indexOf(v.bucket) >= 0 ? "b-hidden" : "b-unknown");
+    cell.textContent = BUCKET_LABELS[v.bucket] || v.bucket;
+    return cell;
+  }
+
+  function comparisonCell(v) {
+    var cell = document.createElement("div");
+    cell.className = "dm-vcompare";
+    var verdict = document.createElement("span");
+    verdict.className = v.comparison === "match" ? "dm-vplain"
+      : "dm-bucket " + (v.comparison === "differs" ? "b-differs" : "b-unknown");
+    verdict.textContent = { match: "Match", differs: "Differs" }[v.comparison] || "Not comparable";
+    cell.appendChild(verdict);
+    var reasonText = v.comparison === "match"
+      ? v.reason.split(STOCK_MATCH).join("").trim()
+      : v.reason;
+    if (reasonText) {
+      var reason = document.createElement("div");
+      reason.className = "dm-vreason";
+      reason.textContent = reasonText;
+      cell.appendChild(reason);
+    }
+    return cell;
+  }
+
+  function header() {
+    var cols = document.createElement("div");
+    cols.className = "dm-vcols";
+    cols.setAttribute("aria-hidden", "true");
+    COLUMNS.forEach(function (text) {
+      cols.appendChild(Object.assign(document.createElement("span"), { textContent: text }));
+    });
+    return cols;
+  }
+
   function rowEl(v) {
     var el = document.createElement("div");
-    el.className = "dm-vrow";
+    el.className = "dm-vrow" + (v.comparison === "differs" ? " edge-differs"
+      : HIDDEN_BUCKETS.indexOf(v.bucket) >= 0 ? " edge-hidden" : "");
+    el.setAttribute("role", "listitem");
 
     var name = document.createElement("div");
     var label = document.createElement("div");
@@ -3014,21 +3539,6 @@ a { color: var(--teal); }
     type.className = "dm-vtype";
     type.textContent = v.type;
 
-    var bucket = document.createElement("span");
-    bucket.className = "dm-bucket " + v.bucket;
-    bucket.textContent = BUCKET_LABELS[v.bucket];
-
-    var comparison = document.createElement("div");
-    comparison.className = "dm-vcompare";
-    var comparisonBadge = document.createElement("span");
-    comparisonBadge.className = "dm-bucket " + v.comparison;
-    comparisonBadge.textContent = v.comparison === "not-comparable"
-      ? "Not comparable"
-      : v.comparison.charAt(0).toUpperCase() + v.comparison.slice(1);
-    var reason = document.createElement("small");
-    reason.textContent = v.reason;
-    comparison.append(comparisonBadge, reason);
-
     var values = document.createElement("div");
     values.className = "dm-vvalues";
     [["Stored", v.stored], ["Live", v.live]].forEach(function (pair) {
@@ -3038,11 +3548,13 @@ a { color: var(--teal); }
       side.textContent = pair[0];
       var value = document.createElement("span");
       value.textContent = pair[1] || "(empty)";
+      if (v.placeholder || !pair[1]) value.className = "placeholder";
+      value.title = value.textContent;
       line.append(side, value);
       values.appendChild(line);
     });
 
-    el.append(name, type, bucket, comparison, values);
+    el.append(name, type, visibilityCell(v), comparisonCell(v), values);
     if (v.storedRows || v.liveRows) el.appendChild(mrvsDetail(v, values));
     return el;
   }
@@ -3147,6 +3659,7 @@ a { color: var(--teal); }
       empty.textContent = "No variables match these filters.";
       host.appendChild(empty);
     } else {
+      host.appendChild(header());
       list.forEach(function (v) { host.appendChild(rowEl(v)); });
     }
 
@@ -3199,6 +3712,14 @@ a { color: var(--teal); }
    coverageFromStates does, so the demo cannot drift into showing a total the
    real panel could never produce.
 
+   What an opened row shows is translation_lens_ui.js's: each answer once,
+   gaps first (ANSWER_ORDER), with its languages by name, Missing and Blank
+   ones as links; then where the text is stored, in the same list under a
+   rule. A choices row lists its choices first, each with the same answer
+   list, and no list of its own. The summary is the panel's three lines. The
+   stores, types and registrations are the engine's for a catalog item's
+   fields; every name, value and score is invented.
+
    The language picker rescopes the score and keeps the all-language score
    beside it, and minor rows fold away without changing what was counted —
    both behaviours the panel itself is tested for.
@@ -3213,35 +3734,49 @@ a { color: var(--teal); }
   ];
   var COVERED = { direct: 1, same_as_source: 1 };
   var EXCLUDED = { not_applicable: 1, unavailable: 1, unverified: 1 };
-  var STATE_WORD = {
-    direct: "Translated",
-    same_as_source: "Same as source",
-    missing: "Missing",
-    blank: "Blank row",
-    partial: "Partial",
-    not_applicable: "Not applicable",
-    unavailable: "Not read"
+  /* STATE_META's words and tones; "blank" is a missing row that exists. */
+  var META = {
+    direct: { text: "Direct", tone: "ok" },
+    same_as_source: { text: "Same as source", tone: "flag" },
+    missing: { text: "Missing", tone: "gap" },
+    blank: { text: "Blank", tone: "gap" },
+    partial: { text: "Partial", tone: "gap" },
+    not_applicable: { text: "Not applicable", tone: "muted" },
+    unavailable: { text: "Unavailable", tone: "muted" }
   };
+  var ANSWER_ORDER = ["missing", "blank", "partial", "conflict", "unavailable", "unverified",
+    "fallback", "same_as_source", "not_applicable", "direct"];
+  var LINK_SENTENCE = {
+    missing: "Each opens a new record, prefilled for that language.",
+    blank: "Each opens the existing blank row."
+  };
+  var CHOICE_LINK_SENTENCE = {
+    missing: "A missing language opens a new record, prefilled for that choice and language.",
+    blank: "A blank language opens that choice's existing blank row."
+  };
+  var QUESTION = { store: "sys_translated", storeLabel: "Translated Names / Fields",
+    type: "translated_field", registered: "question" };
+  var HELP = { store: "sys_translated_text", storeLabel: "Translated Text", type: "translated_text" };
+  var CHOICE = { store: "sys_translated", storeLabel: "Translated Names / Fields", registered: "question_choice" };
+  var MESSAGE = { store: "sys_ui_message", storeLabel: "Messages" };
 
-  function row(element, label, aspect, group, states, extra) {
-    var item = {
-      element: element, label: label, aspect: aspect, group: group, states: states,
-      minor: false, word: ""
-    };
+  function row(element, label, kind, group, states, store, extra) {
+    var item = { element: element, label: label, kind: kind, group: group, states: states,
+      store: store, minor: false };
     if (extra) { for (var key in extra) { if (extra.hasOwnProperty(key)) item[key] = extra[key]; } }
     return item;
   }
 
   /* A choices row carries one state per language derived from its base
-   * values the way the engine does it: every value covered is Translated,
-   * every value missing is Missing, anything in between is Partial. The
-   * values are hand-written; the row is not. */
+   * values the way the engine does it: every value covered is Direct, every
+   * value missing is Missing, anything in between is Partial. The values are
+   * hand-written; the row is not. */
   function choiceRowStates(choices) {
     var states = {};
     LANGS.forEach(function (lang) {
       var each = choices.map(function (choice) { return choice.states[lang.id] || "missing"; });
       if (each.every(function (s) { return COVERED[s]; })) states[lang.id] = "direct";
-      else if (each.every(function (s) { return s === "missing"; })) states[lang.id] = "missing";
+      else if (each.every(function (s) { return s === "missing" || s === "blank"; })) states[lang.id] = "missing";
       else states[lang.id] = "partial";
     });
     return states;
@@ -3256,29 +3791,29 @@ a { color: var(--teal); }
   ];
 
   var ROWS = [
-    row("delivery_date", "Question text", "Question text", "values",
-      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" }),
-    row("contact_email", "Question text", "Question text", "values",
-      { fr: "direct", de: "direct", es: "same_as_source", it: "missing", nl: "missing" }),
-    row("cost_centre", "Question text", "Question text", "values",
-      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }),
-    row("urgency_note", "Help text", "Help text", "values",
-      { fr: "missing", de: "missing", es: "blank", it: "missing", nl: "missing" }),
-    row("contact_email", "Help tag", "Help tag", "values",
-      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" },
+    row("delivery_date", "Delivery date", "Question text", "values",
+      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" }, QUESTION),
+    row("contact_email", "Contact email", "Question text", "values",
+      { fr: "direct", de: "direct", es: "same_as_source", it: "missing", nl: "missing" }, QUESTION),
+    row("cost_centre", "Cost centre", "Question text", "values",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }, QUESTION),
+    row("urgency_note", "Urgency note", "Help text", "values",
+      { fr: "missing", de: "missing", es: "blank", it: "missing", nl: "missing" }, HELP),
+    row("contact_email", "Contact email", "Help tag", "values",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }, QUESTION,
       { minor: true }),
-    row("cost_centre", "Help tag", "Help tag", "values",
-      { fr: "missing", de: "missing", es: "missing", it: "missing", nl: "missing" },
+    row("cost_centre", "Cost centre", "Help tag", "values",
+      { fr: "missing", de: "missing", es: "missing", it: "missing", nl: "missing" }, QUESTION,
       { minor: true }),
-    row("urgency", "Choices", "Choices", "choices",
-      choiceRowStates(URGENCY_CHOICES), { choices: URGENCY_CHOICES }),
-    row("site_list", "Choices", "Choices", "choices",
+    row("urgency", "Urgency", "Choices", "choices",
+      choiceRowStates(URGENCY_CHOICES), CHOICE, { choices: URGENCY_CHOICES }),
+    row("site_list", "Site", "Choices", "choices",
       { fr: "not_applicable", de: "not_applicable", es: "not_applicable", it: "not_applicable", nl: "not_applicable" },
-      { minor: true, word: "Not applicable — options come from a table" }),
-    row("invalid_email", "Message key", "Message", "messages",
-      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }),
-    row("order_submitted", "Message key", "Message", "messages",
-      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" })
+      null, { minor: true, notApplicable: "options come from a table" }),
+    row("invalid_email", "invalid_email", "Message", "messages",
+      { fr: "direct", de: "missing", es: "missing", it: "missing", nl: "missing" }, MESSAGE),
+    row("order_submitted", "order_submitted", "Message", "messages",
+      { fr: "direct", de: "direct", es: "direct", it: "direct", nl: "direct" }, MESSAGE)
   ];
 
   var GROUPS = [
@@ -3297,17 +3832,27 @@ a { color: var(--teal); }
   var showMinor = false;
   var selected = {};
   LANGS.forEach(function (lang) { selected[lang.id] = true; });
-  /* One text row and the choices row start expanded so the per-language
-   * chips are visible without a click; both carry covered and missing
-   * languages, so green and red are both on screen. */
+  /* One text row and the choices row start opened, so both kinds of answer
+   * list are on screen without a click. */
   var open = {
     "values:contact_email:Question text": true,
     "choices:urgency:Choices": true
   };
 
+  function make(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = String(text);
+    return node;
+  }
+
   function scope() {
     return LANGS.filter(function (lang) { return selected[lang.id]; })
       .map(function (lang) { return lang.id; });
+  }
+
+  function langName(id) {
+    return LANGS.filter(function (lang) { return lang.id === id; })[0].name;
   }
 
   /* coverageFromStates, verbatim in behaviour. */
@@ -3361,168 +3906,234 @@ a { color: var(--teal); }
     });
   }
 
-  function chip(id, state) {
-    var node = document.createElement("span");
-    var tone = COVERED[state] ? "ok" : (EXCLUDED[state] ? "na" : "gap");
-    node.className = "dm-tl-chip " + tone;
-    var code = document.createElement("b");
-    code.textContent = id;
-    node.appendChild(code);
-    node.appendChild(document.createTextNode(STATE_WORD[state] || state));
-    return node;
+  /* One labelled list: each answer once, in its tone, with its languages.
+     A choice's list leaves its link sentence for the choice list to say once. */
+  function answers(states, ids, inChoice, said) {
+    var groups = {};
+    ids.forEach(function (id) {
+      var kind = states[id] || "missing";
+      (groups[kind] = groups[kind] || []).push(id);
+    });
+    var list = make("dl", "dm-tl-facts answers" + (inChoice ? " in-choice" : ""));
+    ANSWER_ORDER.forEach(function (kind) {
+      var members = groups[kind];
+      if (!members) return;
+      var meta = META[kind];
+      var label = make("dt", meta.tone, meta.text + " ");
+      label.appendChild(make("span", "n", members.length));
+      list.appendChild(label);
+      var value = make("dd");
+      var langs = make("div", "dm-tl-langs");
+      var linked = kind === "missing" || kind === "blank";
+      members.forEach(function (id) {
+        var words = langName(id) + " (" + id + ")";
+        var item = make("span");
+        if (linked) {
+          var link = make("button", "dm-tl-link", words);
+          link.type = "button";
+          link.title = kind === "blank"
+            ? "Opens the existing blank row for " + langName(id) + " — inert in this demo"
+            : "Opens a prefilled new record for " + langName(id) + " — inert in this demo";
+          item.appendChild(link);
+        } else {
+          item.textContent = words;
+        }
+        langs.appendChild(item);
+      });
+      value.appendChild(langs);
+      if (linked && inChoice) said[kind] = true;
+      if (linked && !inChoice) value.appendChild(make("span", "dm-tl-line", LINK_SENTENCE[kind]));
+      list.appendChild(value);
+    });
+    return list;
   }
 
-  function renderRow(item, index) {
+  /* Where the text is stored: the first fact carries the rule when it sits
+     under the answers. */
+  function storeFacts(list, store, underAnswers) {
+    if (!store) return;
+    var placed = 0;
+    function fact(label, fill) {
+      var rule = placed === 0 && underAnswers ? " rule" : "";
+      var dt = make("dt", "store" + rule, label);
+      var dd = make("dd", "store" + rule);
+      fill(dd);
+      list.append(dt, dd);
+      placed += 1;
+    }
+    fact("Store", function (dd) {
+      dd.append(make("span", "", store.storeLabel + " "), make("span", "mono", store.store));
+    });
+    if (store.type) fact("Type", function (dd) { dd.appendChild(make("span", "mono", store.type)); });
+    if (store.registered) fact("Registered under", function (dd) { dd.appendChild(make("span", "mono", store.registered)); });
+  }
+
+  function choiceList(detail, item, ids) {
+    var said = {};
+    var lines = [];
+    item.choices.forEach(function (choice) {
+      var line = make("div", "dm-tl-choice");
+      var label = make("div", "dm-tl-choice-label");
+      label.append(make("span", "", choice.label), make("span", "dm-tl-choice-value", "value " + choice.value));
+      var cov = coverage(choice, ids);
+      var body = make("div", "dm-tl-choice-body");
+      if (ids.length) body.appendChild(answers(choice.states, ids, true, said));
+      line.append(label, make("div", "dm-tl-choice-cov", cov.counted ? cov.covered + "/" + cov.counted : "not counted"), body);
+      lines.push(line);
+    });
+    var wrap = make("div", "dm-tl-choices");
+    var notes = [];
+    if (said.missing) notes.push(CHOICE_LINK_SENTENCE.missing);
+    if (said.blank) notes.push(CHOICE_LINK_SENTENCE.blank);
+    if (notes.length) {
+      var head = make("div", "dm-tl-choice-notes");
+      notes.forEach(function (text) { head.appendChild(make("span", "dm-tl-line", text)); });
+      wrap.appendChild(head);
+    }
+    lines.forEach(function (line) { wrap.appendChild(line); });
+    detail.appendChild(wrap);
+  }
+
+  function rowDetail(item, ids) {
+    var detail = make("div", "dm-tl-detail");
+    var byChoice = Boolean(item.choices);
+    if (byChoice) choiceList(detail, item, ids);
+    var answered = ids.length > 0 && !byChoice && !item.notApplicable;
+    var list = answered ? answers(item.states, ids, false, {}) : make("dl", "dm-tl-facts store");
+    storeFacts(list, item.store, answered);
+    if (list.children.length) detail.appendChild(list);
+    if (item.store) {
+      var line = make("div", "dm-tl-rowlink");
+      var link = make("button", "dm-tl-link", "Open the matching rows in the platform");
+      link.type = "button";
+      link.title = "Inert in this demo";
+      line.appendChild(link);
+      detail.appendChild(line);
+    }
+    var evidence = make("ul", "dm-tl-evidence");
+    if (item.notApplicable) evidence.appendChild(make("li", "", "Not applicable: " + item.notApplicable + "."));
+    if (item.choices) evidence.appendChild(make("li", "", item.choices.length + " base choices were assessed."));
+    if (evidence.children.length) detail.appendChild(evidence);
+    return detail;
+  }
+
+  function renderRow(item) {
     var ids = scope();
     var cov = coverage(item, ids);
-    var key = item.group + ":" + item.element + ":" + item.aspect;
-    var line = document.createElement("button");
+    var key = item.group + ":" + item.element + ":" + item.kind;
+    var line = make("button", "dm-tl-row");
     line.type = "button";
-    line.className = "dm-tl-row";
     line.setAttribute("aria-expanded", open[key] ? "true" : "false");
 
-    var caret = document.createElement("span");
-    caret.className = "dm-caret";
-    caret.textContent = open[key] ? "\u25be" : "\u25b8";
-    line.appendChild(caret);
-
-    var name = document.createElement("span");
-    name.className = "dm-tl-name";
-    var el = document.createElement("span");
-    el.className = "dm-tl-el";
-    el.textContent = item.element;
-    var lab = document.createElement("span");
-    lab.className = "dm-tl-lab";
-    lab.textContent = item.aspect + (item.minor ? " · minor" : "");
-    name.appendChild(el);
-    name.appendChild(lab);
+    var name = make("span", "dm-tl-name");
+    name.appendChild(make("span", "dm-tl-title", item.label));
+    if (item.element !== item.label) name.appendChild(make("span", "dm-tl-el", item.element));
     line.appendChild(name);
+    line.appendChild(make("span", "dm-tl-kind", item.kind));
 
-    var cell = document.createElement("span");
-    cell.className = "dm-tl-cov";
+    var cell = make("span", "dm-tl-cov");
     if (!cov.counted) {
-      var word = document.createElement("span");
-      word.className = "dm-tl-word";
-      word.textContent = item.word || "Not counted";
-      cell.appendChild(word);
+      cell.appendChild(make("span", "dm-tl-word", item.notApplicable ? "Not applicable" : "Not counted"));
     } else {
-      var bar = document.createElement("span");
-      bar.className = "dm-tl-bar" + (cov.covered === cov.counted ? "" : (cov.covered ? " part" : " none"));
-      var fill = document.createElement("span");
+      var bar = make("span", "dm-tl-bar" + (cov.covered === cov.counted ? "" : (cov.covered ? " part" : " none")));
+      bar.setAttribute("role", "img");
+      bar.setAttribute("aria-label", cov.covered + " of " + cov.counted + " languages covered");
+      var fill = make("span");
       fill.style.width = cov.percent + "%";
       bar.appendChild(fill);
-      var num = document.createElement("span");
-      num.className = "dm-tl-num";
-      num.textContent = cov.covered + "/" + cov.counted + "  " + cov.percent + "%";
-      cell.appendChild(bar);
-      cell.appendChild(num);
+      var num = make("span", "dm-tl-num");
+      num.append(make("span", "", cov.covered + "/" + cov.counted), make("span", "pct", cov.percent + "%"));
+      cell.append(bar, num);
     }
     line.appendChild(cell);
+
+    var tags = make("span", "dm-tl-tags");
+    var blanks = ids.filter(function (id) { return item.states[id] === "blank"; }).length;
+    if (blanks) tags.appendChild(make("span", "dm-tl-tag gap", blanks + (blanks === 1 ? " blank row" : " blank rows")));
+    line.appendChild(tags);
+
+    var caret = make("span", "dm-tl-caret", open[key] ? "▾" : "▸");
+    caret.setAttribute("aria-hidden", "true");
+    line.appendChild(caret);
 
     line.addEventListener("click", function () {
       open[key] = !open[key];
       render();
     });
-
     host.appendChild(line);
-
     if (open[key]) {
-      var chips = document.createElement("div");
-      chips.className = "dm-tl-chips";
-      ids.forEach(function (id) {
-        chips.appendChild(chip(id, item.states[id] || "missing"));
-      });
-      if (!ids.length) {
-        var empty = document.createElement("span");
-        empty.className = "dm-tl-word";
-        empty.textContent = "No language is selected.";
-        chips.appendChild(empty);
-      }
-      host.appendChild(chips);
-
-      if (item.choices) {
-        var list = document.createElement("div");
-        list.className = "dm-tl-choices";
-        item.choices.forEach(function (choice) {
-          var line = document.createElement("div");
-          line.className = "dm-tl-choice";
-          var label = document.createElement("div");
-          label.className = "dm-tl-choice-label";
-          var text = document.createElement("span");
-          text.textContent = choice.label;
-          var value = document.createElement("span");
-          value.className = "dm-tl-choice-value";
-          value.textContent = "value " + choice.value;
-          label.appendChild(text);
-          label.appendChild(value);
-          line.appendChild(label);
-          var ccov = coverage(choice, ids);
-          var covText = document.createElement("span");
-          covText.className = "dm-tl-choice-cov";
-          covText.textContent = ccov.counted ? ccov.covered + "/" + ccov.counted : "not counted";
-          line.appendChild(covText);
-          var cchips = document.createElement("div");
-          cchips.className = "dm-tl-chips";
-          ids.forEach(function (id) { cchips.appendChild(chip(id, choice.states[id] || "missing")); });
-          line.appendChild(cchips);
-          list.appendChild(line);
-        });
-        host.appendChild(list);
-      }
+      var detail = rowDetail(item, ids);
+      detail.id = "dmtrDetail-" + ROWS.indexOf(item);
+      line.setAttribute("aria-controls", detail.id);
+      host.appendChild(detail);
     }
   }
 
   function renderPicker() {
-    picker.innerHTML = "";
+    picker.textContent = "";
     if (langBtn.getAttribute("aria-expanded") !== "true") {
       picker.hidden = true;
       return;
     }
     picker.hidden = false;
-    var note = document.createElement("p");
-    note.textContent = "The score counts the languages you leave selected, so you can see whether the ones you ship are done. " +
-      "The score across all " + LANGS.length + " stays beside it, so narrowing this list can never hide a gap.";
-    picker.appendChild(note);
+    picker.appendChild(make("p", "", "The score counts the languages you leave selected, so you can see whether the ones you ship are done. " +
+      "The score across all " + LANGS.length + " stays beside it, so narrowing this list can never hide a gap."));
     LANGS.forEach(function (lang) {
-      var label = document.createElement("label");
-      label.className = "dm-tl-opt";
-      var box = document.createElement("input");
+      var label = make("label", "dm-tl-opt");
+      var box = make("input");
       box.type = "checkbox";
       box.checked = !!selected[lang.id];
       box.addEventListener("change", function () {
         selected[lang.id] = box.checked;
         render();
       });
-      var code = document.createElement("code");
-      code.textContent = lang.id;
-      label.appendChild(box);
-      label.appendChild(code);
-      label.appendChild(document.createTextNode(lang.name));
+      label.append(box, make("code", "", lang.id), document.createTextNode(lang.name));
       picker.appendChild(label);
     });
   }
 
-  function render() {
-    var ids = scope();
+  function renderSummary(ids) {
     var scoped = ids.length !== LANGS.length;
     var main = ROWS.filter(function (item) { return item.group !== "messages"; });
-
     var summary = summarise(main, ids);
     document.getElementById("dmtrScore").textContent = summary.counted ? summary.percent + "%" : "—";
-    document.getElementById("dmtrComplete").textContent = String(summary.complete);
-    document.getElementById("dmtrPartial").textContent = String(summary.partial);
-    document.getElementById("dmtrNone").textContent = String(summary.none);
-    document.getElementById("dmtrShown").textContent = ids.length + " of " + LANGS.length + " languages shown";
-
+    document.getElementById("dmtrShown").textContent = summary.counted
+      ? "of translations exist, across the " + ids.length + (ids.length === 1 ? " language" : " languages") +
+        (scoped ? " selected" : " shown")
+      : "nothing counted in the selected languages";
     var all = document.getElementById("dmtrAll");
     if (scoped) {
       var overall = summarise(main, LANGS.map(function (lang) { return lang.id; }));
       all.hidden = false;
-      all.textContent = "all " + LANGS.length + " languages: " +
+      all.textContent = "· all " + LANGS.length + " languages: " +
         (overall.counted ? overall.percent + "%" : "nothing counted");
     } else {
       all.hidden = true;
     }
+    document.getElementById("dmtrNone").textContent = String(summary.none);
+    document.getElementById("dmtrPartial").textContent = String(summary.partial);
+    document.getElementById("dmtrComplete").textContent = String(summary.complete);
+
+    /* Line 3: messages are counted apart from the score. */
+    var check = document.getElementById("dmtrCheck");
+    check.textContent = "";
+    var messages = ROWS.filter(function (item) { return item.group === "messages"; });
+    var msg = summarise(messages, ids);
+    if (messages.length) {
+      check.hidden = false;
+      check.appendChild(make("span", "dm-tl-head", "Also check:"));
+      var words = make("span", "dm-tl-check");
+      words.append(make("span", "", "Messages "), make("b", "", msg.covered + "/" + msg.counted),
+        make("span", "", " across " + messages.length + " keys — counted separately"));
+      check.appendChild(words);
+    } else {
+      check.hidden = true;
+    }
+  }
+
+  function render() {
+    var ids = scope();
+    renderSummary(ids);
 
     var folded = showMinor ? 0 : ROWS.filter(function (item) {
       return item.minor && matchesQuery(item);
@@ -3531,44 +4142,30 @@ a { color: var(--teal); }
       ? "Hide minor rows"
       : "Minor rows" + (folded ? " (" + folded + ")" : "");
 
-    host.innerHTML = "";
+    host.textContent = "";
     GROUPS.forEach(function (group) {
       var rows = visibleRows(group.id);
       var total = ROWS.filter(function (item) { return item.group === group.id; }).length;
       if (!rows.length && filter !== "all" && filter !== group.id && filter !== "missing") return;
 
-      var head = document.createElement("div");
-      head.className = "dm-grp-head";
-      var caret = document.createElement("span");
-      caret.className = "dm-caret";
-      caret.textContent = "\u25be";
-      var name = document.createElement("span");
-      name.textContent = group.label;
-      var count = document.createElement("span");
-      count.className = "dm-n";
-      count.textContent = rows.length === total ? String(total) : rows.length + " of " + total;
-      var stat = document.createElement("span");
-      stat.className = "dm-st";
+      var head = make("div", "dm-grp-head");
+      var caret = make("span", "dm-caret", "▾");
+      caret.setAttribute("aria-hidden", "true");
       var groupRows = ROWS.filter(function (item) { return item.group === group.id; });
       var groupSummary = summarise(groupRows, ids);
-      stat.textContent = groupSummary.counted ? groupSummary.percent + "%" : "not counted";
-      head.appendChild(caret);
-      head.appendChild(name);
-      head.appendChild(count);
-      head.appendChild(stat);
+      head.append(caret, make("span", "", group.label),
+        make("span", "dm-n", rows.length === total ? String(total) : rows.length + " of " + total),
+        make("span", "dm-st", groupSummary.counted ? groupSummary.percent + "%" : "not counted"));
       host.appendChild(head);
 
       if (!rows.length) {
-        var note = document.createElement("div");
-        note.className = "dm-tl-note";
         var hidden = showMinor ? 0 : groupRows.filter(function (item) {
           return item.minor && matchesQuery(item);
         }).length;
-        note.textContent = hidden
+        host.appendChild(make("div", "dm-tl-note", hidden
           ? hidden + (hidden === 1 ? " matching row is" : " matching rows are") +
             " folded away. Use Minor rows to show " + (hidden === 1 ? "it" : "them") + "."
-          : "No row in this section matches the current filter.";
-        host.appendChild(note);
+          : "No row in this section matches the current filter."));
         return;
       }
       rows.forEach(renderRow);
@@ -3616,133 +4213,327 @@ a { color: var(--teal); }
 /* ---------------------------------------------------------------------------
    Demo 4 — the Debug Timeline results panel.
 
-   Categories and their labels are CATEGORY_LABELS from debug_timeline_ui.js.
-   Low-signal events are hidden until asked for, and the trace deliberately
-   shows what ran rather than which named script ran it — the panel does not
-   claim Client Script or UI Policy attribution, so neither does this.
+   Categories and their labels are CATEGORY_LABELS from debug_timeline_ui.js,
+   and every event below is in the recorder's own shape (debug_timeline_main.js
+   and the worker's start/stop rows): only the g_form calls it patches, native
+   field events, GlideAjax and page errors. The panel's rules are copied:
+     - one row per GlideAjax call: a start whose finished call names it
+       (details.startId) is left out, and the finished row says when it was
+       sent and carries the start's call stack; a call with no answer keeps
+       its start row;
+     - a setValue that set the value already there, and the same show, hide,
+       mandatory or read-only call repeated within 5 seconds, are left out,
+       with no switch to bring them back;
+     - an opened finished call is a Request card and a Response card.
+   The trace shows what ran, not which named script ran it: the panel does
+   not claim Client Script or UI Policy attribution, so neither does this.
+   Every name, value and URL below is invented.
    --------------------------------------------------------------------------- */
 (function () {
   "use strict";
 
+  var FRAME = { frameId: 3, frameLabel: "Frame 3",
+    frameUrl: "https://example.service-now.com/com.glideapp.servicecatalog_cat_item_view.do" };
+  var ONCHANGE_STACK = "at onChange_laptop_model (catalog_script_client.do:9:18)\n" +
+    "at GlideForm.fireOnChange (js_includes_doctype.js:4812:7)";
+
+  function frameEvent(extra) {
+    var event = { frameId: FRAME.frameId, frameLabel: FRAME.frameLabel, frameUrl: FRAME.frameUrl, stack: "" };
+    Object.keys(extra).forEach(function (key) { event[key] = extra[key]; });
+    return event;
+  }
+
   var EVENTS = [
-    { t: "0.00s", cat: "system", text: "Recording started",
-      det: "frames: 2 (top, gsft_main)\npatched: g_form, XMLHttpRequest, window.onerror" },
-    { t: "0.42s", cat: "field", text: "change on laptop_model",
-      det: "element: select#laptop_model\nvalue: '' -> 'macbook_pro_16'\ntrusted: true" },
-    { t: "0.44s", cat: "g_form", text: "g_form.getValue('laptop_model')",
-      det: "returned: 'macbook_pro_16'\nframe: gsft_main" },
-    { t: "0.44s", cat: "g_form", text: "g_form.getValue('laptop_model')",
-      det: "returned: 'macbook_pro_16'\nframe: gsft_main", low: "repeat" },
-    { t: "0.45s", cat: "g_form", text: "g_form.setDisplay('accessories', false)",
-      det: "field: accessories\ndisplayed: true -> false\nframe: gsft_main" },
-    /* The GlideAjax pair is the reason this feature saves a Network-tab round
-       trip, so the detail mirrors the real payload: className, method, every
-       addParam value, then the decoded answer and the duration. The token
-       param is redacted by name, which is what actually happens. */
-    { t: "0.61s", cat: "glideajax", action: "start", text: "AssetAjax.getModelPrice started",
-      det: "script include: AssetAjax\nmethod:        getModelPrice\nparams:\n  sysparm_name:       getModelPrice\n  sysparm_model:      macbook_pro_16\n  sysparm_user_token: [REDACTED]" },
-    { t: "1.28s", cat: "glideajax", action: "complete", text: "AssetAjax.getModelPrice completed in 667 ms",
-      det: "script include: AssetAjax\nmethod:        getModelPrice\nduration:      667 ms\nanswer:        2399.00" },
-    { t: "1.29s", cat: "g_form", text: "g_form.setValue('unit_price', '2399.00')",
-      det: "field: unit_price\nvalue: '' -> '2399.00'" },
-    { t: "1.31s", cat: "field", text: "change on unit_price",
-      det: "element: input#unit_price\ntrusted: false  (set programmatically)" },
-    { t: "1.44s", cat: "g_form", text: "g_form.getValue('unit_price')",
-      det: "returned: '2399.00'", low: "repeat" },
-    { t: "2.04s", cat: "error", text: "TypeError: Cannot read properties of null",
-      det: "message: Cannot read properties of null (reading 'value')\nat onChangeAccessories (catalog_script:14:22)\nNote: the stack names a runtime call, not a Client Script record." },
-    { t: "2.05s", cat: "g_form", text: "g_form.addErrorMessage('Could not price this model')",
-      det: "frame: gsft_main" }
+    { id: 0, elapsedMs: 0, category: "system", action: "start", summary: "Recording started",
+      details: { frameCount: 2 }, stack: "" },
+    frameEvent({ id: 1, elapsedMs: 420, category: "field", action: "change", summary: 'change: "laptop_model"',
+      details: { field: "laptop_model", value: "macbook_pro_16", tag: "select", type: "select-one", trusted: true } }),
+    frameEvent({ id: 2, elapsedMs: 450, category: "g_form", action: "setDisplay", summary: 'setDisplay("accessories")',
+      details: { field: "accessories", arguments: [false] }, stack: ONCHANGE_STACK }),
+    /* The same call again within 5 seconds: left out. */
+    frameEvent({ id: 3, elapsedMs: 470, category: "g_form", action: "setDisplay", summary: 'setDisplay("accessories")',
+      details: { field: "accessories", arguments: [false] }, stack: ONCHANGE_STACK }),
+    /* Answered below, so this start is left out and its stack moves there. */
+    frameEvent({ id: 4, elapsedMs: 610, category: "glideajax", action: "start",
+      summary: "AssetAjax.getModelPrice started",
+      details: { className: "AssetAjax", method: "getModelPrice",
+        params: { sysparm_name: "getModelPrice", sysparm_model: "macbook_pro_16", sysparm_user_token: "[REDACTED]" } },
+      stack: ONCHANGE_STACK }),
+    frameEvent({ id: 5, elapsedMs: 640, category: "glideajax", action: "start",
+      summary: "AssetAjax.getStockLevel started",
+      details: { className: "AssetAjax", method: "getStockLevel",
+        params: { sysparm_name: "getStockLevel", sysparm_model: "macbook_pro_16" } },
+      stack: ONCHANGE_STACK }),
+    frameEvent({ id: 6, elapsedMs: 1277, category: "glideajax", action: "complete",
+      summary: "AssetAjax.getModelPrice completed in 667 ms",
+      details: { className: "AssetAjax", method: "getModelPrice",
+        params: { sysparm_name: "getModelPrice", sysparm_model: "macbook_pro_16", sysparm_user_token: "[REDACTED]" },
+        durationMs: 667, startId: 4,
+        response: { status: 200, format: "json", answerLength: 38, bodyRetained: true,
+          answer: { price: "2399.00", currency: "GBP" } } } }),
+    frameEvent({ id: 7, elapsedMs: 1290, category: "g_form", action: "setValue", summary: 'setValue("unit_price")',
+      details: { field: "unit_price", arguments: ["2399.00"], oldValue: "" } }),
+    /* The value it already had: left out. */
+    frameEvent({ id: 8, elapsedMs: 1300, category: "g_form", action: "setValue", summary: 'setValue("unit_price")',
+      details: { field: "unit_price", arguments: ["2399.00"], oldValue: "2399.00", noValueChange: true } }),
+    frameEvent({ id: 9, elapsedMs: 1310, category: "field", action: "change", summary: 'change: "unit_price"',
+      details: { field: "unit_price", value: "2399.00", tag: "input", type: "text", trusted: false } }),
+    frameEvent({ id: 10, elapsedMs: 2040, category: "error", action: "error",
+      summary: "Uncaught TypeError: Cannot read properties of null (reading 'value')",
+      details: { file: "https://example.service-now.com/catalog_script_client.do", line: 14, column: 22 },
+      stack: "TypeError: Cannot read properties of null (reading 'value')\n" +
+        "    at onChangeAccessories (catalog_script_client.do:14:22)" }),
+    frameEvent({ id: 11, elapsedMs: 2050, category: "g_form", action: "showFieldMsg", summary: 'showFieldMsg("laptop_model")',
+      details: { field: "laptop_model", arguments: ["Could not price this model", "error"] } }),
+    { id: 0, elapsedMs: 2410, category: "system", action: "stop", summary: "Recording stopped",
+      details: { frameCount: 2 }, stack: "" }
   ];
 
-  var LABELS = { system: "System", g_form: "g_form", field: "Field", glideajax: "GlideAjax", error: "Error" };
+  var CATEGORY_LABELS = { system: "System", g_form: "g_form", field: "Field", glideajax: "GlideAjax", error: "Error" };
+  var KEY_LABELS = {
+    field: "Field", arguments: "Arguments", oldValue: "Value before", noValueChange: "No value change",
+    value: "Value", tag: "Element", type: "Input type", trusted: "Trusted event",
+    file: "File", line: "Line", column: "Column",
+    className: "Script Include", method: "Method", params: "Parameters", durationMs: "Took",
+    frameCount: "Frames"
+  };
+  var MONO_KEYS = ["field", "arguments", "oldValue", "value", "file", "params"];
+  var REPEATABLE = ["hideFieldMsg", "setMandatory", "setVisible", "setDisplay", "setReadOnly", "setDisabled"];
 
   var host = document.getElementById("dmtRows");
   var find = document.getElementById("dmtFind");
-  var lowSig = document.getElementById("dmtLowSig");
   if (!host || !find) return;
 
   var filter = "all";
+  var open = [];
+  var shownStacks = [];
 
-  function visible() {
-    var q = find.value.trim().toLowerCase();
-    return EVENTS.filter(function (e) {
-      if (e.low && lowSig.getAttribute("aria-pressed") !== "true") return false;
-      if (filter !== "all" && e.cat !== filter) return false;
-      if (!q) return true;
-      return (e.text + " " + e.det + " " + LABELS[e.cat]).toLowerCase().indexOf(q) !== -1;
-    });
+  function make(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = String(text);
+    return node;
   }
 
-  function eventEl(e) {
-    var row = document.createElement("div");
-    row.className = "dm-ev";
+  function formatElapsed(ms) { return "+" + (Math.max(0, ms) / 1000).toFixed(3) + "s"; }
 
-    var main = document.createElement("button");
-    main.type = "button";
-    main.className = "dm-ev-main";
-
-    var time = document.createElement("span");
-    time.className = "dm-time";
-    time.textContent = e.t;
-    main.appendChild(time);
-
-    var cat = document.createElement("span");
-    cat.className = "dm-cat " + e.cat;
-    cat.textContent = LABELS[e.cat];
-    main.appendChild(cat);
-
-    var sum = document.createElement("span");
-    sum.className = "dm-evsum";
-    if (e.action) {
-      var status = document.createElement("span");
-      status.className = "dm-ga " + (e.action === "start" ? "started" : "completed");
-      status.textContent = e.action === "start" ? "Started" : "Completed";
-      sum.appendChild(status);
-    }
-    var text = document.createElement("span");
-    text.className = "dm-evtext";
-    text.textContent = e.text;
-    sum.appendChild(text);
-    if (e.low) {
-      var badge = document.createElement("span");
-      badge.className = "dm-lowsig";
-      badge.textContent = e.low;
-      sum.appendChild(badge);
-    }
-    main.appendChild(sum);
-
-    var expand = document.createElement("span");
-    expand.className = "dm-expand";
-    expand.textContent = "Details";
-    main.appendChild(expand);
-
-    var det = document.createElement("pre");
-    det.className = "dm-evdet";
-    det.textContent = e.det;
-
-    main.addEventListener("click", function () {
-      var open = row.classList.toggle("open");
-      expand.textContent = open ? "Hide" : "Details";
+  /* Pair each finished call with the start it names, by frame and id. */
+  var startOf = {};
+  var answered = {};
+  EVENTS.forEach(function (event) {
+    if (event.category !== "glideajax" || event.action !== "complete") return;
+    var startId = event.details.startId;
+    EVENTS.forEach(function (candidate) {
+      if (candidate.category === "glideajax" && candidate.action === "start" &&
+          candidate.frameId === event.frameId && candidate.id === startId) {
+        startOf[event.id] = candidate;
+        answered[candidate.id] = true;
+      }
     });
+  });
 
-    row.append(main, det);
+  /* dropNoise: what tells someone debugging the form nothing. */
+  var latest = {};
+  var SHOWN = EVENTS.filter(function (event) {
+    var details = event.details || {};
+    var noise = Boolean(details.noValueChange) ||
+      (event.category === "glideajax" && event.action === "start" && answered[event.id]);
+    if (event.category === "g_form" && REPEATABLE.indexOf(event.action) !== -1) {
+      var key = [event.frameId, event.action, details.field || ""].join("|");
+      var signature = JSON.stringify(details.arguments || []);
+      var previous = latest[key];
+      if (previous && previous.signature === signature && event.elapsedMs - previous.time <= 5000) noise = true;
+      latest[key] = { signature: signature, time: event.elapsedMs };
+    }
+    return !noise;
+  });
+
+  function searchText(event) {
+    var start = startOf[event.id];
+    return [event.category, event.action, event.summary, event.frameLabel,
+      JSON.stringify(event.details || {}), event.stack, start ? start.stack : ""].join(" ").toLowerCase();
+  }
+
+  function fillValue(dd, value) {
+    if (value === "[REDACTED]") {
+      dd.appendChild(make("span", "dm-ev-redacted", "redacted — the name suggests a secret"));
+      return;
+    }
+    if (value === undefined || value === null || value === "") {
+      dd.appendChild(make("span", "dm-ev-none", "empty"));
+      return;
+    }
+    if (typeof value === "boolean") { dd.textContent = value ? "Yes" : "No"; return; }
+    if (Array.isArray(value)) {
+      dd.textContent = value.map(function (item) { return JSON.stringify(item); }).join(", ");
+      return;
+    }
+    if (typeof value === "object") { dd.appendChild(make("pre", "dm-ev-json", JSON.stringify(value, null, 2))); return; }
+    dd.textContent = String(value);
+  }
+
+  function addFact(list, label, value, mono, monoLabel, suffix) {
+    list.appendChild(make("dt", monoLabel ? "mono" : null, label));
+    var dd = make("dd", mono ? "mono" : null);
+    if (suffix && typeof value === "number") dd.textContent = value + suffix;
+    else fillValue(dd, value);
+    list.appendChild(dd);
+  }
+
+  function paramFacts(params) {
+    var list = make("dl", "dm-ev-facts");
+    Object.keys(params).forEach(function (name) { addFact(list, name, params[name], true, true); });
+    return list;
+  }
+
+  function frameFacts(event) {
+    var list = make("dl", "dm-ev-facts");
+    if (event.frameLabel) addFact(list, "Frame", event.frameLabel);
+    if (event.frameUrl) addFact(list, "Page", event.frameUrl, true);
+    return list;
+  }
+
+  /* Any other event, and a call with no answer: one fact list. */
+  function factList(event, box) {
+    var list = frameFacts(event);
+    var nested = null;
+    Object.keys(event.details || {}).forEach(function (key) {
+      var value = event.details[key];
+      if (key === "params") { nested = value; return; }
+      addFact(list, KEY_LABELS[key] || key, value, MONO_KEYS.indexOf(key) !== -1, !KEY_LABELS[key],
+        key === "durationMs" ? " ms" : "");
+    });
+    if (list.children.length) box.appendChild(list);
+    if (nested) {
+      box.appendChild(make("div", "dm-ev-subhead", "Parameters"));
+      box.appendChild(paramFacts(nested));
+    }
+  }
+
+  function card(name, role) {
+    var side = make("section", "dm-ev-side");
+    var head = make("h4");
+    head.append(make("b", null, name), make("span", "dm-ev-role", role));
+    side.appendChild(head);
+    return side;
+  }
+
+  /* A finished GlideAjax call: what the form asked, and what came back. */
+  function callCards(event, box) {
+    var details = event.details;
+    var frame = frameFacts(event);
+    if (frame.children.length) box.appendChild(frame);
+    var sides = make("div", "dm-ev-sides");
+
+    var request = card("Request", "what the form asked");
+    var asked = make("dl", "dm-ev-facts");
+    addFact(asked, "Script Include", details.className, true);
+    addFact(asked, "Method", details.method, true);
+    var start = startOf[event.id];
+    if (start) addFact(asked, "Sent", formatElapsed(start.elapsedMs));
+    request.appendChild(asked);
+    request.appendChild(make("div", "dm-ev-subhead", "Parameters"));
+    request.appendChild(paramFacts(details.params));
+
+    var response = details.response;
+    var answer = card("Response", "what came back");
+    var came = make("dl", "dm-ev-facts");
+    addFact(came, "Status", response.status);
+    addFact(came, "Took", details.durationMs, false, false, " ms");
+    addFact(came, "Answer", "JSON, " + response.answerLength + " characters");
+    answer.appendChild(came);
+    answer.appendChild(make("div", "dm-ev-subhead", "Decoded answer"));
+    answer.appendChild(make("pre", "dm-ev-json", JSON.stringify(response.answer, null, 2)));
+
+    sides.append(request, answer);
+    box.appendChild(sides);
+  }
+
+  /* The stack behind its own toggle. A finished call was answered in a
+     callback, so it shows where its start was sent from. */
+  function stackToggle(event, box) {
+    var start = startOf[event.id];
+    var text = event.stack || (start && start.stack) || "";
+    if (!text) return;
+    var toggle = make("button", "dm-ev-link");
+    toggle.type = "button";
+    var stack = make("pre", "dm-ev-json", text);
+    stack.id = "dmtStack-" + EVENTS.indexOf(event);
+    toggle.setAttribute("aria-controls", stack.id);
+    function paint() {
+      var shown = shownStacks.indexOf(event) !== -1;
+      toggle.textContent = shown ? "Hide the call stack" : "Show the call stack (best effort)";
+      toggle.setAttribute("aria-expanded", shown ? "true" : "false");
+      stack.hidden = !shown;
+    }
+    toggle.addEventListener("click", function () {
+      var at = shownStacks.indexOf(event);
+      if (at === -1) shownStacks.push(event); else shownStacks.splice(at, 1);
+      paint();
+    });
+    paint();
+    box.append(toggle, stack);
+  }
+
+  function eventEl(event) {
+    var index = EVENTS.indexOf(event);
+    var row = make("div", "dm-ev");
+    var main = make("button", "dm-ev-main");
+    main.type = "button";
+    var detailId = "dmtDetails-" + index;
+    main.setAttribute("aria-controls", detailId);
+
+    var summary = make("span", "dm-evsum");
+    summary.title = event.summary;
+    summary.appendChild(make("span", "dm-evtext", event.summary));
+    var ms = event.details && event.details.durationMs;
+    var caret = make("span", "dm-ev-caret");
+    caret.setAttribute("aria-hidden", "true");
+    main.append(make("span", "dm-time", formatElapsed(event.elapsedMs)),
+      make("span", "dm-cat " + event.category, CATEGORY_LABELS[event.category]),
+      summary, make("span", "dm-dur", typeof ms === "number" ? ms + " ms" : ""), caret);
+
+    /* Built the first time the row is opened; the empty box keeps its id. */
+    var box = make("div", "dm-ev-det");
+    box.id = detailId;
+    var built = false;
+    function paint() {
+      var isOpen = open.indexOf(event) !== -1;
+      if (isOpen && !built) {
+        if (event.category === "glideajax" && event.action === "complete") callCards(event, box);
+        else factList(event, box);
+        stackToggle(event, box);
+        built = true;
+      }
+      row.classList.toggle("open", isOpen);
+      main.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      caret.textContent = isOpen ? "▾" : "▸";
+      box.hidden = !isOpen;
+    }
+    main.addEventListener("click", function () {
+      var at = open.indexOf(event);
+      if (at === -1) open.push(event); else open.splice(at, 1);
+      paint();
+    });
+    paint();
+    row.append(main, box);
     return row;
   }
 
   function render() {
-    var list = visible();
+    var q = find.value.trim().toLowerCase();
+    var list = SHOWN.filter(function (event) {
+      if (filter !== "all" && event.category !== filter) return false;
+      return !q || searchText(event).indexOf(q) !== -1;
+    });
     host.textContent = "";
-
     if (!list.length) {
-      var empty = document.createElement("div");
-      empty.className = "dm-empty";
-      empty.textContent = "No events match these filters.";
-      host.appendChild(empty);
+      host.appendChild(make("div", "dm-empty", "No timeline events match these filters."));
     } else {
-      list.forEach(function (e) { host.appendChild(eventEl(e)); });
+      list.forEach(function (event) { host.appendChild(eventEl(event)); });
     }
-    document.getElementById("dmtEvents").textContent = String(list.length);
+    /* The count covers only what is shown, as the panel's does. */
+    document.getElementById("dmtEvents").textContent = String(SHOWN.length);
   }
 
   Array.prototype.forEach.call(
@@ -3763,13 +4554,8 @@ a { color: var(--teal); }
     }
   );
 
-  lowSig.addEventListener("click", function () {
-    var on = lowSig.getAttribute("aria-pressed") !== "true";
-    lowSig.setAttribute("aria-pressed", on ? "true" : "false");
-    lowSig.classList.toggle("on", on);
-    render();
-  });
-
+  /* Open the finished call, the row this feature exists for. */
+  open.push(EVENTS[6]);
   find.addEventListener("input", render);
   render();
 })();
@@ -4359,50 +5145,133 @@ a { color: var(--teal); }
         "because impersonating one can end your own session.");
       return;
     }
-    var role = roleCombo.selected && roleCombo.selected.role;
-    people.forEach(function (person) { rowsEl.appendChild(buildRow(person, role)); });
+    renderPeople(people, roleCombo.selected && roleCombo.selected.role);
   }
 
-  /* One row shape for a search result and a recent account alike. */
-  function buildRow(person, role) {
-    var row = el("div", "dm-rl-row");
-    var top = el("div", "dm-rl-top");
-    top.appendChild(el("span", "dm-rl-title", person.name));
-    top.appendChild(el("span", "dm-rl-sysid", person.userName));
-    if (role) {
+  /* impersonate_ui.js peopleColumns: Email and Title when anyone has one,
+   * then the instance's display fields (Department, on this invented
+   * instance), and a role column only on a role search, headed with the
+   * role's name. */
+  function peopleColumns(people, role) {
+    var values = [];
+    function anyone(key) { return people.some(function (person) { return Boolean(person[key]); }); }
+    if (anyone("email")) values.push({ key: "email", label: "Email" });
+    if (anyone("title")) values.push({ key: "title", label: "Title" });
+    if (anyone("department")) values.push({ key: "department", label: "Department" });
+    return { values: values, role: role ? role.name : "" };
+  }
+
+  /* One header and one row shape for a search result and a recent account
+   * alike. The rows element carries how many value columns there are, for the
+   * shared template, and how many steps wider than the base they need before
+   * the rows stack. */
+  function renderPeople(people, role) {
+    var columns = peopleColumns(people, role);
+    var weight = columns.values.length + (columns.role ? 1 : 0);
+    rowsEl.setAttribute("data-values", String(columns.values.length));
+    rowsEl.setAttribute("data-role", columns.role ? "1" : "0");
+    rowsEl.setAttribute("data-width", String(Math.max(0, weight - 3)));
+    rowsEl.appendChild(buildHeader(columns));
+    people.forEach(function (person) { rowsEl.appendChild(buildRow(person, role, columns)); });
+  }
+
+  /* For sight: each value carries its own label for assistive technology. */
+  function buildHeader(columns) {
+    var header = el("div", "dm-im-cols");
+    header.setAttribute("aria-hidden", "true");
+    header.appendChild(el("span", "dm-im-cname", "Name"));
+    header.appendChild(el("span", "dm-im-cuid", "User ID"));
+    if (columns.values.length) {
+      var vals = el("span", "dm-im-vals");
+      columns.values.forEach(function (column) {
+        var cell = el("span", null, column.label);
+        cell.title = column.label;
+        vals.appendChild(cell);
+      });
+      header.appendChild(vals);
+    }
+    if (columns.role) {
+      var roleHead = el("span", "dm-im-crole", columns.role);
+      roleHead.title = columns.role;
+      header.appendChild(roleHead);
+    }
+    return header;
+  }
+
+  /* An empty cell keeps its place, so the columns stay in line, and is read
+   * as "empty" rather than as a dash. */
+  function appendEmpty(node) {
+    var dash = el("span", "dm-im-none", "–");
+    dash.setAttribute("aria-hidden", "true");
+    node.appendChild(dash);
+    node.appendChild(el("span", "dm-sr", "empty"));
+  }
+
+  function buildRow(person, role, columns) {
+    var row = el("div", "dm-im-row");
+    row.tabIndex = 0;
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", person.name + ", " + person.userName);
+
+    /* The name opens the user record in a new tab; there is no separate
+     * "Open user", and it never changes the session. */
+    var name = el("button", "dm-im-name", person.name);
+    name.type = "button";
+    name.title = "Open the user record";
+    name.addEventListener("click", function () {
+      setStatus("Opens " + person.name + "'s user record in a new tab — inert in this demo.");
+    });
+    row.appendChild(name);
+
+    var userId = el("span", "dm-im-uid");
+    userId.appendChild(el("span", "dm-sr", "User ID "));
+    userId.appendChild(el("span", null, person.userName));
+    userId.title = person.userName;
+    row.appendChild(userId);
+
+    if (columns.values.length) {
+      var facts = el("dl", "dm-im-dl");
+      var filled = 0;
+      columns.values.forEach(function (column) {
+        var value = person[column.key] || "";
+        var fact = el("div", value ? "dm-im-fact" : "dm-im-fact is-blank");
+        fact.appendChild(el("dt", null, column.label));
+        var cell = el("dd");
+        if (value) {
+          cell.textContent = value;
+          cell.title = value;
+          filled += 1;
+        } else {
+          appendEmpty(cell);
+        }
+        fact.appendChild(cell);
+        facts.appendChild(fact);
+      });
+      /* Stacked, an all-empty list is left out with its facts. */
+      if (!filled) facts.className = "dm-im-dl is-blank";
+      row.appendChild(facts);
+    }
+
+    if (columns.role) {
+      var roleCell = el("span", "dm-im-role");
+      roleCell.appendChild(el("span", "dm-sr", columns.role + ": "));
       var held = person.roles[role.id];
       /* Direct or inherited, and nothing more: the membership rows carry no
        * usable provenance, so "via group X" cannot be said honestly. */
-      top.appendChild(el("span", "dm-im-badge" + (held === "direct" ? " is-direct" : ""),
-        held === "direct" ? "Direct role" : "Inherited role"));
+      if (held) {
+        roleCell.appendChild(el("span", "dm-im-badge" + (held === "direct" ? " is-direct" : ""),
+          held === "direct" ? "Direct role" : "Inherited role"));
+      } else {
+        appendEmpty(roleCell);
+      }
+      row.appendChild(roleCell);
     }
-    row.appendChild(top);
 
-    var values = el("div", "dm-rl-values");
-    [["Email", person.email], ["Title", person.title],
-      ["Country code", person.country], ["Department", person.department]]
-      .forEach(function (pair) {
-        if (!pair[1]) return;
-        var item = el("span");
-        item.appendChild(el("span", "dm-rl-vlab", pair[0] + ": "));
-        item.appendChild(document.createTextNode(pair[1]));
-        values.appendChild(item);
-      });
-    row.appendChild(values);
-
-    var acts = el("div", "dm-rl-acts");
-    var open = el("button", "dm-rl-act", "Open user");
-    open.type = "button";
-    open.addEventListener("click", function () {
-      setStatus("Opens this user's record in ServiceNow — inert in this demo.");
-    });
-    var go = el("button", "dm-rl-act dm-im-go", "Impersonate");
+    var go = el("button", "dm-im-rgo", "Impersonate");
     go.type = "button";
     /* A row click does nothing at all. Only this button confirms. */
     go.addEventListener("click", function () { confirm(person, role); });
-    acts.appendChild(open);
-    acts.appendChild(go);
-    row.appendChild(acts);
+    row.appendChild(go);
     return row;
   }
 
@@ -4428,7 +5297,7 @@ a { color: var(--teal); }
     heading.appendChild(el("span", null, "Recent impersonations"));
     heading.appendChild(el("span", null, "Kept by ServiceNow"));
     rowsEl.appendChild(heading);
-    shown.forEach(function (person) { rowsEl.appendChild(buildRow(person, null)); });
+    renderPeople(shown, null);
     if (hidden) {
       rowsEl.appendChild(el("div", "dm-im-snote",
         (hidden === 1 ? "1 recent account is" : hidden + " recent accounts are") +
