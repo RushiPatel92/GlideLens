@@ -1124,6 +1124,15 @@ Change a panel and its demonstration in the same change. Give each demo its
 own id prefix: `getElementById` returns the first match in the document, so an
 id shared between two demos only works by accident of article order.
 
+A demo box is 744px wide, far narrower than its panel, so a panel that stacks
+its rows below a container width would always be stacked in its demo. Where
+that happens the demo keeps the panel's column order, words and stacking rule
+but narrows its tracks or scales its widths, and a comment beside the CSS
+gives the panel's numbers and the demo's. Data in a demo is in the engine's
+own shape (Debug Timeline's events are the recorder's, with only the `g_form`
+methods it patches), and every sentence a demo shows the panel also writes;
+nothing is reworded for the demo.
+
 Variable Insight icons modify ServiceNow's own form chrome and should use real
 screenshots rather than a fabricated platform form; a panel such as
 Translation Lens is demonstrated with a `dm-` mock built from its real
