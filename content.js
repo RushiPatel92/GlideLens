@@ -263,15 +263,6 @@ function removeSnhElements(selector) {
   });
 }
 
-// Lucide "workflow" (client scripts / UI policy actions affecting a variable).
-const ICON_VAR_LOGIC =
-  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" ' +
-  'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-  'stroke-linejoin="round" aria-hidden="true">' +
-  '<rect x="3" y="3" width="7" height="7" rx="1"></rect>' +
-  '<rect x="14" y="14" width="7" height="7" rx="1"></rect>' +
-  '<path d="M6.5 10v3a2 2 0 0 0 2 2H14"></path></svg>';
-
 /*
  * Single-row Table API read.
  *
@@ -1666,13 +1657,13 @@ async function prepareCrossInstanceVariables(variables, onProgress) {
   const notes = [];
   if (missing.length) {
     notes.push(
-      "Not filled, because the record isn't on this instance or this account can't see it: " +
+      "Held back, because the record isn't on this instance or this account can't see it: " +
         prefillNameList(missing) + "."
     );
   }
   if (unchecked.length) {
     notes.push(
-      "Not filled, because GlideLens couldn't check the record here: " + prefillNameList(unchecked) + "."
+      "Held back, because GlideLens couldn't check the record here: " + prefillNameList(unchecked) + "."
     );
   }
   partialLists.forEach((note) => notes.push(note));
@@ -1725,25 +1716,109 @@ let prefillRunning = false;
 
 function refusePrefillWhileRunning() {
   if (!prefillRunning) return false;
-  showPrefillProgress("Prefill is already running. Wait for it to finish.");
+  showPrefillProgress("Prefill is already running. Wait for it to finish.", { aside: true });
   return true;
 }
 
-function showPrefillProgress(message) {
+/*
+ * The four steps of a run that switches the session, while one is on screen,
+ * and null otherwise. They stay listed and tick off, so where a failure left
+ * the session is shown by where the list stopped as well as said. Each step
+ * is { state: "pending" | "current" | "done" | "failed", text, message,
+ * words }, where words holds what the step says pending, done and failed.
+ * Display only: the switch itself never reads this.
+ */
+let prefillSwitchSteps = null;
+
+function beginPrefillSwitchSteps(ticket, target) {
+  prefillSwitchSteps = [
+    {
+      pending: "Switch back to your own account",
+      done: "Switched back to your own account",
+      failed: "Switching back to your own account did not finish",
+    },
+    {
+      pending: "Read " + ticket + " as you",
+      done: "Read " + ticket + " as you",
+      failed: "Reading " + ticket + " as you did not finish",
+      empty: "Read " + ticket + " as you: nothing to fill",
+    },
+    {
+      pending: "Impersonate " + target + " again",
+      done: "Impersonating " + target + " again",
+      failed: "Impersonating " + target + " again did not finish",
+    },
+    {
+      pending: "Fill this form as " + target,
+      done: "Filled this form as " + target,
+      failed: "Filling this form as " + target + " did not finish",
+    },
+  ].map((words) => ({ state: "pending", text: words.pending, message: "", words }));
+}
+
+// Step n (1-4) becomes current; its text is then each progress message. With
+// no message, the step's first progress comes from the work it starts.
+function startPrefillSwitchStep(n, message) {
+  prefillStep = "Step " + n + " of 4";
+  const step = prefillSwitchSteps && prefillSwitchSteps[n - 1];
+  if (step) step.state = "current";
+  if (message) showPrefillProgress(message);
+}
+
+function settlePrefillSwitchStep(n, state, text, message) {
+  const step = prefillSwitchSteps && prefillSwitchSteps[n - 1];
+  if (!step) return;
+  step.state = state;
+  step.text = text || step.words[state] || step.text;
+  step.message = message || "";
+}
+
+// What showToast draws: plain copies, so a later change cannot reach a list
+// already handed over.
+function prefillSwitchStepsShown() {
+  return prefillSwitchSteps
+    ? prefillSwitchSteps.map(({ state, text, message }) => ({ state, text, message }))
+    : null;
+}
+
+/*
+ * options.aside: a word about the run that is not the step's own progress,
+ * shown under the list rather than in place of the current step.
+ */
+function showPrefillProgress(message, options) {
   // A fill the worker stopped waiting for can still be typing into the page,
   // and its late progress must not replace the message that ended the run.
   if (!prefillRunning) return;
-  showToast((prefillStep ? prefillStep + " · " : "") + message, false, 0, { busy: true });
+  const said = (prefillStep ? prefillStep + " · " : "") + message;
+  if (!prefillSwitchSteps) {
+    showToast(said, false, 0, { busy: true });
+    return;
+  }
+  const aside = Boolean(options && options.aside);
+  const current = prefillSwitchSteps.find((step) => step.state === "current");
+  if (current && !aside) current.text = message;
+  showToast(said, false, 0, {
+    busy: true,
+    steps: prefillSwitchStepsShown(),
+    lines: aside ? [prefillNote(message)] : null,
+  });
 }
 
 /*
  * A run's last word. It stays until the palette is closed or used again, so
  * the person can tell the run is over and it is safe to close.
  *
- * A finished run's lines are drawn by kind: the summary keeps the success
- * colour and its tick, a note is plain text, and the close hint is muted, so
- * "Not filled…" never reads as a success. A line is a string (the summary) or
- * one of prefillNote/prefillHint. An error is one colour throughout, as ever.
+ * A finished run's lines are drawn by kind: the headline keeps the success
+ * colour and its tick, a fact is a label and its value, a note is plain text,
+ * and the close hint is muted, so "Held back" never reads as a success. A
+ * line is a string, or one of prefillHead/prefillFact/prefillNote/
+ * prefillBack/prefillHint. An error is one colour throughout, as ever.
+ *
+ * After a session switch the four steps stay on screen above the report. A
+ * failure is put under the step it stopped on -- the one still running, or
+ * the one that already holds it -- and the line saying the session is back
+ * is left to the list, whose ticks say the same. The message text still
+ * carries every line, for the status region and for the tests.
  */
 function finishPrefill(lines, isErr) {
   prefillStep = "";
@@ -1751,16 +1826,51 @@ function finishPrefill(lines, isErr) {
     .filter(Boolean)
     .map((line) => (typeof line === "string" ? { text: line, kind: "" } : line))
     .filter((line) => line.text);
-  showToast(
-    shown.map((line) => line.text).join("\n"),
-    Boolean(isErr),
-    0,
-    isErr ? { sticky: true } : { done: true, lines: shown }
-  );
+  const said = shown
+    .map((line) => (line.kind === "fact" ? line.label + ": " + line.text : line.text))
+    .join("\n");
+  if (!prefillSwitchSteps) {
+    showToast(said, Boolean(isErr), 0, isErr ? { sticky: true } : { done: true, lines: shown });
+    return;
+  }
+
+  let visible = shown.filter((line) => line.kind !== "back");
+  const current = prefillSwitchSteps.find((step) => step.state === "current");
+  if (isErr) {
+    const placed = prefillSwitchSteps.map((step) => step.message).filter(Boolean);
+    visible = visible.filter((line) => !placed.includes(line.text));
+    if (current) {
+      settlePrefillSwitchStep(prefillSwitchSteps.indexOf(current) + 1, "failed", "",
+        visible.length ? visible[0].text : "");
+      visible = visible.slice(1);
+    }
+  } else if (current) {
+    settlePrefillSwitchStep(prefillSwitchSteps.indexOf(current) + 1, "done");
+  }
+  const steps = prefillSwitchStepsShown();
+  prefillSwitchSteps = null;
+  showToast(said, Boolean(isErr), 0, Object.assign(
+    isErr ? { sticky: true } : { done: true },
+    { steps, lines: visible.length ? visible : null }
+  ));
+}
+
+function prefillHead(text) {
+  return text ? { text, kind: "head" } : null;
+}
+
+function prefillFact(label, value) {
+  return value ? { label, text: String(value), kind: "fact" } : null;
 }
 
 function prefillNote(text) {
   return text ? { text, kind: "note" } : null;
+}
+
+// Says the session is back as the impersonated account: shown only when no
+// step list says it already.
+function prefillBack(text) {
+  return text ? { text, kind: "back" } : null;
 }
 
 function prefillHint(text) {
@@ -2020,17 +2130,20 @@ async function offerPrefillSessionSwitch(value, access) {
     );
     return true;
   }
+  // The reason is the heading, the consequence comes next in the amber that
+  // says "this changes your session", and the steps follow their lead-in.
   return showPaletteConfirmation({
-    title: cannot(target) + ". To prefill, GlideLens will:",
+    title: cannot(target) + ".",
+    note:
+      "ServiceNow records both switches in its audit log, and other tabs on this " +
+      "instance act as you for a moment.",
+    lead: "To prefill, GlideLens will:",
     steps: [
       "switch your session back to your own account",
       "read " + ticket,
       "impersonate " + target + " again",
       "fill this form as " + target,
     ],
-    note:
-      "ServiceNow records both switches in its audit log, and other tabs on this " +
-      "instance act as you for a moment.",
     confirmLabel: "Switch, read and fill",
     onConfirm: () => prefillWithSessionSwitch(value, ticket, target),
     onCancel: () => showToast("Nothing was switched.", false, 4000),
@@ -2060,42 +2173,68 @@ async function sendPrefillSwitch(message) {
   };
 }
 
+/*
+ * How the read as you went, on its step: ticked with what it found, or marked
+ * with why there is nothing to fill. Display only, and it can never throw,
+ * because it runs on the way to switching back.
+ */
+function settlePrefillReadStep(read, readError, ticket) {
+  try {
+    if (readError) {
+      settlePrefillSwitchStep(2, "failed", "", prefillErrorText(readError));
+      return;
+    }
+    const count = read.sourceResult.variables.length;
+    if (!count) {
+      const step = prefillSwitchSteps && prefillSwitchSteps[1];
+      settlePrefillSwitchStep(2, "failed", step && step.words.empty,
+        emptyPrefillReadMessage(read.sourceResult, ticket));
+      return;
+    }
+    settlePrefillSwitchStep(2, "done",
+      "Read " + ticket + " as you: " + count + (count === 1 ? " variable" : " variables"));
+  } catch (e) {}
+}
+
 // Runs only from the confirmation's button. The fill happens after the second
 // switch, so the form's own scripts run as the impersonated account.
 async function prefillWithSessionSwitch(value, ticket, target) {
   if (refusePrefillWhileRunning()) return;
   prefillRunning = true;
+  beginPrefillSwitchSteps(ticket, target);
   try {
-    prefillStep = "Step 1 of 4";
-    showPrefillProgress("Switching back to your own account…");
+    startPrefillSwitchStep(1, "Switching back to your own account…");
     const begin = await sendPrefillSwitch({ type: "PREFILL_SWAP_BEGIN", expectedTarget: target });
     if (!begin.ok) {
       showSwitchFailure(begin.message);
       return;
     }
+    settlePrefillSwitchStep(1, "done");
 
     let read = null;
     let readError = null;
     let end = null;
     try {
-      prefillStep = "Step 2 of 4";
-      showPrefillProgress("Reading " + ticket + " as you…");
+      startPrefillSwitchStep(2, "Reading " + ticket + " as you…");
       read = await readPrefillSource(value, showPrefillProgress);
     } catch (error) {
       readError = error;
     } finally {
       // Always switch back once the first switch has succeeded, whatever the
-      // read did. sendPrefillSwitch never throws.
-      prefillStep = "Step 3 of 4";
-      showPrefillProgress("Impersonating " + target + " again…");
+      // read did. sendPrefillSwitch never throws, and nothing before it here can.
+      settlePrefillReadStep(read, readError, ticket);
+      try {
+        startPrefillSwitchStep(3, "Impersonating " + target + " again…");
+      } catch (e) {}
       end = await sendPrefillSwitch({ type: "PREFILL_SWAP_END" });
     }
     if (!end.ok) {
       showSwitchFailure(end.message);
       return;
     }
+    settlePrefillSwitchStep(3, "done");
 
-    const back = "Read " + ticket + " as you; you're impersonating " + target + " again.";
+    const back = prefillBack("Read " + ticket + " as you; you're impersonating " + target + " again.");
     if (readError) {
       finishPrefill([prefillErrorText(readError), back], true);
       return;
@@ -2104,12 +2243,13 @@ async function prefillWithSessionSwitch(value, ticket, target) {
       finishPrefill([emptyPrefillReadMessage(read.sourceResult, ticket), back], true);
       return;
     }
-    prefillStep = "Step 4 of 4";
+    startPrefillSwitchStep(4);
     await fillPrefillForm(read, { filledAs: target, back });
   } catch (error) {
     showSwitchFailure(prefillErrorText(error));
   } finally {
     prefillRunning = false;
+    prefillSwitchSteps = null;
   }
 }
 
@@ -2164,7 +2304,7 @@ async function fillPrefillForm(read, context) {
       return;
     }
 
-    const skipped = (resp.skipped || 0) + sourceSkipped;
+    const fillSkipped = resp.skipped || 0;
     const already = resp.alreadySet || 0;
     const unmatched = resp.unmatched || 0;
     if (!resp.filled && unmatched === variables.length) {
@@ -2183,19 +2323,30 @@ async function fillPrefillForm(read, context) {
       );
       return;
     }
-    const details = [];
-    if (already) details.push(already + " already set");
-    if (unmatched) details.push(unmatched + " not on this form");
-    if (skipped) details.push(skipped + " skipped");
-    if (ctx.withheld) details.push(ctx.withheld + " not filled");
     // The denominator is what was read. Variables held back never reach the
     // fill, and counting only what was sent would quietly shrink it.
     const total = Number.isFinite(ctx.totalRead) ? ctx.totalRead : variables.length;
-    const summary =
-      "Done. Filled " + (resp.filled || 0) + " of " + total + " variables" +
-      (ctx.from ? " from " + ctx.from : "") +
-      (ctx.filledAs ? " as " + ctx.filledAs : "") +
-      (details.length ? " (" + details.join(", ") + ")" : "") + ".";
+    const headline =
+      "Filled " + (resp.filled || 0) + " of " + total + (total === 1 ? " variable" : " variables");
+    /*
+     * Where it came from and what was left, as labelled facts, each reason
+     * said once and a zero left out. "Can't be copied" is a type Prefill
+     * never copies, known before the fill; the page's own skips are fills
+     * that failed after every retry, so they are not called a type.
+     * "Held back" is a count only: the notes below name each one and why.
+     */
+    const facts = [
+      prefillFact("Read from", ctx.from),
+      prefillFact("Filled as", ctx.filledAs),
+      already ? prefillFact("Already set", already + (already === 1 ? ", left as it was" : ", left as they were")) : null,
+      unmatched ? prefillFact("Not on this form", unmatched) : null,
+      sourceSkipped
+        ? prefillFact("Can't be copied", sourceSkipped +
+          (sourceSkipped === 1 ? ", a type Prefill doesn't copy" : ", of types Prefill doesn't copy"))
+        : null,
+      fillSkipped ? prefillFact("Couldn't be filled", fillSkipped) : null,
+      ctx.withheld ? prefillFact("Held back", ctx.withheld) : null,
+    ];
     // Some tables answered and others did not: what was read is filled, but
     // the form may lack values the ticket has.
     const partial =
@@ -2203,7 +2354,9 @@ async function fillPrefillForm(read, context) {
         ? "Some of the ticket's variables couldn't be read, so check the form for gaps."
         : "";
     finishPrefill(
-      [summary, prefillNote(partial), prefillNote(ctx.back)]
+      [prefillHead(headline)]
+        .concat(facts)
+        .concat([prefillNote(partial), ctx.back])
         .concat((ctx.notes || []).map(prefillNote))
         .concat(prefillHint(PREFILL_CLOSE_HINT)),
       false
@@ -4994,6 +5147,14 @@ function buildVariableRows(definitions, perVariableResults) {
   });
 }
 
+// Every way Variable Values opens goes through here. The palette gives focus
+// back to the page as it closes, so it closes first: the panel then takes
+// focus from that page element, and gives it back to it when the panel closes.
+function showVariableValuesPanel(result) {
+  closePalette();
+  globalThis.SNHiddenVariablesUI.showResults(result);
+}
+
 async function showHiddenPortalVariables() {
   const catalogItemSysId = currentCatalogItemDefinitionSysId();
   if (!isSysId(catalogItemSysId)) {
@@ -5026,12 +5187,11 @@ async function showHiddenPortalVariables() {
     }
 
     const rows = buildVariableRows(definitions, resp.perVariable);
-    globalThis.SNHiddenVariablesUI.showResults({
+    showVariableValuesPanel({
       foundForm: resp.foundForm,
       setCount,
       rows,
     });
-    closePalette();
   } catch (error) {
     showToast(String(error && error.message ? error.message : error), true);
   }
@@ -5084,7 +5244,7 @@ function workspacePanelCapabilities(panelState) {
 }
 
 function showWorkspaceVariableValuesError(message) {
-  globalThis.SNHiddenVariablesUI.showResults({
+  showVariableValuesPanel({
     mode: "native",
     recordKind: "workspace",
     panelState: "refused",
@@ -5098,7 +5258,6 @@ function showWorkspaceVariableValuesError(message) {
     uncheckedCount: 0,
     rows: [],
   });
-  closePalette();
 }
 
 /*
@@ -5236,7 +5395,7 @@ async function showWorkspaceVariableValues(route, surface, initialSnapshot) {
     }
   );
   const state = workspacePanelState(recordData, finalSnapshot.formStatus, rows);
-  globalThis.SNHiddenVariablesUI.showResults({
+  showVariableValuesPanel({
     mode: "native",
     recordKind: "workspace",
     panelState: state.panelState,
@@ -5250,11 +5409,10 @@ async function showWorkspaceVariableValues(route, surface, initialSnapshot) {
     uncheckedCount: state.uncheckedCount,
     rows,
   });
-  closePalette();
 }
 
 function showNativeVariableValuesError(message, recordKind) {
-  globalThis.SNHiddenVariablesUI.showResults({
+  showVariableValuesPanel({
     mode: "native",
     recordKind: recordKind || "record",
     foundForm: false,
@@ -5263,7 +5421,6 @@ function showNativeVariableValuesError(message, recordKind) {
     fatalError: message,
     rows: [],
   });
-  closePalette();
 }
 
 // True when any definition sharing this name is classified secret.
@@ -5407,7 +5564,7 @@ async function finishNativeVariableValues(
     liveProbe.perVariable,
     Object.assign({ recordKind }, zone)
   );
-  globalThis.SNHiddenVariablesUI.showResults({
+  showVariableValuesPanel({
     mode: "native",
     recordKind,
     foundForm: true,
@@ -5416,7 +5573,6 @@ async function finishNativeVariableValues(
     storedReadError: recordData.storedReadError,
     rows,
   });
-  closePalette();
 }
 
 async function showNativeRitmVariableValues(initialProbe, workspaceRoute) {
@@ -5813,6 +5969,10 @@ async function showCatalogInsight() {
       /* name is cosmetic; ignore */
     }
 
+    // The palette gives focus back to the page as it closes, so it closes
+    // first: the panel then takes focus from that page element, and gives
+    // it back to it when the panel closes.
+    closePalette();
     globalThis.SNCatalogInsightUI.showResults({
       rows,
       setCount,
@@ -5820,7 +5980,6 @@ async function showCatalogInsight() {
       itemSysId: catalogItemSysId,
       setIds,
     });
-    closePalette();
   } catch (error) {
     showToast(String(error && error.message ? error.message : error), true);
   }
@@ -5891,49 +6050,109 @@ function varInsightAnchorFor(fieldActualEl, type) {
   return fieldActualEl;
 }
 
-// The catalog form is a light surface, so use a deeper teal than the dark panels.
+/*
+ * The marks live in the page's own DOM, not a shadow root, so they are styled
+ * from ONE stylesheet injected beside them and removed with them. `all:initial`
+ * comes first so a portal theme's button rules cannot reach in. The mark
+ * carries its own background, so its contrast does not depend on the theme:
+ * white on #0b5f57 is 7.5:1, and the thin white edge parts it from a dark page.
+ * The focus ring is the mark's own, drawn outside that edge, because a theme
+ * may draw none.
+ */
+const VAR_INSIGHT_STYLE_ID = "snh-var-insight-style";
+const VAR_INSIGHT_CSS = `
+button.snh-var-insight{all:initial;box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;
+  vertical-align:middle;margin:0 0 0 7px;padding:2px 7px 2px 5px;border-radius:999px;
+  background:#0b5f57;color:#fff;cursor:pointer;white-space:nowrap;
+  font:600 11px/14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  box-shadow:0 0 0 1px rgba(255,255,255,.85)}
+button.snh-var-insight:hover{background:#084a44}
+button.snh-var-insight:focus{outline:none}
+button.snh-var-insight:focus-visible{outline:2px solid #0b5f57;outline-offset:3px;
+  box-shadow:0 0 0 1px #fff,0 0 0 3px #fff}
+button.snh-var-insight svg{display:block;flex:none;width:12px;height:12px;fill:none;stroke:currentColor}
+@media (forced-colors:active){
+  button.snh-var-insight{border:1px solid ButtonText;background:ButtonFace;color:ButtonText;box-shadow:none}
+  button.snh-var-insight:focus-visible{outline:2px solid Highlight;box-shadow:none}
+}
+`;
+
+function ensureVariableInsightStyle() {
+  if (document.getElementById(VAR_INSIGHT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = VAR_INSIGHT_STYLE_ID;
+  style.textContent = VAR_INSIGHT_CSS;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+// Lucide "workflow", built node by node: the mark has no markup path.
+function makeVariableLogicSvg() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  [
+    ["width", "12"], ["height", "12"], ["viewBox", "0 0 24 24"], ["fill", "none"],
+    ["stroke", "currentColor"], ["stroke-width", "2.4"], ["stroke-linecap", "round"],
+    ["stroke-linejoin", "round"], ["aria-hidden", "true"], ["focusable", "false"],
+  ].forEach(([name, value]) => svg.setAttribute(name, value));
+  [
+    ["rect", { x: "3", y: "3", width: "7", height: "7", rx: "1" }],
+    ["rect", { x: "14", y: "14", width: "7", height: "7", rx: "1" }],
+    ["path", { d: "M6.5 10v3a2 2 0 0 0 2 2H14" }],
+  ].forEach(([tag, attrs]) => {
+    const shape = document.createElementNS(ns, tag);
+    Object.keys(attrs).forEach((name) => shape.setAttribute(name, attrs[name]));
+    svg.appendChild(shape);
+  });
+  return svg;
+}
+
+// What the mark says, by the variable's label: its tooltip and its name.
+function variableInsightLabel(count, label) {
+  return count === 1
+    ? "1 script or policy acts on “" + label + "”. Open it in Catalog Logic."
+    : count + " scripts and policies act on “" + label + "”. Open them in Catalog Logic.";
+}
+
+/*
+ * Which variable's mark had focus. Angular re-creates a field, and its mark,
+ * on a section move or a variable-set load; the focused mark goes with it and
+ * focus falls to the page. A mark re-created while focus sits on the page
+ * takes it back. Blur forgets it, because a removed element never blurs.
+ */
+let varInsightFocusedName = "";
+
 function makeVariableInsightIcon(name, sysId, info) {
   const count = (info && info.count) || 0;
-  const btn = document.createElement("span");
+  const label = (info && info.label) || name;
+  const btn = document.createElement("button");
+  btn.type = "button";
   btn.className = "snh-var-insight";
-  btn.setAttribute("role", "button");
-  btn.tabIndex = 0;
-  btn.title = count
-    ? count +
-      (count === 1
-        ? " client script / UI policy action affects "
-        : " client scripts / UI policy actions affect ") +
-      "“" + name + "” — click to view"
-    : "No variable-specific logic on “" + name +
-      "” — click to see what runs on this form";
-  btn.innerHTML =
-    ICON_VAR_LOGIC +
-    (count
-      ? '<span style="font:600 9px/1 -apple-system,BlinkMacSystemFont,' +
-        "'Segoe UI',sans-serif;color:inherit\">" + count + "</span>"
-      : "");
-  btn.style.cssText =
-    "display:inline-flex;align-items:center;gap:3px;vertical-align:middle;" +
-    "margin-left:6px;color:" + (count ? "#0f9e8e" : "#8a8f99") +
-    ";cursor:pointer;line-height:0;";
-  const handler = (event) => {
+  btn.setAttribute("data-snh-var-mark", name);
+  const said = variableInsightLabel(count, label);
+  btn.title = said;
+  btn.setAttribute("aria-label", said);
+  btn.appendChild(makeVariableLogicSvg());
+  btn.appendChild(document.createTextNode(String(count)));
+  // A real button: Enter and Space click it, so one handler serves all three.
+  btn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
     openVariableInsight(name, sysId);
-  };
-  btn.addEventListener("click", handler);
-  btn.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") handler(event);
   });
-  btn.addEventListener("mouseenter", () => (btn.style.opacity = "0.7"));
-  btn.addEventListener("mouseleave", () => (btn.style.opacity = "1"));
+  btn.addEventListener("focus", () => {
+    varInsightFocusedName = name;
+  });
+  btn.addEventListener("blur", () => {
+    if (varInsightFocusedName === name) varInsightFocusedName = "";
+  });
   return btn;
 }
 
 function openVariableInsight(name, sysId) {
   const data = SNH.varInsightData;
   if (!data || !globalThis.SNCatalogInsightUI) {
-    showToast("Reopen the variable icons and try again", true);
+    // A mark is usually clicked with the palette closed, where showToast says nothing.
+    showVariableInsightNotice("Turn the variable marks off and on, then try again", "err");
     return;
   }
   const info = lookupVariableLogic(data.index, name, sysId);
@@ -5947,12 +6166,61 @@ function openVariableInsight(name, sysId) {
   });
 }
 
+/*
+ * The variables on the form, and the ones that get a mark: stamped, not a
+ * rich-text label (those carry no logic), and acted on by at least one script
+ * or policy. A variable nothing acts on gets no mark at all.
+ * injectVariableInsightIcons and varInsightStale both read this, and must:
+ * if the staleness check counted a variable the injector skips, the observer
+ * would re-apply forever.
+ */
+function varInsightTargets() {
+  const index = SNH.varInsightData ? SNH.varInsightData.index : null;
+  const targets = [];
+  let total = 0;
+  document.querySelectorAll("[data-snh-var]").forEach((el) => {
+    const name = el.getAttribute("data-snh-var");
+    if (!name) return;
+    const type = el.getAttribute("data-snh-var-type") || "";
+    if (type === "rich_text_label") return;
+    total++;
+    const sysId = el.getAttribute("data-snh-var-sysid") || "";
+    const info = lookupVariableLogic(index, name, sysId);
+    if (!info.count) return;
+    const anchor = varInsightAnchorFor(el, type);
+    if (anchor) targets.push({ name, sysId, info, anchor, label: anchor.closest("label") });
+  });
+  return { targets, total };
+}
+
+/*
+ * A mark goes right AFTER the field's <label> when its anchor sits in one, not
+ * inside it. Inside, the mark's own name became part of the field's: measured
+ * in Chrome on the portal's label structure, a text field read "Mandatory Name
+ * 5 scripts and policies act on “Name”. Open them in Catalog Logic.", and
+ * "Mandatory Name" with the mark beside it. The portal's label is
+ * inline-block with nothing after it, so the mark stays on the same line.
+ * Anywhere else -- a checkbox's control container -- it goes inside the
+ * anchor, as before.
+ */
+function varInsightMarkFor(target) {
+  if (!target.label) return target.anchor.querySelector(":scope > .snh-var-insight");
+  const next = target.label.nextElementSibling;
+  return next && next.tagName === "BUTTON" && next.hasAttribute("data-snh-var-mark") ? next : null;
+}
+
+function placeVariableInsightMark(target, mark) {
+  if (target.label) target.label.after(mark);
+  else target.anchor.appendChild(mark);
+}
+
 // (Re)stamp variable identities via the MAIN world only when something is
 // unstamped — a fresh render or the first pass. ng-hide toggles keep the stamp,
-// so the common re-render skips the round trip. Then anchor a missing icon on
-// every stamped variable (rich-text labels carry no logic, so they're skipped).
+// so the common re-render skips the round trip. Then anchor a missing mark on
+// every variable something acts on. Answers how many variables carry a mark
+// and how many are on the form.
 async function injectVariableInsightIcons() {
-  if (!SNH.varInsightOn || !SNH.varInsightData) return 0;
+  if (!SNH.varInsightOn || !SNH.varInsightData) return { marked: 0, total: 0 };
 
   const needsStamp =
     !document.querySelector("[data-snh-var]") ||
@@ -5964,27 +6232,137 @@ async function injectVariableInsightIcons() {
     } catch (e) {
       resp = null;
     }
-    if (!resp || !resp.ok || !resp.foundForm) return 0;
+    if (!resp || !resp.ok || !resp.foundForm) return { marked: 0, total: 0 };
   }
 
-  const index = SNH.varInsightData.index;
-  let count = 0;
-  document.querySelectorAll("[data-snh-var]").forEach((el) => {
-    const name = el.getAttribute("data-snh-var");
-    if (!name) return;
-    const type = el.getAttribute("data-snh-var-type") || "";
-    if (type === "rich_text_label") return;
-    const sysId = el.getAttribute("data-snh-var-sysid") || "";
-    const anchor = varInsightAnchorFor(el, type);
-    if (!anchor || anchor.querySelector(":scope > .snh-var-insight")) return;
-    anchor.appendChild(makeVariableInsightIcon(name, sysId, lookupVariableLogic(index, name, sysId)));
-    count++;
+  const { targets, total } = varInsightTargets();
+  if (targets.length) ensureVariableInsightStyle();
+  let restore = null;
+  targets.forEach((target) => {
+    if (varInsightMarkFor(target)) return;
+    const mark = makeVariableInsightIcon(target.name, target.sysId, target.info);
+    placeVariableInsightMark(target, mark);
+    const page = document.activeElement;
+    if (target.name === varInsightFocusedName && (!page || page === document.body)) restore = mark;
   });
-  return count;
+  if (restore) restore.focus({ preventScroll: true });
+  return { marked: targets.length, total };
+}
+
+/*
+ * What the marks say about themselves, by route. Alt+double-click runs with
+ * the palette closed, where showToast has nowhere to write, so the read, its
+ * result and any failure were all silent there. With the palette open the
+ * notice is its message line; closed, a small notice in the page corner. The
+ * words are the same on both.
+ */
+function showVariableInsightNotice(text, kind) {
+  if (paletteToast) {
+    hidePageNotice();
+    showToast(text, kind === "err", kind === "err" ? 0 : 2400, kind === "busy" ? { busy: true } : undefined);
+    return;
+  }
+  showPageNotice(text, kind);
+}
+
+function variableInsightResultText(marked, total) {
+  if (!marked) return "Nothing acts on any of this form's " + total + " variables, so none is marked.";
+  if (marked === total) return "Marked " + marked + " of " + total + " variables.";
+  return "Marked " + marked + " of " + total + " variables. Nothing acts on the other " +
+    (total - marked) + ".";
+}
+
+/*
+ * The page-corner notice: its own closed shadow root, text set with
+ * textContent only. The status region is created once and stays, empty
+ * between notices, because a live region inserted already holding its text is
+ * often not announced. It never takes a click, so it cannot cover a control.
+ */
+const PAGE_NOTICE_HOST_ID = "snh-page-notice";
+const PAGE_NOTICE_CSS = `
+  :host{all:initial}
+  .region{position:fixed;right:16px;bottom:16px;z-index:2147483646;pointer-events:none;
+    font:12px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  .box{display:flex;align-items:center;gap:10px;max-width:min(460px,calc(100vw - 32px));
+    padding:10px 14px;border:1px solid #4a5066;border-radius:10px;background:#181a24;
+    color:#d8dbea;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+  .box[hidden]{display:none}
+  .brand{flex:none;color:#ff6fae;font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+  .text{min-width:0;overflow-wrap:anywhere}
+  .box.done .text::before{content:"✓";margin-right:6px;color:#31d4c4;font-weight:800}
+  .box.err .text{color:#ff9d9d}
+  .box.busy .text::before{content:"";display:inline-block;width:10px;height:10px;margin-right:8px;
+    vertical-align:-1px;border:2px solid rgba(49,212,196,.28);border-top-color:#31d4c4;border-radius:50%;
+    animation:snh-notice-spin .8s linear infinite}
+  @keyframes snh-notice-spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.box.busy .text::before{animation:none}}
+  @media (forced-colors:active){.box{border-color:CanvasText}}
+`;
+const PAGE_NOTICE_MS = { "": 4000, done: 4000, err: 6000, busy: 60000 };
+let pageNotice = null;
+let pageNoticeTimer = null;
+
+function showPageNotice(text, kind) {
+  const fresh = !pageNotice || !pageNotice.host.isConnected;
+  if (fresh) {
+    const host = document.createElement("div");
+    host.id = PAGE_NOTICE_HOST_ID;
+    const shadow = host.attachShadow({ mode: "closed" });
+    const style = document.createElement("style");
+    style.textContent = PAGE_NOTICE_CSS;
+    const region = document.createElement("div");
+    region.className = "region";
+    region.setAttribute("role", "status");
+    const box = document.createElement("div");
+    box.className = "box";
+    box.hidden = true;
+    const brand = document.createElement("span");
+    brand.className = "brand";
+    brand.textContent = "GlideLens";
+    const said = document.createElement("span");
+    said.className = "text";
+    box.appendChild(brand);
+    box.appendChild(said);
+    region.appendChild(box);
+    shadow.appendChild(style);
+    shadow.appendChild(region);
+    (document.body || document.documentElement).appendChild(host);
+    const notice = { host, box, said, ready: false, pending: null };
+    pageNotice = notice;
+    // A region created this moment is given a beat to be noticed before it
+    // speaks. Whatever arrives meanwhile waits, and only the newest is said.
+    setTimeout(() => {
+      notice.ready = true;
+      writePageNotice(notice);
+    }, 60);
+  }
+  pageNotice.pending = { text, kind: kind || "" };
+  writePageNotice(pageNotice);
+  clearTimeout(pageNoticeTimer);
+  pageNoticeTimer = setTimeout(hidePageNotice, PAGE_NOTICE_MS[kind || ""] || 4000);
+}
+
+function writePageNotice(notice) {
+  if (pageNotice !== notice || !notice.ready || !notice.pending) return;
+  const { text, kind } = notice.pending;
+  notice.pending = null;
+  notice.box.className = "box" + (kind ? " " + kind : "");
+  notice.said.textContent = text;
+  notice.box.hidden = false;
+}
+
+function hidePageNotice() {
+  clearTimeout(pageNoticeTimer);
+  pageNoticeTimer = null;
+  if (!pageNotice) return;
+  pageNotice.pending = null;
+  pageNotice.said.textContent = "";
+  pageNotice.box.hidden = true;
 }
 
 async function toggleVariableInsightIcons(force) {
   const turnOn = typeof force === "boolean" ? force : !SNH.varInsightOn;
+  const wasOn = SNH.varInsightOn;
 
   removeSnhElements(".snh-var-insight");
   document.querySelectorAll("[data-snh-var]").forEach((el) => {
@@ -5996,6 +6374,9 @@ async function toggleVariableInsightIcons(force) {
   if (!turnOn) {
     SNH.varInsightOn = false;
     syncVarInsightObserver();
+    removeSnhElements("#" + VAR_INSIGHT_STYLE_ID);
+    varInsightFocusedName = "";
+    if (wasOn) showVariableInsightNotice("Variable marks removed.", "");
     return 0;
   }
 
@@ -6003,13 +6384,13 @@ async function toggleVariableInsightIcons(force) {
   if (!isSysId(catalogItemSysId)) {
     SNH.varInsightOn = false;
     syncVarInsightObserver();
-    showToast("Open a Service Portal catalog item first", true);
+    showVariableInsightNotice("Open a Service Portal catalog item first", "err");
     return 0;
   }
 
   try {
     if (!SNH.varInsightData || SNH.varInsightData.itemSysId !== catalogItemSysId) {
-      showToast("Reading catalog client scripts and UI policies…", false, 6000);
+      showVariableInsightNotice("Reading this item's scripts and policies…", "busy");
       const data = await fetchCatalogAffectingLogic(catalogItemSysId);
       let itemName = "";
       try {
@@ -6033,21 +6414,16 @@ async function toggleVariableInsightIcons(force) {
   } catch (error) {
     SNH.varInsightOn = false;
     syncVarInsightObserver();
-    showToast(String(error && error.message ? error.message : error), true);
+    showVariableInsightNotice(String(error && error.message ? error.message : error), "err");
     return 0;
   }
 
   SNH.varInsightOn = true;
-  const count = await injectVariableInsightIcons();
+  const { marked, total } = await injectVariableInsightIcons();
   syncVarInsightObserver();
-  showToast(
-    count
-      ? "Variable insight icons on — Alt+double-click to hide"
-      : "No catalog variables found on this form",
-    !count,
-    2400
-  );
-  return count;
+  if (!total) showVariableInsightNotice("No catalog variables found on this form", "err");
+  else showVariableInsightNotice(variableInsightResultText(marked, total), marked ? "done" : "");
+  return marked;
 }
 
 /*
@@ -6062,17 +6438,12 @@ let snhVarObserver = null;
 let snhVarTimer = null;
 let snhVarBusy = false;
 
+// Stale when a variable lost its stamp, or one that should carry a mark has
+// none. A variable nothing acts on never has one, so it never counts here.
 function varInsightStale() {
   if (!SNH.varInsightOn) return false;
   if (document.querySelector("span.field-actual[ng-switch]:not([data-snh-var])")) return true;
-  const stamped = document.querySelectorAll("[data-snh-var]");
-  for (const el of stamped) {
-    const type = el.getAttribute("data-snh-var-type") || "";
-    if (type === "rich_text_label") continue;
-    const anchor = varInsightAnchorFor(el, type);
-    if (anchor && !anchor.querySelector(":scope > .snh-var-insight")) return true;
-  }
-  return false;
+  return varInsightTargets().targets.some((target) => !varInsightMarkFor(target));
 }
 
 function queueVarReapply() {
@@ -6555,7 +6926,7 @@ function buildCommands() {
     {
       id: "prefill-variables",
       label: "Variable Prefill",
-      description: "Copy catalog-variable values from another ticket, on this or another open instance…",
+      description: "Copy variable values from another ticket…",
       keywords: [
         "variable", "prefill", "copy", "ritm", "sctask", "req", "catalog", "portal", "clone",
         "instance", "case",
@@ -6594,7 +6965,7 @@ function buildCommands() {
     {
       id: "toggle-variable-insight",
       label: "Variable Insight",
-      description: "Show or hide per-variable insight icons",
+      description: "Mark each variable that scripts or UI policies act on",
       keywords: ["variable", "icon", "client script", "ui policy", "onchange", "action", "affects", "catalog", "insight", "double click", "alt"],
       group: "Catalog",
       hint: "Alt+double-click",
@@ -7352,7 +7723,7 @@ async function showTranslationLens() {
     showToast(TRANSLATION_LENS_WORKSPACE_MESSAGE, true, 7000);
     return;
   }
-  showToast("Checking Translation Lens contextâ€¦", false, 6000);
+  showToast("Checking Translation Lens context…", false, 6000);
   try {
     await ensureTranslationLensLoaded();
   } catch (error) {
@@ -9363,8 +9734,8 @@ function validatePaletteCommands(cmds) {
  * complete label can also match some OTHER command through that command's
  * description. Without this, ordering was declaration order alone, and typing
  * "Variable Values" made Variable Prefill the active row -- its description
- * reads "Copy catalog-variable values from another ticket", which contains the
- * whole query, and it is declared first. Enter then ran the wrong command.
+ * reads "Copy variable values from another ticket", which contains the whole
+ * query, and it is declared first. Enter then ran the wrong command.
  * A label match must outrank a description or keyword match.
  */
 function paletteMatchTier(cmd, query) {
@@ -9602,7 +9973,8 @@ const PALETTE_CSS = `
   }
   #palette-confirm-title{color:var(--palette-text);font-weight:650}
   #palette-confirm ol{margin:6px 0 8px;padding-left:20px}
-  #palette-confirm .confirm-note{color:var(--palette-secondary)}
+  #palette-confirm .confirm-note{margin-top:6px;color:#efc48f}
+  #palette-confirm .confirm-lead{margin-top:6px}
   #palette-confirm .confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
   #palette-confirm button{
     padding:6px 12px;border:1px solid var(--palette-border);border-radius:6px;
@@ -9625,7 +9997,7 @@ const PALETTE_CSS = `
     background:#2c2d49;border-color:#4d5079;outline:none;box-shadow:inset 3px 0 0 var(--teal);
   }
   .usl-option-name{font-size:12.5px;font-weight:650;overflow-wrap:anywhere}
-  .usl-option-meta{color:#9494af;font-size:11px;overflow-wrap:anywhere}
+  .usl-option-meta{color:#9a9ab3;font-size:11px;overflow-wrap:anywhere}
   .usl-tag{
     display:inline-block;margin-left:6px;padding:0 5px;border:1px solid #6d5b34;border-radius:4px;
     color:#e2b864;font-size:10px;font-weight:600;line-height:1.5;
@@ -9644,8 +10016,35 @@ const PALETTE_CSS = `
   #toast.done::before{content:"✓";display:inline-block;margin-right:8px;font-weight:800;color:var(--teal)}
   #toast .toast-note{color:var(--palette-body)}
   #toast .toast-hint{color:var(--palette-muted)}
+  /* A finished run: the headline carries the tick, and what follows it sits
+     under its text, past the tick. A step list carries its own marks. */
+  #toast.lines::before,#toast.steps::before{content:none;display:none}
+  #toast .toast-head{color:#a8e6b8;font-size:13px;font-weight:650}
+  #toast.done .toast-head::before{content:"✓";display:inline-block;width:12px;margin-right:8px;
+    font-weight:800;color:var(--teal)}
+  #toast.done .toast-head~.toast-line,#toast.done .toast-head~.toast-facts{margin-left:20px}
+  #toast .toast-head~.toast-hint{margin-top:6px}
+  #toast .toast-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 14px;
+    margin:7px 0 6px}
+  #toast .toast-facts dt{color:var(--palette-muted)}
+  #toast .toast-facts dd{color:var(--palette-body);overflow-wrap:anywhere}
+  #toast .toast-said{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  #toast .toast-steps{list-style:none;margin:0;padding:0}
+  #toast .toast-steps~.toast-line,#toast .toast-steps~.toast-facts{margin-top:8px}
+  #toast .toast-steps li{display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:6px;padding:2px 0;
+    color:var(--palette-muted)}
+  #toast .toast-steps .step-mark{text-align:center}
+  #toast .toast-steps .step-done{color:var(--palette-body)}
+  #toast .toast-steps .step-done .step-mark{color:var(--teal);font-weight:800}
+  #toast .toast-steps .step-current{color:var(--palette-text);font-weight:650}
+  #toast .toast-steps .step-failed{color:#ff9d9d;font-weight:650}
+  #toast .toast-steps .step-message{grid-column:2;color:#ff9d9d;font-weight:400}
+  #toast .step-spinner{display:inline-block;width:10px;height:10px;vertical-align:-1px;border-radius:50%;
+    border:2px solid color-mix(in srgb, var(--teal) 28%, transparent);border-top-color:var(--teal);
+    animation:snh-toast-spin .8s linear infinite}
   @keyframes snh-toast-spin{to{transform:rotate(360deg)}}
-  @media (prefers-reduced-motion:reduce){#toast.busy::before,#checking::before{animation:none}}
+  @media (prefers-reduced-motion:reduce){#toast.busy::before,#checking::before,#toast .step-spinner{animation:none}}
   #toast a{color:var(--teal);text-decoration:underline;cursor:pointer}
   #toast a:focus{outline:2px solid var(--teal);outline-offset:2px}
   #empty,#checking{padding:34px 16px;color:var(--palette-secondary);font-size:13px;text-align:center}
@@ -9699,26 +10098,38 @@ const PALETTE_CSS = `
  * would leave the person guessing whether it is safe to close the palette.
  * A done or sticky message is a run's last word, after which Esc in a
  * command's input closes the palette (paletteShowsFinalMessage).
- * options.lines: [{ text, kind }] draws each line in its own span, so a kind
- * can set its colour. Every line is set as text: labels in them come from the
- * instance.
+ * options.lines: [{ text, kind, label }] draws each line as its own block, so
+ * a kind can set its colour: "head" is a finished run's headline (the tick and
+ * the success colour), "fact" a label and its value, drawn together as one
+ * fact list, "note" plain and "hint" muted. Every line is set as text: labels
+ * in them come from the instance.
+ * options.steps: [{ state, text, message }] draws Prefill's session-switch
+ * steps above the lines: a tick when done, a spinner when current, a cross and
+ * its message when failed, its number while pending. The list is for sight;
+ * the status region speaks msg (or the lines), as it did before the list.
  */
 function showToast(msg, isErr, durationMs, options) {
   if (!paletteToast) return;
   const opts = options || {};
-  if (Array.isArray(opts.lines) && opts.lines.length) {
+  const steps = Array.isArray(opts.steps) && opts.steps.length ? opts.steps : null;
+  const lines = Array.isArray(opts.lines) ? opts.lines.filter(Boolean) : [];
+  if (steps || lines.length) {
     paletteToast.textContent = "";
-    opts.lines.forEach((line, index) => {
-      const span = document.createElement("span");
-      if (line.kind) span.className = "toast-" + line.kind;
-      // #toast keeps white-space:pre-line, so this newline is the line break.
-      span.textContent = (index ? "\n" : "") + line.text;
-      paletteToast.appendChild(span);
-    });
+    if (steps) paletteToast.appendChild(toastStepList(steps));
+    if (lines.length) appendToastLines(paletteToast, lines);
+    else {
+      const said = document.createElement("span");
+      said.className = "toast-said";
+      said.textContent = msg;
+      paletteToast.appendChild(said);
+    }
   } else {
     paletteToast.textContent = msg;
   }
-  paletteToast.className = [isErr ? "err" : "", opts.busy ? "busy" : "", opts.done ? "done" : ""]
+  paletteToast.className = [
+    isErr ? "err" : "", opts.busy ? "busy" : "", opts.done ? "done" : "",
+    lines.length ? "lines" : "", steps ? "steps" : "",
+  ]
     .filter(Boolean)
     .join(" ");
   paletteToast.dataset.final = opts.done || opts.sticky ? "true" : "";
@@ -9728,6 +10139,66 @@ function showToast(msg, isErr, durationMs, options) {
   showToast._t = setTimeout(() => {
     if (paletteToast) paletteToast.style.display = "none";
   }, durationMs || 2200);
+}
+
+// Consecutive facts share one list, so their labels line up.
+function appendToastLines(toast, lines) {
+  let facts = null;
+  lines.forEach((line) => {
+    if (line.kind === "fact") {
+      if (!facts) {
+        facts = document.createElement("dl");
+        facts.className = "toast-facts";
+        toast.appendChild(facts);
+      }
+      const label = document.createElement("dt");
+      label.textContent = line.label;
+      const value = document.createElement("dd");
+      value.textContent = line.text;
+      facts.appendChild(label);
+      facts.appendChild(value);
+      return;
+    }
+    facts = null;
+    const block = document.createElement("div");
+    const kind = line.kind === "back" ? "note" : line.kind;
+    block.className = "toast-line" + (kind ? " toast-" + kind : "");
+    block.textContent = line.text;
+    toast.appendChild(block);
+  });
+}
+
+function toastStepList(steps) {
+  const list = document.createElement("ol");
+  list.className = "toast-steps";
+  // The status region already says each step as it starts; the list is for sight.
+  list.setAttribute("aria-hidden", "true");
+  steps.forEach((step, index) => {
+    const item = document.createElement("li");
+    item.className = "step-" + step.state;
+    const mark = document.createElement("span");
+    mark.className = "step-mark";
+    if (step.state === "done") mark.textContent = "✓";
+    else if (step.state === "failed") mark.textContent = "✕";
+    else if (step.state === "current") {
+      const spinner = document.createElement("span");
+      spinner.className = "step-spinner";
+      mark.appendChild(spinner);
+    } else mark.textContent = String(index + 1);
+    const text = document.createElement("span");
+    text.className = "step-text";
+    text.textContent = step.text;
+    item.appendChild(mark);
+    item.appendChild(text);
+    if (step.message) {
+      const message = document.createElement("span");
+      message.className = "step-message";
+      message.textContent = step.message;
+      item.appendChild(message);
+    }
+    list.appendChild(item);
+  });
+  return list;
 }
 
 function paletteShowsFinalMessage() {
@@ -9905,17 +10376,14 @@ function renderResults(query) {
   if (!filteredCmds.length) {
     paletteList.innerHTML = '<div id="empty">No commands match</div>';
     activeIndex = 0;
-    if (paletteCount) paletteCount.textContent = "0 commands";
+    setPaletteCount("0 commands");
     updateActivePaletteControls();
     return;
   }
 
   activeIndex = Math.min(activeIndex, filteredCmds.length - 1);
 
-  if (paletteCount) {
-    paletteCount.textContent =
-      filteredCmds.length + (filteredCmds.length === 1 ? " command" : " commands");
-  }
+  setPaletteCount(filteredCmds.length + (filteredCmds.length === 1 ? " command" : " commands"));
 
   let lastGroup = null;
   let groupElement = null;
@@ -9995,8 +10463,16 @@ function renderPaletteWaiting() {
   note.setAttribute("aria-hidden", "true");
   note.textContent = PALETTE_CHECKING_TEXT;
   paletteList.appendChild(note);
-  if (paletteCount) paletteCount.textContent = PALETTE_CHECKING_TEXT;
+  setPaletteCount(PALETTE_CHECKING_TEXT);
   updateActivePaletteControls();
+}
+
+/* #result-count is a polite live region and #toast a status region. A redraw
+ * that leaves the count as it was (setting or clearing the favourite, a late
+ * access answer) must not rewrite it, or that one action is announced twice:
+ * once by the count, once by its toast. */
+function setPaletteCount(text) {
+  if (paletteCount && paletteCount.textContent !== text) paletteCount.textContent = text;
 }
 
 /*
@@ -10161,8 +10637,11 @@ function showArgInput(cmd) {
  * click. Focus stays where it was, so Enter in the input never confirms it:
  * only the button does, reached by mouse or by Tab. Returns false when the
  * palette has closed and there is nowhere to ask, and then nothing runs.
+ *
+ * Drawn in this order: the title (the reason), the note (the consequence, in
+ * the amber that says "this changes your session"), the lead-in, the steps.
  */
-function showPaletteConfirmation({ title, steps, note, confirmLabel, onConfirm, onCancel }) {
+function showPaletteConfirmation({ title, note, lead, steps, confirmLabel, onConfirm, onCancel }) {
   clearPaletteConfirmation();
   if (!paletteShadow) return false;
   const box = paletteShadow.getElementById("box");
@@ -10178,6 +10657,18 @@ function showPaletteConfirmation({ title, steps, note, confirmLabel, onConfirm, 
   heading.id = "palette-confirm-title";
   heading.textContent = title;
   panel.appendChild(heading);
+  if (note) {
+    const noteEl = document.createElement("p");
+    noteEl.className = "confirm-note";
+    noteEl.textContent = note;
+    panel.appendChild(noteEl);
+  }
+  if (lead) {
+    const leadEl = document.createElement("p");
+    leadEl.className = "confirm-lead";
+    leadEl.textContent = lead;
+    panel.appendChild(leadEl);
+  }
   if (steps && steps.length) {
     const list = document.createElement("ol");
     steps.forEach((step) => {
@@ -10186,12 +10677,6 @@ function showPaletteConfirmation({ title, steps, note, confirmLabel, onConfirm, 
       list.appendChild(item);
     });
     panel.appendChild(list);
-  }
-  if (note) {
-    const noteEl = document.createElement("p");
-    noteEl.className = "confirm-note";
-    noteEl.textContent = note;
-    panel.appendChild(noteEl);
   }
   const actions = document.createElement("div");
   actions.className = "confirm-actions";
@@ -10246,7 +10731,7 @@ function returnPaletteFocusToInput() {
  * under it before anyone needs to know it.
  */
 const PREFILL_SOURCE_HINT_OTHERS =
-  "Lists the instances open in this browser. To add one, open it in a tab, sign in, then reopen Variable Prefill.";
+  "Another instance appears here once it is open in a tab and signed in. Reopen Variable Prefill to see it.";
 const PREFILL_SOURCE_HINT_NONE =
   "To copy from another instance, open it in a tab and sign in, then reopen Variable Prefill.";
 
@@ -10512,7 +10997,7 @@ function openPalette() {
         </div>
         <div id="results" role="listbox" aria-label="Available commands"></div>
         <button id="favorite-command" type="button" aria-pressed="false" hidden>☆</button>
-        <div id="toast"></div>
+        <div id="toast" role="status"></div>
         <div id="palette-footer">
           <span id="active-shortcut" hidden></span>
           <span id="result-count" aria-live="polite"></span>

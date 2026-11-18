@@ -183,6 +183,13 @@ function startDebugTimelineInPage() {
     return event;
   };
 
+  /* A finished GlideAjax call names the start it answers, by that event's id.
+   * Ids are unique within one recording in one frame, so the results panel can
+   * pair the two exactly: several calls to one Script Include in flight at
+   * once look identical by name, and their answers come back in any order. */
+  const startLink = (startEvent) =>
+    startEvent && typeof startEvent.id === "number" ? { startId: startEvent.id } : {};
+
   const installPatch = (target, methodName, makeWrapper) => {
     if (!target) return false;
     let original;
@@ -615,7 +622,7 @@ function startDebugTimelineInPage() {
         const stack = captureStack();
         const label =
           info.className + (info.method ? "." + info.method : "") + " started";
-        addEvent("glideajax", "start", label, info, stack);
+        const startEvent = addEvent("glideajax", "start", label, info, stack);
 
         if (typeof args[0] === "function") {
           const callback = args[0];
@@ -634,6 +641,7 @@ function startDebugTimelineInPage() {
                 {},
                 info,
                 { durationMs },
+                startLink(startEvent),
                 response ? { response } : {}
               ),
               ""
@@ -672,7 +680,7 @@ function startDebugTimelineInPage() {
         const info = glideAjaxInfo(this);
         const started = Date.now();
         const stack = captureStack();
-        addEvent(
+        const startEvent = addEvent(
           "glideajax",
           "start",
           info.className + (info.method ? "." + info.method : "") + " started",
@@ -697,6 +705,7 @@ function startDebugTimelineInPage() {
                 {},
                 info,
                 { durationMs },
+                startLink(startEvent),
                 response ? { response } : {}
               ),
               ""

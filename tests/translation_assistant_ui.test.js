@@ -35,6 +35,16 @@ const HOST_ID = "snh-translation-assistant-results";
 
 function createDom() {
   let activeElement = null;
+  /* As in a browser, removing the focused node, or anything around it, drops
+   * focus to nowhere; without this a removed button would "keep" focus. */
+  function dropFocusWithin(node) {
+    for (let current = activeElement; current; current = current.parentNode) {
+      if (current === node) {
+        activeElement = null;
+        return;
+      }
+    }
+  }
   /* The download anchor is removed from the shadow root immediately after it
    * is clicked, so what it was asked to save has to be recorded as it happens
    * or it cannot be inspected at all. */
@@ -67,7 +77,10 @@ function createDom() {
         .join("");
     }
     set textContent(value) {
-      this.children.forEach((child) => { child.parentNode = null; });
+      this.children.forEach((child) => {
+        dropFocusWithin(child);
+        child.parentNode = null;
+      });
       this.children = [];
       this._text = value == null ? "" : String(value);
     }
@@ -80,6 +93,7 @@ function createDom() {
       return node;
     }
     removeChild(node) {
+      dropFocusWithin(node);
       const index = this.children.indexOf(node);
       if (index >= 0) this.children.splice(index, 1);
       node.parentNode = null;
@@ -1761,4 +1775,131 @@ test("a message a fill wrote is named as a shared script message, not a catalog 
   assert.match(text,
     /One script message filled on this page is shared: publishing it changes that message for every script on this instance that uses the same message key\./);
   assert.doesNotMatch(text, /One translation filled on this page is shared/);
+});
+
+/* ------------------------------------------------------------------ *
+ * Screen readers: the body is not live. It is replaced whole at each phase,
+ * and a live body asked for all of it to be read again. One status line for
+ * the panel, never redrawn, says each phase's outcome once; the reply's own
+ * status line still says "Filling the page…" and what is wrong with a paste.
+ * ------------------------------------------------------------------ */
+
+const liveRegions = (root_) => findAll(root_, (node) => node.attributes && node.attributes["aria-live"]);
+const panelStatus = (root_) =>
+  findAll(root_, (node) => node.className === "sr-only" && node.attributes["role"] === "status")[0] || null;
+
+test("the body is not a live region; one status line, never redrawn, says each phase", async () => {
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Approver", fields: [field({ source: "Approver" })] }),
+  ];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût", Approver: "Approbateur" });
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1, 2]));
+  harness.ui.open({ fingerprint: "ta-test-1", context: {}, callbacks: harness.callbacks });
+  const shadow = harness.shadow();
+  const body = findAll(shadow, (node) => node.className === "body")[0];
+  assert.strictEqual(body.getAttribute("aria-live"), null, "the body is not live");
+  const status = panelStatus(shadow);
+  assert.ok(status, "the panel has a status line");
+  assert.strictEqual(status.attributes["aria-live"], "polite");
+  assert.strictEqual(status.textContent, "Reading this item…");
+
+  harness.ui.showDraft({ fingerprint: "ta-test-1", draft: draftFrom(content) });
+  assert.strictEqual(panelStatus(shadow), status, "the same node, never redrawn");
+  assert.strictEqual(status.textContent, "2 to translate.");
+  /* The panel's line and the reply's own; nothing else is live. */
+  assert.deepStrictEqual(liveRegions(shadow).map((node) => node.className), ["reply-status", "sr-only"]);
+
+  await pasteAndFill(harness, "{ \"reply\": true }");
+  assert.strictEqual(panelStatus(shadow), status);
+  assert.strictEqual(status.textContent, "Filled 2 fields.",
+    "the reply's status line went with the body, so the report is said here");
+  assert.deepStrictEqual(liveRegions(shadow).map((node) => node.className), ["reply-status", "sr-only"]);
+});
+
+test("an item with nothing to translate, a read error and a refused fill are each said", async () => {
+  const empty = load();
+  show(empty, draftFrom([element({ groupName: "Variable: Blank", fields: [field({ source: "" })] })]));
+  assert.strictEqual(panelStatus(empty.shadow()).textContent,
+    "Nothing to translate here. Every field is excluded for one of the reasons above.");
+
+  const failed = load();
+  failed.ui.open({ fingerprint: "ta-test-1", context: {}, callbacks: failed.callbacks });
+  failed.ui.showError({ fingerprint: "ta-test-1", message: "The example page could not be read." });
+  assert.strictEqual(panelStatus(failed.shadow()).textContent, "The example page could not be read.");
+
+  const refused = load();
+  withFill(refused, { ok: false, code: "unparseable", message: "That is not JSON: bad token", excerpt: "Sure!" });
+  show(refused, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  await pasteAndFill(refused, "Sure! {");
+  assert.strictEqual(panelStatus(refused.shadow()).textContent, "That is not JSON: bad token");
+
+  const unsure = load();
+  withFill(unsure, { ok: false, indeterminate: true, message: "It may still be filling." });
+  show(unsure, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  await pasteAndFill(unsure, "reply text");
+  assert.strictEqual(panelStatus(unsure.shadow()).textContent, "It may still be filling.");
+});
+
+test("what a copy or download did is said in the panel, since the palette's toast is gone", async () => {
+  const harness = load();
+  show(harness, draftFrom([element({ fields: [field({ source: "Cost centre" })] })]));
+  press(buttonNamed(harness.shadow(), "Copy prompt + JSON instead"));
+  await flush();
+  assert.strictEqual(panelStatus(harness.shadow()).textContent,
+    "Prompt and JSON copied. Paste it into your AI tool.");
+  press(buttonNamed(harness.shadow(), "Download JSON"));
+  assert.strictEqual(panelStatus(harness.shadow()).textContent,
+    "Draft downloaded. Upload it to your AI tool.");
+  assert.strictEqual(harness.notices.length, 2, "the callback still hears both");
+});
+
+test("Fill from a different reply puts focus on the empty reply box, not the page", async () => {
+  const content = [
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+  ];
+  const evaluation = evaluationFor(content, { "Cost centre": "Centre de coût" });
+  const harness = load();
+  withFill(harness, filledAnswer(evaluation, [1]));
+  show(harness, draftFrom(content));
+  await pasteAndFill(harness, "{ \"reply\": true }");
+
+  const again = buttonNamed(harness.shadow(), "Fill from a different reply");
+  again.focus();
+  press(again);
+  assert.strictEqual(buttonNamed(harness.shadow(), "Fill from a different reply"), null, "the button has gone");
+  const box = findAll(harness.shadow(), (node) => node.tagName === "TEXTAREA")[0];
+  assert.ok(box, "the reply step is back");
+  assert.strictEqual(box.value, "", "with an empty box");
+  assert.strictEqual(harness.sandbox.document.activeElement, box, "and focus is in it");
+});
+
+test("each show/hide toggle names the part it opens", () => {
+  const harness = load();
+  show(harness, mixedDraft());
+  const shadow = harness.shadow();
+  const byId = (id) => findAll(shadow, (node) => node.id === id);
+
+  const toggle = bucketToggle(shadow, "already translated");
+  const detail = detailOf(toggle);
+  assert.ok(detail.id, "the list it opens has an id");
+  assert.strictEqual(toggle.getAttribute("aria-controls"), detail.id);
+  assert.deepStrictEqual(byId(detail.id), [detail], "one element with that id");
+
+  const sharedHarness = load();
+  show(sharedHarness, draftFrom([
+    element({ groupName: "Variable: Cost centre", fields: [field({ source: "Cost centre" })] }),
+    element({ groupName: "Variable: Department", fields: [field({ source: "Department" })] }),
+  ]));
+  const list = findAll(sharedHarness.shadow(), (node) => node.className === "shared-list")[0];
+  const shared = buttonNamed(sharedHarness.shadow(), "Show all 2");
+  assert.ok(list.id);
+  assert.strictEqual(shared.getAttribute("aria-controls"), list.id);
+
+  /* Every toggle in the panel names a different part. */
+  const ids = findAll(shadow, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-controls"))
+    .map((node) => node.getAttribute("aria-controls"));
+  assert.strictEqual(new Set(ids).size, ids.length);
+  ids.forEach((id) => assert.strictEqual(byId(id).length, 1, id));
 });

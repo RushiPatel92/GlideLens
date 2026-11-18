@@ -14,9 +14,16 @@
   let lastResult = null;
   let activeFilter = "all";
   let searchQuery = "";
-  let showLowSignal = false;
-  let lowSignalReasons = new WeakMap();
-  let lowSignalCount = 0;
+  /* The events the panel draws and copies: the trace minus the rows that
+   * would only add noise (see dropNoise). */
+  let shownEvents = [];
+  /* Rows the user opened, and stacks they showed, keyed on the event object
+   * itself, so a filter or search redraw keeps them as they were. */
+  let openEvents = new WeakSet();
+  let shownStacks = new WeakSet();
+  /* A finished GlideAjax call and the start it answers, both ways round. */
+  let startOf = new WeakMap();
+  let answerOf = new WeakMap();
 
   const CATEGORY_LABELS = {
     system: "System",
@@ -68,7 +75,7 @@
     }
     .heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:#85859f;line-height:1.45;max-width:90ch}
+    .subtitle{font-size:12px;color:#9a9ab3;line-height:1.45;max-width:90ch}
     .best-effort{
       display:inline-flex;margin-left:7px;padding:3px 7px;border-radius:999px;
       color:#c7b9ff;background:#302b50;border:1px solid #4a4271;
@@ -76,7 +83,7 @@
       vertical-align:2px;
     }
     .close{
-      border:0;background:transparent;color:#85859f;padding:3px 5px;
+      border:0;background:transparent;color:#9a9ab3;padding:3px 5px;
       font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
     }
     .close:hover{color:#fff;background:#2d2d48}
@@ -98,8 +105,6 @@
       border-color:var(--teal);color:#eafffb;
       box-shadow:0 0 0 1px color-mix(in srgb, var(--teal) 40%, transparent);
     }
-    .filter.low-signal-toggle{color:#b0b0c6;border-color:#43435e;background:#2c2c42}
-    .filter.low-signal-toggle.active{color:#d4d4e6;border-color:#5b5b7a;background:#38384f}
     .search{
       margin-left:auto;width:230px;max-width:38vw;background:#313150;
       border:1px solid #575780;border-radius:6px;color:#f0f0fa;
@@ -107,15 +112,20 @@
     }
     .search:focus{border-color:var(--teal);background:#37375a}
     .search::placeholder{color:#a4a4be}
-    .events{flex:1;overflow:auto;padding:6px 0}
+    .events{flex:1;overflow:auto;padding:6px 0;container:events / inline-size}
     .event{border-bottom:1px solid #292941}
+    /* Time | category | what happened | duration | caret. */
     .event-main{
-      width:100%;display:grid;grid-template-columns:76px 82px 1fr auto;
+      width:100%;display:grid;grid-template-columns:76px 82px minmax(0,1fr) 72px 16px;
       align-items:center;gap:10px;padding:10px 18px;background:transparent;
       color:#d7d7e8;border:0;text-align:left;cursor:pointer;
     }
     .event-main:hover{background:#25253d}
-    .time{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#76768f}
+    .event-main:focus-visible{outline:2px solid var(--teal);outline-offset:-2px}
+    .time{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9a9ab3}
+    .duration{text-align:right;font-size:12px;color:#dedeee;font-variant-numeric:tabular-nums;white-space:nowrap}
+    /* 13px: at 11px the glyph reads as a dot and the state is lost. */
+    .caret{color:#9a9ab3;font-size:13px;line-height:1;text-align:center}
     .category{
       justify-self:start;padding:3px 6px;border-radius:4px;font-size:10px;font-weight:600;
       color:#cdd0f2;background:#33345a;border:1px solid #4a4d78;
@@ -135,37 +145,52 @@
     .category.field{color:#c4efce;background:#284037;border-color:#3f6555}
     .event-summary{min-width:0;display:flex;align-items:center;gap:8px;font-size:12px}
     .event-summary-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .glideajax-status{
-      flex:0 0 auto;padding:2px 6px;border-radius:4px;font-size:9px;
-      font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+    .event.open .event-summary-text{font-weight:650;color:#f0f0fa}
+    /* An opened row: facts first; a finished GlideAjax call as a Request card
+       and a Response card, in the Update Set Lens card form. */
+    .event-details{margin:0 18px 12px 196px;font-size:12px;line-height:1.45;color:#dedeee}
+    .event-details[hidden]{display:none}
+    .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin:6px 0 0;
+      font-size:12px;line-height:1.45}
+    .facts:first-child{margin-top:0}
+    .facts dt{color:#9a9ab3;font-size:11px;padding-top:1px}
+    .facts dd{margin:0;color:#dedeee;overflow-wrap:anywhere;min-width:0}
+    .mono,.facts dd.mono,.facts dt.mono{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .facts dt.mono{color:#b9b9cf}
+    .none{color:#9a9ab3}
+    .redacted{color:#e2c48a;font-style:italic}
+    .sides{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin-top:10px}
+    .side{background:#24243c;border:1px solid #33334f;border-left:3px solid #5b5b86;border-radius:8px;
+      padding:8px 11px 9px;min-width:0}
+    .side.t-amber{border-left-color:#e0b25a}
+    .side-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:7px;margin:0 0 6px;padding-bottom:5px;
+      border-bottom:1px solid #33334f;font-size:13px;font-weight:400;color:#f5f5ff}
+    .side-head b{font-weight:650}
+    .role{font-size:10.5px;color:#9a9ab3;letter-spacing:.05em;text-transform:uppercase}
+    .why{margin:0 0 6px;color:#f0d9a6}
+    .sub-head{margin:9px 0 3px;color:#9a9ab3;font-size:11px}
+    .json{margin:4px 0 0;padding:8px 10px;background:#171725;border:1px solid #2d2d47;border-radius:6px;
+      color:#c9c9dc;font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
+      white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
+    .facts dd .json{margin-top:0}
+    .link{border:0;background:transparent;padding:0;margin:8px 0 0;cursor:pointer;color:#8fd6cf;
+      font-size:11.5px;text-decoration:underline;text-underline-offset:2px}
+    .link:hover{color:#d9fbf7}
+    .link:focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:3px}
+    .stack[hidden]{display:none}
+    /* Narrow: the cards stack by themselves; the duration column goes, since
+       the Response card and the fact list say it. */
+    @container events (max-width:699px){
+      .event-main{grid-template-columns:62px 70px minmax(0,1fr) 16px;padding:10px 12px}
+      .duration{display:none}
+      .event-details{margin:0 12px 10px}
     }
-    .glideajax-status.started{
-      color:#bfe1ff;background:#26374d;border:1px solid #3d6488;
-    }
-    .glideajax-status.completed{
-      color:#c4efce;background:#284037;border:1px solid #3f6555;
-    }
-    .event.low-signal .event-main{color:#9999ad}
-    .event.low-signal .category{opacity:.62}
-    .low-signal-badge{
-      flex:0 0 auto;padding:2px 6px;border-radius:999px;font-size:9px;
-      color:#85859a;background:#242437;border:1px solid #38384d;
-      letter-spacing:.02em;
-    }
-    .expand{color:#6f6f86;font-size:11px}
-    .event-details{
-      display:none;margin:0 18px 12px 186px;padding:10px 12px;
-      background:#171725;border:1px solid #2d2d47;border-radius:6px;
-      color:#a9a9bf;font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
-      white-space:pre-wrap;overflow-wrap:anywhere;
-    }
-    .event.open .event-details{display:block}
-    .empty{padding:48px 20px;text-align:center;color:#74748b;font-size:13px;max-width:90ch;margin:0 auto}
+    .empty{padding:48px 20px;text-align:center;color:#9a9ab3;font-size:13px;max-width:90ch;margin:0 auto}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
-    .toolbar-note{font-size:11px;color:#67677e;flex:1;max-width:90ch;margin-right:auto}
+    .toolbar-note{font-size:11px;color:#9a9ab3;flex:1;max-width:90ch;margin-right:auto}
     .toolbar-note.caution{color:#e8b4c8}
     .toolbar .primary.armed{
       background:color-mix(in srgb, var(--pink) 96%, #3a2740);
@@ -182,8 +207,6 @@
       .header{padding:14px}.summary{padding:9px 14px;gap:10px;flex-wrap:wrap}
       .warning{width:100%;margin-left:0}.controls{align-items:stretch;flex-direction:column}
       .search{width:100%;max-width:none;margin-left:0}
-      .event-main{grid-template-columns:62px 70px 1fr;padding:10px 12px}
-      .expand{display:none}.event-details{margin:0 12px 10px}
     }
   `;
 
@@ -229,6 +252,8 @@
     return "+" + (value / 1000).toFixed(3) + "s";
   };
 
+  /* A finished call shows its start's call stack, so a search for the script
+   * that sent it finds the finished call too. */
   const eventSearchText = (event) =>
     [
       event.category,
@@ -237,70 +262,382 @@
       event.frameLabel,
       JSON.stringify(event.details || {}),
       event.stack,
+      startOf.has(event) ? startOf.get(event).stack : "",
     ]
       .join(" ")
       .toLowerCase();
 
-  const classifyLowSignalEvents = (events) => {
-    const repeatableMethods = new Set([
-      "hideFieldMsg",
-      "setMandatory",
-      "setVisible",
-      "setDisplay",
-      "setReadOnly",
-      "setDisabled",
-    ]);
-    const latestCalls = new Map();
-    lowSignalReasons = new WeakMap();
-    lowSignalCount = 0;
+  const isGlideAjaxStart = (event) =>
+    event.category === "glideajax" && event.action === "start";
+  const isGlideAjaxComplete = (event) =>
+    event.category === "glideajax" && event.action === "complete";
 
+  /* One row per GlideAjax call. A finished call names the start it answers
+   * (details.startId: the recorder's event id, unique within one frame's
+   * recording), so the pair is exact even when several calls to one Script
+   * Include are in flight and answer out of order — matching by name could
+   * not tell them apart. A trace from a recorder without the link pairs
+   * nothing, and every start keeps its own row as before. */
+  const pairGlideAjaxCalls = (events) => {
+    startOf = new WeakMap();
+    answerOf = new WeakMap();
+    const starts = new Map();
     events.forEach((event) => {
-      const details = event.details || {};
-      let reason = details.noValueChange ? "No value change" : "";
+      if (isGlideAjaxStart(event)) starts.set(event.frameId + "|" + event.id, event);
+    });
+    events.forEach((event) => {
+      const startId = isGlideAjaxComplete(event) && event.details ? event.details.startId : undefined;
+      if (typeof startId !== "number") return;
+      const start = starts.get(event.frameId + "|" + startId);
+      if (!start || answerOf.has(start)) return;
+      startOf.set(event, start);
+      answerOf.set(start, event);
+    });
+  };
 
-      if (event.category === "g_form" && repeatableMethods.has(event.action)) {
-        const key = [
-          event.frameId,
-          event.action,
-          details.field || "",
-        ].join("|");
+  /* Rows that tell someone debugging the form nothing are left out of the
+   * panel and the copied trace altogether, with no toggle to bring them back
+   * (owner's call: a "show hidden rows" switch only confused). Three kinds:
+   *  - a setValue that set the value the field already had;
+   *  - the same show/hide/mandatory/read-only call, with the same arguments,
+   *    again within 5 seconds of the last one (UI policies re-fire these);
+   *    the first one stays;
+   *  - the start of a GlideAjax call whose finished row is in the trace: that
+   *    row says when it was sent and carries the start's call stack.
+   * A start with no answer stays: it is the call worth looking at. */
+  const REPEATABLE_METHODS = new Set([
+    "hideFieldMsg",
+    "setMandatory",
+    "setVisible",
+    "setDisplay",
+    "setReadOnly",
+    "setDisabled",
+  ]);
+
+  const dropNoise = (events) => {
+    const latestCalls = new Map();
+    return events.filter((event) => {
+      const details = event.details || {};
+      let noise = Boolean(details.noValueChange) || answerOf.has(event);
+
+      if (event.category === "g_form" && REPEATABLE_METHODS.has(event.action)) {
+        const key = [event.frameId, event.action, details.field || ""].join("|");
         const signature = JSON.stringify(details.arguments || []);
         const previous = latestCalls.get(key);
-        if (
-          !reason &&
-          previous &&
-          previous.signature === signature &&
-          event.time - previous.time <= 5000
-        ) {
-          reason = "Repeated call";
+        if (previous && previous.signature === signature && event.time - previous.time <= 5000) {
+          noise = true;
         }
         latestCalls.set(key, { signature, time: event.time });
       }
-
-      if (reason) {
-        lowSignalReasons.set(event, reason);
-        lowSignalCount += 1;
-      }
+      return !noise;
     });
   };
 
-  const filteredEvents = () => {
-    const events = (lastResult && lastResult.events) || [];
-    return events.filter((event) => {
-      if (!showLowSignal && lowSignalReasons.has(event)) return false;
+  const filteredEvents = () =>
+    shownEvents.filter((event) => {
       if (activeFilter !== "all" && event.category !== activeFilter) return false;
       return !searchQuery || eventSearchText(event).includes(searchQuery);
     });
+
+  /* ------------------------------------------------------------------ *
+   * The opened row
+   *
+   * Instance data goes in through textContent only. Keys and their shapes
+   * are the recorder's (debug_timeline_main.js) and the worker's merge
+   * (background.js, the Debug Timeline stop handler); a key not listed here
+   * is never dropped: it is shown under its own name, or in "Other details".
+   * ------------------------------------------------------------------ */
+
+  const make = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = String(text);
+    return node;
   };
 
-  const detailText = (event) => {
-    const parts = [];
-    if (event.frameLabel) parts.push("Frame: " + event.frameLabel);
-    if (event.frameUrl) parts.push("URL: " + event.frameUrl);
+  /* The recorder's own marker. It writes it when the field, parameter or
+   * answer key NAME matches its secret pattern (safeValue,
+   * sanitizeGlideAjaxResponseValue), and for a password-type input (fieldValue),
+   * so "the name suggests a secret" is said only where the name is the reason. */
+  const REDACTED = "[REDACTED]";
+
+  /* Friendly labels for keys the recorder writes, by where it writes them. */
+  const KEY_LABELS = {
+    // g_form calls and their errors: patchGForm.
+    field: "Field",
+    arguments: "Arguments",
+    oldValue: "Value before",
+    noValueChange: "No value change",
+    // Native field events: recordNativeFieldEvent.
+    value: "Value",
+    tag: "Element",
+    type: "Input type",
+    trusted: "Trusted event",
+    // Page errors: onError.
+    file: "File",
+    line: "Line",
+    column: "Column",
+    // GlideAjax: glideAjaxInfo, and durationMs on completes and errors.
+    className: "Script Include",
+    method: "Method",
+    params: "Parameters",
+    durationMs: "Took",
+    // Recording start and stop: the worker's merge.
+    frameCount: "Frames",
+  };
+
+  const MONO_KEYS = new Set(["field", "arguments", "oldValue", "value", "file", "params"]);
+
+  const isPlainObject = (value) =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+
+  const redactedNode = (byName) =>
+    make("span", "redacted", byName ? "redacted — the name suggests a secret" : "redacted");
+
+  const jsonBlock = (value) => make("pre", "json", JSON.stringify(value, null, 2));
+
+  /* One value, as words. A primitive array reads as a list; anything nested
+   * is a small JSON block. */
+  const fillValue = (dd, value, options) => {
+    const opts = options || {};
+    if (value === REDACTED) {
+      dd.appendChild(redactedNode(opts.byName));
+      return;
+    }
+    if (value === undefined || value === null || value === "") {
+      dd.appendChild(make("span", "none", value === null ? "null" : "empty"));
+      return;
+    }
+    if (typeof value === "boolean") {
+      dd.textContent = value ? "Yes" : "No";
+      return;
+    }
+    if (typeof value === "number" || typeof value === "string") {
+      dd.textContent = opts.suffix ? value + opts.suffix : String(value);
+      return;
+    }
+    if (Array.isArray(value) && value.every((item) => item === null || typeof item !== "object")) {
+      if (!value.length) {
+        dd.appendChild(make("span", "none", "none"));
+        return;
+      }
+      value.forEach((item, index) => {
+        if (index) dd.appendChild(document.createTextNode(", "));
+        if (item === REDACTED) dd.appendChild(redactedNode(opts.byName));
+        else dd.appendChild(document.createTextNode(JSON.stringify(item)));
+      });
+      return;
+    }
+    dd.appendChild(jsonBlock(value));
+  };
+
+  const addFact = (list, label, value, options) => {
+    const opts = options || {};
+    list.appendChild(make("dt", opts.monoLabel ? "mono" : null, label));
+    const dd = make("dd", opts.mono ? "mono" : null);
+    fillValue(dd, value, opts);
+    list.appendChild(dd);
+    return dd;
+  };
+
+  /* Parameters: each name is the label, each value the value, both
+   * monospace. The recorder redacts a parameter by its name. */
+  const paramFacts = (params) => {
+    const list = make("dl", "facts");
+    Object.keys(params).forEach((name) => {
+      addFact(list, name, params[name], { mono: true, monoLabel: true, byName: true });
+    });
+    return list;
+  };
+
+  const frameFacts = (event) => {
+    const list = make("dl", "facts");
+    if (event.frameLabel) addFact(list, "Frame", event.frameLabel);
+    if (event.frameUrl) addFact(list, "Page", event.frameUrl, { mono: true });
+    return list;
+  };
+
+  /* A field event's value is redacted for a secret-looking name OR a
+   * password input, so its reason is not given; everything else the
+   * recorder redacts by name. */
+  const redactedByName = (event, key) => !(event.category === "field" && key === "value");
+
+  const otherDetails = (container, leftover) => {
+    if (!Object.keys(leftover).length) return;
+    container.appendChild(make("div", "sub-head", "Other details"));
+    container.appendChild(jsonBlock(leftover));
+  };
+
+  /* Any other event, and a GlideAjax start: one fact list. */
+  const buildFactList = (event, container) => {
     const details = event.details || {};
-    if (Object.keys(details).length) parts.push(JSON.stringify(details, null, 2));
-    if (event.stack) parts.push("Stack (best effort):\n" + event.stack);
-    return parts.join("\n\n") || "No additional details.";
+    const list = frameFacts(event);
+    let nested = null;
+    Object.keys(details).forEach((key) => {
+      const value = details[key];
+      if (key === "params" && isPlainObject(value)) {
+        nested = value;
+        return;
+      }
+      addFact(list, KEY_LABELS[key] || key, value, {
+        mono: MONO_KEYS.has(key),
+        monoLabel: !KEY_LABELS[key],
+        byName: redactedByName(event, key),
+        suffix: key === "durationMs" && typeof value === "number" ? " ms" : "",
+      });
+    });
+    if (list.children.length) container.appendChild(list);
+    if (nested) {
+      container.appendChild(make("div", "sub-head", "Parameters"));
+      container.appendChild(Object.keys(nested).length
+        ? paramFacts(nested)
+        : make("div", "none", "No parameters were added."));
+    }
+  };
+
+  const ANSWER_FORMATS = { json: "JSON", text: "Text", oversized: "Too large to read" };
+
+  const answerWords = (response) => {
+    if (typeof response.answerLength !== "number") return "None recorded";
+    const parts = [];
+    if (response.format && ANSWER_FORMATS[response.format]) parts.push(ANSWER_FORMATS[response.format]);
+    else if (response.format) parts.push(String(response.format));
+    parts.push(response.answerLength.toLocaleString("en-US") +
+      (response.answerLength === 1 ? " character" : " characters"));
+    let words = parts.join(", ");
+    if (response.truncated) words += "; long values were shortened in the record";
+    return words;
+  };
+
+  /* Why a body was not kept, from the recorder's own reasons
+   * (glideAjaxResponseInfo). Empty when it was. */
+  const notKeptReason = (response) => {
+    if (response.format === "oversized") {
+      return "The answer was over 200,000 characters, so it was not read or kept. DevTools' Network tab has it in full.";
+    }
+    if (response.bodyRetained === false && response.format === "text") {
+      return "The answer is not JSON, so it was not kept: there are no keys to redact it by safely. DevTools' Network tab has it in full.";
+    }
+    if (response.bodyRetained === false) {
+      return "The answer was not kept. DevTools' Network tab has it in full.";
+    }
+    return "";
+  };
+
+  const sideCard = (name, role) => {
+    const card = make("section", "side");
+    const head = make("h3", "side-head");
+    head.append(make("b", null, name), make("span", "role", role));
+    card.appendChild(head);
+    return card;
+  };
+
+  /* startId is the recorder's link to the start, not a fact about the call:
+   * it becomes "Sent" and the call stack, or nothing when that start is not
+   * in the trace (the per-frame event cap drops the oldest). */
+  const PLACED_DETAILS = new Set(["className", "method", "params", "durationMs", "response", "startId"]);
+  const PLACED_RESPONSE = new Set(["status", "answerLength", "truncated", "answer", "format", "bodyRetained"]);
+
+  /* A finished GlideAjax call: what the form asked, and what came back. */
+  const buildGlideAjaxCards = (event, container) => {
+    const details = event.details || {};
+    const frame = frameFacts(event);
+    if (frame.children.length) container.appendChild(frame);
+
+    const sides = make("div", "sides");
+    const request = sideCard("Request", "what the form asked");
+    const asked = make("dl", "facts");
+    addFact(asked, "Script Include", details.className, { mono: true });
+    addFact(asked, "Method", details.method, { mono: true });
+    const start = startOf.get(event);
+    if (start) addFact(asked, "Sent", formatElapsed(start.elapsedMs));
+    request.appendChild(asked);
+    request.appendChild(make("div", "sub-head", "Parameters"));
+    const params = isPlainObject(details.params) ? details.params : {};
+    request.appendChild(Object.keys(params).length
+      ? paramFacts(params)
+      : make("div", "none", "No parameters were added."));
+
+    const response = isPlainObject(details.response) ? details.response : {};
+    const answer = sideCard("Response", "what came back");
+    const why = notKeptReason(response);
+    if (why) {
+      answer.classList.add("t-amber");
+      answer.appendChild(make("p", "why", why));
+    }
+    const came = make("dl", "facts");
+    if (response.status !== undefined) {
+      addFact(came, "Status", response.status);
+    } else {
+      // getXMLAnswer hands the callback a string, which carries no status.
+      came.append(make("dt", null, "Status"), make("dd", "none", "Not reported"));
+    }
+    if (typeof details.durationMs === "number") addFact(came, "Took", details.durationMs, { suffix: " ms" });
+    else if (details.durationMs !== undefined) addFact(came, "Took", details.durationMs);
+    addFact(came, "Answer", answerWords(response));
+    answer.appendChild(came);
+    if (Object.prototype.hasOwnProperty.call(response, "answer")) {
+      answer.appendChild(make("div", "sub-head", "Decoded answer"));
+      answer.appendChild(response.format === "json" || typeof response.answer !== "string"
+        ? jsonBlock(response.answer)
+        : make("pre", "json", response.answer));
+    }
+    sides.append(request, answer);
+    container.appendChild(sides);
+
+    /* Nothing is dropped: whatever the cards do not place is shown as it is. */
+    const leftover = {};
+    Object.keys(details).forEach((key) => {
+      if (!PLACED_DETAILS.has(key)) leftover[key] = details[key];
+    });
+    if (details.params !== undefined && !isPlainObject(details.params)) leftover.params = details.params;
+    const extraResponse = {};
+    if (details.response !== undefined && !isPlainObject(details.response)) {
+      leftover.response = details.response;
+    } else {
+      Object.keys(response).forEach((key) => {
+        if (!PLACED_RESPONSE.has(key)) extraResponse[key] = response[key];
+      });
+      if (Object.keys(extraResponse).length) leftover.response = extraResponse;
+    }
+    otherDetails(container, leftover);
+  };
+
+  /* The call stack, behind its own toggle. A finished asynchronous call was
+   * answered in a callback, whose stack says nothing, so it shows the stack
+   * its start captured: where the call was sent from. */
+  const buildStack = (event, container, id) => {
+    const start = startOf.get(event);
+    const text = event.stack || (start && start.stack) || "";
+    if (!text) return;
+    const toggle = make("button", "link");
+    toggle.type = "button";
+    const stack = make("pre", "json stack", text);
+    stack.id = id;
+    toggle.setAttribute("aria-controls", id);
+    const paint = () => {
+      const shown = shownStacks.has(event);
+      toggle.textContent = shown ? "Hide the call stack" : "Show the call stack (best effort)";
+      toggle.setAttribute("aria-expanded", shown ? "true" : "false");
+      stack.hidden = !shown;
+    };
+    toggle.addEventListener("click", () => {
+      if (shownStacks.has(event)) shownStacks.delete(event);
+      else shownStacks.add(event);
+      paint();
+    });
+    paint();
+    container.append(toggle, stack);
+  };
+
+  const buildDetails = (event, container, index) => {
+    const details = event.details || {};
+    if (isGlideAjaxComplete(event)) buildGlideAjaxCards(event, container);
+    else buildFactList(event, container);
+    buildStack(event, container, "snh-dt-stack-" + index);
+    if (!container.children.length && !Object.keys(details).length) {
+      container.appendChild(make("div", "none", "No additional details."));
+    }
   };
 
   const renderEvents = () => {
@@ -318,15 +655,23 @@
       return;
     }
 
+    /* Each event's place in the whole result: stable across filters, so the
+     * ids a control points at do not change under it. One map per redraw
+     * rather than a linear search per row. */
+    const positions = new Map();
+    ((lastResult && lastResult.events) || []).forEach((event, position) => {
+      positions.set(event, position);
+    });
     events.forEach((event) => {
+      const index = positions.get(event);
       const row = document.createElement("div");
       row.className = "event";
-      const lowSignalReason = lowSignalReasons.get(event) || "";
-      if (lowSignalReason) row.classList.add("low-signal");
 
       const main = document.createElement("button");
       main.type = "button";
       main.className = "event-main";
+      const detailId = "snh-dt-details-" + index;
+      main.setAttribute("aria-controls", detailId);
 
       const time = document.createElement("span");
       time.className = "time";
@@ -338,49 +683,57 @@
 
       const summary = document.createElement("span");
       summary.className = "event-summary";
-      if (
-        event.category === "glideajax" &&
-        (event.action === "start" || event.action === "complete")
-      ) {
-        const status = document.createElement("span");
-        status.className =
-          "glideajax-status " +
-          (event.action === "start" ? "started" : "completed");
-        status.textContent = event.action === "start" ? "Started" : "Completed";
-        summary.appendChild(status);
-      }
       const summaryText = document.createElement("span");
       summaryText.className = "event-summary-text";
       summaryText.textContent = event.summary || event.action || "Timeline event";
       summary.title = summaryText.textContent;
       summary.appendChild(summaryText);
-      if (lowSignalReason) {
-        const badge = document.createElement("span");
-        badge.className = "low-signal-badge";
-        badge.textContent = lowSignalReason;
-        summary.appendChild(badge);
-      }
 
-      const expand = document.createElement("span");
-      expand.className = "expand";
-      expand.textContent = "Details";
+      /* From the recorder's own number, never parsed out of the sentence. */
+      const durationMs = event.details && event.details.durationMs;
+      const duration = make("span", "duration",
+        typeof durationMs === "number" ? durationMs + " ms" : "");
 
-      main.append(time, category, summary, expand);
+      const caret = make("span", "caret");
+      caret.setAttribute("aria-hidden", "true");
 
-      const details = document.createElement("pre");
-      details.className = "event-details";
-      details.textContent = detailText(event);
+      main.append(time, category, summary, duration, caret);
 
+      /* Built the first time the row is painted open, not for every event on
+       * every redraw: a trace holds up to 1,000 events per frame and the list
+       * is redrawn on each keystroke in the search box. The empty container
+       * keeps its id, so aria-controls always has a target. A row closed again
+       * keeps what it built. */
+      const details = make("div", "event-details");
+      details.id = detailId;
+      let built = false;
+
+      const paint = () => {
+        const open = openEvents.has(event);
+        if (open && !built) {
+          buildDetails(event, details, index);
+          built = true;
+        }
+        row.classList.toggle("open", open);
+        main.setAttribute("aria-expanded", open ? "true" : "false");
+        caret.textContent = open ? "▾" : "▸";
+        details.hidden = !open;
+      };
       main.addEventListener("click", () => {
-        row.classList.toggle("open");
-        expand.textContent = row.classList.contains("open") ? "Hide" : "Details";
+        if (openEvents.has(event)) openEvents.delete(event);
+        else openEvents.add(event);
+        paint();
       });
+      paint();
 
       row.append(main, details);
       list.appendChild(row);
     });
   };
 
+  /* The copy holds what the panel shows, in the same words: a finished call
+   * gets its start's "Sent" time and call stack, since its start is left out.
+   * startId is the recorder's link, not a fact, so it is not printed. */
   const traceAsText = () => {
     const result = lastResult || { events: [] };
     const lines = [
@@ -389,11 +742,12 @@
       "Started: " + (result.startedAt ? new Date(result.startedAt).toISOString() : "unknown"),
       "Stopped: " + (result.stoppedAt ? new Date(result.stoppedAt).toISOString() : "unknown"),
       "Frames: " + String(result.frameCount || 0),
-      "Events: " + String((result.events || []).length),
+      "Events: " + String(shownEvents.length),
       "",
     ];
 
-    (result.events || []).forEach((event) => {
+    shownEvents.forEach((event) => {
+      const start = startOf.get(event);
       lines.push(
         formatElapsed(event.elapsedMs) +
           " [" +
@@ -402,15 +756,16 @@
           (event.summary || event.action || "")
       );
       if (event.frameLabel) lines.push("  Frame: " + event.frameLabel);
-      if (lowSignalReasons.has(event)) {
-        lines.push("  Signal: " + lowSignalReasons.get(event));
+      if (start) lines.push("  Sent: " + formatElapsed(start.elapsedMs));
+      const details = Object.assign({}, event.details || {});
+      delete details.startId;
+      if (Object.keys(details).length) {
+        lines.push("  Details: " + JSON.stringify(details));
       }
-      if (event.details && Object.keys(event.details).length) {
-        lines.push("  Details: " + JSON.stringify(event.details));
-      }
-      if (event.stack) {
+      const stack = event.stack || (start && start.stack) || "";
+      if (stack) {
         lines.push(
-          event.stack
+          stack
             .split("\n")
             .map((line) => "  " + line)
             .join("\n")
@@ -455,8 +810,10 @@
     lastResult = result;
     activeFilter = "all";
     searchQuery = "";
-    showLowSignal = false;
-    classifyLowSignalEvents(result.events || []);
+    openEvents = new WeakSet();
+    shownStacks = new WeakSet();
+    pairGlideAjaxCalls(result.events || []);
+    shownEvents = dropNoise(result.events || []);
 
     resultsHost = document.createElement("div");
     resultsHost.id = "snh-debug-timeline-results";
@@ -481,12 +838,11 @@
           </div>
           <div class="controls">
             <div class="filters" aria-label="Timeline filters">
-              <button class="filter active" type="button" data-filter="all">All</button>
-              <button class="filter" type="button" data-filter="g_form">g_form</button>
-              <button class="filter" type="button" data-filter="field">Fields</button>
-              <button class="filter" type="button" data-filter="glideajax">GlideAjax</button>
-              <button class="filter" type="button" data-filter="error">Errors</button>
-              <button class="filter low-signal-toggle" type="button" data-action="toggle-low-signal" aria-pressed="false">Show low-signal (${lowSignalCount})</button>
+              <button class="filter active" type="button" data-filter="all" aria-pressed="true">All</button>
+              <button class="filter" type="button" data-filter="g_form" aria-pressed="false">g_form</button>
+              <button class="filter" type="button" data-filter="field" aria-pressed="false">Fields</button>
+              <button class="filter" type="button" data-filter="glideajax" aria-pressed="false">GlideAjax</button>
+              <button class="filter" type="button" data-filter="error" aria-pressed="false">Errors</button>
             </div>
             <input class="search" type="search" placeholder="Search events, fields, stacks…" aria-label="Search timeline" />
           </div>
@@ -503,7 +859,7 @@
     const eventsCount = resultsShadow.querySelector("[data-count='events']");
     const framesCount = resultsShadow.querySelector("[data-count='frames']");
     const durationCount = resultsShadow.querySelector("[data-count='duration']");
-    if (eventsCount) eventsCount.textContent = String((result.events || []).length);
+    if (eventsCount) eventsCount.textContent = String(shownEvents.length);
     if (framesCount) framesCount.textContent = String(result.frameCount || 0);
     if (durationCount) {
       durationCount.textContent =
@@ -516,23 +872,11 @@
         activeFilter = button.dataset.filter || "all";
         resultsShadow.querySelectorAll("[data-filter]").forEach((candidate) => {
           candidate.classList.toggle("active", candidate === button);
+          candidate.setAttribute("aria-pressed", candidate === button ? "true" : "false");
         });
         renderEvents();
       });
     });
-
-    const lowSignalToggle = resultsShadow.querySelector("[data-action='toggle-low-signal']");
-    if (lowSignalToggle) {
-      lowSignalToggle.hidden = lowSignalCount === 0;
-      lowSignalToggle.addEventListener("click", () => {
-        showLowSignal = !showLowSignal;
-        lowSignalToggle.classList.toggle("active", showLowSignal);
-        lowSignalToggle.setAttribute("aria-pressed", String(showLowSignal));
-        lowSignalToggle.textContent =
-          (showLowSignal ? "Hide" : "Show") + " low-signal (" + lowSignalCount + ")";
-        renderEvents();
-      });
-    }
 
     const search = resultsShadow.querySelector(".search");
     if (search) {

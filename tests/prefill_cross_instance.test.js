@@ -1027,8 +1027,8 @@ test("a reference found here is kept; one missing, refused or tableless is left 
     "a text variable holding a sys_id is copied as it is");
   assert.strictEqual(prepared.withheld, 3);
   assert.deepStrictEqual(prepared.notes, [
-    "Not filled, because the record isn't on this instance or this account can't see it: building.",
-    "Not filled, because GlideLens couldn't check the record here: cost centre, configuration item.",
+    "Held back, because the record isn't on this instance or this account can't see it: building.",
+    "Held back, because GlideLens couldn't check the record here: cost centre, configuration item.",
   ]);
   const reads = tableReads(prefill.page).map((msg) => msg.table + ":" + msg.fields);
   assert.deepStrictEqual(reads.sort(), ["cmn_cost_center:sys_id", "cmn_location:sys_id"],
@@ -1145,7 +1145,7 @@ test("the withheld list stops at five names", async () => {
     ["A", "B", "C", "D", "E", "F", "G"].map((name, index) => ref(name, id(600 + index), "cmn_location"))
   );
   assert.deepStrictEqual(prepared.notes, [
-    "Not filled, because the record isn't on this instance or this account can't see it: A, B, C, D, E (+2 more).",
+    "Held back, because the record isn't on this instance or this account can't see it: A, B, C, D, E (+2 more).",
   ]);
 });
 
@@ -1188,8 +1188,10 @@ test("a read from another instance fills what travels and names what didn't", as
   ]);
   assert.deepStrictEqual(lastToast(prefill.page), {
     text: [
-      "Done. Filled 4 of 6 variables from RITM0010001 on examplesbx (2 not filled).",
-      "Not filled, because the record isn't on this instance or this account can't see it: Location.",
+      "Filled 4 of 6 variables",
+      "Read from: RITM0010001 on examplesbx",
+      "Held back: 2",
+      "Held back, because the record isn't on this instance or this account can't see it: Location.",
       "Watch list: kept 1 of 2; the rest aren't on this instance.",
       "Attachments aren't copied between instances: Supporting document.",
       "Devices: 1 cell left empty, because its record isn't on this instance.",
@@ -1200,7 +1202,7 @@ test("a read from another instance fills what travels and names what didn't", as
   assert.strictEqual(prefill.SNH.lastPrefillSource.origin, SANDBOX, "the debug copy says which instance was read");
 });
 
-test("the counts add up to the number read, with the withheld counted as not filled", async () => {
+test("the counts add up to the number read, with the withheld counted as held back", async () => {
   const prefill = loadPrefill({
     answer: (msg) => {
       if (msg.type === "PREFILL_REMOTE_READ") return exportReply(REMOTE_VARIABLES);
@@ -1211,20 +1213,70 @@ test("the counts add up to the number read, with the withheld counted as not fil
     },
   });
   await prefill.prefillPortalVariablesFromTicket("RITM0010001", fakePicker(SANDBOX, true));
-  const summary = lastToast(prefill.page).text.split("\n")[0];
-  assert.strictEqual(summary,
-    "Done. Filled 2 of 6 variables from RITM0010001 on examplesbx (1 already set, 1 not on this form, 2 not filled).");
-  const [filled, total] = summary.match(/Filled (\d+) of (\d+)/).slice(1).map(Number);
-  const details = summary.match(/\(([^)]*)\)/)[1].match(/\d+/g).map(Number);
-  assert.strictEqual(filled + details.reduce((sum, count) => sum + count, 0), total);
+  const state = prefill.page.toastStates[prefill.page.toastStates.length - 1];
+  assert.strictEqual(state.lines[0].text, "Filled 2 of 6 variables");
+  const facts = state.lines.filter((line) => line.kind === "fact");
+  assert.deepStrictEqual(facts.map((fact) => [fact.label, fact.text]), [
+    ["Read from", "RITM0010001 on examplesbx"],
+    ["Already set", "1, left as it was"],
+    ["Not on this form", "1"],
+    ["Held back", "2"],
+  ]);
+  const [filled, total] = state.lines[0].text.match(/Filled (\d+) of (\d+)/).slice(1).map(Number);
+  const counted = facts.filter((fact) => fact.label !== "Read from")
+    .map((fact) => Number(fact.text.match(/^\d+/)[0]));
+  assert.strictEqual(filled + counted.reduce((sum, count) => sum + count, 0), total);
 });
 
-test("the finished message's notes are neutral and its summary keeps the success colour", async () => {
+test("the finished message is a headline, then labelled facts, then the notes and the hint", async () => {
   const prefill = remoteRun(exportReply(REMOTE_VARIABLES));
   await prefill.prefillPortalVariablesFromTicket("RITM0010001", fakePicker(SANDBOX, true));
   const state = prefill.page.toastStates[prefill.page.toastStates.length - 1];
   assert.strictEqual(state.done, true);
-  assert.deepStrictEqual(state.lines.map((line) => line.kind), ["", "note", "note", "note", "note", "hint"]);
+  assert.deepStrictEqual(state.lines.map((line) => line.kind),
+    ["head", "fact", "fact", "note", "note", "note", "note", "hint"]);
+  /* Held back is a count: the notes below name each variable and why, once. */
+  const held = state.lines.find((line) => line.label === "Held back");
+  assert.strictEqual(held.text, "2");
+  assert.strictEqual(state.lines.filter((line) => /Location/.test(line.text)).length, 1);
+  /* One name for it: the fact and the note that explains it both say "Held back". */
+  assert.ok(state.lines.some((line) => line.kind === "note" && /^Held back, because /.test(line.text)));
+  assert.ok(!state.lines.some((line) => /Not filled/.test(line.text)), "the old words are gone");
+});
+
+test("a zero count is left out, and only a type Prefill never copies is called one", async () => {
+  const run = async (fill) => {
+    const prefill = loadPrefill({
+      answer: (msg) => {
+        if (msg.type !== "SN_TABLE_GET") return msg.type === "FILL_PORTAL_VARIABLES" ? fill : undefined;
+        if (msg.table === "task") {
+          return { ok: true, result: [{ sys_id: SOURCE_RITM, number: "RITM0010001", sys_class_name: "sc_req_item" }] };
+        }
+        if (msg.table === "sc_item_option_mtom") {
+          return { ok: true, result: [catalogRow(1, "laptop_model", "X1"), catalogRow(2, "location", id(90), "8")] };
+        }
+        return undefined;
+      },
+    });
+    await prefill.prefillPortalVariablesFromTicket("RITM0010001", fakePicker("", true));
+    return prefill.page.toastStates[prefill.page.toastStates.length - 1].lines;
+  };
+
+  const clean = await run({ ok: true, foundForm: true, filled: 2, alreadySet: 0, skipped: 0, unmatched: 0 });
+  assert.deepStrictEqual(clean.map((line) => line.kind), ["head", "hint"], "nothing left, nothing listed");
+
+  const failed = await run({ ok: true, foundForm: true, filled: 1, alreadySet: 0, skipped: 1, unmatched: 0 });
+  const facts = failed.filter((line) => line.kind === "fact").map((line) => [line.label, line.text]);
+  assert.deepStrictEqual(facts, [["Couldn't be filled", "1"]],
+    "a fill that failed after its retries is not a type Prefill doesn't copy");
+});
+
+test("the finished message names each kind of left-out variable in its own plain words", () => {
+  const fill = stripComments(between(contentSource, "async function fillPrefillForm(", "const PREFILL_EXPORT_PROGRESS_MS"));
+  assert.match(fill, /prefillFact\("Can't be copied", sourceSkipped/);
+  assert.match(fill, /", a type Prefill doesn't copy"/);
+  assert.match(fill, /prefillFact\("Couldn't be filled", fillSkipped\)/);
+  assert.ok(!/skipped"|not filled"/.test(fill), "the old bracket words are gone");
 });
 
 test("no message names a value or a sys_id, from a link or a typed sys_id", async () => {
@@ -1238,15 +1290,15 @@ test("no message names a value or a sys_id, from a link or a typed sys_id", asyn
     });
     const label = input === RITM_LINK ? "the linked ticket" : "that record";
     assert.strictEqual(texts[0], "Reading " + label + " from examplesbx…");
-    assert.match(lastToast(prefill.page).text, new RegExp("^Done\\. Filled 4 of 6 variables from " + label + " on examplesbx"));
+    assert.match(lastToast(prefill.page).text, new RegExp("^Filled 4 of 6 variables\\nRead from: " + label + " on examplesbx\\n"));
   }
 });
 
-test("once the read answers, the Done line names the ticket by its number", async () => {
+test("once the read answers, Read from names the ticket by its number", async () => {
   const prefill = remoteRun(exportReply(REMOTE_VARIABLES));
   await prefill.prefillPortalVariablesFromTicket(RITM_LINK, fakePicker("", true));
   assert.strictEqual(prefill.page.toasts[0].text, "Reading the linked ticket from examplesbx…");
-  assert.match(lastToast(prefill.page).text, /^Done\. Filled 4 of 6 variables from RITM0010001 on examplesbx /);
+  assert.match(lastToast(prefill.page).text, /^Filled 4 of 6 variables\nRead from: RITM0010001 on examplesbx\n/);
 });
 
 test("each refusal from the other instance is told in its own words", async () => {
@@ -1288,7 +1340,7 @@ test("a part-refused remote read fills what it read, and says why the rest is mi
   const prefill = remoteRun(exportReply([REMOTE_VARIABLES[0]], { readRefused: true, sourceImpersonating: true }));
   await prefill.prefillPortalVariablesFromTicket("RITM0010001", fakePicker(SANDBOX, true));
   assert.deepStrictEqual(lastToast(prefill.page), {
-    text: "Done. Filled 1 of 1 variables from RITM0010001 on examplesbx.\n" +
+    text: "Filled 1 of 1 variable\nRead from: RITM0010001 on examplesbx\n" +
       "Some of the ticket's variables couldn't be read, so check the form for gaps.\n" +
       "You're impersonating someone there: stop that in its tab, then try again.\n" +
       "You can close this (Esc) and review the form.",
@@ -1337,7 +1389,7 @@ test("a run that matches nothing still names what was held back before the fill"
     unmatched: msg.variables.length });
   const variables = [REMOTE_VARIABLES[0], REMOTE_VARIABLES[1], REMOTE_VARIABLES[3]];
   const heldBack =
-    "Not filled, because the record isn't on this instance or this account can't see it: Location.\n" +
+    "Held back, because the record isn't on this instance or this account can't see it: Location.\n" +
     "Attachments aren't copied between instances: Supporting document.";
 
   const whole = loadPrefill({
@@ -1397,7 +1449,7 @@ test("a run on this instance checks nothing and fills as before", async () => {
   await prefill.prefillPortalVariablesFromTicket("RITM0010001", fakePicker("", true));
   assert.deepStrictEqual(prefill.page.filled.map((variable) => variable.name), ["laptop_model", "location"]);
   assert.ok(!prefill.page.sent.some((msg) => msg.type === "PREFILL_REMOTE_READ" || /^sys_idIN/.test(msg.query || "")));
-  assert.strictEqual(lastToast(prefill.page).text, "Done. Filled 2 of 2 variables.\nYou can close this (Esc) and review the form.");
+  assert.strictEqual(lastToast(prefill.page).text, "Filled 2 of 2 variables\nYou can close this (Esc) and review the form.");
   assert.strictEqual(prefill.SNH.lastPrefillSource.origin, HERE);
 });
 
@@ -1625,7 +1677,7 @@ test("Read from sits under the input with its own label, and lists the other ins
   ]);
   assert.strictEqual(row.select.value, HERE, "this instance, every time the row opens");
   assert.strictEqual(row.hint.textContent,
-    "Lists the instances open in this browser. To add one, open it in a tab, sign in, then reopen Variable Prefill.");
+    "Another instance appears here once it is open in a tab and signed in. Reopen Variable Prefill to see it.");
 });
 
 test("with no other instance open, the select stays hidden and the hint says how to add one", async () => {
@@ -1770,21 +1822,69 @@ test("finished lines are drawn by kind, each as text", async () => {
   row.ui.showToast("ignored when lines are given", false, 0, {
     done: true,
     lines: [
-      { text: "Done. Filled 1 of 2 variables.", kind: "" },
-      { text: "Not filled …: " + markup, kind: "note" },
+      { text: "Filled 1 of 2 variables", kind: "head" },
+      { label: "Read from", text: "RITM0010001 on " + markup, kind: "fact" },
+      { label: "Held back", text: "1", kind: "fact" },
+      { text: "Held back …: " + markup, kind: "note" },
       { text: "You can close this (Esc) and review the form.", kind: "hint" },
     ],
   });
-  const spans = dom.toast.children;
-  assert.deepStrictEqual(spans.map((span) => span.className), ["", "toast-note", "toast-hint"]);
-  assert.strictEqual(spans[1].textContent, "\nNot filled …: " + markup, "markup stays text");
-  assert.strictEqual(dom.toast.className, "done");
-  assert.strictEqual(dom.toast.textContent,
-    "Done. Filled 1 of 2 variables.\nNot filled …: " + markup + "\nYou can close this (Esc) and review the form.");
+  const blocks = dom.toast.children;
+  assert.deepStrictEqual(blocks.map((block) => [block.tagName, block.className]), [
+    ["DIV", "toast-line toast-head"],
+    ["DL", "toast-facts"],
+    ["DIV", "toast-line toast-note"],
+    ["DIV", "toast-line toast-hint"],
+  ], "each line its own block, and the facts one list so their labels line up");
+  const facts = blocks[1].children;
+  assert.deepStrictEqual(facts.map((node) => [node.tagName, node.textContent]), [
+    ["DT", "Read from"], ["DD", "RITM0010001 on " + markup],
+    ["DT", "Held back"], ["DD", "1"],
+  ], "markup stays text");
+  assert.strictEqual(blocks[2].textContent, "Held back …: " + markup);
+  assert.strictEqual(dom.toast.className, "done lines");
+  assert.match(contentSource, /#toast\.done \.toast-head::before\{content:"✓"/, "the tick is the headline's");
 
   row.ui.showToast("Couldn't read.", true, 0, { sticky: true });
   assert.deepStrictEqual(dom.toast.children, [], "an error is one colour throughout");
   assert.strictEqual(dom.toast.textContent, "Couldn't read.");
+});
+
+test("the session-switch steps are drawn as a list, each with its mark, and the status says the step", async () => {
+  const dom = fakeShadow();
+  const row = loadPaletteRow(dom);
+  row.ui.showToast("Step 3 of 4 · Impersonating example.person again…", false, 0, {
+    busy: true,
+    steps: [
+      { state: "done", text: "Switched back to your own account", message: "" },
+      { state: "failed", text: "Read RITM0010001 as you: nothing to fill", message: "No copyable variables found." },
+      { state: "current", text: "Impersonating example.person again…", message: "" },
+      { state: "pending", text: "Fill this form as example.person", message: "" },
+    ],
+  });
+  const [list, said] = dom.toast.children;
+  assert.strictEqual(list.tagName, "OL");
+  assert.strictEqual(list["aria-hidden"], "true", "the list is for sight");
+  assert.deepStrictEqual(list.children.map((item) => item.className),
+    ["step-done", "step-failed", "step-current", "step-pending"]);
+  const marks = list.children.map((item) => item.children[0]);
+  assert.deepStrictEqual(marks.map((mark) => mark.textContent), ["✓", "✕", "", "4"]);
+  assert.strictEqual(marks[2].children[0].className, "step-spinner");
+  assert.strictEqual(list.children[1].children[2].className, "step-message");
+  assert.strictEqual(list.children[1].children[2].textContent, "No copyable variables found.");
+  assert.strictEqual(said.className, "toast-said");
+  assert.strictEqual(said.textContent, "Step 3 of 4 · Impersonating example.person again…",
+    "the status region says the step, as it did before the list");
+  assert.strictEqual(dom.toast.className, "busy steps");
+
+  /* The report follows the list once the run is done. */
+  row.ui.showToast("Filled 2 of 2 variables", false, 0, {
+    done: true,
+    steps: [{ state: "done", text: "Filled this form as example.person", message: "" }],
+    lines: [{ text: "Filled 2 of 2 variables", kind: "head" }],
+  });
+  assert.deepStrictEqual(dom.toast.children.map((node) => node.tagName), ["OL", "DIV"]);
+  assert.strictEqual(dom.toast.className, "done lines steps");
 });
 
 test("a note reads in the body colour and the close hint in the muted one", () => {
@@ -1797,6 +1897,6 @@ test("the command's text names the new ways to give a source", () => {
   const command = between(contentSource, 'id: "prefill-variables",', "},");
   assert.match(command, /inputLabel: "Source ticket, sys_id or link"/);
   assert.match(command, /placeholder: "RITM\/SCTASK\/REQ\/case number, sys_id, or a ticket link"/);
-  assert.match(command, /description: "Copy catalog-variable values from another ticket, on this or another open instance…"/);
+  assert.match(command, /description: "Copy variable values from another ticket…"/);
   assert.match(command, /"instance", "case"/);
 });

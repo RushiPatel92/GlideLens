@@ -220,6 +220,53 @@ test("a direct getXML on the same instance is still recorded afterwards", () => 
   assert.equal(glideAjaxEvents(events).length, 4, "expected two full pairs");
 });
 
+test("a completion names the start it answers, even when answers come back out of order", () => {
+  const { api, win } = loadRecorder();
+  const GlideAjax = installGlideAjax(win, { delegates: false });
+  /* Hold every callback so the test decides the order the answers arrive in. */
+  const pending = [];
+  GlideAjax.prototype.getXMLAnswer = function (callback) { pending.push(() => callback("a")); };
+  GlideAjax.prototype.getXML = function (callback) { pending.push(() => callback({ responseXML: null })); };
+
+  const events = record(win, api, () => {
+    ["first", "second"].forEach((name) => {
+      const ajax = new win.GlideAjax("AssetAjax");
+      ajax.addParam("sysparm_name", name);
+      ajax.getXMLAnswer(() => {});
+    });
+    const plain = new win.GlideAjax("AssetAjax");
+    plain.addParam("sysparm_name", "third");
+    plain.getXML(() => {});
+    pending.reverse().forEach((answer) => answer());
+  });
+
+  const calls = glideAjaxEvents(events);
+  const starts = calls.filter((event) => event.action === "start");
+  const completes = calls.filter((event) => event.action === "complete");
+  assert.deepStrictEqual(completes.map((event) => event.details.params.sysparm_name), ["third", "second", "first"]);
+  completes.forEach((done) => {
+    const start = starts.find((event) => event.id === done.details.startId);
+    assert.ok(start, "the link names a recorded start");
+    assert.strictEqual(start.details.params.sysparm_name, done.details.params.sysparm_name);
+  });
+  starts.forEach((start) => assert.strictEqual(start.details.startId, undefined, "only completions carry it"));
+});
+
+test("a synchronous getXMLWait has no start, so its completion names none", () => {
+  const { api, win } = loadRecorder();
+  installGlideAjax(win, { delegates: false });
+
+  const events = record(win, api, () => {
+    const ajax = new win.GlideAjax("AssetAjax");
+    ajax.addParam("sysparm_name", "getModelPrice");
+    ajax.getXMLWait();
+  });
+
+  const calls = glideAjaxEvents(events);
+  assert.deepStrictEqual(calls.map((event) => event.action), ["complete"]);
+  assert.strictEqual(calls[0].details.startId, undefined);
+});
+
 test("plain getXML keeps working — the guard must not silence it", () => {
   const { api, win } = loadRecorder();
   installGlideAjax(win, { delegates: false });

@@ -392,11 +392,14 @@ function findAll(node, predicate) {
 function load() {
   const dom = createDom();
   const timers = [];
+  /* What the panel asked the worker to open. */
+  const opened = [];
   const sandbox = {
     document: dom.document,
     window: dom.window,
     location: { origin: "https://example.service-now.com" },
     navigator: {},
+    chrome: { runtime: { sendMessage: (message) => { opened.push(message); } } },
     setTimeout: (fn, ms) => {
       timers.push({ fn, ms, cancelled: false, done: false });
       return timers.length;
@@ -412,6 +415,7 @@ function load() {
   return {
     ui: sandbox.SNRecordSearchUI,
     dom,
+    opened,
     navigator: sandbox.navigator,
     runTimers() {
       timers.forEach((timer) => {
@@ -1406,7 +1410,8 @@ async function searchedRow(harness) {
   const shadow = openPanel(harness, {
     onFindTables: async () => [{ name: "incident", label: "Incident" }],
     onSearch: async () => ({ stale: false, table: "incident", tableLabel: "Incident", results: [
-      { table: "incident", sysId: RESULT_SYS_ID, title: "INC0010001", values: [] },
+      { table: "incident", sysId: RESULT_SYS_ID, title: "INC0010001",
+        values: [{ field: "number", label: "Label number", value: "INC0010001" }] },
     ] }),
   });
   await chooseLiveTable(harness, shadow, "incident");
@@ -1418,60 +1423,69 @@ async function searchedRow(harness) {
   return shadow;
 }
 
-const resultAction = (shadow, label) => shadow.querySelectorAll(".result-action")
-  .find((button) => button.textContent === label);
+const sysIdButton = (shadow) => q(shadow, ".row .sys-id");
+const copyUrlButton = (shadow) => q(shadow, ".row .copy-url");
 
-test("a copy is confirmed on the button pressed, which then reads as before", async () => {
+test("the sys_id is its own copy button, confirmed in place, and then reads as before", async () => {
   const harness = load();
   const copied = [];
   harness.navigator.clipboard = { writeText: async (text) => { copied.push(text); } };
   const shadow = await searchedRow(harness);
-  const copySysId = resultAction(shadow, "Copy sys_id");
+  const copySysId = sysIdButton(shadow);
+  assert.strictEqual(copySysId.textContent, RESULT_SYS_ID);
+  assert.strictEqual(copySysId.getAttribute("aria-label"), "Copy sys_id " + RESULT_SYS_ID);
   copySysId.fire("click");
   await settle();
   assert.deepStrictEqual(copied, [RESULT_SYS_ID]);
   assert.strictEqual(copySysId.textContent, "✓ Copied");
-  assert.strictEqual(copySysId.className, "result-action copied");
+  assert.strictEqual(copySysId.className, "sys-id copied");
   assert.strictEqual(copySysId.querySelector("span").getAttribute("aria-hidden"), "true",
     "the tick is not read out");
   assert.strictEqual(status(shadow), "sys_id copied to the clipboard.", "the status line still announces it");
 
-  /* A second press restarts the confirmation, and the label still comes back. */
+  /* A second press restarts the confirmation, and the sys_id still comes back. */
   copySysId.fire("click");
   await settle();
   harness.runTimers();
-  assert.strictEqual(copySysId.textContent, "Copy sys_id");
-  assert.strictEqual(copySysId.className, "result-action");
+  assert.strictEqual(copySysId.textContent, RESULT_SYS_ID);
+  assert.strictEqual(copySysId.className, "sys-id");
 
-  const copyUrl = resultAction(shadow, "Copy URL");
+  const copyUrl = copyUrlButton(shadow);
+  assert.strictEqual(copyUrl.className, "link copy-url");
   copyUrl.fire("click");
   await settle();
   assert.strictEqual(copied[2], "https://example.service-now.com/incident.do?sys_id=" + RESULT_SYS_ID);
   assert.strictEqual(copyUrl.textContent, "✓ Copied");
-  assert.strictEqual(copySysId.textContent, "Copy sys_id", "only the pressed button changes");
+  assert.strictEqual(copySysId.textContent, RESULT_SYS_ID, "only the pressed button changes");
+  harness.runTimers();
+  assert.strictEqual(copyUrl.textContent, "Copy URL");
+  assert.strictEqual(copyUrl.className, "link copy-url");
+  assert.strictEqual(harness.opened.length, 0, "copying never opens the record");
 });
 
 test("a blocked copy says so on the button as well as on the status line", async () => {
   const harness = load();
   harness.navigator.clipboard = { writeText: async () => { throw new Error("blocked"); } };
   const shadow = await searchedRow(harness);
-  const copySysId = resultAction(shadow, "Copy sys_id");
+  const copySysId = sysIdButton(shadow);
   copySysId.fire("click");
   await settle();
   assert.strictEqual(copySysId.textContent, "Copy failed");
-  assert.strictEqual(copySysId.className, "result-action copy-failed");
+  assert.strictEqual(copySysId.className, "sys-id copy-failed");
   assert.match(status(shadow), /Clipboard access was blocked/);
   assert.strictEqual(harness.dom.document.body.children.length, 0, "the fallback leaves nothing behind");
   harness.runTimers();
-  assert.strictEqual(copySysId.textContent, "Copy sys_id");
+  assert.strictEqual(copySysId.textContent, RESULT_SYS_ID);
 });
 
 /* ------------------------------------------------------------------ *
  * Searching as the question changes
  * ------------------------------------------------------------------ */
 
+/* Engine-shaped: the title is the first shown column's value, here the
+ * default column `number`, so the row's title cell reads it by field. */
 function rowFor(table, title) {
-  return { table, sysId: RESULT_SYS_ID, title, values: [] };
+  return { table, sysId: RESULT_SYS_ID, title, values: [{ field: "number", label: "Label number", value: title }] };
 }
 
 const resultTitles = (shadow) => shadow.querySelectorAll(".row .title").map((node) => node.textContent);
@@ -1823,7 +1837,10 @@ test("Show starts as what is searched, keeps the order ticked, and asks again af
   toggleColumn(shadow, "u_active");
   toggleColumn(shadow, "u_company");
   assert.deepStrictEqual(shownOrder(shadow), [["u_supplier", "1"], ["u_active", "2"]]);
-  assert.match(q(shadow, ".field-summary").textContent, / · Showing: Supplier, Active$/);
+  /* The results' column header names what is shown; the summary names only
+   * what is searched. */
+  assert.match(q(shadow, ".field-summary").textContent, /Searching: Company \[u_company\], Supplier \[u_supplier\]$/);
+  assert.doesNotMatch(q(shadow, ".field-summary").textContent, /Showing/);
   assert.strictEqual(searches.length, 0, "a column change waits for the pause");
   harness.runTimers();
   await settle();
@@ -2073,32 +2090,237 @@ test("a remembered column that is gone is named; ones that could not be verified
   assert.match(status(unsure.shadow), /Not saved: this favourite's columns could not be verified/);
 });
 
-test("a row marks a match found in a field it does not show", async () => {
+const SECOND_SYS_ID = "fedcba9876543210fedcba9876543210";
+
+/* Shows Company, Currency and Active; searches Company and Supplier, so a
+ * match in Supplier is a match in a field the row does not show. The engine
+ * drops an empty value, as the first row's Currency is here. */
+async function columnsPanel(harness, results) {
+  const searches = [];
+  const shadow = linkPanel(harness, {
+    onSearch: async (input) => {
+      searches.push(JSON.parse(JSON.stringify(input)));
+      return { stale: false, table: "u_example_link", tableLabel: "Example link", results: results || [{
+        table: "u_example_link",
+        sysId: RESULT_SYS_ID,
+        title: "FR01",
+        values: [
+          { field: "u_company", label: "Company", value: "FR01" },
+          { field: "u_active", label: "Active", value: "true" },
+          { field: "u_supplier", label: "Supplier", value: "Acme Ltd", matched: true },
+        ],
+      }, {
+        table: "u_example_link",
+        sysId: SECOND_SYS_ID,
+        title: "DE02",
+        values: [
+          { field: "u_company", label: "Company", value: "DE02" },
+          { field: "u_currency", label: "Currency", value: "EUR" },
+          { field: "u_active", label: "Active", value: "false" },
+        ],
+      }] };
+    },
+  });
+  await chooseLiveTable(harness, shadow, "u_example_link");
+  await settle();
+  toggleColumn(shadow, "u_currency");
+  toggleColumn(shadow, "u_active");
+  toggleColumn(shadow, "u_supplier");
+  termInput(shadow).value = "acme";
+  q(shadow, ".form").fire("submit");
+  await settle();
+  assert.deepStrictEqual(searches[searches.length - 1].columns, ["u_company", "u_currency", "u_active"]);
+  return shadow;
+}
+
+const factsOf = (row) => row.querySelectorAll(".fact").map((fact) =>
+  [fact.querySelector("dt").textContent, fact.querySelector("dd").textContent]);
+
+test("the column header names the shown columns in order, and every row lines up under it", async () => {
+  const harness = load();
+  const shadow = await columnsPanel(harness);
+  const header = q(shadow, ".results .cols");
+  assert.strictEqual(header.getAttribute("aria-hidden"), "true",
+    "for sight: each value carries its own label for assistive technology");
+  assert.deepStrictEqual(
+    [q(header, ".col-title").textContent]
+      .concat(q(header, ".vals").children.map((cell) => cell.textContent))
+      .concat([q(header, ".end").textContent]),
+    ["Company", "Currency", "Active", "sys_id · click to copy"]
+  );
+  assert.strictEqual(q(shadow, ".results").dataset.values, "2");
+  const rows = shadow.querySelectorAll(".row");
+  assert.deepStrictEqual(resultTitles(shadow), ["FR01", "DE02"]);
+  assert.deepStrictEqual(rows.map((row) => factsOf(row).map((fact) => fact[0])),
+    [["Currency", "Active"], ["Currency", "Active"]], "one cell per column, in header order");
+  assert.deepStrictEqual(factsOf(rows[1]), [["Currency", "EUR"], ["Active", "false"]]);
+  const active = rows[1].querySelectorAll(".fact dd")[1];
+  assert.strictEqual(active.title, "false", "the full value is in the title");
+});
+
+test("the column header sticks flush with the list's top edge, past its padding", () => {
+  /* .rows has 6px of top padding; top:0 stops the sticky header under it,
+   * and a scrolled row shows through the 6px band. */
+  assert.match(UI_SOURCE, /\.rows\{flex:1;overflow:auto;padding:6px 0\}/);
+  assert.match(UI_SOURCE, /\.cols\{position:sticky;top:-6px;/);
+  assert.doesNotMatch(UI_SOURCE, /position:sticky;top:0\b/);
+});
+
+test("an empty value keeps its cell, with a dim dash read as empty", async () => {
+  const harness = load();
+  const shadow = await columnsPanel(harness);
+  const currency = shadow.querySelectorAll(".row")[0].querySelectorAll(".fact dd")[0];
+  const dash = currency.querySelector(".none");
+  assert.strictEqual(dash.textContent, "–");
+  assert.strictEqual(dash.getAttribute("aria-hidden"), "true");
+  assert.strictEqual(currency.querySelector(".sr-only").textContent, "empty");
+  assert.deepStrictEqual(factsOf(shadow.querySelectorAll(".row")[0]),
+    [["Currency", "–empty"], ["Active", "true"]]);
+});
+
+test("a match in a field that is not a column gets its own line under the record", async () => {
+  const harness = load();
+  const shadow = await columnsPanel(harness);
+  const [first, second] = shadow.querySelectorAll(".row");
+  const line = first.querySelector(".matched");
+  assert.ok(line, "the matched field is named");
+  assert.deepStrictEqual(
+    [q(line, ".matched-label").textContent, q(line, ".matched-value").textContent, q(line, ".match-tag").textContent],
+    ["Supplier", "Acme Ltd", "matched your text"],
+    "the tag is its own words when read aloud"
+  );
+  assert.strictEqual(q(line, ".matched-value").title, "Acme Ltd");
+  assert.ok(!factsOf(first).some((fact) => fact[0] === "Supplier"), "never as a column");
+  assert.strictEqual(second.querySelector(".matched"), null);
+});
+
+test("the title opens the record, Enter on the row does, and a click on a value does not", async () => {
+  const harness = load();
+  const shadow = await columnsPanel(harness);
+  const row = shadow.querySelectorAll(".row")[0];
+  const recordUrl = "https://example.service-now.com/u_example_link.do?sys_id=" + RESULT_SYS_ID;
+
+  assert.strictEqual(shadow.querySelectorAll(".row .result-action").length, 0, "no Open record button");
+  const title = row.querySelector(".title");
+  assert.strictEqual(title.tagName, "BUTTON");
+  assert.strictEqual(title.textContent, "FR01");
+
+  row.querySelector(".fact dd").fire("click");
+  row.fire("click", { target: row.querySelector(".fact dd") });
+  row.fire("click");
+  assert.deepStrictEqual(harness.opened, [], "a value can be selected without opening the record");
+
+  title.fire("click");
+  assert.deepStrictEqual(harness.opened.map((message) => [message.type, message.url]), [["OPEN_URL", recordUrl]]);
+
+  row.focus();
+  const enter = row.fire("keydown", { key: "Enter", target: row });
+  assert.strictEqual(enter.defaultPrevented, true);
+  assert.strictEqual(harness.opened.length, 2);
+  assert.strictEqual(harness.opened[1].url, recordUrl);
+
+  /* Enter on the title is the button's own click, never the row's as well. */
+  row.fire("keydown", { key: "Enter", target: title });
+  assert.strictEqual(harness.opened.length, 2);
+
+  /* The arrow keys still move between rows. */
+  key(row, "ArrowDown");
+  assert.strictEqual(harness.dom.document.activeElement, shadow.querySelectorAll(".row")[1]);
+});
+
+/* As the engine answers them: an empty value is dropped, and the title is
+ * the first NON-empty value, or the sys_id when there is none. */
+const EMPTY_FIRST = [{
+  table: "u_example_link",
+  sysId: RESULT_SYS_ID,
+  title: "GBP",
+  values: [
+    { field: "u_currency", label: "Currency", value: "GBP" },
+    { field: "u_active", label: "Active", value: "true" },
+  ],
+}, {
+  table: "u_example_link",
+  sysId: SECOND_SYS_ID,
+  title: SECOND_SYS_ID,
+  values: [],
+}];
+
+test("an empty first column reads (empty) as the link, and no value moves under its header", async () => {
+  const harness = load();
+  const shadow = await columnsPanel(harness, EMPTY_FIRST);
+  const [first, allEmpty] = shadow.querySelectorAll(".row");
+  const title = first.querySelector(".title");
+  assert.strictEqual(title.textContent, "(empty)");
+  assert.strictEqual(title.className, "title empty");
+  assert.strictEqual(title.getAttribute("aria-label"), "Open record, Company empty");
+  assert.match(UI_SOURCE, /\.title\.empty\{color:#9a9ab3/);
+  /* Currency shows once, in its own cell, not under Company as well. */
+  assert.deepStrictEqual(factsOf(first), [["Currency", "GBP"], ["Active", "true"]]);
+  assert.strictEqual(first.textContent.split("GBP").length - 1, 1);
+  assert.strictEqual(first.getAttribute("aria-label"), "GBP result. Press Enter to open.",
+    "the row keeps a meaningful name");
+
+  title.fire("click");
+  first.fire("keydown", { key: "Enter", target: first });
+  const recordUrl = "https://example.service-now.com/u_example_link.do?sys_id=" + RESULT_SYS_ID;
+  assert.deepStrictEqual(harness.opened.map((message) => message.url), [recordUrl, recordUrl]);
+
+  /* Every shown column empty: the sys_id stays in its own end cell. */
+  assert.strictEqual(allEmpty.querySelector(".title").textContent, "(empty)");
+  assert.deepStrictEqual(factsOf(allEmpty), [["Currency", "–empty"], ["Active", "–empty"]]);
+  assert.strictEqual(allEmpty.textContent.split(SECOND_SYS_ID).length - 1, 1, "only in the sys_id button");
+  allEmpty.querySelector(".title").fire("click");
+  assert.strictEqual(harness.opened[2].url, "https://example.service-now.com/u_example_link.do?sys_id=" + SECOND_SYS_ID);
+});
+
+test("with no columns asked for, the header's first column and each row's title are the same field", async () => {
   const harness = load();
   const shadow = linkPanel(harness, {
+    onResolveTable: async (name) => linkInfo(name, { defaultFields: [] }),
     onSearch: async () => ({ stale: false, table: "u_example_link", tableLabel: "Example link", results: [{
-      table: "u_example_link",
-      sysId: RESULT_SYS_ID,
-      title: "FR01",
+      table: "u_example_link", sysId: RESULT_SYS_ID, title: "Acme Ltd",
       values: [
+        { field: "u_supplier", label: "Supplier", value: "Acme Ltd" },
         { field: "u_company", label: "Company", value: "FR01" },
-        { field: "u_active", label: "Active", value: "true" },
-        { field: "u_supplier", label: "Supplier", value: "Acme Ltd", matched: true },
       ],
+    }, {
+      table: "u_example_link", sysId: SECOND_SYS_ID, title: "DE02",
+      values: [{ field: "u_company", label: "Company", value: "DE02" }],
     }] }),
   });
   await chooseLiveTable(harness, shadow, "u_example_link");
   await settle();
-  termInput(shadow).value = "acme";
+  assert.strictEqual(q(shadow, ".columns-button").textContent, "Show 0 columns");
+  termInput(shadow).value = RESULT_SYS_ID;
   q(shadow, ".form").fire("submit");
   await settle();
-  assert.deepStrictEqual(resultTitles(shadow), ["FR01"]);
-  const values = shadow.querySelectorAll(".row .value");
-  assert.deepStrictEqual(values.map((node) => [node.className, node.textContent]), [
-    ["value", "Active: true"],
-    ["value matched", "Supplier: Acme Ltd match"],
-  ], "the tag is its own word when read aloud");
-  assert.strictEqual(values[1].title, "Matched your text. Not one of the shown columns.");
+  const header = q(shadow, ".results .cols");
+  assert.strictEqual(q(header, ".col-title").textContent, "Supplier");
+  assert.deepStrictEqual(q(header, ".vals").children.map((cell) => cell.textContent), ["Company"]);
+  assert.deepStrictEqual(resultTitles(shadow), ["Acme Ltd", "(empty)"],
+    "the second row has no Supplier, so its Company stays in its own cell");
+  assert.deepStrictEqual(shadow.querySelectorAll(".row").map(factsOf), [[["Company", "FR01"]], [["Company", "DE02"]]]);
+});
+
+test("the stacked form is the same nodes, laid out by the panel's width", async () => {
+  const harness = load();
+  const shadow = await columnsPanel(harness);
+  /* One copy of each record: the narrow layout restyles these nodes, so
+   * assistive technology never meets two and focus survives the switch. */
+  assert.strictEqual(shadow.querySelectorAll(".row").length, 2);
+  assert.strictEqual(shadow.querySelectorAll(".row .title").length, 2);
+  shadow.querySelectorAll(".row").forEach((row) => {
+    const facts = row.querySelector(".facts");
+    assert.strictEqual(facts.tagName, "DL", "stacked, the values are a labelled fact list");
+    assert.strictEqual(row.querySelector(".end").children.length, 2, "sys_id, then Copy URL");
+  });
+  const css = UI_SOURCE;
+  assert.match(css, /\.rows\{container:results \/ inline-size\}/);
+  assert.match(css, /@container results \(max-width:899px\)\{\s*\.cols\{display:none\}/);
+  assert.match(css, /grid-template-columns:max-content minmax\(0,1fr\)/);
+  /* Four and five values need more room before they stack. */
+  assert.match(css, /@container results \(max-width:1019px\)\{\s*\.results\[data-values="4"\] \.cols,\.results\[data-values="5"\] \.cols\{display:none\}/);
+  assert.match(css, /@container results \(max-width:1149px\)\{\s*\.results\[data-values="5"\] \.cols\{display:none\}/);
 });
 
 test("a column's position is its own word when read aloud", async () => {
@@ -2123,7 +2345,7 @@ test("a table that opens with nothing to search says Show follows what is search
   toggleField(shadow, "u_currency");
   assert.strictEqual(q(shadow, ".columns-button").textContent, "Show searched fields",
     "not zero: an empty Show list shows what is searched");
-  assert.match(q(shadow, ".field-summary").textContent, / · Showing: the searched fields$/);
+  assert.match(q(shadow, ".field-summary").textContent, /Searching: Currency \[u_currency\]$/);
   toggleColumn(shadow, "u_active");
   assert.strictEqual(q(shadow, ".columns-button").textContent, "Show 1 column");
 });

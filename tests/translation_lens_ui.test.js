@@ -54,10 +54,20 @@ const HOST_ID = "snh-translation-lens-results";
 function createDom() {
   let activeElement = null;
 
+  /* Like Chrome's HTMLCollection: length, indices and item(), and no array
+   * methods. A panel that calls children.some() or children.map() throws in
+   * the browser; with a plain array here it passed every test, and opening a
+   * row blanked the real list. Tests read it through kids(). */
+  function collection(list) {
+    const out = { length: list.length, item: (index) => list[index] || null };
+    list.forEach((node, index) => { out[index] = node; });
+    return out;
+  }
+
   class El {
     constructor(tag) {
       this.tagName = String(tag || "div").toUpperCase();
-      this.children = [];
+      this._kids = [];
       this.parentNode = null;
       this.attributes = Object.create(null);
       this.handlers = Object.create(null);
@@ -76,26 +86,27 @@ function createDom() {
        * shadow root, and a real textContent would fold all of it into every
        * assertion below -- "100%" and "%" both appear in it. Skipping STYLE
        * makes a text assertion mean "the panel says this to the reader". */
-      return this._text + this.children
+      return this._text + this._kids
         .filter((child) => child.tagName !== "STYLE")
         .map((child) => child.textContent)
         .join("");
     }
     set textContent(value) {
-      this.children.forEach((child) => { child.parentNode = null; });
-      this.children = [];
+      this._kids.forEach((child) => { child.parentNode = null; });
+      this._kids = [];
       this._text = value == null ? "" : String(value);
     }
+    get children() { return collection(this._kids); }
     appendChild(node) {
       if (!node) return node;
       if (node.parentNode) node.parentNode.removeChild(node);
       node.parentNode = this;
-      this.children.push(node);
+      this._kids.push(node);
       return node;
     }
     removeChild(node) {
-      const index = this.children.indexOf(node);
-      if (index >= 0) this.children.splice(index, 1);
+      const index = this._kids.indexOf(node);
+      if (index >= 0) this._kids.splice(index, 1);
       node.parentNode = null;
       return node;
     }
@@ -144,8 +155,11 @@ function createDom() {
   return { El, document, window, setActive: (node) => { activeElement = node; } };
 }
 
+/* children is a collection without array methods, as in Chrome. */
+const kids = (node) => Array.from((node && node.children) || []);
+
 function walk(node, visit) {
-  (node.children || []).forEach((child) => {
+  kids(node).forEach((child) => {
     visit(child);
     walk(child, visit);
   });
@@ -169,6 +183,45 @@ function buttonWithText(root, text) {
  * pinned to the button itself or it returns the whole overlay. */
 function buttonContaining(root, text) {
   return find(root, (node) => node.tagName === "BUTTON" && node.textContent.includes(text));
+}
+
+/* An opened row's answers: each state once, its tone, and its languages,
+ * read from the labelled list in order. */
+/* A row's own list by default; a choice's list is "facts answers in-choice". */
+function answerGroups(root, className) {
+  const wanted = className || "facts answers";
+  const lists = findAll(root, (node) => node.tagName === "DL" && String(node.className) === wanted);
+  const out = [];
+  lists.forEach((list) => {
+    for (let index = 0; index < list.children.length; index += 2) {
+      const dt = list.children[index];
+      const dd = list.children[index + 1];
+      const count = find(dt, (node) => String(node.className) === "n");
+      /* The same list carries the store facts after the answers. */
+      if (!count) continue;
+      const langs = find(dd, (node) => String(node.className) === "langs");
+      out.push({
+        label: dt.textContent,
+        word: dt.textContent.slice(0, dt.textContent.length - count.textContent.length).trim(),
+        count: Number(count.textContent),
+        tone: String(dt.className),
+        langs: kids(langs).map((item) => {
+          const label = item.children[0];
+          const note = item.children[1];
+          return {
+            node: label,
+            tag: label.tagName,
+            text: label.textContent,
+            title: label.title,
+            aria: label.getAttribute("aria-label"),
+            note: note ? note.textContent : "",
+          };
+        }),
+        lines: kids(dd).filter((node) => String(node.className) === "group-line").map((node) => node.textContent),
+      });
+    }
+  });
+  return out;
 }
 
 function click(node) {
@@ -231,7 +284,7 @@ function load(options) {
     window: dom && dom.window,
     clipboard: sandbox.navigator && sandbox.navigator.clipboard,
     shadow() {
-      const host = (dom.document.documentElement.children || [])
+      const host = kids(dom.document.documentElement)
         .find((node) => node.id === HOST_ID);
       return host ? host.shadowRoot : null;
     },
@@ -528,14 +581,12 @@ test("a blank translation row renders as Blank, not as ordinary Missing", () => 
   });
   const shadow = harness.shadow();
   click(buttonWithText(shadow, "Expand all"));
-  const chips = findAll(harness.shadow(), (node) => node.className && String(node.className).startsWith("chip "));
-  const words = chips.map((chip) => chip.textContent);
-  assert.ok(words.some((word) => word.includes("fr") && word.includes("Blank")), "fr is Blank: " + words.join(" | "));
-  assert.ok(words.some((word) => word.includes("de") && word.includes("Missing")), "de is Missing");
-  assert.ok(
-    words.some((word) => word.includes("∅")) && words.some((word) => word.includes("—")),
-    "both states carry a symbol as well as words"
-  );
+  const groups = answerGroups(harness.shadow());
+  const summary = groups.map((group) => [group.word, group.langs.map((lang) => lang.text)]);
+  assert.deepStrictEqual(summary, [["Missing", ["German (de)"]], ["Blank", ["French (fr)"]]],
+    "fr is Blank and de is Missing: " + JSON.stringify(summary));
+  /* Each state is said in words, not by colour alone; the colour is a class. */
+  assert.deepStrictEqual(groups.map((group) => group.tone), ["gap", "gap"]);
 });
 
 test("a Blank chip opens the existing rows for that language, never a new record", () => {
@@ -564,16 +615,18 @@ test("a Blank chip opens the existing rows for that language, never a new record
     result: makeResult({ sections: [makeSection("labels", "Field Labels", [row])] }),
   });
   click(buttonWithText(harness.shadow(), "Expand all"));
-  const chips = findAll(harness.shadow(), (node) =>
-    node.tagName === "BUTTON" && node.className && String(node.className).startsWith("chip "));
-  const blank = chips.find((chip) => chip.textContent.includes("fr") && chip.textContent.includes("Blank"));
-  assert.ok(blank, "the blank chip is actionable");
-  assert.ok(String(blank.getAttribute("aria-label")).includes("existing"), "and says it opens the existing row");
-  click(blank);
+  const groups = answerGroups(harness.shadow());
+  const blank = groups.find((group) => group.word === "Blank").langs[0];
+  assert.strictEqual(blank.text, "French (fr)");
+  assert.strictEqual(blank.tag, "BUTTON", "the blank language is actionable");
+  assert.strictEqual(blank.aria, "Open the existing blank Field Labels row for French",
+    "and says it opens the existing row");
+  click(blank.node);
   assert.deepStrictEqual(calls.open, [existing], "it opened the existing rows, not the prefill");
+  assert.ok(groups.find((group) => group.word === "Blank").lines.includes("Each opens the existing blank row."));
 
-  const missing = chips.find((chip) => chip.textContent.includes("de") && chip.textContent.includes("Missing"));
-  click(missing);
+  const missing = groups.find((group) => group.word === "Missing").langs[0];
+  click(missing.node);
   assert.ok(calls.open[1].includes("sys_id=-1"), "a genuinely missing language still opens a prefilled new record");
 });
 
@@ -767,7 +820,7 @@ test("the filters narrow the list and the language picker reports n of m", () =>
     }),
   });
   let shadow = harness.shadow();
-  assert.ok(shadow.textContent.includes("2 of 2 languages shown"));
+  assert.ok(shadow.textContent.includes("of translations exist, across the 2 languages shown"));
 
   click(buttonWithText(shadow, "Missing only"));
   shadow = harness.shadow();
@@ -813,14 +866,14 @@ test("deselecting a language rescopes the score and keeps the all-language score
   harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
   const shadow = hideGerman(harness);
 
-  assert.ok(shadow.textContent.includes("1 of 2 languages shown"));
+  assert.ok(shadow.textContent.includes("of translations exist, across the 1 language selected"));
   assert.strictEqual(scoreText(shadow), "100%", "the headline counts only the selected language");
   assert.ok(
     shadow.textContent.includes("all 2 languages: 50%"),
     "the all-language score must stay on screen: " + shadow.textContent
   );
-  const chips = findAll(shadow, (node) => node.className === "chip gap");
-  assert.ok(!chips.some((chip) => chip.textContent.includes("de")), "the hidden language has no chip");
+  const langs = answerGroups(shadow).flatMap((group) => group.langs).map((lang) => lang.text);
+  assert.ok(!langs.some((text) => text.includes("(de)")), "the hidden language is not listed: " + langs);
 });
 
 test("the complete count follows the selection, which is the whole point of scoping it", () => {
@@ -1221,10 +1274,11 @@ test("a missing-language chip opens the prefilled new record it was given", () =
   let shadow = harness.shadow();
   click(buttonWithText(shadow, "Expand all"));
   shadow = harness.shadow();
-  const chips = findAll(shadow, (node) => node.tagName === "BUTTON" && String(node.className).startsWith("chip "));
-  assert.strictEqual(chips.length, 1, "only the missing language offers a prefill");
-  assert.ok(chips[0].textContent.includes("de"));
-  click(chips[0]);
+  const links = answerGroups(shadow).flatMap((group) => group.langs).filter((lang) => lang.tag === "BUTTON");
+  assert.strictEqual(links.length, 1, "only the missing language offers a prefill");
+  assert.strictEqual(links[0].text, "German (de)");
+  assert.strictEqual(links[0].aria, "Open a prefilled new Field Labels record for German");
+  click(links[0].node);
   assert.deepStrictEqual(calls.open, [prefill]);
 });
 
@@ -1398,16 +1452,18 @@ test("an unproven key match is Unverified on the chip, offers no new record, and
   click(buttonWithText(shadow, "Expand all"));
   shadow = harness.shadow();
   const text = shadow.textContent;
-  assert.ok(text.includes("unconfirmed key match"), "the chip names the reason");
+  assert.ok(text.includes("unconfirmed key match"), "the language names the reason");
   assert.ok(text.includes("1 unconfirmed key match"), "the row carries a flag");
   assert.ok(text.includes("never counted as covered, never as missing"), "the evidence explains the state");
-  const chips = findAll(shadow, (node) => node.className && String(node.className).startsWith("chip "));
-  const unverified = chips.filter((node) => node.textContent.includes("unconfirmed key match"));
-  const missing = chips.filter((node) => node.textContent.includes("Missing"));
-  assert.ok(unverified.length, "the Unverified chip is drawn");
-  assert.ok(unverified.every((node) => node.tagName !== "BUTTON"),
-    "an Unverified chip is not a button, so it cannot create a row beside one that may render");
-  assert.ok(missing.length && missing.every((node) => node.tagName === "BUTTON"),
+  const groups = answerGroups(shadow);
+  const unverified = groups.find((group) => group.word === "Unverified");
+  const missing = groups.find((group) => group.word === "Missing");
+  assert.ok(unverified, "the Unverified answer is drawn");
+  assert.deepStrictEqual(unverified.langs.map((lang) => [lang.text, lang.note]),
+    [["French (fr)", "· unconfirmed key match"]], "its note sits beside its language");
+  assert.ok(unverified.langs.every((lang) => lang.tag !== "BUTTON"),
+    "an Unverified language is not a link, so it cannot create a row beside one that may render");
+  assert.ok(missing.langs.length && missing.langs.every((lang) => lang.tag === "BUTTON"),
     "the real gap in the same row still opens a new record");
 });
 
@@ -1604,13 +1660,14 @@ test("a catalog result nests its native form fields in one collapsed group", () 
   assert.strictEqual(rows.length, 2, "one row per aspect, never the flattened copy as well");
 });
 
-test("a choices row expands to one entry per base value with its own chips", () => {
-  const harness = load();
-  openPanel(harness);
-  const choiceRow = makeRow({
+function choicesRow(over) {
+  return makeRow(Object.assign({
     id: "choices:state", element: "state", label: "state", aspect: "choices", store: "sys_choice",
     states: { fr: { state: "partial" }, de: { state: "missing" } },
     coverage: { covered: 0, counted: 2, percent: 0, missing: ["fr", "de"], unavailable: [] },
+    /* The engine gives a choices row a list link and no prefills: it stands
+     * for every choice, so no single record would close its gap. */
+    links: { list: ORIGIN + "/sys_choice_list.do?sysparm_query=element%3Dstate", newRecord: {}, existing: {} },
     evidence: {
       choiceCount: 2,
       choices: [
@@ -1619,35 +1676,131 @@ test("a choices row expands to one entry per base value with its own chips", () 
           states: { fr: { state: "direct", direct: true }, de: { state: "missing" } },
           coverage: { covered: 1, counted: 2, percent: 50, missing: ["de"], unavailable: [] },
           nearDuplicates: { rowCount: 0, languages: [], inactiveLanguages: [] },
+          links: { newRecord: { de: ORIGIN + "/sys_choice.do?sys_id=-1&sysparm_query=value%3Dopen%5Elanguage%3Dde" } },
         },
         {
           identity: "closed\u0000hardware", value: "closed", dependentValue: "hardware", label: "Closed",
-          states: { fr: { state: "missing" }, de: { state: "missing" } },
-          coverage: { covered: 0, counted: 2, percent: 0, missing: ["fr", "de"], unavailable: [] },
+          states: {
+            fr: { state: "missing" },
+            de: { state: "unavailable", reason: "read failed" },
+          },
+          coverage: { covered: 0, counted: 1, percent: 0, missing: ["fr"], unavailable: ["de"] },
           nearDuplicates: { rowCount: 1, languages: ["fr"], inactiveLanguages: [] },
+          links: { newRecord: { fr: ORIGIN + "/sys_choice.do?sys_id=-1&sysparm_query=value%3Dclosed%5Elanguage%3Dfr" } },
         },
       ],
     },
-  });
+  }, over || {}));
+}
+
+function openChoices(harness, row) {
+  const calls = openPanel(harness);
   harness.ui.showResults({
     fingerprint: "run-1",
-    result: makeResult({ sections: [makeSection("choices", "Choices", [choiceRow])] }),
+    result: makeResult({ sections: [makeSection("choices", "Choices", [row || choicesRow()])] }),
   });
-  let shadow = harness.shadow();
-  click(buttonWithText(shadow, "Expand all"));
-  shadow = harness.shadow();
+  click(buttonWithText(harness.shadow(), "Expand all"));
+  return calls;
+}
+
+test("a choices row expands to one entry per base value, each with its own answer list", () => {
+  const harness = load();
+  openChoices(harness);
+  const shadow = harness.shadow();
   const entries = findAll(shadow, (node) => node.className === "choice");
   assert.strictEqual(entries.length, 2, "one line per base value");
   const first = entries[0].textContent;
   assert.ok(first.includes("Open"), "the base label identifies the choice");
   assert.ok(first.includes("value open"), "so does its stored value");
   assert.ok(first.includes("1/2"));
-  assert.ok(first.includes("fr") && first.includes("Direct"));
-  assert.ok(first.includes("de") && first.includes("Missing"));
   const second = entries[1].textContent;
   assert.ok(second.includes("under hardware"), "dependent_value is part of a choice's identity");
   assert.ok(second.includes("near-duplicate"), "case-variant rows are reported per value");
   assert.ok(shadow.textContent.includes("2 base choices were assessed."));
+
+  /* The same list a field's opened row has: each answer once, gaps first,
+   * languages by name. No pills anywhere in the opened row. */
+  const open = answerGroups(entries[0], "facts answers in-choice");
+  assert.deepStrictEqual(open.map((group) => [group.label, group.tone, group.langs.map((lang) => lang.text)]), [
+    ["Missing 1", "gap", ["German (de)"]],
+    ["Direct 1", "ok", ["French (fr)"]],
+  ]);
+  const closed = answerGroups(entries[1], "facts answers in-choice");
+  assert.deepStrictEqual(closed.map((group) => group.word), ["Missing", "Unavailable"]);
+  assert.strictEqual(findAll(shadow, (node) => String(node.className).startsWith("chip ")).length, 0,
+    "choices no longer draw state pills");
+});
+
+test("a choice's Missing language is a link to its own prefilled record", () => {
+  const harness = load();
+  const calls = openChoices(harness);
+  const entries = findAll(harness.shadow(), (node) => node.className === "choice");
+  const german = answerGroups(entries[0], "facts answers in-choice")
+    .find((group) => group.word === "Missing").langs[0];
+  assert.strictEqual(german.tag, "BUTTON");
+  assert.strictEqual(german.aria, "Open a prefilled new Choices record for German");
+  click(german.node);
+  assert.deepStrictEqual(calls.open,
+    [ORIGIN + "/sys_choice.do?sys_id=-1&sysparm_query=value%3Dopen%5Elanguage%3Dde"]);
+  const french = answerGroups(entries[0], "facts answers in-choice")
+    .find((group) => group.word === "Direct").langs[0];
+  assert.strictEqual(french.tag, "SPAN", "a covered language is plain text");
+});
+
+test("what a field says under an answer is said once above the choices, not under each", () => {
+  const harness = load();
+  openChoices(harness);
+  const shadow = harness.shadow();
+  const notes = find(shadow, (node) => node.className === "choice-notes");
+  assert.deepStrictEqual(kids(notes).map((node) => node.textContent), [
+    "A missing language opens a new record, prefilled for that choice and language.",
+    "read failed",
+    "The read did not complete, so this is unknown — not missing.",
+  ]);
+  findAll(shadow, (node) => node.className === "choice").forEach((entry) => {
+    assert.strictEqual(findAll(entry, (node) => node.className === "group-line").length, 0,
+      "no choice repeats a sentence");
+  });
+  const list = find(shadow, (node) => node.className === "choice-list");
+  assert.strictEqual(list.children[0], notes, "the sentences come before the first choice");
+});
+
+test("a choices row draws no summary of its own: its choices come first, then the store facts", () => {
+  const harness = load();
+  /* Languages outside the counted set are a fact about the row, so they stay. */
+  const row = choicesRow();
+  row.evidence.extras = { rowCount: 1, languages: ["it"], inactiveLanguages: [] };
+  openChoices(harness, row);
+  const shadow = harness.shadow();
+  /* Its answers would only repeat the choices': a language missing there is
+   * missing, and linked, on each choice. */
+  assert.deepStrictEqual(answerGroups(shadow), [], "no row-level answer list");
+  assert.ok(!shadow.textContent.includes("This row covers every choice"), "and nothing pointing down to them");
+  const detail = find(shadow, (node) => node.className === "row-detail");
+  assert.deepStrictEqual(kids(detail).map((node) => String(node.className)),
+    ["choice-list", "facts store", "row-link", "evidence"]);
+  const facts = kids(kids(detail)[1]).map((node) => node.textContent);
+  assert.deepStrictEqual(facts.slice(0, 4), ["Extra", "+itExtra", "Store", "Choices sys_choice"]);
+  const head = find(shadow, (node) => node.tagName === "BUTTON" && node.className === "row");
+  assert.ok(head.textContent.includes("0/2"), "the row's head still shows its score");
+});
+
+test("a choices row with no choices to list keeps its own answer list", () => {
+  const harness = load();
+  const row = choicesRow();
+  row.evidence = { choiceCount: 0 };
+  openChoices(harness, row);
+  assert.deepStrictEqual(answerGroups(harness.shadow()).map((group) => group.word), ["Missing", "Partial"],
+    "with nothing below it, the summary is all there is");
+});
+
+test("no link sentence is said over choices that have no links", () => {
+  const harness = load();
+  const row = choicesRow();
+  row.evidence.choices.forEach((entry) => { entry.links = null; });
+  openChoices(harness, row);
+  const notes = find(harness.shadow(), (node) => node.className === "choice-notes");
+  assert.ok(!notes.textContent.includes("opens a new record"), "no link sentence without a link");
 });
 
 test("a manual lookup is listed apart from the scanned keys and moves no denominator", async () => {
@@ -2032,11 +2185,16 @@ test("the hardcoded warning is not dressed as one more amber advisory", () => {
   );
   assert.ok(chip.textContent.includes("36 hardcoded strings"));
 
-  const summary = chip.parentNode;
-  const score = find(summary, (node) => String(node.className).indexOf("score") === 0);
+  /* The summary is three lines now; the alert stays on the score's line,
+   * directly after the score and the words saying what it measures. */
+  const line = chip.parentNode;
+  const summary = line.parentNode;
+  assert.strictEqual(kids(summary).indexOf(line), 0, "on the score's own line");
+  const phrase = line.children[0];
+  assert.strictEqual(String(phrase.className), "sum-score");
+  assert.ok(find(phrase, (node) => String(node.className).indexOf("score") === 0), "the score leads that line");
   assert.strictEqual(
-    summary.children.indexOf(chip),
-    summary.children.indexOf(score) + 1,
+    kids(line).indexOf(chip), 1,
     "it stands immediately after the score, not at the end of the advisories"
   );
 
@@ -2212,4 +2370,411 @@ test("Show all survives a repaint that brings more findings", () => {
   assert.ok(text.includes("Wording number 44"),
     "asking for all of them is a decision, not a number that a longer list undoes");
   assert.ok(!text.includes("Show all"), "and there is nothing left to ask for");
+});
+
+/* ------------------------------------------------------------------ *
+ * The opened row: languages grouped by answer
+ * ------------------------------------------------------------------ */
+
+const SEVEN = {
+  active: [
+    { id: "en", name: "English" }, { id: "fr", name: "French" }, { id: "de", name: "German" },
+    { id: "it", name: "Italian" }, { id: "es", name: "Spanish" }, { id: "nl", name: "Dutch" },
+    { id: "pt", name: "Portuguese" }, { id: "ja", name: "Japanese" },
+  ],
+  baseLanguage: "en",
+  assumedBase: false,
+  countedLanguageIds: ["fr", "de", "it", "es", "nl", "pt", "ja"],
+};
+
+function groupedRow(over) {
+  return makeRow(Object.assign({
+    store: "sys_translated",
+    states: {
+      fr: { state: "direct", direct: true, duplicateCount: 2 },
+      de: { state: "missing", direct: false },
+      it: { state: "fallback", fallbackLanguage: "pt" },
+      es: { state: "partial", missingAtoms: ["help"] },
+      nl: { state: "conflict", conflictCount: 3 },
+      pt: { state: "unavailable", reason: "read failed" },
+      ja: { state: "unavailable", reason: "read failed" },
+    },
+    coverage: { covered: 1, counted: 5, percent: 20, missing: ["de", "it", "es", "nl"], unavailable: ["pt", "ja"] },
+    links: {
+      list: ORIGIN + "/sys_translated_list.do?sysparm_query=name%3Ddemo_widget",
+      newRecord: { de: ORIGIN + "/sys_translated.do?sys_id=-1&sysparm_query=language%3Dde",
+        fr: ORIGIN + "/sys_translated.do?sys_id=-1&sysparm_query=language%3Dfr" },
+    },
+  }, over || {}));
+}
+
+function openGrouped(harness, row) {
+  const calls = openPanel(harness);
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({ languages: SEVEN, sections: [makeSection("labels", "Field Labels", [row || groupedRow()])] }),
+  });
+  click(buttonWithText(harness.shadow(), "Expand all"));
+  return calls;
+}
+
+test("an opened row says each answer once, gaps first, and draws no empty answer", () => {
+  const harness = load();
+  openGrouped(harness);
+  const groups = answerGroups(harness.shadow());
+  assert.deepStrictEqual(groups.map((group) => [group.word, group.count, group.tone]), [
+    ["Missing", 1, "gap"],
+    ["Partial", 1, "gap"],
+    ["Conflict", 1, "flag"],
+    ["Unavailable", 2, "muted"],
+    ["Fallback", 1, "info"],
+    ["Direct", 1, "ok"],
+  ], "Blank and Same as source have no language here, so they are not drawn");
+  assert.deepStrictEqual(groups.map((group) => group.label).slice(0, 2), ["Missing 1", "Partial 1"],
+    "the word and its count are two words when read aloud");
+  assert.deepStrictEqual(groups[3].langs.map((lang) => lang.text), ["Portuguese (pt)", "Japanese (ja)"],
+    "languages keep their given order inside an answer");
+  assert.strictEqual(findAll(harness.shadow(), (node) => String(node.className).startsWith("chip ")).length, 0,
+    "no state pills in the opened row");
+});
+
+test("only Missing and Blank languages are links; Direct and Fallback are plain text", () => {
+  const harness = load();
+  const calls = openGrouped(harness);
+  const groups = answerGroups(harness.shadow());
+  const byWord = (word) => groups.find((group) => group.word === word);
+  const german = byWord("Missing").langs[0];
+  assert.strictEqual(german.tag, "BUTTON");
+  assert.strictEqual(german.aria, "Open a prefilled new Translated Names / Fields record for German");
+  assert.deepStrictEqual(byWord("Missing").lines.slice(0, 1), ["Each opens a new record, prefilled for that language."]);
+  click(german.node);
+  assert.deepStrictEqual(calls.open, [ORIGIN + "/sys_translated.do?sys_id=-1&sysparm_query=language%3Dde"]);
+  ["Direct", "Fallback", "Partial", "Conflict", "Unavailable"].forEach((word) => {
+    byWord(word).langs.forEach((lang) => assert.strictEqual(lang.tag, "SPAN", word + " is plain text"));
+    assert.ok(!byWord(word).lines.some((line) => line.startsWith("Each opens")), word + " offers no action");
+  });
+  assert.strictEqual(byWord("Direct").langs[0].aria, null, "a Direct language has a new-record URL but is not a link");
+});
+
+test("a language's own note sits beside it, and a tooltip-only explanation is said once per answer", () => {
+  const harness = load();
+  openGrouped(harness);
+  const groups = answerGroups(harness.shadow());
+  const notes = groups.flatMap((group) => group.langs.map((lang) => [lang.text, lang.note]));
+  assert.deepStrictEqual(notes, [
+    ["German (de)", ""],
+    ["Spanish (es)", "(help missing)"],
+    ["Dutch (nl)", "(3 texts)"],
+    ["Portuguese (pt)", ""],
+    ["Japanese (ja)", ""],
+    ["Italian (it)", "via pt"],
+    ["French (fr)", "· 2 duplicates"],
+  ]);
+  const unavailable = groups.find((group) => group.word === "Unavailable");
+  assert.deepStrictEqual(unavailable.lines, [
+    "read failed",
+    "The read did not complete, so this is unknown — not missing.",
+  ], "two languages share the explanation, so it is said once");
+  assert.strictEqual(unavailable.langs[0].title,
+    "Portuguese (pt) — read failed — The read did not complete, so this is unknown — not missing.",
+    "the tooltip each language had is kept as its title");
+});
+
+test("store facts are labelled facts, and the platform link is a link, not a pill", () => {
+  const harness = load();
+  const calls = openGrouped(harness, groupedRow({ internalType: "" }));
+  const shadow = harness.shadow();
+  /* One list, so one label column lines the store values up under the
+   * languages: the store facts follow the answers in the same dl. */
+  const lists = findAll(shadow, (node) => node.tagName === "DL");
+  assert.strictEqual(lists.length, 1, "answers and store facts share one list");
+  const list = lists[0];
+  const pairs = [];
+  for (let index = 0; index < list.children.length; index += 2) {
+    pairs.push([list.children[index], list.children[index + 1]]);
+  }
+  const storePairs = pairs.filter(([dt]) => /\bstore\b/.test(String(dt.className)));
+  assert.deepStrictEqual(storePairs.map(([dt, dd]) => [dt.textContent, dd.textContent]), [
+    ["Store", "Translated Names / Fields sys_translated"],
+    ["Defined on", "demo_widget"],
+    ["This table", "demo_widget"],
+    ["Registered under", "demo_widget"],
+  ], "a fact with no value is not drawn");
+  assert.strictEqual(pairs.indexOf(storePairs[0]), pairs.length - storePairs.length, "after every answer");
+  assert.deepStrictEqual(storePairs.map(([dt]) => String(dt.className)), ["store rule", "store", "store", "store"],
+    "the first carries the rule between the two parts");
+  assert.ok(find(storePairs[0][1], (node) => String(node.className) === "mono" && node.textContent === "sys_translated"),
+    "the table name stays monospace");
+  /* The rule row's label keeps the rule's padding, so "Store" sits on its
+   * value's baseline: 9px like the dd, plus the 1px every store label has. */
+  assert.match(SOURCE, /\.facts \.rule\{margin-top:6px;padding-top:9px;/);
+  assert.match(SOURCE, /\.facts\.answers dt\.store\{[^}]*padding-top:1px/);
+  assert.match(SOURCE, /\.facts\.answers dt\.store\.rule\{padding-top:10px\}/);
+  assert.match(SOURCE, /\.facts\{display:grid;grid-template-columns:max-content minmax\(0,1fr\);gap:4px 0;/,
+    "one max-content label column, spaced by the label's padding so the rule is unbroken");
+  const open = buttonWithText(shadow, "Open the matching rows in the platform");
+  assert.strictEqual(String(open.className), "link");
+  click(open);
+  assert.deepStrictEqual(calls.open, [ORIGIN + "/sys_translated_list.do?sysparm_query=name%3Ddemo_widget"]);
+  assert.match(SOURCE, /button\.link\{[^}]*font-size:12px;[^}]*text-decoration:underline/,
+    "every link is 12px and underlined at rest");
+});
+
+test("a long note wraps while a language's name and code stay together; the caret is 13px", () => {
+  assert.match(SOURCE, /\.lang-item\{white-space:normal\}/);
+  assert.match(SOURCE, /\.lang-item>:first-child\{white-space:nowrap\}/);
+  assert.match(SOURCE, /\.caret\{color:#9a9ab3;font-size:13px/);
+});
+
+test("with every language hidden, the store facts still stand as their own list under a rule", () => {
+  const harness = load();
+  openGrouped(harness);
+  click(buttonWithText(harness.shadow(), "Languages 7 of 7"));
+  click(buttonWithText(harness.shadow(), "None"));
+  const shadow = harness.shadow();
+  assert.ok(shadow.textContent.includes("Every language is hidden by the language filter"));
+  const list = find(shadow, (node) => node.tagName === "DL");
+  assert.strictEqual(String(list.className), "facts store");
+  assert.strictEqual(String(list.children[0].className), "store", "the list's own rule, not a pair's");
+});
+
+test("the row head names its kind in words, points at its detail, and keeps focus when toggled", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  let shadow = harness.shadow();
+  let head = find(shadow, (node) => node.tagName === "BUTTON" && String(node.className) === "row");
+  assert.strictEqual(find(head, (node) => String(node.className) === "kind-word").textContent, "Label");
+  assert.strictEqual(find(head, (node) => String(node.className) === "badge"), null, "no pill for the kind");
+  assert.strictEqual(head.getAttribute("aria-controls"), null, "nothing to point at while closed");
+  head.focus();
+  click(head);
+  shadow = harness.shadow();
+  head = find(shadow, (node) => node.tagName === "BUTTON" && String(node.className) === "row");
+  assert.strictEqual(head.getAttribute("aria-expanded"), "true");
+  const detail = find(shadow, (node) => String(node.className) === "row-detail");
+  assert.strictEqual(head.getAttribute("aria-controls"), detail.id);
+  assert.strictEqual(shadow.activeElement, head, "the rebuilt head of the toggled row has focus");
+
+  const group = find(shadow, (node) => node.tagName === "BUTTON" && String(node.className) === "group-head");
+  click(group);
+  shadow = harness.shadow();
+  const again = find(shadow, (node) => node.tagName === "BUTTON" && String(node.className) === "group-head");
+  assert.strictEqual(again.getAttribute("aria-expanded"), "false");
+  assert.strictEqual(shadow.activeElement, again, "and a group toggle keeps it on the group's head");
+});
+
+/* A head's aria-controls always has a target, open or closed, as Debug
+ * Timeline's rows do: the part under the head, empty and hidden while closed. */
+function controlledBy(shadow, head, open) {
+  const id = head.getAttribute("aria-controls");
+  assert.ok(id, head.textContent + " names the part it opens");
+  const targets = findAll(shadow, (node) => node.id === id);
+  assert.strictEqual(targets.length, 1, "one element has the id " + id);
+  const target = targets[0];
+  assert.strictEqual(target.parentNode, head.parentNode, "it sits under the head, in the same group");
+  assert.strictEqual(head.getAttribute("aria-expanded"), open ? "true" : "false");
+  assert.strictEqual(Boolean(target.hidden), !open);
+  if (!open) assert.strictEqual(kids(target).length, 0, "a closed part is drawn empty");
+  return target;
+}
+
+const groupHeadNamed = (shadow, text) =>
+  find(shadow, (node) => node.tagName === "BUTTON" && String(node.className).startsWith("group-head") &&
+    node.textContent.includes(text));
+
+test("every group head names the part it opens, open or closed, across repaints", () => {
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow()]),
+      makeHardcodedSection([makeFinding()]),
+    ],
+  });
+  result.failures = [{ table: "sys_documentation", status: 403, code: "access", error: "denied", truncated: false }];
+  harness.ui.showResults({ fingerprint: "run-1", result });
+
+  let shadow = harness.shadow();
+  const labels = controlledBy(shadow, groupHeadNamed(shadow, "Field Labels"), true);
+  assert.ok(find(labels, (node) => String(node.className) === "row"), "the open part holds the rows");
+  controlledBy(shadow, groupHeadNamed(shadow, "Hardcoded text"), false);
+  const failures = controlledBy(shadow, groupHeadNamed(shadow, "Read failures"), true);
+  assert.ok(failures.textContent.includes("sys_documentation"));
+
+  click(groupHeadNamed(shadow, "Hardcoded text"));
+  shadow = harness.shadow();
+  const hardcoded = controlledBy(shadow, groupHeadNamed(shadow, "Hardcoded text"), true);
+  assert.ok(hardcoded.textContent.includes("Demo wording"), "the findings are in the part it names");
+
+  click(groupHeadNamed(shadow, "Field Labels"));
+  shadow = harness.shadow();
+  controlledBy(shadow, groupHeadNamed(shadow, "Field Labels"), false);
+  click(groupHeadNamed(shadow, "Read failures"));
+  shadow = harness.shadow();
+  controlledBy(shadow, groupHeadNamed(shadow, "Read failures"), false);
+
+  const ids = findAll(shadow, (node) => node.tagName === "BUTTON" && node.getAttribute("aria-controls"))
+    .map((node) => node.getAttribute("aria-controls"));
+  assert.strictEqual(new Set(ids).size, ids.length, "no two controls name one part");
+});
+
+test("a nested group's head names its part, and so do the subsection heads inside it", () => {
+  const harness = load();
+  const context = { mode: "catalog", surface: "Catalog definition form", table: "sc_cat_item", isNewRecord: false };
+  openPanel(harness, { context });
+  const labelRow = makeRow({ id: "label:short_description", element: "short_description", label: "short_description" });
+  harness.ui.showResults({
+    fingerprint: "run-1",
+    result: makeResult({
+      context,
+      sections: [makeSection("form-fields", "Form fields", [labelRow], {
+        collapsed: true,
+        subsections: [makeSection("labels", "Field Labels", [labelRow])],
+      })],
+    }),
+  });
+
+  let shadow = harness.shadow();
+  controlledBy(shadow, groupHeadNamed(shadow, "Form fields"), false);
+  click(groupHeadNamed(shadow, "Form fields"));
+  shadow = harness.shadow();
+  const outer = controlledBy(shadow, groupHeadNamed(shadow, "Form fields"), true);
+  const sub = groupHeadNamed(outer, "Field Labels");
+  assert.ok(sub, "the subsection's head is inside the part the outer head opens");
+  controlledBy(shadow, sub, true);
+});
+
+test("the manual lookups head names its part", async () => {
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({
+    sections: [makeSection("messages", "Messages", [makeRow({
+      id: "message:demo.scanned", element: "demo.scanned", label: "demo.scanned",
+      aspect: "message", store: "sys_ui_message",
+    })], { separateHeadline: true })],
+  });
+  harness.ui.showResults({ fingerprint: "run-1", result });
+  const shadow = harness.shadow();
+  const input = find(shadow, (node) => node.tagName === "INPUT" && node.id.includes("lookup"));
+  input.value = "demo.typed";
+  (input.handlers.input || []).forEach((handler) => handler({ target: input }));
+  click(buttonWithText(shadow, "Look up"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const lookups = controlledBy(harness.shadow(), groupHeadNamed(harness.shadow(), "Manual key lookups"), true);
+  assert.ok(find(lookups, (node) => String(node.className) === "row"), "the looked-up row is in it");
+});
+
+test("the language button names the picker it opens, which is always there to point at", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  let shadow = harness.shadow();
+  let button = buttonContaining(shadow, "Languages ");
+  const id = button.getAttribute("aria-controls");
+  assert.ok(id);
+  let slots = findAll(shadow, (node) => node.id === id);
+  assert.strictEqual(slots.length, 1);
+  assert.strictEqual(button.getAttribute("aria-expanded"), "false");
+  assert.strictEqual(kids(slots[0]).length, 0, "closed, the slot is empty");
+
+  click(button);
+  shadow = harness.shadow();
+  button = buttonContaining(shadow, "Languages ");
+  assert.strictEqual(button.getAttribute("aria-expanded"), "true");
+  assert.strictEqual(button.getAttribute("aria-controls"), id);
+  slots = findAll(shadow, (node) => node.id === id);
+  assert.ok(find(slots[0], (node) => String(node.className) === "popover"), "open, it holds the picker");
+});
+
+/* ------------------------------------------------------------------ *
+ * The summary in three lines
+ * ------------------------------------------------------------------ */
+
+const summaryLines = (shadow) => {
+  const summary = find(shadow, (node) => String(node.className) === "summary");
+  return kids(summary).map((line) => line.textContent);
+};
+
+test("the summary says what the score measures, then the rows, as plain text", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  const shadow = harness.shadow();
+  assert.deepStrictEqual(summaryLines(shadow), [
+    "50%of translations exist, across the 2 languages shown",
+    "Rows:0 missing / none·1 partial·0 complete",
+  ], "no third line when there is nothing else to check");
+  const summary = find(shadow, (node) => String(node.className) === "summary");
+  assert.strictEqual(findAll(summary.children[1], (node) => node.tagName === "BUTTON").length, 0,
+    "the row counts are text, not filters");
+  assert.deepStrictEqual(
+    findAll(shadow, (node) => node.tagName === "BUTTON" && String(node.className).startsWith("filter"))
+      .map((node) => node.textContent),
+    ["All", "Missing only", "Labels", "Values", "Choices", "Messages"],
+    "the filter row is unchanged"
+  );
+});
+
+test("a deselected language scopes the words and keeps the all-language figure on the score's line", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults({ fingerprint: "run-1", result: makeResult() });
+  const shadow = hideGerman(harness);
+  assert.strictEqual(summaryLines(shadow)[0],
+    "100%of translations exist, across the 1 language selected·all 2 languages: 50%");
+});
+
+test("the also-check line gathers every advisory as words", () => {
+  const harness = load();
+  openPanel(harness);
+  const conflicted = makeRow({
+    id: "label:other", element: "other",
+    states: { fr: { state: "conflict", conflictCount: 2 }, de: { state: "unavailable" } },
+    coverage: { covered: 0, counted: 1, percent: 0, missing: ["fr"], unavailable: ["de"] },
+    evidence: { stranded: { rowCount: 1, languages: ["fr"] } },
+  });
+  const messageRow = makeRow({
+    id: "message:demo.key", element: "demo.key", label: "demo.key", aspect: "message", store: "sys_ui_message",
+    states: { fr: { state: "missing" }, de: { state: "direct", direct: true } },
+    coverage: { covered: 1, counted: 2, percent: 50, missing: ["fr"], unavailable: [] },
+  });
+  const result = makeResult({
+    sections: [
+      makeSection("labels", "Field Labels", [makeRow(), conflicted]),
+      makeSection("messages", "Messages", [messageRow], { separateHeadline: true,
+        scan: { dynamicCount: 0, invalid: [], capped: false, omittedCount: 0 } }),
+    ],
+    failures: [{ table: "sys_translated", status: 403, code: "access", error: "denied" }],
+  });
+  result.messageSummary = { covered: 1, counted: 2, percent: 50, complete: 0, partial: 1, none: 0, rowCount: 1 };
+  harness.ui.showResults({ fingerprint: "run-1", result });
+  const shadow = harness.shadow();
+  assert.strictEqual(summaryLines(shadow)[2],
+    "Also check:1 row with a conflict·1 row not read·1 row with stranded rows·1 read failure·" +
+    "Messages 1/2 across 1 key — counted separately");
+  const summary = find(shadow, (node) => String(node.className) === "summary");
+  const line = summary.children[2];
+  assert.strictEqual(findAll(line, (node) => String(node.className).startsWith("chip")).length, 0, "no pills");
+  assert.deepStrictEqual(findAll(line, (node) => node.tagName === "B").map((node) => node.textContent),
+    ["1", "1", "1", "1", "1/2"], "each count in bold");
+  assert.deepStrictEqual(
+    findAll(line, (node) => String(node.className).startsWith("check")).map((node) => String(node.className)),
+    ["check warn", "check warn", "check warn", "check warn", "check msg"],
+    "in the colours the chips had"
+  );
+});
+
+test("the unavailable state is unchanged: one line, no score", () => {
+  const harness = load();
+  openPanel(harness);
+  const result = makeResult({ languages: null, sections: [], unavailable: true,
+    failures: [{ table: "sys_language", status: 0, code: "transport", error: "read failed" }] });
+  harness.ui.showResults({ fingerprint: "run-1", result });
+  const shadow = harness.shadow();
+  assert.deepStrictEqual(summaryLines(shadow),
+    ["Active languages could not be read — nothing on this page was assessed.1 read failure"]);
+  const summary = find(shadow, (node) => String(node.className) === "summary");
+  assert.deepStrictEqual(kids(summary.children[0]).map((node) => String(node.className)), ["chip-stop", "chip-warn"]);
 });

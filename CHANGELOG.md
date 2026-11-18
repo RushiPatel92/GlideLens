@@ -82,8 +82,70 @@ reconstructed version by version.
   page; a plain click still switches to it. **Other sets holding it** and
   **Check this set** change the panel rather than open a page, so a
   middle-click leaves them alone.
+- **Result rows line up under a column header** in Record Lens, Catalog
+  Logic, Variable Values and Impersonate: one line per row, each value under
+  its column's name, an empty value shown as a dash. On a narrow panel each
+  row stacks instead. The header stays in place as the list scrolls.
+- **Catalog Logic opens grouped by variable.** Form-level logic (onLoad and
+  onSubmit scripts, UI policies that change no variable) comes first, then each
+  variable with the onChange scripts watching it and every UI policy that
+  changes it, each policy saying what it does to that variable ("hides,
+  mandatory"). A group head opens and closes its rows. "Group by variable"
+  turns it into one flat list. Rows that won't run while ordering the item
+  carry a **Won't run here** or **Inactive** badge with the reason, and the
+  summary's count of them shows only those rows. A search for a variable finds
+  a UI policy under that variable, not under the others it changes. The name
+  opens the record.
+- **Variable Insight marks only the variables something acts on**, with a
+  count, as real buttons a keyboard can reach and a screen reader names
+  ("3 scripts and policies act on Requested for"). From Alt+double-click, a
+  small notice in the page corner says how many variables were marked.
+- **Debug Timeline shows one row per GlideAjax call.** The finished call
+  opens as a Request card (Script Include, method, parameters, when it was
+  sent) and a Response card (status, time taken, decoded answer), with the
+  call stack it was sent from one click away. A call with no answer shows as
+  its start. Rows that add nothing are left out: a `setValue` that set the
+  value already there, and the same show, hide, mandatory or read-only call
+  repeated within 5 seconds.
+- **Translation Lens: an opened row lists each answer once**, gaps first
+  (Missing, Blank, Partial, …, then Direct), with the languages under it by
+  name; Missing and Blank languages link to the record that would hold the
+  translation. Each choice under a choices row gets the same list. The
+  summary is three short lines.
+- **Variable Values: badges only where they mean something.** A visible
+  variable has no badge, the hidden kinds share one badge with their own
+  labels, **Match** is a plain word, **Differs** is a rose badge and
+  **Not comparable** a grey one.
+- **Code Search groups matches by record**: one head per record, each field's
+  snippets together under it, and a match in a field that isn't shown gets its
+  own line. A source that was denied, missing, timed out or failed says so
+  instead of "0 matches".
+- **Impersonate: one line per person.** The name opens the user record in a
+  new tab, so there is no separate "Open user" button.
+- **Variable Prefill: the four steps of a switch stay on screen** and tick off
+  as they finish, and a failure sits under the step it stopped on. The
+  finished message is a headline ("Filled 11 of 16 variables") and labelled
+  facts: read from, filled as, already set, not on this form, can't be copied,
+  couldn't be filled, held back.
+- **Dim text is easier to read.** The dimmest grey in every panel is now about
+  6:1 against the panel background.
 
 ### Fixed
+- **Catalog Logic and Variable Values: keyboard focus.** Each panel takes
+  focus when it opens and keeps Tab inside itself, and closing it by any way
+  gives focus back to what had it. Opened from the command palette, the
+  palette closed after the panel opened and pulled focus back out.
+- **Catalog Logic and Record Lens: no rows above the column header.** A
+  scrolled row showed through a thin gap above the sticky header.
+- **Variable Values: no sideways scrolling in a narrower window.** On a
+  request item, the stored-and-live columns need about 950 pixels, so in a
+  window under about 1000 pixels wide the list scrolled sideways. Each row now
+  stacks whenever the list is narrower than its columns.
+- **Catalog Logic: "Show all" lost its ↗.** The arrow marks a button that opens
+  a platform list; Show all only widens the panel.
+- **Panels on a screen reader:** the palette's message line is a status
+  region, Code Search says "Searching…" and its final count once rather than
+  per source, and the Translation Assistant says each step once.
 - **Update Set Lens: no teal for a later revert.** When the other instance
   runs a version saved here after this set began, with the content of the
   version this set was built on (a revert, say), the row said **Previous

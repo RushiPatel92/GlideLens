@@ -176,7 +176,7 @@
     .r-saved span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .r-who{font-size:11px;color:var(--muted)}
     .r-there{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
-    .r-none{font-size:11.5px;color:#77778f}
+    .r-none{font-size:11.5px;color:var(--muted)}
     .b-there{background:transparent;border-color:#4a4a6e;color:#c9c9de}
     .b-there.missing,.b-there.cloned{border-color:#33334f;color:#8d8da6}
     .b-there.backed-out,.b-there.failed{border-color:var(--amber-line);color:var(--amber)}

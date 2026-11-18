@@ -16,8 +16,9 @@
  * The panel is deliberately in-page rather than a separate tab (sn-utils opens
  * one). Our transport reads g_ck from the page's MAIN world; an extension tab
  * has no SN session context and would have to proxy every request back through
- * an instance tab, breaking if that tab is closed or navigated. Clicking a hit
- * opens a new tab via OPEN_URL, so results survive being acted on anyway.
+ * an instance tab, breaking if that tab is closed or navigated. Clicking a
+ * record's name opens a new tab via OPEN_URL, so results survive being acted
+ * on anyway.
  */
 
 (() => {
@@ -30,10 +31,20 @@
   let filterText = "";
   let finished = false;
   let truncated = false;
+  /* What had focus before the panel opened, given back when it closes. */
+  let previousFocus = null;
+  /* The final count is announced once, whichever of complete, cancel or an
+   * error comes first. */
+  let announcedFinal = false;
   /* sourceId -> { summary, hits } in arrival order, so a fast source paints
    * before a slow one finishes. */
   const sources = new Map();
   const collapsed = new Set();
+  /* Group key -> the id of that group's list, kept for the panel's life so a
+   * head's aria-controls names the same element across every rebuild. */
+  const groupIds = new Map();
+  /* Focus key -> the control drawn for it by the latest rebuild. */
+  let focusables = new Map();
 
   const STATUS_TEXT = {
     complete: "",
@@ -79,9 +90,9 @@
       font:14px ui-monospace,SFMono-Regular,Consolas,monospace;
       color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
     }
-    .subtitle{font-size:12px;color:#85859f;line-height:1.45;max-width:90ch}
+    .subtitle{font-size:12px;color:#9a9ab3;line-height:1.45;max-width:90ch}
     .close{
-      border:0;background:transparent;color:#85859f;padding:3px 5px;
+      border:0;background:transparent;color:#9a9ab3;padding:3px 5px;
       font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
     }
     .close:hover{color:#fff;background:#2d2d48}
@@ -117,7 +128,7 @@
     }
     .search:focus{border-color:var(--teal);background:#37375a}
     .search::placeholder{color:#a4a4be}
-    .rows{flex:1;overflow:auto;padding:6px 0}
+    .rows{flex:1;overflow:auto;padding:6px 0;container:rows / inline-size}
     .group{border-bottom:1px solid #23233a}
     .group-head{
       display:flex;align-items:center;gap:9px;width:100%;text-align:left;
@@ -125,7 +136,7 @@
       color:#cfcfe4;font-size:12px;font-weight:600;
     }
     .group-head:hover{background:#32325a}
-    .group-head .caret{color:#7d7d9c;font-size:9px;width:9px}
+    .group-head .caret{color:#9a9ab3;font-size:9px;width:9px}
     .group-head .count{
       color:#9d9dba;font-weight:500;background:#3a3a5e;border-radius:9px;
       padding:1px 8px;font-size:11px;
@@ -134,26 +145,41 @@
       margin-left:auto;font-weight:500;font-size:11px;color:#9d9dba;
     }
     .group-head .status.warn{color:#e0c187}
-    .group-head .open-list{
+    /* The list button follows the group's rows; it is a child of .group, not of
+     * .group-head (a button cannot hold a button). */
+    .group > .open-list{
+      margin:6px 20px 10px;
       border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;border-radius:6px;
       padding:3px 8px;font-size:11px;cursor:pointer;
     }
-    .group-head .open-list:hover{background:#4a4b78;color:#fff}
-    .row{
-      display:block;width:100%;text-align:left;border:0;background:transparent;
-      color:inherit;padding:10px 20px;cursor:pointer;
-      border-bottom:1px solid #23233a;
+    .group > .open-list:hover{background:#4a4b78;color:#fff}
+    .group > .open-list:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+    /* One block per record: its name is the one control, and each field it
+       matched in is said once, in a column beside that field's lines. */
+    .rec{padding:10px 20px 11px;border-bottom:1px solid #23233a}
+    .rec:last-child{border-bottom:0}
+    .rec-head{display:flex;align-items:baseline;gap:9px;margin-bottom:6px;min-width:0}
+    .rec-name{
+      flex:0 1 auto;min-width:0;border:0;background:transparent;padding:0;margin:0;cursor:pointer;
+      text-align:left;color:#f0f0fa;font-size:13px;font-weight:600;line-height:1.35;
+      text-decoration:underline;text-decoration-color:#6c6c90;text-underline-offset:2px;
+      overflow-wrap:anywhere;
     }
-    .row:last-child{border-bottom:0}
-    .row:hover{background:#26264080}
-    .row:focus-visible{outline:2px solid var(--teal);outline-offset:-2px}
-    .row-top{display:flex;align-items:baseline;gap:9px;margin-bottom:5px}
-    .row-name{color:#f0f0fa;font-size:13px;font-weight:600}
-    .row-sub{color:#85859f;font-size:11px;min-width:0;overflow:hidden;
+    .rec-name:hover{color:#fff;text-decoration-color:var(--teal)}
+    .rec-name:focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:3px}
+    .row-sub{color:#9a9ab3;font-size:11px;min-width:0;overflow:hidden;
       text-overflow:ellipsis;white-space:nowrap}
-    .row-field{
-      margin-left:auto;flex:none;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
-      color:#a9a9c8;background:#2f2f4e;border-radius:4px;padding:2px 6px;
+    .fields{display:grid;grid-template-columns:124px minmax(0,1fr);gap:7px 8px;margin:0}
+    .fields dt{
+      font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:#9a9ab3;
+      overflow-wrap:anywhere;
+    }
+    .fields dd{margin:0;min-width:0}
+    /* Narrow: the field name moves above its lines. */
+    @container rows (max-width:639px){
+      .fields{grid-template-columns:minmax(0,1fr);gap:2px 0}
+      .fields dd{margin-bottom:6px}
+      .fields dd:last-child{margin-bottom:0}
     }
     .snippet{
       font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
@@ -161,12 +187,12 @@
       display:flex;gap:10px;
     }
     .snippet + .snippet{margin-top:2px}
-    .snippet .line{color:#63637f;flex:none;user-select:none;min-width:32px;text-align:right}
+    .snippet .line{color:#9a9ab3;flex:none;user-select:none;min-width:32px;text-align:right}
     .snippet mark{background:color-mix(in srgb, var(--teal) 34%, transparent);
       color:#eafffb;border-radius:2px;padding:0 1px}
     .redacted{color:#d2b779;font-style:italic}
-    .empty{padding:34px 20px;text-align:center;color:#85859f;font-size:13px;max-width:90ch;margin:0 auto}
-    .empty .hint{display:block;margin-top:8px;font-size:11px;color:#6e6e88}
+    .empty{padding:34px 20px;text-align:center;color:#9a9ab3;font-size:13px;max-width:90ch;margin:0 auto}
+    .empty .hint{display:block;margin-top:8px;font-size:11px;color:#9a9ab3}
     .drawer{border-top:1px solid #2e2e4e;background:#1a1a2a;max-height:180px;overflow:auto}
     .drawer-head{
       display:flex;align-items:center;gap:8px;width:100%;text-align:left;
@@ -182,14 +208,16 @@
       color:#9d9dba;
     }
     .drawer-row .name{color:#c6c6d8;min-width:170px}
-    .drawer-row .tbl{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#6e6e88}
+    .drawer-row .tbl{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9a9ab3}
     .drawer-row .state{margin-left:auto}
     .drawer-row.warn .state{color:#e0c187}
+    .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+      clip:rect(0 0 0 0);white-space:nowrap;border:0}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 16px;
       border-top:1px solid #2e2e4e;background:#20203a;
     }
-    .toolbar-note{flex:1;color:#7d7d95;font-size:11px;max-width:90ch;margin-right:auto}
+    .toolbar-note{flex:1;color:#9a9ab3;font-size:11px;max-width:90ch;margin-right:auto}
     .toolbar button{
       border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;border-radius:7px;
       padding:6px 12px;cursor:pointer;font-size:12px;
@@ -205,7 +233,6 @@
       .header{padding:14px}.summary{padding:9px 14px;gap:10px;flex-wrap:wrap}
       .controls{align-items:stretch;flex-direction:column}
       .search{width:100%;max-width:none;margin-left:0}
-      .row-top{flex-wrap:wrap}.row-field{margin-left:0}
     }
   `;
 
@@ -220,9 +247,62 @@
     onCancel = null;
     sources.clear();
     collapsed.clear();
+    groupIds.clear();
+    focusables = new Map();
     filterText = "";
     finished = false;
     truncated = false;
+    announcedFinal = false;
+    const restore = previousFocus;
+    previousFocus = null;
+    if (restore && typeof restore.focus === "function") {
+      try {
+        restore.focus({ preventScroll: true });
+      } catch (e) {
+        try { restore.focus(); } catch (ignored) { /* the opener is gone */ }
+      }
+    }
+  };
+
+  /* A control in the result list, remembered by what it stands for (a group
+   * key, a record key) so a rebuild can give focus back to its replacement.
+   * Never by text or position: both change as sources report. */
+  const remember = (node, key) => {
+    node.snhFocusKey = key;
+    focusables.set(key, node);
+    return node;
+  };
+
+  const within = (node, ancestor) => {
+    for (let current = node; current; current = current.parentNode) {
+      if (current === ancestor) return true;
+    }
+    return false;
+  };
+
+  const groupListId = (key) => {
+    if (!groupIds.has(key)) groupIds.set(key, "snh-cs-group-" + (groupIds.size + 1));
+    return groupIds.get(key);
+  };
+
+  /* Every control Tab can reach, in document order, skipping hidden parts. */
+  const focusableElements = () => {
+    const out = [];
+    const walk = (node) => {
+      Array.from((node && node.children) || []).forEach((child) => {
+        if (child.hidden || (child.style && child.style.display === "none")) return;
+        const tag = String(child.tagName || "").toLowerCase();
+        if ((tag === "button" || tag === "input") && !child.disabled) out.push(child);
+        walk(child);
+      });
+    };
+    walk(shadow);
+    return out;
+  };
+
+  const announce = (text) => {
+    const live = shadow && shadow.querySelector("[data-live]");
+    if (live) live.textContent = text;
   };
 
   const openUrl = (url) => {
@@ -384,7 +464,86 @@
     return out;
   };
 
+  /*
+   * One entry per record, in the order records first appeared, each holding
+   * its fields in the order they first appeared and each field's snippets in
+   * arrival order. Every hit lands in exactly one record and one field.
+   *
+   * Two hits for one record and one field (two sources reporting the same
+   * place) merge under one field label and keep every snippet. The caller
+   * dedupes table+sysId+field on the way in, so this should not happen, but
+   * the panel's own API does not promise it, and a dropped snippet is a hole.
+   * Redaction stays with the hit each snippet came from.
+   *
+   * The head describes the RECORD, and hits for one record can disagree about
+   * it. An instance-index hit (kind "instance") carries the matched field's
+   * label as its subtitle -- a fact about the field, which the field column
+   * already states -- so the head's subtitle is the first subtitle from any
+   * other kind of hit, and with none the head has no subtitle. The name is
+   * the first hit's, unless that is only the record's sys_id (both tiers fall
+   * back to it) and a later hit has a real name.
+   */
+  const recordHead = (records) => {
+    records.forEach((record) => {
+      const recordHit = record.hits.find((hit) => hit.kind !== "instance");
+      record.subtitle = recordHit ? recordHit.subtitle : "";
+      const sysId = String(record.sysId || "");
+      const named = (hit) => Boolean(hit.name) && String(hit.name) !== sysId;
+      const first = record.hits[0];
+      const real = named(first) ? first : record.hits.find(named);
+      record.name = (real || first).name;
+    });
+    return records;
+  };
+
+  const groupHitsByRecord = (hits) => {
+    const records = [];
+    const byKey = Object.create(null);
+    (hits || []).forEach((hit) => {
+      const key = recordKey(hit);
+      let record = byKey[key];
+      if (!record) {
+        record = byKey[key] = {
+          key,
+          table: hit.table,
+          sysId: hit.sysId,
+          name: "",
+          subtitle: "",
+          first: hit,
+          hits: [],
+          fields: [],
+        };
+        records.push(record);
+      }
+      record.hits.push(hit);
+      const fieldName = String(hit.field || "");
+      let field = record.fields.find((candidate) => candidate.field === fieldName);
+      if (!field) {
+        field = { field: fieldName, hits: [], snippets: [] };
+        record.fields.push(field);
+      }
+      field.hits.push(hit);
+      (hit.snippets || []).forEach((snippet) =>
+        field.snippets.push({ snippet, redacted: Boolean(hit.redacted) })
+      );
+    });
+    return recordHead(records);
+  };
+
   const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
+
+  /* A source that was denied, absent, timed out or errored and found nothing
+   * has no count to give: "0 matches in 0 records" beside "access denied" reads
+   * as a search that looked and found nothing. Its status says it alone. */
+  const groupCountText = (entry) => {
+    const hits = (entry && entry.hits) || [];
+    if (!hits.length && NEEDS_ATTENTION.indexOf(entry && entry.status) !== -1) return "";
+    return (
+      plural(hits.length, "match", "matches") +
+      " in " +
+      plural((entry && entry.records) || 0, "record", "records")
+    );
+  };
 
   /*
    * One snippet line: number, then the text split around the match so the term
@@ -423,39 +582,45 @@
     return line;
   };
 
-  const renderRow = (hit) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "row";
-    row.title = "Open " + hit.table + " record";
+  /* The name is the record's one control; the code under it is plain text that
+   * can be selected and copied, and a click on it does nothing. */
+  const renderRecord = (record, groupKey) => {
+    const block = document.createElement("div");
+    block.className = "rec";
 
-    const top = document.createElement("div");
-    top.className = "row-top";
+    const head = document.createElement("div");
+    head.className = "rec-head";
 
-    const name = document.createElement("span");
-    name.className = "row-name";
-    name.textContent = hit.name || "(unnamed)";
-    top.appendChild(name);
+    const name = document.createElement("button");
+    name.type = "button";
+    name.className = "rec-name";
+    name.title = "Open " + record.table + " record";
+    name.textContent = record.name || "(unnamed)";
+    name.addEventListener("click", () => openRecord(record.first));
+    remember(name, "record:" + groupKey + ":" + record.key);
+    head.appendChild(name);
 
-    if (hit.subtitle) {
+    if (record.subtitle) {
       const sub = document.createElement("span");
       sub.className = "row-sub";
-      sub.textContent = hit.subtitle;
-      top.appendChild(sub);
+      sub.textContent = record.subtitle;
+      head.appendChild(sub);
     }
+    block.appendChild(head);
 
-    const field = document.createElement("span");
-    field.className = "row-field";
-    field.textContent = hit.field;
-    top.appendChild(field);
-
-    row.appendChild(top);
-    (hit.snippets || []).forEach((snippet) =>
-      row.appendChild(renderSnippet(snippet, hit.redacted))
-    );
-
-    row.addEventListener("click", () => openRecord(hit));
-    return row;
+    const fields = document.createElement("dl");
+    fields.className = "fields";
+    record.fields.forEach((field) => {
+      const term = document.createElement("dt");
+      term.textContent = field.field;
+      const lines = document.createElement("dd");
+      field.snippets.forEach((entry) =>
+        lines.appendChild(renderSnippet(entry.snippet, entry.redacted))
+      );
+      fields.append(term, lines);
+    });
+    block.appendChild(fields);
+    return block;
   };
 
   const renderGroup = (entry) => {
@@ -468,9 +633,14 @@
     const head = document.createElement("button");
     head.type = "button";
     head.className = "group-head";
+    const listId = groupListId(entry.key);
+    head.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    head.setAttribute("aria-controls", listId);
+    remember(head, "head:" + entry.key);
 
     const caret = document.createElement("span");
     caret.className = "caret";
+    caret.setAttribute("aria-hidden", "true");
     caret.textContent = isCollapsed ? "▶" : "▼";
     head.appendChild(caret);
 
@@ -478,13 +648,13 @@
     label.textContent = entry.label;
     head.appendChild(label);
 
-    const count = document.createElement("span");
-    count.className = "count";
-    count.textContent =
-      plural(hits.length, "match", "matches") +
-      " in " +
-      plural(entry.records, "record", "records");
-    head.appendChild(count);
+    const countText = groupCountText(entry);
+    if (countText) {
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = countText;
+      head.appendChild(count);
+    }
 
     const statusText = STATUS_TEXT[entry.status] || "";
     if (statusText) {
@@ -502,11 +672,20 @@
     });
     group.appendChild(head);
 
-    if (!isCollapsed) {
+    /* The list the head controls is always drawn, so aria-controls always has
+     * a target: a collapsed group's is empty and hidden, as Debug Timeline
+     * does for a closed row. */
+    const list = document.createElement("div");
+    list.id = listId;
+    if (isCollapsed) {
+      list.hidden = true;
+      group.appendChild(list);
+    } else {
+      group.appendChild(list);
       if (hits.length) {
-        const list = document.createElement("div");
-        hits.forEach((hit) => list.appendChild(renderRow(hit)));
-        group.appendChild(list);
+        groupHitsByRecord(hits).forEach((record) =>
+          list.appendChild(renderRecord(record, entry.key))
+        );
 
         const listButton = document.createElement("button");
         listButton.type = "button";
@@ -517,11 +696,11 @@
           entry.records === 1
             ? "Open this record in a list ↗"
             : "Open these " + entry.records + " records in a list ↗";
-        listButton.style.margin = "6px 20px 10px";
         listButton.addEventListener("click", (event) => {
           event.stopPropagation();
           openAsList(entry);
         });
+        remember(listButton, "list:" + entry.key);
         group.appendChild(listButton);
       }
     }
@@ -532,7 +711,16 @@
     if (!shadow) return;
     const container = shadow.querySelector(".rows");
     if (!container) return;
+
+    /* The whole list is rebuilt each time a source reports, a group is
+     * collapsed or the filter changes. If a control in it had focus, the same
+     * record, head or list button gets it back by key. Focus anywhere else
+     * (the filter box, the footer) is not this rebuild's to move. */
+    const focused = shadow.activeElement;
+    const focusKey =
+      focused && within(focused, container) ? String(focused.snhFocusKey || "") : "";
     container.textContent = "";
+    focusables = new Map();
 
     const entries = displayGroups();
 
@@ -569,6 +757,31 @@
 
     updateSummary();
     renderDrawer();
+    if (focusKey) restoreFocus(focusKey);
+  };
+
+  /* Its replacement if it was drawn again; if not (its group went), the Close
+   * button, so focus stays in the panel rather than falling to the page. */
+  const restoreFocus = (key) => {
+    const target = focusables.get(key) || (shadow && shadow.querySelector(".close"));
+    if (target && typeof target.focus === "function") target.focus();
+  };
+
+  const finalCountText = () =>
+    plural(totalHits(), "match", "matches") +
+    " in " +
+    plural(totalRecords(), "record", "records") +
+    ", " +
+    plural(sources.size, "source", "sources") +
+    " reported." +
+    (truncated ? " Capped — refine the term to see the rest." : "");
+
+  /* The status line speaks twice in a search: once when it starts, and once
+   * when it ends, however it ends. A source reporting is not announced. */
+  const announceFinal = (lead) => {
+    if (announcedFinal) return;
+    announcedFinal = true;
+    announce((lead ? lead + " " : "") + finalCountText());
   };
 
   const updateSummary = () => {
@@ -635,6 +848,7 @@
 
   const mount = (term, tableFilters) => {
     close();
+    previousFocus = document.activeElement;
     host = document.createElement("div");
     host.id = "sn-dev-helper-code-search";
     /* Closed, like every other GlideLens panel: an open root lets page
@@ -645,7 +859,7 @@
     shadow.innerHTML = `
       <style>${UI_CSS}</style>
       <div class="overlay">
-        <section class="panel" role="dialog" aria-label="Code search results">
+        <section class="panel" role="dialog" aria-modal="true" aria-label="Code search results">
           <header class="header">
             <div class="heading">
               <h2>Code Search <span class="term"></span></h2>
@@ -662,7 +876,7 @@
             <span><strong data-count="total">0</strong>matches in
               <strong data-count="records">0</strong>records</span>
             <span><strong data-count="sources">0</strong>sources reported</span>
-            <span class="spinner" aria-label="Searching"></span>
+            <span class="spinner" aria-hidden="true"></span>
             <span class="chip-warn" data-cap style="display:none">
               <strong>Capped</strong> — refine the term to see the rest
             </span>
@@ -673,16 +887,17 @@
           </div>
           <div class="rows"></div>
           <div class="drawer">
-            <button class="drawer-head" type="button">
-              <span class="caret">▶</span><span>Source status — what was searched</span>
+            <button class="drawer-head" type="button" aria-expanded="false" aria-controls="snh-cs-sources">
+              <span class="caret" aria-hidden="true">▶</span><span>Source status — what was searched</span>
             </button>
-            <div class="drawer-list"></div>
+            <div class="drawer-list" id="snh-cs-sources"></div>
           </div>
           <footer class="toolbar">
             <span class="toolbar-note">Read-only — nothing here runs or edits what it finds.</span>
             <button type="button" data-action="cancel">Cancel</button>
             <button class="primary" type="button" data-action="close">Close</button>
           </footer>
+          <div class="sr-only" role="status" aria-live="polite" data-live></div>
         </section>
       </div>
     `;
@@ -711,6 +926,7 @@
       if (onCancel) onCancel();
       finished = true;
       updateSummary();
+      announceFinal("");
     });
 
     const search = shadow.querySelector(".search");
@@ -724,6 +940,7 @@
       const list = shadow.querySelector(".drawer-list");
       const open = list.classList.toggle("open");
       drawerHead.querySelector(".caret").textContent = open ? "▼" : "▶";
+      drawerHead.setAttribute("aria-expanded", open ? "true" : "false");
     });
 
     const overlay = shadow.querySelector(".overlay");
@@ -731,15 +948,33 @@
       if (event.target === overlay) close();
     });
 
+    /* Escape closes; Tab and Shift+Tab stay inside the panel, as in every
+     * other GlideLens panel. */
     keydownHandler = (event) => {
-      if (event.key !== "Escape" || !host) return;
+      if (!host || !shadow) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = focusableElements();
+      if (!focusable.length) return;
+      const index = focusable.indexOf(shadow.activeElement);
+      const next = event.shiftKey
+        ? (index <= 0 ? focusable.length - 1 : index - 1)
+        : (index < 0 || index === focusable.length - 1 ? 0 : index + 1);
       event.preventDefault();
-      event.stopPropagation();
-      close();
+      focusable[next].focus();
     };
     window.addEventListener("keydown", keydownHandler, true);
 
     renderRows();
+    const closeButton = shadow.querySelector(".close");
+    if (closeButton) closeButton.focus();
+    /* Said once as the search starts; the next thing said is the final count. */
+    announce("Searching…");
   };
 
   /* ---------------------------------------------------------------------
@@ -764,18 +999,26 @@
     finished = true;
     truncated = Boolean(result && result.truncated);
     renderRows();
+    announceFinal("");
   };
 
   const showError = (message) => {
     if (!shadow) return;
     finished = true;
     const container = shadow.querySelector(".rows");
+    const focused = shadow.activeElement;
+    const hadFocus = Boolean(focused && within(focused, container));
     container.textContent = "";
+    focusables = new Map();
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = String(message || "The search could not run.");
     container.appendChild(empty);
     updateSummary();
+    /* Nothing in the list survives an error; focus that was there stays in
+     * the panel. */
+    if (hadFocus) restoreFocus("");
+    announceFinal(empty.textContent);
   };
 
   const isOpen = () => Boolean(host);
@@ -792,5 +1035,7 @@
      * that without a DOM. */
     countRecords,
     clusterByRecord,
+    groupHitsByRecord,
+    groupCountText,
   };
 })();

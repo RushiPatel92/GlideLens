@@ -44,7 +44,7 @@ Run all Node tests explicitly so behavior does not depend on Node's directory
 discovery rules:
 
 ```powershell
-node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js tests/update_set_lens.test.js tests/update_set_lens_ui.test.js tests/update_set_lens_integration.test.js tests/version_lens.test.js tests/version_lens_ui.test.js tests/version_lens_integration.test.js
+node --test tests/code_search.test.js tests/code_search_api.test.js tests/code_search_ui.test.js tests/frame_discovery.test.js tests/search_transport_frames.test.js tests/record_search.test.js tests/record_search_ui.test.js tests/command_palette.test.js tests/content_context.test.js tests/open_url.test.js tests/debug_timeline.test.js tests/debug_timeline_frames.test.js tests/prefill_settle.test.js tests/prefill_impersonation.test.js tests/prefill_cross_instance.test.js tests/variable_values_native.test.js tests/translation_lens.test.js tests/translation_lens_ui.test.js tests/translation_lens_integration.test.js tests/translation_assistant.test.js tests/translation_assistant_ui.test.js tests/translation_assistant_integration.test.js tests/impersonate.test.js tests/impersonate_ui.test.js tests/impersonate_integration.test.js tests/update_set_lens.test.js tests/update_set_lens_ui.test.js tests/update_set_lens_integration.test.js tests/version_lens.test.js tests/version_lens_ui.test.js tests/version_lens_integration.test.js tests/catalog_insight_ui.test.js tests/debug_timeline_ui.test.js tests/contrast_floor.test.js tests/variable_insight.test.js
 ```
 
 The suites cover:
@@ -53,7 +53,30 @@ The suites cover:
   inheritance probing, redaction, pooling, and orchestration.
 - `code_search_api.test.js` — the instance Code Search endpoint, coverage map,
   ignored table scope, saturation, and adapter merging.
-- `code_search_ui.test.js` — result identity and separate match/record counts.
+- `code_search_ui.test.js` — result identity and separate match/record counts. A
+  source that was denied, absent, timed out or errored and found nothing shows
+  its status without a "0 matches" count, and the open-in-list button's rule
+  matches where the button is appended. The record-grouping helper keeps record
+  and field order, loses and duplicates nothing, keeps one sys_id in two tables
+  as two records, and merges two hits for one field without dropping a snippet.
+  A record's head takes its subtitle from the first hit that is not an
+  instance-index hit (whose subtitle is a field label), and none when there is
+  no such hit, and its name from the first hit unless that is only the sys_id
+  and a later hit has a real name.
+  Rendered tests against a DOM shim copied from `catalog_insight_ui.test.js`
+  check one head per record, one `dt` per field holding all its snippets, that
+  the name opens the record while a click on the code does nothing, that a
+  filter leaves only the fields that still match, and that a redacted field
+  keeps its wording. The shim models focus as the Record Lens one does
+  (detaching the focused node drops focus), so the keyboard tests mean
+  something: opening focuses Close, Tab and Shift+Tab wrap inside the panel,
+  closing by button or Escape gives focus back to the opener, and focus on a
+  record name, a group head or an open-in-list button comes back to the same
+  record or group by key after a rebuild, even when its group has moved,
+  while focus in the filter box or the footer is left alone. Group heads and
+  the source drawer carry `aria-expanded` and an `aria-controls` whose target
+  exists even when collapsed, and the one `role="status"` line says
+  "Searching…" at open and the final count once, never per source.
 - `frame_discovery.test.js` — the shared frame discovery and per-frame
   injection every worker read now uses: announcement collection, the frame-0
   fallback, cross-tab announcement rejection, and the regressions that matter —
@@ -155,7 +178,17 @@ The suites cover:
   - Both pickers are busy during a search.
   - A starred table's columns come back in order and are saved on change. A gone
     column is named, and unverifiable ones are never saved over.
-  - A match in an unshown field is marked.
+  - A match in an unshown field gets its own line under the record.
+  - Results: a column header names the shown columns in order and every row
+    has one cell per column, an empty value keeping its cell as a dash read as
+    "empty". The title cell is the first column's own value: when it is empty
+    the link reads "(empty)", named "Open record, <column> empty", and no other
+    column's value moves under the first header, also when every column is
+    empty and when the columns are read off the answer. The title button and
+    Enter on a row open the record; a click on a value does not. The sys_id is its own copy button, confirmed in place and
+    restored. The stacked form is the same nodes, laid out by container
+    queries. The header sticks at `top:-6px`, past the list's 6px top padding,
+    so no scrolled row shows above it.
   - Opening one picker closes the other, and Escape or an outside click closes
     both.
   - Opening sorts ticked rows into Selected (columns in shown order, where that
@@ -173,7 +206,13 @@ The suites cover:
   single-appearance favourite, the stable Debug Timeline favourite key across
   Start/Stop, rejection of duplicate labels and implicit input labels, and
   source assertions for the listbox, `aria-activedescendant`, focus trap, and
-  shared panel headings. Also that every `*_ui.js` panel, found by glob rather
+  shared panel headings. The toast is a polite `role="status"` region, and a
+  redraw that leaves the live result count unchanged does not rewrite it, so
+  one action is not announced twice. No panel (`*_ui.js`, by glob) or
+  `content.js` calls an array-only method directly on `children`,
+  `childNodes`, `classList` or a `querySelectorAll` result, nor `forEach` on
+  `children`: the DOM shims hand back arrays, so such a call passes every suite
+  and throws in Chrome. Also that every `*_ui.js` panel, found by glob rather
   than listed, carries the shared GlideLens teal and pink tokens and stops the
   page's inherited styles with `:host{all:initial}`, which no host rule undoes
   with `inherit`, `unset` or `revert` — there is no build step to share CSS, so
@@ -199,9 +238,34 @@ The suites cover:
   the fallback to Chrome's default placement when tab context is missing or
   invalid.
 - `debug_timeline.test.js` — reversible MAIN-world recording, including all
-  GlideAjax entry points.
+  GlideAjax entry points, and the `startId` link from each asynchronous
+  completion to its own start when answers arrive out of order.
 - `debug_timeline_frames.test.js` — discovery and injection across concrete
   frames without hanging on helper frames.
+- `debug_timeline_ui.test.js` — the Debug Timeline results panel under
+  `node:vm`, on a copy of the Catalog Logic DOM shim, with events in the
+  recorder's shapes. A finished GlideAjax call opens as a Request card (Script
+  Include, method, each parameter as a fact) and a Response card (status, took,
+  answer format and length, decoded answer); a body that was not kept edges the
+  card amber and says why first. A start, and every other event, opens as one
+  fact list. A redacted value reads as words and never shows the marker; a
+  reason is claimed only where the recorder redacts by name. The call stack is
+  behind an `aria-expanded` toggle. No key is dropped: an unknown key shows
+  under its own name, or in "Other details" on a card. The row head is a
+  disclosure button, an open row and a shown stack survive a filter or search
+  redraw, the duration column comes only from `durationMs`, and the copied
+  trace's format is unchanged. A row's opened content is built only when it is
+  first opened: a closed row's container is empty but keeps the id its head
+  points at, so a redraw on each search keystroke does not build every event.
+  One row per call: a start whose completion names it is left out, the
+  finished row gains "Sent" and the start's stack (and is found by a search for
+  that stack), and pairing follows `frameId` plus `startId`, never the name; an
+  unanswered start, a link to another frame and a link to a start no longer in
+  the trace all pair nothing. An unchanged `setValue` and a same-argument
+  repeat within 5 seconds are left out, with no toggle and no "low-signal"
+  wording anywhere in the panel source; the event count and the copied trace
+  cover only the rows shown, and the copy carries a finished call's "Sent" and
+  stack but never `startId`.
 - `prefill_settle.test.js` — installation and removal of GlideAjax settle
   tracking around catalog-variable prefill.
 - `prefill_impersonation.test.js` — Prefill while impersonating. The worker's
@@ -219,9 +283,16 @@ The suites cover:
   nothing switches before the click, the order is switch, read, switch back,
   fill, a second run during the switch is refused, late progress cannot
   replace a run's last message, and every failure fills nothing — including a
-  failed switch back with the palette closed. On a minimal fake DOM: clicking
-  either confirmation button returns focus to the input, and Esc there closes
-  the palette once a run's last message is showing. `frame_discovery.test.js` adds
+  failed switch back with the palette closed. The four steps stay listed and
+  tick off with their done wording, the report follows them without repeating
+  the "impersonating again" line, a failure sits under the step it stopped on
+  (a refused first switch, a failed switch back, a read as you that found
+  nothing while the switch back still ticks) with later steps pending, a
+  second run's refusal goes under the list without replacing the step's own
+  words, and late progress cannot replace a finished list. On a minimal fake
+  DOM: clicking either confirmation button returns focus to the input, the
+  confirmation reads reason, amber consequence, lead-in, steps, and Esc there
+  closes the palette once a run's last message is showing. `frame_discovery.test.js` adds
   that no fill starts while a switch holds the tab.
 - `update_set_lens.test.js` — the Update Set Lens engine under `node:vm`,
   against a simulated instance (`update_set_sim.js`, shared with the Version
@@ -399,6 +470,42 @@ The suites cover:
   its own and sending the check with its four fields only, end to end with the
   real engine, handing the cards' `parts` to the panel and opening it with
   this instance's name.
+- `catalog_insight_ui.test.js` — the Catalog Logic panel under `node:vm`, on a
+  copy of the Record Lens DOM shim. A badge only when something stops a row
+  firing, inactive winning over a Task/RITM-only view, and the reason sentence
+  that starts with the badge's words; the badge is hidden from assistive
+  technology, so the verdict is spoken once. Facts as labelled columns under one
+  header, with no pills. The name is a button that opens the record; a click on
+  the row does not. The summary's "won't run here" count is an `aria-pressed`
+  toggle that filters with the type filter and search. The whole item opens
+  grouped by variable, sharing the rows and header with the flat list; opened
+  from a variable's icon it is flat, and "Show all" groups it. Form-level logic
+  comes first; a UI policy sits under every variable it changes, with what it
+  does there, and scoped to one variable under that one only; an action that
+  names no variable files nothing. A variable whose name never came back shows
+  its label or "Variable name not available" with its sys_id, after the named
+  ones; the sys_id is hidden from screen readers when a label names it. A
+  group head is a button that opens and closes its rows in place, its rows
+  always drawn so `aria-controls` has a target, and closed groups stay closed
+  through a filter or search; its label has no click of its own and wraps, and
+  its count is spoken as client scripts and UI policies. The search is asked of
+  a row in each place it is filed: a variable's name or label finds a UI policy
+  under that variable and not under the others it changes, the policy's own
+  words find it everywhere it is filed, flat finds it once, and the copy holds
+  what was found; a nameless variable is found by the sys_id its head shows, a
+  named one not by its sys_id. The panel takes focus on Close as it opens, and
+  Tab and Shift+Tab go round its own displayed, enabled controls in page order,
+  passing over a closed group's rows, a disabled button and a count hidden at
+  zero; Show all, which takes its own button away, moves focus to the grouping
+  it turned on. From the palette, `showCatalogInsight` closes the palette
+  before opening the panel, because closing it hands focus back to the page.
+  Every way out (either Close, Escape, a click outside) gives focus back to
+  what had it when the panel opened, without scrolling, and an opener that has
+  gone is passed over. The shim focuses as Chrome does: only a node in an
+  attached shadow root, which becomes that root's `activeElement`. The sticky header and
+  group heads sit at `top:-6px`, past the list's 6px top padding, so no
+  scrolled row shows above them. The copied list words each verdict the same
+  way.
 - `prefill_cross_instance.test.js` — Prefill from another instance. Parsing:
   a link names its own instance and wins over Read from, a link's sys_id is
   taken from Workspace, classic, `nav_to` and portal routes, and a non-SN,
@@ -419,12 +526,15 @@ The suites cover:
   first read, no Prefill state touched, its listener removed on failure, and
   answering only the extension from the top frame. The preparation: found,
   missing, refused and tableless references, chunking at 100, list subsets,
-  lookups, attachments and multi-row cells. The run: counts that add up to the
-  number read, neutral notes, no value or sys_id in any message, every
+  lookups, attachments and multi-row cells. The run: a headline, labelled
+  facts and then notes, counts that add up to the number read, a zero fact
+  left out, "Can't be copied" kept apart from "Couldn't be filled", Held back
+  a count the notes explain once, no value or sys_id in any message, every
   refusal's wording, and no session switch offered or made. On a minimal fake
   DOM: Read from under the input, the hint in both states, a pasted link moving
   the select, Tab and Shift+Tab through the trap, Esc and Enter on the select,
-  and finished lines drawn as text by kind.
+  finished lines drawn as text by kind with the facts as one list, and the
+  switch steps drawn with their marks while the status says the step.
 - `variable_values_native.test.js` — classic RITM identity before/after reads,
   Workspace-aware embedded-classic selection, exact `variables.<name>` classic
   reads and same-snapshot page timezone, record-producer `question_answer`
@@ -488,7 +598,32 @@ The suites cover:
   Select Box raw-value/display-label separation, malformed representation
   rejection, end-to-end Checkbox boolean comparison refusing both a disagreeing
   and an unrecognised pair, tri-state visibility, verdict-derived panel
-  completeness, and structurally honest stored-only copy.
+  completeness, and structurally honest stored-only copy. Its rendered-panel
+  tests run the real `showResults` against a DOM shim in the style of
+  `catalog_insight_ui.test.js`: a visible row has no badge and keeps a
+  screen-reader-only "Visible", the three hidden buckets share one badge class
+  with their own labels and a left edge, the two unknown buckets are the same
+  badge in grey, a multi-row set has no badge or text, a placeholder the panel
+  produced carries the placeholder class while a value that really is the text
+  "(empty)" does not, "default, not live" is a separate note, Match is a plain
+  word, Differs is a rose badge that sets the row's edge, Not comparable is the
+  grey unknown badge with no edge of its own (a hidden row keeps its hidden
+  edge), a Match row leaves out the engine's stock match sentence and keeps the
+  rest of its reason while the copied list keeps it whole, every stock sentence
+  the panel strips is still written verbatim by `content.js`, the header's cells
+  and grid tracks equal each row's columns for
+  all eight capability combinations, and the copied list for the same rows is
+  pinned byte for byte. Every path opens the panel through
+  `showVariableValuesPanel` in `content.js`, which closes the palette first:
+  `closePalette()` gives focus back to the page, so run after the panel opened
+  it pulled focus out of the panel and left the panel nothing to give focus
+  back to on close. The test runs the helper and counts that `content.js` has
+  no other `SNHiddenVariablesUI.showResults(` call. A list narrower than its
+  layout's columns stacks its rows: the list's `data-fit` is the sum of the
+  tracks' least widths, gaps and padding (954px for compared with
+  visibility), and the stylesheet holds a container rule for each native
+  layout's fit, generated from `rowLayout`, so a changed track moves its rule;
+  the portal layout's flexible tracks get none.
 
 - `translation_lens.test.js` — the Translation Lens engine: storage routing by
   dictionary type, chunked query construction and the values it refuses,
@@ -506,7 +641,8 @@ The suites cover:
   only the languages asked for, applies the identical excluded-state rule,
   never rewrites the row it counted, and treats an empty selection as a
   selection rather than as every language.
-- `translation_lens_ui.test.js` — the panel. A late call from a superseded run
+- `translation_lens_ui.test.js` — the panel, on a shim whose `children` is
+  an array-like with no array methods, as Chrome's HTMLCollection is. A late call from a superseded run
   must never paint; progressive sections accumulate and are then replaced
   rather than stacked; absent data never reads as coverage. Also the language
   picker, which rescopes the score while the all-language score stays drawn
@@ -514,7 +650,27 @@ The suites cover:
   back again, because the scope is memoised for the duration of a paint. Minor
   rows fold away without changing what was counted, each section carries its
   own score over the same selection as the headline, and the report carries no
-  value, URL, hostname or sys_id. Most cases run the panel with no engine
+  value, URL, hostname or sys_id. An opened row lists each answer once, gaps
+  first (Missing, Blank, Partial, Conflict, Unavailable, Unverified, then
+  Fallback, Same as source, Not applicable, then Direct), and draws no empty
+  answer. Only Missing and Blank languages are links, with the chips'
+  `aria-label`s and URLs; a language's own note sits beside it, and a
+  tooltip-only explanation is said once per answer; an answer's word and its
+  count are separate words. Store facts follow the answers in the same list,
+  under a rule, so one label column lines every value up; the platform link is
+  a link and every link is 12px. Each choice under a choices row gets the same
+  answer list, its own Missing and Blank languages linked, with one label
+  width down the whole list; what a field says under an answer is said once
+  above the choices instead of under each. A choices row draws no answer list
+  of its own, since it would only repeat its choices': the choices come first,
+  then the store facts (any Extra languages at their top), and the row's head
+  keeps its score. One with no choices to list keeps its own list. A toggled
+  row or group head keeps keyboard focus, and an open row's head points at its
+  detail. The summary is three lines: the score with what it measures (and the
+  all-language figure when scoped, the hardcoded alert directly after it), the
+  row counts as plain text, and an "Also check" line only when there is
+  something on it; the unavailable state and the filter row are unchanged.
+  Most cases run the panel with no engine
   loaded, which is what exercises its local fallbacks; two load both files into
   one sandbox to pin the contract between them.
 - `translation_lens_integration.test.js` — the runtime boundary: the
@@ -613,7 +769,14 @@ The suites cover:
   reuses a row number keeps its own old text, a member of a shared row that
   lands only on a later fill joins, and shared translations are counted by
   destination, not by field. And Overwrite from a per-field display binds
-  every field to the value shown for it, an empty one included.
+  every field to the value shown for it, an empty one included. The body is
+  not a live region: one visually hidden status line, never redrawn, says
+  each phase once (reading, the draft's count or "Nothing to translate", a
+  read error, the fill report's first line, a copy or download), beside the
+  reply's own status line; each show/hide toggle names its list in
+  `aria-controls`; and "Fill from a different reply", which removes itself,
+  puts focus in the empty reply box (the shim drops focus from a removed
+  node, so this is tested rather than assumed).
 - `translation_assistant_integration.test.js` — the runtime boundary: the
   four-method panel contract `content.js` depends on, the command listed from
   the decoded URL but acting only on a probed scope, the MAIN-world read that
@@ -743,7 +906,15 @@ The suites cover:
   a confirmation restores it, and entering a confirmation supersedes reads
   already in flight, so one cannot repaint over it. Stop absent with an
   explanation when no original is recoverable, and present when a frame was
-  merely unreadable.
+  merely unreadable. Aligned rows: one `aria-hidden` header (Name, User ID,
+  the value columns merged in the engine's order, the role column), every row
+  a cell per column labelled by a hidden `dt`, an empty cell read as "empty"
+  and marked to be left out when stacked, the role column only on a role
+  search (headed "Selected role" unless the result names the role), the
+  recent list under the same header, the name opening the user record with no
+  "Open user", Cancel returning focus to the same row's Impersonate, and both
+  of a row's buttons disabled while a request is out, in place and when
+  redrawn.
 
 - `impersonate_integration.test.js` — the runtime boundary. The worker's
   impersonation block is evaluated on its own against a `chrome` stub, so the
@@ -764,6 +935,34 @@ The suites cover:
   is refused before frame discovery. Mutation-transport assertions live here
   rather than in `search_transport_frames.test.js`, so read-retry semantics
   can never be applied to the write path by accident.
+- `contrast_floor.test.js` — the dimmest text grey. It reads every `color:`
+  hex in the `*_ui.js` panels and `content.js` (inline style attributes
+  included), every `color:var(--token)` whose token the file defines as a hex,
+  and any `.style.color` set from script, and fails on a value under 5.8:1 on
+  the panel background `#1e1e2e`; `#9a9ab3` (about 6.0:1) is the floor, and
+  input placeholders use `#a4a4be`. The allow-list names each exemption by
+  file, colour and rule, with its reason: dark text on a pink or coloured
+  fill, decorative separators and bullets, and the passing greys the owner
+  kept in Update Set Lens and Version Lens. An entry nothing uses any more
+  fails, so the list cannot outlive its rule. It measures against the panel
+  background only; text on a band, card or footer is not checked here.
+- `variable_insight.test.js` — Variable Insight's marks and notices, the
+  `content.js` block from `buildVariableLogicIndex` to `openList`, against a
+  DOM shim whose selector matcher throws on anything it does not understand.
+  Notices: with the palette closed a page-corner notice in its own closed root
+  (`role="status"`, created once, emptied rather than removed) says the read,
+  the result and any failure; with it open the same words go to the palette
+  line; turning off says "Variable marks removed." on both; a quick second
+  notice is never overwritten by the first; a result shown in the palette
+  clears a spinner left in the corner. Marks: a real `type="button"` named by
+  the variable's label (singular and plural), an SVG built with
+  `createElementNS` and the count as text, one injected stylesheet starting
+  from `all:initial` and removed with the marks, no inline style, no hover
+  script, no `innerHTML`. A mark sits beside the field's label, never inside
+  it, and a checkbox's inside its control. Only variables something acts on
+  get a mark, and `varInsightStale` agrees, so the observer settles. A focused
+  mark Angular re-creates takes focus back only while focus is on the page
+  body.
 
 Impersonate additionally has an end-to-end browser check, because the POST is
 the one thing no Node suite and no Table API client can exercise. It lives with

@@ -308,7 +308,7 @@ test("a label match outranks a description match", () => {
     command({
       id: "prefill",
       label: "Variable Prefill",
-      description: "Copy catalog-variable values from another ticket",
+      description: "Copy variable values from another ticket",
       group: "Catalog",
     }),
     command({
@@ -954,4 +954,78 @@ test("result panels use the same stable feature headings", () => {
     const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
     assert.match(source, pattern, file);
   }
+});
+
+test("the palette toast is a polite status region, and a redraw with the same count stays quiet", () => {
+  assert.match(contentSource, /<div id="toast" role="status"><\/div>/);
+  /* Every count write goes through the one setter, which skips an unchanged
+   * value: toggling the favourite redraws the list and toasts, and the
+   * redraw must not announce the same count a second time. */
+  const render = between(contentSource, "function renderResults(", "function renderPaletteWaiting(");
+  assert.doesNotMatch(render, /paletteCount\.textContent\s*=/);
+  assert.match(render, /setPaletteCount\(/);
+  const setter = between(contentSource, "function setPaletteCount(", "function selectCommand(");
+  let writes = 0;
+  let value = "3 commands";
+  const count = {
+    get textContent() { return value; },
+    set textContent(next) { writes += 1; value = next; },
+  };
+  const setPaletteCount = new Function("paletteCount", setter + "\nreturn setPaletteCount;")(count);
+  setPaletteCount("3 commands");
+  assert.strictEqual(writes, 0, "an unchanged count is not rewritten");
+  setPaletteCount("1 command");
+  assert.strictEqual(writes, 1);
+  assert.strictEqual(value, "1 command");
+});
+
+/* `children` is a live HTMLCollection in Chrome and `querySelectorAll` a
+ * NodeList: neither has `some`, `map` or `filter`, and an HTMLCollection has
+ * no `forEach` either. The panels' DOM shims hand back plain arrays, so a
+ * call like `list.children.some(...)` passes every suite and throws in the
+ * browser -- which once left Translation Lens with an empty list whenever a
+ * row was opened. Globbed like the shared-style check above. */
+const ARRAY_ONLY = "some|map|filter|find|findIndex|every|reduce|includes|indexOf|slice|concat|flatMap";
+const ON_LIVE_COLLECTION = new RegExp(
+  "\\.(?:children|childNodes|classList)\\s*\\.\\s*(?:" + ARRAY_ONLY + ")\\s*\\(" +
+  "|\\.children\\s*\\.\\s*forEach\\s*\\(" +
+  "|querySelectorAll\\s*\\((?:[^()]|\\([^()]*\\))*\\)\\s*\\.\\s*(?:" + ARRAY_ONLY + ")\\s*\\(",
+  "g"
+);
+
+test("no panel calls an array-only method directly on a live DOM collection", () => {
+  /* The rule must catch what it is for, or a broken pattern passes. */
+  [
+    "list.children.some((child) => child)",
+    "node.childNodes\n      .map((n) => n)",
+    "el.classList.includes('x')",
+    "row.children.forEach((c) => c)",
+    "shadow.querySelectorAll(\".row\").filter(Boolean)",
+    "root.querySelectorAll(sel('x')).find(Boolean)",
+  ].forEach((sample) => {
+    assert.ok(sample.match(ON_LIVE_COLLECTION), "the rule misses: " + sample);
+  });
+  [
+    "Array.from(list.children).some((c) => c)",
+    "list.children.length",
+    "shadow.querySelectorAll(\".row\").forEach((row) => row)",
+    "node.classList.contains('x')",
+  ].forEach((sample) => {
+    assert.ok(!sample.match(ON_LIVE_COLLECTION), "the rule wrongly flags: " + sample);
+  });
+
+  const root = path.join(__dirname, "..");
+  const files = fs.readdirSync(root).filter((name) => /_ui\.js$/.test(name)).sort().concat(["content.js"]);
+  assert.ok(files.length >= 8, "the glob must actually find the panels: " + files.join(", "));
+  const hits = [];
+  files.forEach((file) => {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    let match;
+    ON_LIVE_COLLECTION.lastIndex = 0;
+    while ((match = ON_LIVE_COLLECTION.exec(source)) !== null) {
+      const line = source.slice(0, match.index).split("\n").length;
+      hits.push(file + ":" + line + "  " + match[0].replace(/\s+/g, " "));
+    }
+  });
+  assert.deepStrictEqual(hits, [], "wrap the collection in Array.from first:\n" + hits.join("\n"));
 });
