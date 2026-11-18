@@ -3890,7 +3890,7 @@ test("a stored-only multi-row set renders one labelled table and an empty cell s
 test("the panel shows a row count while the copy output keeps the whole array", () => {
   // The rendered side text and the copied side text are deliberately different
   // functions: the panel is for reading, the clipboard is for pasting.
-  assert.match(uiSource, /sideValue\.textContent = nativeSideDisplayText\(row, side\)/);
+  assert.match(uiSource, /const sideParts = nativeSideDisplayParts\(row, side\);\s*fillValue\(sideValue, sideParts\)/);
   assert.match(uiSource, /lines\.push\("  Stored: " \+ nativeSideText\(row, "stored"\)\)/);
   assert.match(uiSource, /rows\.length === 1 \? "1 row" : String\(rows\.length\) \+ " rows"/);
 
@@ -4533,4 +4533,720 @@ test("a substituted definition is not compared when the classic form binds the o
     [Object.assign(liveRow(def, "steel"), { foundEl: true })]
   );
   assert.strictEqual(bound.comparison, "match");
+});
+
+/* ---------------------------------------------------------------------------
+ * The rendered panel: a badge only for an exception.
+ *
+ * These run the real showResults against a small DOM shim in the style of
+ * tests/catalog_insight_ui.test.js: a parser for the panel's own innerHTML
+ * shell and a selector matcher that throws on anything it does not
+ * understand, so a test cannot pass because a selector matched nothing.
+ * All names and values are synthetic.
+ * ------------------------------------------------------------------------ */
+
+const VV_VOID_TAGS = new Set(["INPUT", "BR", "IMG", "META", "LINK", "HR"]);
+const vvCamel = (name) => name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+
+function vvParseCompound(text) {
+  const out = { tag: "", classes: [], attrs: [] };
+  const pattern =
+    /([a-zA-Z][a-zA-Z0-9-]*)|\.([A-Za-z0-9_-]+)|\[([a-zA-Z0-9_-]+)(?:=(?:'([^']*)'|"([^"]*)"))?\]/y;
+  let index = 0;
+  while (index < text.length) {
+    pattern.lastIndex = index;
+    const match = pattern.exec(text);
+    if (!match) throw new Error("selector not supported by the shim: " + text);
+    if (match[1]) {
+      if (index) throw new Error("selector not supported by the shim: " + text);
+      out.tag = match[1].toUpperCase();
+    } else if (match[2]) {
+      out.classes.push(match[2]);
+    } else {
+      out.attrs.push([match[3], match[4] !== undefined ? match[4] : match[5]]);
+    }
+    index = pattern.lastIndex;
+  }
+  return out;
+}
+
+function vvMatchesCompound(node, compound) {
+  if (!node || !node.attributes) return false;
+  if (compound.tag && node.tagName !== compound.tag) return false;
+  const classes = String(node.className || "").split(/\s+/);
+  if (compound.classes.some((name) => !classes.includes(name))) return false;
+  return compound.attrs.every(([name, value]) => {
+    let actual = Object.prototype.hasOwnProperty.call(node.attributes, name) ? node.attributes[name] : null;
+    if (actual === null && name.startsWith("data-")) {
+      const key = vvCamel(name.slice(5));
+      if (Object.prototype.hasOwnProperty.call(node.dataset, key)) actual = String(node.dataset[key]);
+    }
+    return value === undefined ? actual !== null : actual === value;
+  });
+}
+
+function vvMatchesSelector(node, selector) {
+  if (selector.includes(",") || /[>+~#:]/.test(selector)) {
+    throw new Error("selector not supported by the shim: " + selector);
+  }
+  const parts = selector.trim().split(/\s+/).map(vvParseCompound);
+  if (!vvMatchesCompound(node, parts[parts.length - 1])) return false;
+  let ancestor = node.parentNode;
+  for (let index = parts.length - 2; index >= 0; index -= 1) {
+    while (ancestor && !vvMatchesCompound(ancestor, parts[index])) ancestor = ancestor.parentNode;
+    if (!ancestor) return false;
+    ancestor = ancestor.parentNode;
+  }
+  return true;
+}
+
+function vvCreateDom() {
+  class TextNode {
+    constructor(value) {
+      this.tagName = "#text";
+      this.children = [];
+      this.parentNode = null;
+      this._text = String(value == null ? "" : value);
+    }
+    get textContent() { return this._text; }
+  }
+
+  class El {
+    constructor(tag) {
+      this.tagName = String(tag).toUpperCase();
+      this.children = [];
+      this.parentNode = null;
+      this.attributes = Object.create(null);
+      this.handlers = Object.create(null);
+      this.dataset = {};
+      this.className = "";
+      this.id = "";
+      this.value = "";
+      this.type = "";
+      this.title = "";
+      this.hidden = false;
+      this.style = {
+        setProperty(name, value) { this[name] = String(value); },
+      };
+      this.disabled = false;
+      this._text = "";
+    }
+    get classList() {
+      const node = this;
+      const list = () => String(node.className || "").split(/\s+/).filter(Boolean);
+      return {
+        contains: (name) => list().includes(name),
+        add(name) { if (!list().includes(name)) node.className = list().concat([name]).join(" "); },
+        toggle(name, force) {
+          const has = list().includes(name);
+          const want = force === undefined ? !has : Boolean(force);
+          if (want && !has) node.className = list().concat([name]).join(" ");
+          if (!want && has) node.className = list().filter((item) => item !== name).join(" ");
+          return want;
+        },
+      };
+    }
+    get childElementCount() { return this.children.filter((child) => child.tagName !== "#text").length; }
+    get textContent() {
+      return this._text + this.children
+        .filter((child) => child.tagName !== "STYLE")
+        .map((child) => child.textContent)
+        .join("");
+    }
+    set textContent(value) {
+      this.children.forEach((child) => { child.parentNode = null; });
+      this.children = [];
+      this._text = value == null ? "" : String(value);
+    }
+    set innerHTML(markup) {
+      this.textContent = "";
+      parseInto(this, String(markup));
+    }
+    appendChild(node) {
+      if (node.parentNode) node.parentNode.removeChild(node);
+      node.parentNode = this;
+      this.children.push(node);
+      return node;
+    }
+    append(...nodes) {
+      nodes.forEach((node) => this.appendChild(typeof node === "string" ? new TextNode(node) : node));
+    }
+    removeChild(node) {
+      const index = this.children.indexOf(node);
+      if (index >= 0) this.children.splice(index, 1);
+      node.parentNode = null;
+      return node;
+    }
+    remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+    focus() {}
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+    }
+    addEventListener(type, handler) {
+      (this.handlers[type] = this.handlers[type] || []).push(handler);
+    }
+    attachShadow() {
+      const shadow = new El("#shadow");
+      shadow.host = this;
+      this.shadowRoot = shadow;
+      return shadow;
+    }
+    querySelectorAll(selector) {
+      const out = [];
+      const visit = (node) => (node.children || []).forEach((child) => {
+        if (vvMatchesSelector(child, selector)) out.push(child);
+        visit(child);
+      });
+      visit(this);
+      return out;
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    fire(type, event) {
+      const payload = Object.assign({
+        target: this,
+        preventDefault() { payload.defaultPrevented = true; },
+        stopPropagation() {},
+      }, event || {});
+      (this.handlers[type] || []).slice().forEach((handler) => handler(payload));
+      return payload;
+    }
+  }
+
+  function parseInto(parent, markup) {
+    const token =
+      /<\/([a-zA-Z0-9-]+)\s*>|<([a-zA-Z0-9-]+)((?:\s+[^\s=>/]+(?:\s*=\s*"[^"]*")?)*)\s*\/?>|([^<]+)/y;
+    const attribute = /([^\s=>/]+)(?:\s*=\s*"([^"]*)")?/g;
+    const stack = [parent];
+    let index = 0;
+    while (index < markup.length) {
+      token.lastIndex = index;
+      const match = token.exec(markup);
+      if (!match) throw new Error("markup not supported by the shim at: " + markup.slice(index, index + 40));
+      index = token.lastIndex;
+      const current = stack[stack.length - 1];
+      if (match[1]) {
+        if (current.tagName !== match[1].toUpperCase()) throw new Error("mismatched </" + match[1] + ">");
+        stack.pop();
+      } else if (match[2]) {
+        const node = new El(match[2]);
+        let found;
+        attribute.lastIndex = 0;
+        while ((found = attribute.exec(match[3] || "")) !== null) {
+          const name = found[1];
+          const value = found[2] === undefined ? "" : found[2];
+          if (name === "class") node.className = value;
+          else if (name === "id") node.id = value;
+          else {
+            if (name === "type") node.type = value;
+            if (name === "title") node.title = value;
+            if (name.startsWith("data-")) node.dataset[vvCamel(name.slice(5))] = value;
+            node.attributes[name] = value;
+          }
+        }
+        current.appendChild(node);
+        if (node.tagName === "STYLE") {
+          const end = markup.indexOf("</style>", index);
+          node._text = markup.slice(index, end);
+          index = end + "</style>".length;
+        } else if (!VV_VOID_TAGS.has(node.tagName)) {
+          stack.push(node);
+        }
+      } else if (match[4].trim()) {
+        current.appendChild(new TextNode(match[4]));
+      }
+    }
+    if (stack.length !== 1) throw new Error("unclosed element in template");
+  }
+
+  const windowObject = {
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  windowObject.top = windowObject;
+  const document = {
+    createElement: (tag) => new El(tag),
+    createTextNode: (value) => new TextNode(value),
+    documentElement: new El("html"),
+    body: new El("body"),
+    execCommand: () => false,
+  };
+  return { document, window: windowObject };
+}
+
+function vvRender(result) {
+  const dom = vvCreateDom();
+  const copied = [];
+  const navigatorObject = { clipboard: { writeText: async (text) => { copied.push(text); } } };
+  const ui = new Function(
+    "globalThis",
+    "window",
+    "document",
+    "navigator",
+    "setTimeout",
+    uiSource + "\nreturn globalThis.SNHiddenVariablesUI;"
+  )({}, dom.window, dom.document, navigatorObject, () => 0);
+  ui.showResults(result);
+  const host = dom.document.documentElement.children.find(
+    (node) => node.id === "snh-hidden-variables-results"
+  );
+  return { ui, copied, shadow: host.shadowRoot };
+}
+
+const vvPortalRow = (name, label, extra) => Object.assign({
+  name,
+  label,
+  type: "Single Line Text",
+  setName: "",
+  bucket: "visible",
+  hidden: false,
+  visibilityState: "visible",
+  valueSource: "live",
+  value: "",
+}, extra || {});
+
+const VV_PORTAL_ROWS = () => [
+  vvPortalRow("requested_for", "Requested for", { type: "Reference", value: "0a1b2c3d4e5f60718293a4b5c6d7e8f9" }),
+  vvPortalRow("start_date", "Access start date", { type: "Date", value: "" }),
+  vvPortalRow("literal_note", "Literal note", { value: "(empty)" }),
+  vvPortalRow("risk_rating", "Risk rating", { type: "Numeric Scale", bucket: "invisible", hidden: true, visibilityState: "hidden", value: "0" }),
+  vvPortalRow("routing_key", "Routing key", { bucket: "hidden-type", hidden: true, visibilityState: "hidden", value: "EX-ROUTE-02" }),
+  vvPortalRow("cost_centre", "Cost centre", { type: "Reference", setName: "Example details", bucket: "absent", hidden: true, visibilityState: "hidden", valueSource: "none" }),
+  vvPortalRow("laptop_model", "Laptop model", { type: "Select Box", valueSource: "default", value: "standard_14" }),
+  vvPortalRow("access_token", "Access token", { type: "Masked", valueSource: "redacted", value: "" }),
+  vvPortalRow("software_list", "Software to install", { type: "Multi-Row Variable Set", bucket: "mrvs", isMrvs: true, value: '[{"app":"Editor"},{"app":"Viewer"}]' }),
+  vvPortalRow("unknown_one", "Unknown one", { bucket: "visibility-unknown", hidden: null, visibilityState: "unknown", value: "x" }),
+  vvPortalRow("unknown_two", "Unknown two", { bucket: "live-unavailable", hidden: null, visibilityState: "unknown", value: "y" }),
+];
+
+const vvNativeRow = (name, label, extra) => Object.assign({
+  mode: "native",
+  name,
+  label,
+  type: "Single Line Text",
+  setName: "",
+  isMrvs: false,
+  bucket: "visible",
+  hidden: false,
+  visibilityState: "visible",
+  secret: false,
+  storedLookup: "found",
+  storedValue: "",
+  liveValue: "",
+  liveValueAvailable: true,
+  comparison: "match",
+  reason: "Stored and live values match.",
+}, extra || {});
+
+const VV_NATIVE_ROWS = () => [
+  vvNativeRow("start_date", "Access start date", { type: "Date", storedValue: "2026-12-01", liveValue: "2026-12-01" }),
+  vvNativeRow("risk_rating", "Risk rating", {
+    type: "Numeric Scale", bucket: "invisible", hidden: true, visibilityState: "hidden",
+    storedValue: "3", liveValue: "0", comparison: "differs", reason: "Stored and live values are different.",
+  }),
+  vvNativeRow("cost_centre", "Cost centre", { type: "Reference", setName: "Example details" }),
+  vvNativeRow("access_token", "Access token", {
+    type: "Masked", secret: true, storedLookup: "not-read", storedValue: null, liveValue: null,
+    liveValueAvailable: false, comparison: "not-comparable", reason: "Secret value was not read.",
+  }),
+  vvNativeRow("old_answer", "Old answer", {
+    storedLookup: "absent", storedValue: null, liveValueAvailable: false,
+    comparison: "not-comparable", reason: "No stored row exists for this variable.",
+  }),
+  vvNativeRow("unread", "Unread", {
+    storedLookup: "not-read", storedValue: null, liveValue: "(empty)",
+    comparison: "not-comparable", reason: "",
+  }),
+];
+
+const vvRows = (shadow) => shadow.querySelectorAll(".rows .row");
+const vvRow = (shadow, label) =>
+  vvRows(shadow).find((node) => node.querySelector(".row-label").textContent === label);
+const vvHas = (node, name) => String(node.className).split(/\s+/).includes(name);
+// The grid cells of a row, without the full-width multi-row detail.
+const vvCells = (row) => row.children.filter((node) => !vvHas(node, "mrvs-detail"));
+const vvCellKey = (cell) => {
+  if (vvHas(cell, "row-name")) return "name";
+  if (vvHas(cell, "row-type")) return "type";
+  if (vvHas(cell, "vis-none") || vvHas(cell, "badge")) return "visibility";
+  if (vvHas(cell, "comparison")) return "comparison";
+  if (vvHas(cell, "native-values")) return "values";
+  if (vvHas(cell, "row-value")) return "value";
+  return "unknown:" + cell.className;
+};
+const VV_HEAD_KEYS = {
+  Variable: "name",
+  Type: "type",
+  Visibility: "visibility",
+  "Stored vs live": "comparison",
+  Values: "values",
+  Value: "value",
+};
+
+test("rendered Variable Values: a visible row has no badge and says Visible only to assistive technology", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const row = vvRow(shadow, "Requested for");
+  const cell = vvCells(row)[2];
+  assert.strictEqual(vvCellKey(cell), "visibility", "the cell keeps its place in the grid");
+  assert.strictEqual(row.querySelectorAll(".badge").length, 0);
+  assert.strictEqual(cell.querySelector(".sr-only").textContent, "Visible");
+  assert.ok(!vvHas(row, "edge-hidden"));
+});
+
+test("rendered Variable Values: the three hidden buckets share one badge class and keep their labels", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const hidden = ["Risk rating", "Routing key", "Cost centre"].map((label) => vvRow(shadow, label));
+  assert.deepStrictEqual(
+    hidden.map((row) => [row.querySelector(".badge").className, row.querySelector(".badge").textContent]),
+    [
+      ["badge b-hidden", "Hidden by policy/script"],
+      ["badge b-hidden", "Hidden type"],
+      ["badge b-hidden", "Not rendered"],
+    ],
+    "the label is written as BUCKET_LABELS has it; uppercase is the stylesheet's"
+  );
+  hidden.forEach((row) => assert.ok(vvHas(row, "edge-hidden"), "a hidden row has the blue edge"));
+  assert.match(uiSource, /\.badge\{[^}]*text-transform:uppercase/);
+  assert.match(uiSource, /\.badge\.b-hidden\{background:#1f3044;border-color:#365573;color:#8ec5ff\}/);
+});
+
+test("rendered Variable Values: an unknown visibility is the same badge in grey, with no edge", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const unknown = ["Unknown one", "Unknown two"].map((label) => vvRow(shadow, label));
+  assert.deepStrictEqual(
+    unknown.map((row) => [row.querySelector(".badge").className, row.querySelector(".badge").textContent]),
+    [["badge b-unknown", "Visibility unknown"], ["badge b-unknown", "Live availability unknown"]]
+  );
+  unknown.forEach((row) => assert.ok(!vvHas(row, "edge-hidden")));
+  assert.match(uiSource, /\.badge\.b-unknown\{background:#26263b;border-color:#4a4a6e;color:#c3c3d8\}/);
+});
+
+test("rendered Variable Values: a multi-row set has no badge and no visibility text", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const row = vvRow(shadow, "Software to install");
+  const cell = vvCells(row)[2];
+  assert.strictEqual(vvCellKey(cell), "visibility");
+  assert.strictEqual(cell.textContent, "");
+  assert.strictEqual(row.querySelectorAll(".badge").length, 0);
+});
+
+test("rendered Variable Values: the panel's own words carry the placeholder class; a real \"(empty)\" does not", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const valueOf = (label) => vvRow(shadow, label).querySelector(".row-value");
+
+  const produced = valueOf("Access start date");
+  assert.strictEqual(produced.textContent, "(empty)");
+  assert.ok(vvHas(produced, "placeholder"), "the panel said (empty)");
+
+  const literal = valueOf("Literal note");
+  assert.strictEqual(literal.textContent, "(empty)");
+  assert.ok(!vvHas(literal, "placeholder"), "the variable really holds the text (empty)");
+
+  assert.ok(vvHas(valueOf("Cost centre"), "placeholder"), "(no value)");
+  const redacted = valueOf("Access token");
+  assert.strictEqual(redacted.textContent, "[REDACTED]");
+  assert.ok(vvHas(redacted, "redacted") && !vvHas(redacted, "placeholder"), "[REDACTED] stays as it is");
+  assert.ok(!vvHas(valueOf("Routing key"), "placeholder"));
+
+  const native = vvRender({ mode: "native", rows: VV_NATIVE_ROWS() }).shadow;
+  const sides = (label) => vvRow(native, label).querySelectorAll(".native-value-text")
+    .map((node) => [node.textContent, vvHas(node, "placeholder")]);
+  assert.deepStrictEqual(sides("Cost centre"), [["(empty)", true], ["(empty)", true]]);
+  assert.deepStrictEqual(sides("Access token"), [["Not read (secret)", true], ["Not read (secret)", true]]);
+  assert.deepStrictEqual(sides("Old answer"), [["(not stored)", true], ["(not available)", true]]);
+  // The stored side was never read; the live side really holds "(empty)".
+  assert.deepStrictEqual(sides("Unread"), [["(not read)", true], ["(empty)", false]]);
+  assert.deepStrictEqual(sides("Access start date"), [["2026-12-01", false], ["2026-12-01", false]]);
+});
+
+test("rendered Variable Values: \"default, not live\" is a note beside the value, not part of it", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const cell = vvRow(shadow, "Laptop model").querySelector(".row-value");
+  const note = cell.querySelector(".value-note");
+  assert.ok(note, "the note is its own element");
+  assert.strictEqual(note.textContent, "default, not live");
+  assert.strictEqual(cell.textContent, "standard_14" + "default, not live");
+  assert.ok(!vvHas(cell, "placeholder"), "the value itself is a value");
+  // Expand-on-click is still measured on the one string the cell used to hold:
+  // "standard_14 (default, not live)" is over 28 characters, the value alone
+  // is not, and the cell expands exactly as it did before the note split off.
+  assert.ok(vvHas(cell, "expandable"));
+  assert.strictEqual(cell.getAttribute("role"), "button");
+});
+
+test("rendered Variable Values: a value that opens in place says whether it is open", () => {
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  const cell = vvRow(shadow, "Laptop model").querySelector(".row-value");
+  assert.ok(vvHas(cell, "expandable"));
+  assert.strictEqual(cell.getAttribute("aria-expanded"), "false");
+
+  cell.fire("click");
+  assert.ok(vvHas(cell, "expanded"));
+  assert.strictEqual(cell.getAttribute("aria-expanded"), "true");
+
+  const enter = cell.fire("keydown", { key: "Enter" });
+  assert.ok(enter.defaultPrevented);
+  assert.ok(!vvHas(cell, "expanded"));
+  assert.strictEqual(cell.getAttribute("aria-expanded"), "false");
+  cell.fire("keydown", { key: " " });
+  assert.strictEqual(cell.getAttribute("aria-expanded"), "true");
+
+  /* A short value has a tooltip, not a toggle, so it claims no state. */
+  const short = shadow.querySelectorAll(".row-value").find((node) => !vvHas(node, "expandable"));
+  assert.ok(short, "the fixture has a short value");
+  assert.strictEqual(short.getAttribute("aria-expanded"), null);
+});
+
+test("rendered Variable Values: Match is a plain word; Differs is rose and Not comparable a grey unknown, each with its reason", () => {
+  const { shadow } = vvRender({ mode: "native", rows: VV_NATIVE_ROWS() });
+  const comparison = (label) => vvRow(shadow, label).querySelector(".comparison");
+
+  const match = comparison("Access start date");
+  assert.strictEqual(match.querySelectorAll(".badge").length, 0);
+  assert.strictEqual(match.querySelector(".cmp-plain").textContent, "Match");
+  assert.strictEqual(match.querySelector(".comparison-reason"), null, "the stock sentence only repeats Match");
+  assert.strictEqual(match.textContent, "Match");
+  assert.ok(!/edge-/.test(vvRow(shadow, "Access start date").className));
+
+  const differs = comparison("Risk rating");
+  assert.deepStrictEqual(
+    [differs.querySelector(".badge").className, differs.querySelector(".badge").textContent],
+    ["badge b-differs", "Differs"]
+  );
+  assert.strictEqual(differs.querySelector(".comparison-reason").textContent, "Stored and live values are different.");
+  // Hidden as well as differing: the edge follows the comparison.
+  const differsRow = vvRow(shadow, "Risk rating");
+  assert.ok(vvHas(differsRow, "edge-differs") && !vvHas(differsRow, "edge-hidden"));
+
+  const secret = comparison("Access token");
+  assert.deepStrictEqual(
+    [secret.querySelector(".badge").className, secret.querySelector(".badge").textContent],
+    ["badge b-unknown", "Not comparable"],
+    "an unknown, in the same grey as Visibility unknown"
+  );
+  assert.strictEqual(secret.querySelector(".comparison-reason").textContent, "Secret value was not read.");
+  assert.ok(!/edge-/.test(vvRow(shadow, "Access token").className), "Not comparable draws no edge");
+
+  // No reason, no empty line under the verdict.
+  assert.strictEqual(comparison("Unread").querySelector(".comparison-reason"), null);
+  assert.match(uiSource, /\.comparison-reason\{[^}]*color:#c8c8dc;font-size:11\.5px/);
+  assert.doesNotMatch(uiSource, /b-nocomp|edge-nocomp/);
+});
+
+test("rendered Variable Values: a hidden row that is Not comparable keeps the hidden edge", () => {
+  const rows = [vvNativeRow("hidden_label", "Hidden label", {
+    type: "Label", bucket: "hidden-type", hidden: true, visibilityState: "hidden",
+    storedLookup: "absent", storedValue: null, liveValueAvailable: false,
+    comparison: "not-comparable", reason: "Structural variable type has no comparable value.",
+  })];
+  const row = vvRows(vvRender({ mode: "native", rows }).shadow)[0];
+  assert.ok(vvHas(row, "edge-hidden"));
+  assert.ok(!vvHas(row, "edge-differs"));
+  assert.strictEqual(row.querySelector(".comparison .badge").className, "badge b-unknown");
+});
+
+test("rendered Variable Values: a Match row keeps only what its reason adds to the word", () => {
+  const dateNote = " Stored 2026-12-01 is the internal date format; the form shows the same day in the user date format.";
+  const answerNote = " Definition taken from this record's own answer: the catalog item now defines a different variable with this name.";
+  const cases = [
+    ["Stored and live values match.", ""],
+    ["Stored and live Workspace values match.", ""],
+    ["Stored and live rows match.", ""],
+    ["Stored and live Workspace rows match.", ""],
+    ["Inactive variable. Stored and live values match.", "Inactive variable."],
+    ["Stored and live values match." + dateNote, dateNote.trim()],
+    ["Inactive variable. Stored and live values match." + dateNote + answerNote,
+      "Inactive variable." + dateNote + answerNote],
+    ["Stored and live Workspace rows match." + answerNote, answerNote.trim()],
+  ];
+  const rows = cases.map(([reason], index) =>
+    vvNativeRow("match_" + index, "Match " + index, { storedValue: "a", liveValue: "a", reason }));
+  // The same sentence under a different verdict is not stripped.
+  rows.push(vvNativeRow("differs_row", "Differs row", {
+    storedValue: "a", liveValue: "b", comparison: "differs", reason: "Inactive variable. Stored and live values differ.",
+  }));
+  const result = { mode: "native", rows };
+  const { ui, shadow } = vvRender(result);
+  cases.forEach(([reason, shown], index) => {
+    const cell = vvRow(shadow, "Match " + index).querySelector(".comparison");
+    const reasonNode = cell.querySelector(".comparison-reason");
+    assert.strictEqual(reasonNode ? reasonNode.textContent : "", shown, reason);
+    assert.strictEqual(cell.querySelector(".cmp-plain").textContent, "Match");
+  });
+  assert.strictEqual(
+    vvRow(shadow, "Differs row").querySelector(".comparison-reason").textContent,
+    "Inactive variable. Stored and live values differ."
+  );
+  // The copied list keeps every reason whole.
+  const text = ui.formatResultsAsText(result, rows);
+  cases.forEach(([reason]) => assert.ok(text.includes("Match: " + reason), reason));
+});
+
+test("every stock match sentence the panel leaves out is still written verbatim by the engine", () => {
+  const listed = uiSource.slice(
+    uiSource.indexOf("const STOCK_MATCH_SENTENCES = ["),
+    uiSource.indexOf("];", uiSource.indexOf("const STOCK_MATCH_SENTENCES = ["))
+  );
+  const sentences = (listed.match(/"[^"]+"/g) || []).map((quoted) => quoted.slice(1, -1));
+  assert.deepStrictEqual(sentences, [
+    "Stored and live values match.",
+    "Stored and live Workspace values match.",
+    "Stored and live rows match.",
+    "Stored and live Workspace rows match.",
+  ]);
+  // A reworded engine sentence fails here rather than reappearing on screen.
+  sentences.forEach((sentence) =>
+    assert.ok(contentSource.includes('"' + sentence + '"'), "content.js no longer writes: " + sentence));
+});
+
+test("rendered Variable Values: the header's cells are the row's columns for every capability combination", () => {
+  const portal = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() }).shadow;
+  const portalHeader = portal.querySelector(".cols");
+  assert.strictEqual(portalHeader.getAttribute("aria-hidden"), "true");
+  assert.deepStrictEqual(portalHeader.children.map((node) => node.textContent), ["Variable", "Type", "Visibility", "Value"]);
+  vvRows(portal).forEach((row) => {
+    assert.deepStrictEqual(vvCells(row).map(vvCellKey), ["name", "type", "visibility", "value"]);
+    assert.strictEqual(row.style["--cols"], portalHeader.style["--cols"]);
+  });
+  assert.strictEqual(portalHeader.style["--cols"], "1fr 130px 190px 1fr");
+
+  [false, true].forEach((comparison) => [false, true].forEach((liveValues) => [false, true].forEach((liveVisibility) => {
+    const combo = JSON.stringify({ comparison, liveValues, liveVisibility });
+    const { shadow } = vvRender({
+      mode: "native",
+      capabilities: { comparison, liveValues, differing: comparison, liveVisibility },
+      rows: VV_NATIVE_ROWS(),
+    });
+    const header = shadow.querySelector(".cols");
+    const heads = header.children.map((node) => node.textContent);
+    const expected = ["Variable", "Type"]
+      .concat(liveVisibility ? ["Visibility"] : [])
+      .concat(comparison ? ["Stored vs live"] : [])
+      .concat(["Values"]);
+    assert.deepStrictEqual(heads, expected, combo);
+    const tracks = header.style["--cols"].split(" ");
+    assert.strictEqual(tracks.length, heads.length, combo + ": one track per header cell");
+    vvRows(shadow).forEach((row) => {
+      assert.deepStrictEqual(vvCells(row).map(vvCellKey), heads.map((head) => VV_HEAD_KEYS[head]), combo);
+      assert.strictEqual(row.style["--cols"], header.style["--cols"], combo);
+    });
+    if (liveVisibility && comparison) {
+      assert.strictEqual(header.style["--cols"], "minmax(180px,1fr) 110px 190px 150px minmax(240px,1.35fr)");
+    }
+    if (!liveVisibility && !comparison) {
+      // The former stored-side template, unchanged.
+      assert.strictEqual(header.style["--cols"], "minmax(220px,1fr) 130px minmax(280px,1.4fr)");
+    }
+  })));
+  // The header goes when the rows stack, and stays above them while they scroll.
+  assert.match(uiSource, /\.cols\{\s*position:sticky;top:0/);
+  assert.match(uiSource, /@media\(max-width:640px\)\{[\s\S]*?\.cols\{display:none\}/);
+});
+
+test("rendered Variable Values: the copied list for the same rows is byte for byte what it was", async () => {
+  const portalExpected = [
+    "GlideLens — Variable Values",
+    "Read-only inspector; does not modify the live form.",
+    "Rows: 11 of 11",
+    "",
+    "Requested for (requested_for) — Visible — Reference — 0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    "Access start date (start_date) — Visible — Date — (empty)",
+    "Literal note (literal_note) — Visible — Single Line Text — (empty)",
+    "Risk rating (risk_rating) — Hidden by policy/script — Numeric Scale — 0",
+    "Routing key (routing_key) — Hidden type — Single Line Text — EX-ROUTE-02",
+    "Cost centre (cost_centre) — Not rendered [Example details] — Reference — (no value)",
+    "Laptop model (laptop_model) — Visible — Select Box — standard_14 (default, not live)",
+    "Access token (access_token) — Visible — Masked — [REDACTED]",
+    'Software to install (software_list) — Multi-row set — Multi-Row Variable Set — 2 rows: [{"app":"Editor"},{"app":"Viewer"}]',
+    "Unknown one (unknown_one) — Visibility unknown — Single Line Text — x",
+    "Unknown two (unknown_two) — Live availability unknown — Single Line Text — y",
+  ].join("\n");
+  const nativeExpected = [
+    "GlideLens — Variable Values",
+    "Read-only inspector; does not modify the live form.",
+    "Rows: 6 of 6",
+    "",
+    "Access start date (start_date) — Visible — Date — Match: Stored and live values match.",
+    "  Stored: 2026-12-01",
+    "  Live: 2026-12-01",
+    "Risk rating (risk_rating) — Hidden by policy/script — Numeric Scale — Differs: Stored and live values are different.",
+    "  Stored: 3",
+    "  Live: 0",
+    "Cost centre (cost_centre) — Visible — [Example details] — Reference — Match: Stored and live values match.",
+    "  Stored: (empty)",
+    "  Live: (empty)",
+    "Access token (access_token) — Visible — Masked — Not comparable: Secret value was not read.",
+    "  Values not read (secret)",
+    "Old answer (old_answer) — Visible — Single Line Text — Not comparable: No stored row exists for this variable.",
+    "  Stored: (not stored)",
+    "  Live: (not available)",
+    "Unread (unread) — Visible — Single Line Text — Not comparable",
+    "  Stored: (not read)",
+    "  Live: (empty)",
+  ].join("\n");
+
+  for (const [result, expected] of [
+    [{ foundForm: true, rows: VV_PORTAL_ROWS() }, portalExpected],
+    [{ mode: "native", rows: VV_NATIVE_ROWS() }, nativeExpected],
+  ]) {
+    const panel = vvRender(result);
+    assert.strictEqual(panel.ui.formatResultsAsText(result, result.rows), expected);
+    // And what the Copy list button actually writes.
+    panel.shadow.querySelector("[data-action='copy']").fire("click");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(panel.copied[0], expected);
+  }
+});
+
+test("rendered Variable Values: a list narrower than its columns stacks its rows instead of scrolling sideways", () => {
+  /* The compared layout with visibility needs 954px; in a window under about
+   * 1000px the panel is narrower, and only the 640px rule used to stack. */
+  const trackMin = (track) => {
+    const match = /^(?:minmax\()?(\d+)px/.exec(track);
+    return match ? Number(match[1]) : 0;
+  };
+  const seen = new Set();
+  [false, true].forEach((comparison) => [false, true].forEach((liveVisibility) => {
+    const combo = JSON.stringify({ comparison, liveVisibility });
+    const { shadow } = vvRender({
+      mode: "native",
+      capabilities: { comparison, liveValues: comparison, differing: comparison, liveVisibility },
+      rows: VV_NATIVE_ROWS(),
+    });
+    const tracks = shadow.querySelector(".cols").style["--cols"].split(" ");
+    const fit = tracks.reduce((sum, track) => sum + trackMin(track), 0) + 12 * (tracks.length - 1) + 36;
+    const list = shadow.querySelector(".rows");
+    assert.strictEqual(list.getAttribute("data-fit"), String(fit), combo + ": the list names its layout's fit");
+    const css = shadow.querySelector("style").textContent;
+    assert.ok(css.includes(`@container rows (max-width:${fit - 1}px){.rows[data-fit="${fit}"] .cols{display:none}` +
+      `.rows[data-fit="${fit}"] .row{grid-template-columns:1fr;gap:4px;padding:10px 14px}}`),
+      combo + ": below its fit the header goes and each row stacks");
+    seen.add(fit);
+  }));
+  assert.ok(seen.has(954), "the widest layout is the one the walk found scrolling");
+  const { shadow } = vvRender({ foundForm: true, rows: VV_PORTAL_ROWS() });
+  assert.ok(!/data-fit="392"/.test(shadow.querySelector("style").textContent),
+    "a portal layout's tracks are flexible and get no rule");
+  assert.match(uiSource, /\.rows\{flex:1;overflow:auto;padding:0 0 6px;container:rows\/inline-size\}/);
+});
+
+test("from the palette, the palette closes before Variable Values opens, on every path", () => {
+  /* closePalette() gives focus back to the page. Run after the panel opened,
+   * it pulled focus out of the panel, and the panel's own record of where
+   * focus had been was the palette, which is gone by the time it closes. */
+  const start = contentSource.indexOf("function showVariableValuesPanel(result)");
+  const length = contentSource.slice(start).search(/\r?\n\}\r?\n/);
+  assert.ok(start >= 0 && length > 0, "the helper is found, whatever the line endings");
+  const calls = [];
+  const show = new Function(
+    "closePalette", "globalThis",
+    contentSource.slice(start, start + length) + "\n}\nreturn showVariableValuesPanel;"
+  )(
+    () => calls.push("close palette"),
+    { SNHiddenVariablesUI: { showResults: (result) => calls.push("open panel: " + result.mode) } }
+  );
+  show({ mode: "native" });
+  assert.deepStrictEqual(calls, ["close palette", "open panel: native"]);
+  assert.strictEqual(contentSource.split("SNHiddenVariablesUI.showResults(").length - 1, 1,
+    "the panel opens only through the helper, the portal and error paths included");
 });

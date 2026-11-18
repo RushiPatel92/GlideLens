@@ -81,7 +81,7 @@
     *{box-sizing:border-box}
     :host{all:initial;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
       --teal:#31d4c4;--pink:#ff6fae;--panel:#1e1e2e;--raised:#202038;
-      --border:#3a3a5c;--text:#dedeee;--muted:#9292aa}
+      --border:#3a3a5c;--text:#dedeee;--muted:#9a9ab3}
     button,input{font:inherit}
     .overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
       display:flex;align-items:center;justify-content:center;padding:24px}
@@ -114,7 +114,7 @@
     input{width:100%;background:#151522;border:1px solid #555578;border-radius:7px;
       color:#f0f0fa;outline:none;padding:9px 10px;font-size:13px;font-weight:400}
     input:focus{border-color:var(--teal);background:#191929;box-shadow:0 0 0 3px rgba(49,212,196,.12)}
-    input::placeholder{color:#797993}input:disabled{opacity:.5}
+    input::placeholder{color:#a4a4be}input:disabled{opacity:.5}
     .combo{position:relative}.combo input{padding-right:34px}
     .combo-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;
       background:transparent;color:var(--muted);padding:4px 7px;border-radius:5px;font-size:12px;
@@ -130,7 +130,7 @@
     .option:hover,.option.active{background:#2c2d49;border-color:#4d5079}
     .option.active{box-shadow:inset 3px 0 0 var(--teal)}
     .option-label{font-size:12px;font-weight:650;line-height:1.35;overflow-wrap:anywhere}
-    .option-hint{color:#9494af;line-height:1.35;
+    .option-hint{color:#9a9ab3;line-height:1.35;
       font:10px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
     .menu-message{padding:11px;color:#9999b1;font-size:11px;line-height:1.4}
     .search-btn{border:1px solid var(--pink);background:var(--pink);color:#2a0d1a;
@@ -154,38 +154,134 @@
        class when nobody matched, and must stay a status line. */
     .body>.empty{padding:46px 20px;text-align:center;color:var(--muted);font-size:13px;line-height:1.5;
       max-width:90ch;margin:0 auto}
-    .body>.empty small{display:block;margin-top:7px;color:#74748d}
+    .body>.empty small{display:block;margin-top:7px;color:#9a9ab3}
     .section-heading{display:flex;align-items:baseline;gap:10px;padding:12px 20px 6px;
       color:#9ff0e5;font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}
-    .section-source{margin-left:auto;color:#74748d;font-weight:400;letter-spacing:0;text-transform:none}
-    .section-note{padding:10px 20px;color:#85859d;font-size:11px;line-height:1.45;max-width:90ch}
-    .row{position:relative;padding:12px 20px;border-bottom:1px solid #282841;outline:none}
-    .row:hover{background:#282842}
+    .section-source{margin-left:auto;color:#9a9ab3;font-weight:400;letter-spacing:0;text-transform:none}
+    .section-note{padding:10px 20px;color:#9a9ab3;font-size:11px;line-height:1.45;max-width:90ch}
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+      clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    /* People: one line each under a column header, as in Record Lens. The
+       header and every row share one template, so a column lines up down the
+       list: [name] [user ID] [values] [role, on a role search] [Impersonate].
+       The values track holds one fraction per value column. */
+    .body{container:people / inline-size}
+    .cols,.row{display:grid;column-gap:14px;align-items:center;padding:0 20px;
+      grid-template-columns:minmax(0,1.3fr) minmax(0,.9fr) minmax(0,var(--vals,0fr)) 108px}
+    .body[data-role="1"] .cols,.body[data-role="1"] .row{
+      grid-template-columns:minmax(0,1.3fr) minmax(0,.9fr) minmax(0,var(--vals,0fr)) 124px 108px}
+    .body[data-values="1"]{--vals:1fr}.body[data-values="2"]{--vals:2fr;--n:2}
+    .body[data-values="3"]{--vals:3fr;--n:3}.body[data-values="4"]{--vals:4fr;--n:4}
+    .body[data-values="5"]{--vals:5fr;--n:5}
+    .vals,.facts{display:grid;grid-template-columns:repeat(var(--n,1),minmax(0,1fr));column-gap:14px;
+      margin:0;min-width:0}
+    /* Sticky at the body's own top edge: top:0 would stop 6px short, under
+       its padding, and a scrolled row showed through the gap. */
+    .cols{position:sticky;top:-6px;z-index:1;background:var(--panel);padding-top:7px;padding-bottom:7px;
+      border-bottom:1px solid #2e2e4e;color:#9a9ab3;font-size:11px}
+    .cols>span,.vals>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    /* Placed, not flowed: with no values the middle track is empty. */
+    .col-name,.row>.name{grid-column:1}.col-uid,.row>.user-id{grid-column:2}
+    .vals,.facts{grid-column:3}.col-role,.row>.role{grid-column:4}.row>.row-go{grid-column:-2}
+    .row{position:relative;padding-top:9px;padding-bottom:9px;border-bottom:1px solid #282841;outline:none}
+    .row:hover,.row:focus-within{background:#282842}
     .row:focus-visible{outline:2px solid var(--teal);outline-offset:-2px;background:#282842}
-    .row-top{display:flex;align-items:baseline;gap:10px;margin-bottom:6px;flex-wrap:wrap}
-    .title{color:#f0f0fa;font-size:13px;font-weight:650;min-width:0;overflow-wrap:anywhere}
-    .user-id{color:#9c9cba;font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
-    .badge{margin-left:auto;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:650;
-      border:1px solid #4d5079;color:#c8c8e0;background:#2a2b47}
+    .name{justify-self:start;max-width:100%;border:0;background:transparent;padding:0;margin:0;
+      cursor:pointer;text-align:left;color:#f0f0fa;font-size:13px;font-weight:650;line-height:1.35;
+      text-decoration:underline;text-decoration-color:#6c6c90;text-underline-offset:2px;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .name:hover:not(:disabled){color:#fff;text-decoration-color:var(--teal)}
+    .name:focus-visible{outline:2px solid var(--teal);outline-offset:2px;border-radius:3px}
+    .user-id{min-width:0;color:#9c9cba;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .fact{min-width:0}
+    .fact dt{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+      clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .fact dd{margin:0;color:#c9c9dc;font-size:12px;line-height:1.45;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .none{color:#9a9ab3}
+    .role{min-width:0;font-size:12px}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:650;
+      border:1px solid #4d5079;color:#c8c8e0;background:#2a2b47;white-space:nowrap}
     .badge.direct{border-color:#31d4c4;color:#9ff0e5}
-    .values{display:flex;flex-wrap:wrap;gap:5px 12px;color:#aaaac1;font-size:11px;line-height:1.5}
-    .value-label{color:#75758e}
-    .row-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
-    .row-action{border:1px solid #5b5b86;background:#30314f;color:#e6e6f5;border-radius:7px;
-      padding:4px 9px;cursor:pointer;font-size:10px}
-    .row-action:hover:not(:disabled){background:#45466e;color:#fff}
-    .row-action.primary{background:var(--pink);border-color:var(--pink);color:#2a0d1a;font-weight:650}
-    .row-action.primary:hover:not(:disabled){background:#ff85bb}
+    /* Outlined until its row is hovered or focused, so one row at a time
+       carries the pink. */
+    .row-go{justify-self:end;border:1px solid var(--pink);background:transparent;color:#ff9cc6;
+      border-radius:7px;padding:4px 10px;cursor:pointer;font-size:11px;font-weight:650;white-space:nowrap}
+    .row:hover .row-go,.row:focus-visible .row-go,.row:focus-within .row-go{background:var(--pink);color:#2a0d1a}
+    .row .row-go:hover:not(:disabled){background:#ff85bb}
+    .row-go:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+    /* Stacked: below the width the columns need, the header hides and each
+       row becomes the name, user ID and role on one line, the values as a
+       labelled fact list with empty facts left out, then Impersonate. The
+       same nodes in both forms, so focus survives the switch. Up to three
+       value columns (the role counts as one) stack below 900px, four below
+       1020px, five below 1150px and six below 1270px. */
+    @container people (max-width:899px){
+      .cols{display:none}
+      .row{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;padding:11px 16px}
+      .row>.role{order:1;margin-left:auto}
+      .facts{order:2;flex:1 0 100%;grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin-top:4px}
+      .fact{display:contents}.fact.blank,.facts.blank{display:none}
+      .fact dt{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;
+        white-space:normal;color:#9a9ab3;font-size:11px;line-height:1.45}
+      .fact dd{white-space:normal;overflow-wrap:anywhere}
+      .row>.row-go{order:3;margin-top:6px}
+    }
+    @container people (max-width:1019px){
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .cols{display:none}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .row{display:flex;flex-wrap:wrap;
+        align-items:baseline;gap:2px 10px;padding:11px 16px}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .row>.role{order:1;margin-left:auto}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .facts{order:2;flex:1 0 100%;
+        grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin-top:4px}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .fact{display:contents}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) :is(.fact.blank,.facts.blank){display:none}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .fact dt{position:static;width:auto;
+        height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;color:#9a9ab3;font-size:11px;
+        line-height:1.45}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .fact dd{white-space:normal;
+        overflow-wrap:anywhere}
+      .body:is([data-width="1"],[data-width="2"],[data-width="3"]) .row>.row-go{order:3;margin-top:6px}
+    }
+    @container people (max-width:1149px){
+      .body:is([data-width="2"],[data-width="3"]) .cols{display:none}
+      .body:is([data-width="2"],[data-width="3"]) .row{display:flex;flex-wrap:wrap;align-items:baseline;
+        gap:2px 10px;padding:11px 16px}
+      .body:is([data-width="2"],[data-width="3"]) .row>.role{order:1;margin-left:auto}
+      .body:is([data-width="2"],[data-width="3"]) .facts{order:2;flex:1 0 100%;
+        grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin-top:4px}
+      .body:is([data-width="2"],[data-width="3"]) .fact{display:contents}
+      .body:is([data-width="2"],[data-width="3"]) :is(.fact.blank,.facts.blank){display:none}
+      .body:is([data-width="2"],[data-width="3"]) .fact dt{position:static;width:auto;height:auto;margin:0;
+        overflow:visible;clip:auto;white-space:normal;color:#9a9ab3;font-size:11px;line-height:1.45}
+      .body:is([data-width="2"],[data-width="3"]) .fact dd{white-space:normal;overflow-wrap:anywhere}
+      .body:is([data-width="2"],[data-width="3"]) .row>.row-go{order:3;margin-top:6px}
+    }
+    @container people (max-width:1269px){
+      .body[data-width="3"] .cols{display:none}
+      .body[data-width="3"] .row{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;
+        padding:11px 16px}
+      .body[data-width="3"] .row>.role{order:1;margin-left:auto}
+      .body[data-width="3"] .facts{order:2;flex:1 0 100%;grid-template-columns:max-content minmax(0,1fr);
+        gap:2px 10px;margin-top:4px}
+      .body[data-width="3"] .fact{display:contents}
+      .body[data-width="3"] :is(.fact.blank,.facts.blank){display:none}
+      .body[data-width="3"] .fact dt{position:static;width:auto;height:auto;margin:0;overflow:visible;
+        clip:auto;white-space:normal;color:#9a9ab3;font-size:11px;line-height:1.45}
+      .body[data-width="3"] .fact dd{white-space:normal;overflow-wrap:anywhere}
+      .body[data-width="3"] .row>.row-go{order:3;margin-top:6px}
+    }
     .confirm{padding:26px 24px;max-width:620px;margin:0 auto}
     .confirm h3{margin:0 0 10px;font-size:15px;color:#f5f5ff}
     .confirm-warn{margin:0 0 16px;font-size:12px;line-height:1.55;color:#efc48f}
     .confirm-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px 14px;
       font-size:12px;line-height:1.5;margin:0 0 18px}
-    .confirm-facts dt{color:#8f8fa9}
+    .confirm-facts dt{color:#9a9ab3}
     .confirm-facts dd{margin:0;color:#ececf7;overflow-wrap:anywhere}
-    .confirm-facts dd.roles-pending{color:#8f8fa9}
+    .confirm-facts dd.roles-pending{color:#9a9ab3}
     .roles-line{font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:#d6d6ea}
-    .roles-label{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#8f8fa9}
+    .roles-label{font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9ab3}
     .roles-source{display:block;color:#a9a9c2;font-size:11px;line-height:1.45}
     .roles-more{margin-top:4px}
     .roles-more summary{cursor:pointer;color:#bdbdd0;font-size:12px;width:max-content;border-radius:4px}
@@ -193,7 +289,7 @@
     .role-list{margin-top:6px;max-height:160px;overflow:auto;padding:6px 8px;border:1px solid #33335a;
       border-radius:6px;background:#191929;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
       color:#d6d6ea}
-    .roles-note{display:block;margin-top:4px;color:#8f8fa9;font-size:11px;line-height:1.45}
+    .roles-note{display:block;margin-top:4px;color:#9a9ab3;font-size:11px;line-height:1.45}
     .confirm-actions{display:flex;gap:10px;flex-wrap:wrap}
     .confirm-actions button{border-radius:7px;padding:9px 16px;cursor:pointer;font-size:12px;
       border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5}
@@ -205,7 +301,7 @@
     .confirm-state.success{color:#8fe0cf}
     .toolbar{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid #2e2e4e;
       background:#20203a}
-    .toolbar-note{flex:1;color:#85859d;font-size:11px;line-height:1.45;max-width:90ch;margin-right:auto}
+    .toolbar-note{flex:1;color:#9a9ab3;font-size:11px;line-height:1.45;max-width:90ch;margin-right:auto}
     .toolbar button{border:1px solid #5b5b86;background:#3f4067;color:#e6e6f5;border-radius:7px;
       padding:8px 13px;cursor:pointer;font-size:12px}
     .toolbar button:hover:not(:disabled){background:#4a4b78;color:#fff}
@@ -217,7 +313,7 @@
     .dialog-btn:hover:not(:disabled){background:#45466e;color:#fff}
     @media(max-width:680px){.overlay{padding:8px}.panel{width:100%;height:calc(100vh - 16px)}
       .form-main{grid-template-columns:1fr}.filters{grid-template-columns:1fr}
-      .search-btn{width:100%}.header{padding:14px}.user-id{display:block}}
+      .search-btn{width:100%}.header{padding:14px}}
   `;
 
   /* ------------------------------------------------------------------ *
@@ -798,12 +894,110 @@
       return;
     }
 
-    results.forEach((user, index) => els.body.appendChild(buildUserRow(user, index)));
+    renderPeople(results, peopleColumns(results, result));
   }
 
-  /* One row shape for a search result and a recent impersonation alike, so a
-   * recent account says as much about itself as a found one does. */
-  function buildUserRow(user, index) {
+  /* Record Lens's limit: a row shows its name and at most five values. */
+  const MAX_VALUE_COLUMNS = 5;
+
+  /*
+   * The columns a list of people shows: Email and Title when anyone has one,
+   * then each extra field the engine sent, merged across rows in the order
+   * the rows give them (each row's details are in the engine's order, so a
+   * field one row lacks still lands where the others put it), capped at five
+   * values. The role column appears only when the rows carry a membership,
+   * which only a role search does.
+   */
+  function peopleColumns(users, result) {
+    const values = [];
+    if (users.some((user) => user.email)) values.push({ key: "email", label: "Email" });
+    if (users.some((user) => user.title)) values.push({ key: "title", label: "Title" });
+    const details = [];
+    users.forEach((user) => {
+      let at = -1;
+      (user.details || []).forEach((detail) => {
+        if (!detail || !detail.field) return;
+        const found = details.findIndex((item) => item.field === detail.field);
+        if (found >= 0) {
+          at = found;
+          return;
+        }
+        at += 1;
+        details.splice(at, 0, { field: detail.field, label: detail.label || detail.field });
+      });
+    });
+    details.forEach((detail) => values.push({ key: "detail:" + detail.field, label: detail.label }));
+    const roleFilter = result && result.roleFilter;
+    return {
+      values: values.slice(0, MAX_VALUE_COLUMNS),
+      /* The engine says a role filter was applied, not which role, so the
+       * column is headed with the role's name only when one is supplied. */
+      role: users.some((user) => user.membership)
+        ? String((roleFilter && (roleFilter.name || roleFilter.label)) || "Selected role")
+        : "",
+    };
+  }
+
+  function columnValue(user, column) {
+    if (column.key === "email") return user.email || "";
+    if (column.key === "title") return user.title || "";
+    const field = column.key.slice("detail:".length);
+    const detail = (user.details || []).find((item) => item && item.field === field);
+    return detail && detail.value ? String(detail.value) : "";
+  }
+
+  /*
+   * One header and one row shape for a search result and a recent
+   * impersonation alike, so a recent account says as much about itself as a
+   * found one does. The body carries how many value columns there are, for
+   * the shared template, and how wide the columns need to be before the rows
+   * stack: three value columns (the role counts as one) fit the base width,
+   * each more needs another step.
+   */
+  function renderPeople(users, columns) {
+    const count = columns.values.length;
+    const weight = count + (columns.role ? 1 : 0);
+    els.body.setAttribute("data-values", String(count));
+    els.body.setAttribute("data-role", columns.role ? "1" : "0");
+    els.body.setAttribute("data-width", String(Math.max(0, weight - 3)));
+    els.body.appendChild(buildPeopleHeader(columns));
+    users.forEach((user, index) => els.body.appendChild(buildUserRow(user, index, columns)));
+  }
+
+  function buildPeopleHeader(columns) {
+    const header = el("div", "cols");
+    /* For sight: each value carries its own label for assistive technology. */
+    header.setAttribute("aria-hidden", "true");
+    header.appendChild(el("span", "col-name", "Name"));
+    header.appendChild(el("span", "col-uid", "User ID"));
+    if (columns.values.length) {
+      const vals = el("span", "vals");
+      columns.values.forEach((column) => {
+        const cell = el("span", null, column.label);
+        cell.title = column.label;
+        vals.appendChild(cell);
+      });
+      header.appendChild(vals);
+    }
+    if (columns.role) {
+      const role = el("span", "col-role", columns.role);
+      role.title = columns.role;
+      header.appendChild(role);
+    }
+    return header;
+  }
+
+  /* A cell with nothing in it keeps its place, so the columns stay in line,
+   * and is read as "empty" rather than as a dash. */
+  function appendEmpty(node) {
+    const dash = el("span", "none", "–");
+    dash.setAttribute("aria-hidden", "true");
+    node.appendChild(dash);
+    node.appendChild(el("span", "sr-only", "empty"));
+  }
+
+  function buildUserRow(user, index, columns) {
+    const shown = columns || peopleColumns([user], null);
     const row = el("div", "row");
     row.tabIndex = 0;
     row.setAttribute("role", "group");
@@ -811,52 +1005,73 @@
     row.setAttribute("aria-label", (user.name || user.userName) + ", " + user.userName);
     row.setAttribute("data-index", String(index));
 
-    const top = el("div", "row-top");
-    top.appendChild(el("span", "title", user.name || user.userName));
-    top.appendChild(el("span", "user-id", user.userName));
-    if (user.membership) {
-      /* The badge speaks only about the selected role, and never claims a
-       * provenance: granted_by and included_in_role are empty on every
-       * sampled row, so "via group X" cannot be said honestly. */
-      const badge = el(
-        "span",
-        "badge" + (user.membership.inherited ? "" : " direct"),
-        user.membership.inherited ? "Inherited role" : "Direct role"
-      );
-      top.appendChild(badge);
-    }
-    row.appendChild(top);
-
-    const values = el("div", "values");
-    const addValue = (label, value) => {
-      if (!value) return;
-      const item = el("span");
-      item.appendChild(el("span", "value-label", label + ": "));
-      item.appendChild(document.createTextNode(value));
-      values.appendChild(item);
-    };
-    addValue("Email", user.email);
-    addValue("Title", user.title);
-    (user.details || []).forEach((detail) => addValue(detail.label, detail.value));
-    if (values.children.length) row.appendChild(values);
-
-    const actions = el("div", "row-actions");
-    const open = el("button", "row-action", "Open user");
-    open.setAttribute("type", "button");
-    open.addEventListener("click", (event) => {
+    /* The name opens the user record in a new tab; it never changes the
+     * session. */
+    const name = el("button", "name", user.name || user.userName);
+    name.setAttribute("type", "button");
+    name.title = "Open the user record";
+    setDisabled(name, mutationInFlight);
+    name.addEventListener("click", (event) => {
       if (event && event.stopPropagation) event.stopPropagation();
       if (callbacks.onOpenUser) callbacks.onOpenUser(user);
     });
-    const go = el("button", "row-action primary", "Impersonate");
+    row.appendChild(name);
+
+    const userId = el("span", "user-id");
+    userId.appendChild(el("span", "sr-only", "User ID "));
+    userId.appendChild(el("span", null, user.userName));
+    userId.title = user.userName;
+    row.appendChild(userId);
+
+    if (shown.values.length) {
+      const facts = el("dl", "facts");
+      let filled = 0;
+      shown.values.forEach((column) => {
+        const value = columnValue(user, column);
+        const fact = el("div", value ? "fact" : "fact blank");
+        fact.appendChild(el("dt", null, column.label));
+        const cell = el("dd");
+        if (value) {
+          cell.textContent = value;
+          cell.title = value;
+          filled += 1;
+        } else {
+          appendEmpty(cell);
+        }
+        fact.appendChild(cell);
+        facts.appendChild(fact);
+      });
+      /* Stacked, an all-empty list is left out with its facts. */
+      if (!filled) facts.className = "facts blank";
+      row.appendChild(facts);
+    }
+
+    if (shown.role) {
+      const role = el("span", "role");
+      role.appendChild(el("span", "sr-only", shown.role + ": "));
+      if (user.membership) {
+        /* The badge speaks only about the selected role, and never claims a
+         * provenance: granted_by and included_in_role are empty on every
+         * sampled row, so "via group X" cannot be said honestly. */
+        role.appendChild(el(
+          "span",
+          "badge" + (user.membership.inherited ? "" : " direct"),
+          user.membership.inherited ? "Inherited role" : "Direct role"
+        ));
+      } else {
+        appendEmpty(role);
+      }
+      row.appendChild(role);
+    }
+
+    const go = el("button", "row-go", "Impersonate");
     go.setAttribute("type", "button");
     setDisabled(go, mutationInFlight);
     go.addEventListener("click", (event) => {
       if (event && event.stopPropagation) event.stopPropagation();
       showConfirmation(user, go);
     });
-    actions.appendChild(open);
-    actions.appendChild(go);
-    row.appendChild(actions);
+    row.appendChild(go);
 
     /*
      * A row click, and Enter on the row, do NOTHING. Only the labelled
@@ -902,7 +1117,7 @@
      * copy of it, which is what lets the footer keep its promise. */
     heading.appendChild(el("span", "section-source", "Kept by ServiceNow"));
     els.body.appendChild(heading);
-    users.forEach((user, index) => els.body.appendChild(buildUserRow(user, index)));
+    renderPeople(users, peopleColumns(users, null));
     if (recent.hidden) els.body.appendChild(el("div", "section-note", hiddenRecentNote(recent.hidden)));
   }
 
@@ -1175,7 +1390,7 @@
      * called off, and nothing can call it off. */
     if (!els || mutationInFlight) return;
     const opener = confirmOpener;
-    const openerRow = opener && opener.parentNode && opener.parentNode.parentNode;
+    const openerRow = opener && opener.parentNode;
     const openerIndex = openerRow && openerRow.getAttribute
       ? openerRow.getAttribute("data-index") : null;
     confirming = null;
@@ -1195,13 +1410,14 @@
      * replacement in the same row takes focus instead.
      */
     const row = rowNodes().find((node) => node.getAttribute("data-index") === openerIndex);
-    const actions = row && Array.from(row.children || [])
-      .find((node) => node.className === "row-actions");
-    const again = actions && Array.from(actions.children || [])
-      .find((node) => node.className === "row-action primary");
+    const again = row && Array.from(row.children || [])
+      .find((node) => node.className === "row-go");
     if (again && again.focus) again.focus();
     else if (opener && opener.focus) opener.focus();
   }
+
+  /* A row's two buttons: the name, and Impersonate. */
+  const ROW_BUTTONS = ["name", "row-go"];
 
   function setMutationLock(locked) {
     mutationInFlight = Boolean(locked);
@@ -1209,11 +1425,9 @@
     refreshControlLocks();
     setDisabled(els.confirmGo, mutationInFlight);
     setDisabled(els.confirmCancel, mutationInFlight);
-    Array.from(els.body.children || []).forEach((row) => {
+    rowNodes().forEach((row) => {
       Array.from(row.children || []).forEach((child) => {
-        if (child.className === "row-actions") {
-          Array.from(child.children || []).forEach((button) => setDisabled(button, mutationInFlight));
-        }
+        if (ROW_BUTTONS.includes(child.className)) setDisabled(child, mutationInFlight);
       });
     });
   }

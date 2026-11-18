@@ -532,7 +532,7 @@ test("a read your session can make fills as before, with no impersonation check"
   await loadCommand(page)("SCASE0001");
   assert.deepStrictEqual(filledNames(page), ["country", "supplier_name"]);
   assert.strictEqual(lastToast(page).text,
-    "Done. Filled 2 of 2 variables.\nYou can close this (Esc) and review the form.");
+    "Filled 2 of 2 variables\nYou can close this (Esc) and review the form.");
   assert.ok(!page.sent.includes("SN_IMPERSONATE_STATE"));
   assert.strictEqual(page.confirmations.length, 0);
 });
@@ -542,7 +542,8 @@ test("a refused read while impersonating offers the switch and does nothing else
   await loadCommand(page)("SCASE0001");
   assert.strictEqual(page.confirmations.length, 1);
   const offer = page.confirmations[0];
-  assert.strictEqual(offer.title, "abel.tuter can't read SCASE0001's variables. To prefill, GlideLens will:");
+  assert.strictEqual(offer.title, "abel.tuter can't read SCASE0001's variables.");
+  assert.strictEqual(offer.lead, "To prefill, GlideLens will:");
   assert.deepStrictEqual(offer.steps, [
     "switch your session back to your own account",
     "read SCASE0001",
@@ -560,8 +561,7 @@ test("a hidden request item is offered too, without claiming it exists", async (
   await loadCommand(page)("RITM0001");
   assert.strictEqual(page.confirmations.length, 1);
   assert.strictEqual(page.confirmations[0].title,
-    "abel.tuter can't see RITM0001, which may be hidden from them or may not exist. " +
-      "To prefill, GlideLens will:");
+    "abel.tuter can't see RITM0001, which may be hidden from them or may not exist.");
 });
 
 test("an account that reads the answers but not the questions is offered the switch", async () => {
@@ -569,7 +569,7 @@ test("an account that reads the answers but not the questions is offered the swi
   await loadCommand(page)("SCASE0001");
   assert.strictEqual(page.confirmations.length, 1, "not \"No copyable variables found\"");
   assert.strictEqual(page.confirmations[0].title,
-    "abel.tuter can't read SCASE0001's variables. To prefill, GlideLens will:");
+    "abel.tuter can't read SCASE0001's variables.");
   page.confirmations[0].onConfirm();
   await settle();
   assert.deepStrictEqual(filledNames(page), ["country", "supplier_name"]);
@@ -590,7 +590,7 @@ test("a deleted question among readable ones is skipped, not taken for a refusal
   await loadCommand(page)("SCASE0001");
   assert.deepStrictEqual(filledNames(page), ["country", "supplier_name"]);
   assert.strictEqual(lastToast(page).text,
-    "Done. Filled 2 of 2 variables.\nYou can close this (Esc) and review the form.");
+    "Filled 2 of 2 variables\nYou can close this (Esc) and review the form.");
 });
 
 test("while impersonating, a partly refused read offers the switch instead of filling a part", async () => {
@@ -599,13 +599,13 @@ test("while impersonating, a partly refused read offers the switch instead of fi
   await loadCommand(page)("SCASE0001");
   assert.strictEqual(page.confirmations.length, 1);
   assert.strictEqual(page.confirmations[0].title,
-    "abel.tuter can't read all of SCASE0001's variables. To prefill, GlideLens will:");
+    "abel.tuter can't read all of SCASE0001's variables.");
   assert.strictEqual(page.filled, null, "nothing is filled before the click");
   page.confirmations[0].onConfirm();
   await settle();
   assert.deepStrictEqual(filledNames(page), ["country", "supplier_name"]);
   assert.strictEqual(page.filled.as, "target");
-  assert.match(lastToast(page).text, /^Done\. Filled 2 of 2 variables as abel\.tuter\.\n/);
+  assert.match(lastToast(page).text, /^Filled 2 of 2 variables\nFilled as: abel\.tuter\n/);
 });
 
 test("a partly refused read with no way home fills what it read, and says the form may have gaps", async () => {
@@ -624,7 +624,7 @@ test("an itil requester's request item fills straight away: question_answer's re
   assert.deepStrictEqual(filledNames(page), ["justification", "laptop_model"]);
   assert.strictEqual(page.filled.as, "target");
   assert.strictEqual(lastToast(page).text,
-    "Done. Filled 2 of 2 variables.\nYou can close this (Esc) and review the form.");
+    "Filled 2 of 2 variables\nYou can close this (Esc) and review the form.");
 });
 
 test("a request item whose multi-row sets are refused still counts as partly refused", async () => {
@@ -669,7 +669,7 @@ test("a read that is partly refused fills what it read and says the form may hav
   await loadCommand(page)("SCASE0001");
   assert.deepStrictEqual(filledNames(page), ["country", "supplier_name"]);
   assert.strictEqual(lastToast(page).text,
-    "Done. Filled 2 of 2 variables.\n" +
+    "Filled 2 of 2 variables\n" +
       "Some of the ticket's variables couldn't be read, so check the form for gaps.\n" +
       "You can close this (Esc) and review the form.");
 });
@@ -689,7 +689,7 @@ test("a second run during the switch is refused, so nothing is read or filled as
   assert.strictEqual(page.sent.filter((t) => t === "SN_TABLE_GET:question_answer@you").length, 1);
   assert.strictEqual(page.sent.filter((t) => t === "FILL_PORTAL_VARIABLES").length, 1);
   assert.strictEqual(page.filled.as, "target");
-  assert.match(lastToast(page).text, /^Done\. Filled 2 of 2 variables as abel\.tuter\./);
+  assert.match(lastToast(page).text, /^Filled 2 of 2 variables\nFilled as: abel\.tuter\n/);
 });
 
 test("progress arriving after a run has ended does not replace its last message", async () => {
@@ -720,7 +720,7 @@ test("confirming switches, reads as you, switches back, and only then fills", as
   assert.strictEqual(page.filled.as, "target", "the form's scripts run as the impersonated account");
   assert.deepStrictEqual(filledNames(page), ["country", "supplier_name"]);
   assert.deepStrictEqual(lastToast(page), {
-    text: "Done. Filled 2 of 2 variables as abel.tuter.\n" +
+    text: "Filled 2 of 2 variables\nFilled as: abel.tuter\n" +
       "Read SCASE0001 as you; you're impersonating abel.tuter again.\n" +
       "You can close this (Esc) and review the form.",
     isErr: false,
@@ -748,6 +748,120 @@ test("every message during the switch names its step and spins, and the last one
   const last = page.toastStates[page.toastStates.length - 1];
   assert.strictEqual(last.done, true, "the result stays until the palette is closed");
   assert.ok(!last.busy && !last.sticky);
+});
+
+/*
+ * The four steps stay on screen and tick off. Each toast during a switch run
+ * carries the whole list; the message text still names the step for the
+ * status region, as it did before the list.
+ */
+const lastState = (page) => page.toastStates[page.toastStates.length - 1];
+const stepStates = (state) => (state.steps || []).map((step) => step.state);
+const stepTexts = (state) => (state.steps || []).map((step) => step.text);
+
+test("the four steps stay on screen and tick off, and the report follows them", async () => {
+  const page = makePage();
+  await loadCommand(page)("SCASE0001");
+  const from = page.toasts.length;
+  page.confirmations[0].onConfirm();
+  await settle();
+
+  const during = page.toastStates.slice(from, -1);
+  assert.ok(during.every((state) => state.steps && state.steps.length === 4), "every message carries the list");
+  const third = page.toasts.slice(from).findIndex((t) => t.text === "Step 3 of 4 · Impersonating abel.tuter again…");
+  assert.ok(third >= 0);
+  const mid = page.toastStates[from + third];
+  assert.deepStrictEqual(stepStates(mid), ["done", "done", "current", "pending"]);
+  assert.deepStrictEqual(stepTexts(mid), [
+    "Switched back to your own account",
+    "Read SCASE0001 as you: 2 variables",
+    "Impersonating abel.tuter again…",
+    "Fill this form as abel.tuter",
+  ]);
+
+  const last = lastState(page);
+  assert.strictEqual(last.done, true);
+  assert.deepStrictEqual(stepStates(last), ["done", "done", "done", "done"]);
+  assert.deepStrictEqual(stepTexts(last), [
+    "Switched back to your own account",
+    "Read SCASE0001 as you: 2 variables",
+    "Impersonating abel.tuter again",
+    "Filled this form as abel.tuter",
+  ]);
+  /* The report follows the list. The line saying the session is back is the
+   * list's to say, so it is not drawn again under it. */
+  assert.deepStrictEqual(last.lines.map((line) => line.kind), ["head", "fact", "hint"]);
+  assert.deepStrictEqual(last.lines[1], { label: "Filled as", text: "abel.tuter", kind: "fact" });
+  assert.ok(!last.lines.some((line) => /you're impersonating/.test(line.text)));
+});
+
+test("a failed switch back marks the step it stopped on, and later steps stay pending", async () => {
+  const message = "GlideLens could not confirm who you are now. Check the ServiceNow user menu. Nothing was filled.";
+  const page = makePage({ endFails: message, paletteOpen: false });
+  await loadCommand(page)("SCASE0001");
+  page.confirmations[0].onConfirm();
+  await settle();
+  const last = lastState(page);
+  assert.strictEqual(last.sticky, true);
+  assert.deepStrictEqual(stepStates(last), ["done", "done", "failed", "pending"]);
+  assert.strictEqual(last.steps[2].text, "Impersonating abel.tuter again did not finish");
+  assert.strictEqual(last.steps[2].message, message, "the message sits under the step it stopped on");
+  assert.strictEqual(last.steps[3].text, "Fill this form as abel.tuter");
+  assert.strictEqual(last.lines, null, "and is not said again under the list");
+  assert.deepStrictEqual(lastToast(page), { text: message, isErr: true });
+  assert.strictEqual(page.reopened, 1, "a closed palette is still reopened to show it");
+});
+
+test("a refused first switch marks the first step and nothing after it", async () => {
+  const page = makePage({ beginFails: "ServiceNow did not switch your session back." });
+  await loadCommand(page)("SCASE0001");
+  page.confirmations[0].onConfirm();
+  await settle();
+  const last = lastState(page);
+  assert.deepStrictEqual(stepStates(last), ["failed", "pending", "pending", "pending"]);
+  assert.strictEqual(last.steps[0].text, "Switching back to your own account did not finish");
+  assert.strictEqual(last.steps[0].message, "ServiceNow did not switch your session back.");
+});
+
+test("a read that finds nothing as you is marked on its step, and the switch back still ticks", async () => {
+  const page = makePage();
+  await loadCommand(page)("SCASE0002");
+  page.confirmations[0].onConfirm();
+  await settle();
+  const last = lastState(page);
+  assert.deepStrictEqual(stepStates(last), ["done", "failed", "done", "pending"]);
+  assert.strictEqual(last.steps[1].text, "Read SCASE0002 as you: nothing to fill");
+  assert.strictEqual(last.steps[1].message, "No copyable variables found.");
+  assert.strictEqual(last.steps[2].text, "Impersonating abel.tuter again");
+  assert.strictEqual(last.lines, null, "the reason is said once, under its step");
+});
+
+test("progress arriving after a switch run has ended does not replace its list", async () => {
+  const page = makePage();
+  const command = loadCommand(page);
+  await command("SCASE0001");
+  page.confirmations[0].onConfirm();
+  await settle();
+  const shown = page.toasts.length;
+  command.showPrefillProgress("Filling portal form… 3 of 9");
+  assert.strictEqual(page.toasts.length, shown);
+  assert.deepStrictEqual(stepStates(lastState(page)), ["done", "done", "done", "done"]);
+});
+
+test("a second run during a switch says so under the list, leaving the step's own words", async () => {
+  const page = makePage();
+  const command = loadCommand(page);
+  await command("SCASE0001");
+  let seen = null;
+  page.duringReadAsYou = () => {
+    command("SCASE0001");
+    seen = lastState(page);
+  };
+  page.confirmations[0].onConfirm();
+  await settle();
+  assert.deepStrictEqual(stepStates(seen), ["done", "current", "pending", "pending"]);
+  assert.strictEqual(seen.steps[1].text, "Reading SCASE0001 as you…");
+  assert.deepStrictEqual(seen.lines, [{ text: "Prefill is already running. Wait for it to finish.", kind: "note" }]);
 });
 
 test("a run that ends in a problem leaves its message up too", async () => {
@@ -945,7 +1059,8 @@ for (const label of ["Switch, read and fill", "Cancel"]) {
 
     const ran = [];
     ui.showPaletteConfirmation({
-      title: "abel.tuter can't read SCASE0001's variables. To prefill, GlideLens will:",
+      title: "abel.tuter can't read SCASE0001's variables.",
+      lead: "To prefill, GlideLens will:",
       steps: ["a", "b", "c", "d"],
       note: "audit log",
       confirmLabel: "Switch, read and fill",
@@ -978,10 +1093,37 @@ test("Esc in the input closes the palette once a run has ended, and goes back a 
   for (const options of [{ done: true }, { sticky: true }]) {
     closed = 0;
     ui.showArgInput({ inputLabel: "Source ticket, sys_id or link" });
-    ui.showToast("Done. Filled 2 of 2 variables.", Boolean(options.sticky), 0, options);
+    ui.showToast("Filled 2 of 2 variables", Boolean(options.sticky), 0, options);
     dom.root.getElementById("arg-input").onkeydown(escapeKey());
     assert.strictEqual(closed, 1, "a run's last message: " + JSON.stringify(options));
   }
+});
+
+test("the confirmation reads: the reason, the consequence in amber, the lead-in, then the steps", () => {
+  const dom = fakePalette();
+  const ui = loadPaletteUi(dom, () => {});
+  ui.showArgInput({ inputLabel: "Source ticket, sys_id or link" });
+  ui.showPaletteConfirmation({
+    title: "abel.tuter can't read SCASE0001's variables.",
+    note: "ServiceNow records both switches in its audit log.",
+    lead: "To prefill, GlideLens will:",
+    steps: ["a", "b", "c", "d"],
+    confirmLabel: "Switch, read and fill",
+    onConfirm: () => {},
+    onCancel: () => {},
+  });
+  const panel = dom.root.getElementById("palette-confirm");
+  assert.deepStrictEqual(panel.children.map((child) => [child.tagName, child.id || child.className]), [
+    ["P", "palette-confirm-title"],
+    ["P", "confirm-note"],
+    ["P", "confirm-lead"],
+    ["OL", ""],
+    ["DIV", "confirm-actions"],
+  ]);
+  assert.strictEqual(panel.children[0].textContent, "abel.tuter can't read SCASE0001's variables.");
+  assert.strictEqual(panel.children[2].textContent, "To prefill, GlideLens will:");
+  assert.match(contentSource, /#palette-confirm \.confirm-note\{[^}]*color:#efc48f\}/,
+    "the consequence takes the amber Impersonate uses for a session change");
 });
 
 test("the confirmation runs only from a button click, and never takes focus", () => {

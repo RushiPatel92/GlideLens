@@ -139,24 +139,35 @@
     }
     .heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:#85859f;line-height:1.5;max-width:90ch}
+    .subtitle{font-size:12px;color:#9a9ab3;line-height:1.5;max-width:90ch}
     .subtitle .mono{
       font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
       color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
     }
     .subtitle .flagword{color:#e0c187}
+    .subtitle .keep{white-space:nowrap}
     .subtitle .sep{color:#4d4d68;padding:0 5px}
     .close{
-      border:0;background:transparent;color:#85859f;padding:3px 5px;
+      border:0;background:transparent;color:#9a9ab3;padding:3px 5px;
       font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
     }
     .close:hover{color:#fff;background:#2d2d48}
+    /* Three lines, one job each: the score and what it measures; the row
+       counts; what else to check. */
     .summary{
-      display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 20px;
+      display:flex;flex-direction:column;gap:6px;padding:10px 20px;
       border-bottom:1px solid #292944;color:#aaaac1;font-size:11px;
     }
+    .sum-line{display:flex;gap:6px 10px;align-items:center;flex-wrap:wrap;max-width:none}
+    .sum-score{display:inline-flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+    .sum-words{font-size:12px;color:#c8c8dc}
+    .sum-head{color:#9a9ab3}
     .summary .sep{color:#4d4d68}
-    .summary .muted{color:#8686a0}
+    .summary .muted{color:#9a9ab3}
+    .check{font-size:11px}
+    .check b{font-weight:650}
+    .check.warn{color:var(--flag)}
+    .check.msg{color:var(--info)}
     .score{
       font-size:15px;font-weight:650;color:#f0f0fa;padding:1px 9px;border-radius:6px;
       background:#2c2d4a;border:1px solid #3c3e62;
@@ -246,7 +257,7 @@
       max-height:min(520px,60vh);overflow:auto;padding:8px;border-radius:8px;
       background:#26263d;border:1px solid #4a4a72;box-shadow:0 18px 40px rgba(0,0,0,.55);
     }
-    .popover .pop-note{font-size:10px;color:#8686a0;padding:2px 4px 7px;line-height:1.45}
+    .popover .pop-note{font-size:10px;color:#9a9ab3;padding:2px 4px 7px;line-height:1.45}
     .popover .pop-actions{display:flex;gap:6px;flex-wrap:wrap;padding:0 2px 8px}
     .popover .pop-actions button{
       border:1px solid #5b5b86;background:#33345a;color:#dcdcf0;border-radius:5px;
@@ -293,7 +304,7 @@
     .group-name{font-size:12px;font-weight:650;color:color-mix(in srgb, var(--teal) 78%, white);flex:none}
     .group-head.sub .group-name,.group-head.plain .group-name{color:#c9c9e0}
     .group-note{
-      font-size:10px;color:#8585a0;min-width:0;overflow:hidden;
+      font-size:10px;color:#c8c8dc;min-width:0;overflow:hidden;
       text-overflow:ellipsis;white-space:nowrap;
     }
     .group-count{
@@ -308,7 +319,7 @@
     }
     .section-note{
       padding:9px max(20px,calc(100% - 90ch)) 9px 20px;
-      font-size:11px;color:#8f8fa8;line-height:1.55;
+      font-size:11px;color:#9a9ab3;line-height:1.55;
       border-bottom:1px solid #23233a;background:#20202f;
     }
     .row{
@@ -323,17 +334,12 @@
       display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#f0f0fa;
     }
     .row-el{
-      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#85859f;
+      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9a9ab3;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:2px;
-    }
-    .badge{
-      justify-self:start;padding:3px 7px;border-radius:4px;font-size:10px;
-      white-space:nowrap;width:max-content;
-      color:#aeb0d4;background:#2c2d4a;border:1px solid #3c3e62;
     }
     .cov{display:flex;flex-direction:column;gap:4px;min-width:0}
     .cov-num{font-size:11px;color:#c6c6d8;display:flex;gap:6px;align-items:baseline}
-    .cov-num .pct{color:#8686a0;font-size:10px}
+    .cov-num .pct{color:#9a9ab3;font-size:10px}
     .cov-word{font-size:11px;color:var(--muted)}
     .bar{height:5px;border-radius:3px;background:#33334f;overflow:hidden}
     .bar span{display:block;height:100%;border-radius:3px;background:var(--ok)}
@@ -347,11 +353,37 @@
     .tag.gap{color:var(--gap);background:var(--gap-bg);border-color:var(--gap-line)}
     .tag.flag{color:var(--flag);background:var(--flag-bg);border-color:var(--flag-line)}
     .tag.info{color:var(--info);background:var(--info-bg);border-color:var(--info-line)}
-    .caret{color:#6f6f88;font-size:10px;flex:none;justify-self:end}
+    .kind-word{font-size:12px;color:#c8c8dc;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    /* 13px: at 11px the glyph reads as a dot and the state is lost. */
+    .caret{color:#9a9ab3;font-size:13px;line-height:1;flex:none;justify-self:end}
     .row-detail{padding:11px 18px 14px 30px;border-bottom:1px solid #292941;background:#212134}
-    .meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:10px;color:#8686a0;margin-bottom:9px}
-    .meta b{color:#b6b6d0;font-weight:600;padding-right:4px}
-    .meta .mono{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9fb9d8}
+    /* An opened row: each answer once, gaps first, its languages by name;
+       then where it is stored, in the SAME list, so one label column lines
+       the values up down the whole row. No column gap: the label's own
+       right padding spaces it, so the rule above the store facts runs
+       unbroken across both cells. */
+    .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 0;margin:0;
+      font-size:12px;line-height:1.5;max-width:1100px}
+    .facts dt{color:#9a9ab3;font-size:11px;padding:1px 14px 0 0}
+    .facts dd{margin:0;color:#dedeee;min-width:0;overflow-wrap:anywhere}
+    .facts .mono{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:#c9c9dc}
+    .facts.answers dt{font-size:12px;font-weight:650;padding-top:0}
+    .facts.answers dt .n{color:#9a9ab3;font-weight:400}
+    .facts dt.gap{color:var(--gap)}.facts dt.flag{color:var(--flag)}.facts dt.info{color:var(--info)}
+    .facts dt.ok{color:var(--ok)}.facts dt.muted{color:var(--muted)}
+    .facts.answers dt.store{font-size:11px;font-weight:400;padding-top:1px;color:#9a9ab3}
+    .facts .rule{margin-top:6px;padding-top:9px;border-top:1px solid #2e2e48}
+    /* The rule row's label: the rule's 9px plus the 1px every store label
+       has, stated here because .facts.answers dt.store outranks .rule. */
+    .facts.answers dt.store.rule{padding-top:10px}
+    .langs{display:flex;flex-wrap:wrap;gap:3px 16px}
+    /* The name and its code stay together; a long note wraps. */
+    .lang-item{white-space:normal}
+    .lang-item>:first-child{white-space:nowrap}
+    .lang-note{color:#9a9ab3;margin-left:5px}
+    .group-line{display:block;color:#9a9ab3;font-size:11px;margin-top:2px;max-width:90ch}
+    .facts.store{margin-top:10px;padding-top:9px;border-top:1px solid #2e2e48}
+    .row-link{margin-top:9px}
     .chips{display:flex;flex-wrap:wrap;gap:5px}
     .chip{
       display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:5px;
@@ -368,7 +400,7 @@
     .chip.flag{color:var(--flag);background:var(--flag-bg);border-color:var(--flag-line)}
     .chip.info{color:var(--info);background:var(--info-bg);border-color:var(--info-line)}
     .chip.ok .lang,.chip.gap .lang,.chip.flag .lang,.chip.info .lang{color:inherit}
-    .chips-note{font-size:11px;color:#8686a0;padding:2px 0;max-width:90ch}
+    .chips-note{font-size:11px;color:#9a9ab3;padding:2px 0;max-width:90ch}
     .evidence{margin:11px 0 0;padding:0;list-style:none}
     .evidence li{
       font-size:11px;color:#a0a0b8;line-height:1.6;padding:2px 0 2px 13px;position:relative;
@@ -389,7 +421,7 @@
       display:flex;gap:8px;align-items:baseline;min-width:0;font-size:11px;color:#dcdcf0;
     }
     .finding-line{
-      flex:none;color:#8686a0;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
+      flex:none;color:#9a9ab3;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
     }
     .finding-trigger{
       flex:none;color:var(--info);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;
@@ -399,22 +431,37 @@
       padding-left:9px;border-left:2px solid #3a3a5c;max-width:90ch;
     }
     .finding-flag{font-size:11px;color:var(--flag);margin-top:5px}
+    /* Links are underlined at rest, so what can be clicked looks it. */
+    /* Every link one size: a button left to inherit draws at the page's 16px. */
     button.link{
-      background:none;border:0;padding:0;font:inherit;color:var(--info);cursor:pointer;
-      text-align:left;overflow-wrap:anywhere;
+      background:none;border:0;padding:0;font:inherit;font-size:12px;color:var(--info);cursor:pointer;
+      text-align:left;overflow-wrap:anywhere;text-decoration:underline;text-underline-offset:2px;
     }
-    button.link:hover{text-decoration:underline}
+    button.link:hover{color:#d9ecff}
     .choice-list{margin:11px 0 0;border-top:1px solid #2c2c46}
+    .choice-notes{padding:8px 0 4px}
     .choice{
-      display:grid;grid-template-columns:minmax(0,230px) 92px minmax(0,1fr);gap:10px;
-      align-items:start;padding:7px 0;border-bottom:1px solid #2a2a42;
+      display:grid;grid-template-columns:minmax(0,230px) 64px minmax(0,1fr);gap:12px;
+      align-items:start;padding:9px 0;border-bottom:1px solid #2a2a42;
     }
-    .choice-label{font-size:11px;color:#dcdcf0;min-width:0;overflow-wrap:anywhere}
+    .choice-label{font-size:12px;line-height:1.5;color:#dcdcf0;min-width:0;overflow-wrap:anywhere}
     .choice-value{
       font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9fb9d8;
       display:block;margin-top:2px;overflow-wrap:anywhere;
     }
-    .choice-cov{font-size:10px;color:#a0a0b8}
+    .choice-cov{font-size:11px;line-height:1.5;color:#a0a0b8}
+    .choice-body{min-width:0}
+    /* One label width for every choice, so each choice's languages start
+       where the one above's do. Wide enough for "Same as source 23"; a
+       longer answer widens only its own choice. */
+    .facts.answers.in-choice{grid-template-columns:minmax(150px,max-content) minmax(0,1fr)}
+    .choice-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+    /* First in an opened row: no rule under the row's own head. Followed by
+       the store facts: the last choice's rule is theirs, not a second one. */
+    .row-detail>.choice-list:first-child{margin-top:0;border-top:0}
+    .row-detail>.choice-list:first-child>.choice-notes{padding-top:0}
+    .row-detail>.choice-list:first-child>.choice:first-child{padding-top:0}
+    .choice-list+.facts.store{margin-top:0;border-top:0}
     .lookup{
       display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 20px;
       border-top:1px solid #2e2e4e;background:#20202f;
@@ -430,16 +477,16 @@
       padding:6px 10px;font-size:11px;cursor:pointer;
     }
     .lookup button:hover:not(:disabled){background:#41426b;color:#fff}
-    .lookup .lookup-note{font-size:11px;color:#8686a0;flex:1;min-width:160px;max-width:90ch;line-height:1.5}
+    .lookup .lookup-note{font-size:11px;color:#9a9ab3;flex:1;min-width:160px;max-width:90ch;line-height:1.5}
     .lookup .lookup-note.err{color:#ffc9c9}
-    .empty{padding:40px 20px;text-align:center;color:#74748b;font-size:13px;line-height:1.6;
+    .empty{padding:40px 20px;text-align:center;color:#9a9ab3;font-size:13px;line-height:1.6;
       max-width:90ch;margin:0 auto}
-    .empty .hint{display:block;margin-top:6px;font-size:11px;color:#5f5f76}
+    .empty .hint{display:block;margin-top:6px;font-size:11px;color:#9a9ab3}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
-    .toolbar-note{font-size:11px;color:#67677e;flex:1;min-width:150px;max-width:90ch;margin-right:auto}
+    .toolbar-note{font-size:11px;color:#9a9ab3;flex:1;min-width:150px;max-width:90ch;margin-right:auto}
     .toolbar button{
       border:1px solid #3a3a5c;background:#292941;color:#d8d8ea;
       border-radius:6px;padding:6px 9px;cursor:pointer;font-size:12px;
@@ -525,14 +572,6 @@
 
   function separator(parent) {
     parent.appendChild(el("span", "sep", "·"));
-  }
-
-  function metaItem(parent, label, value, mono) {
-    if (!str(value)) return;
-    const wrap = el("span");
-    wrap.appendChild(el("b", "", label));
-    wrap.appendChild(el("span", mono ? "mono" : "", value));
-    parent.appendChild(wrap);
   }
 
   /* The engine is the authority on its own aggregates and its own report
@@ -1084,7 +1123,11 @@
       panel.pickerOpen = !panel.pickerOpen;
       paint();
     });
+    /* The picker is drawn into this slot when open; the slot itself is always
+     * there, so the button's aria-controls always has a target. */
     const langSlot = el("div", "popover-slot");
+    langSlot.id = "snh-tl-languages";
+    langButton.setAttribute("aria-controls", langSlot.id);
     langWrap.appendChild(langButton);
     langWrap.appendChild(langSlot);
     controls.appendChild(langWrap);
@@ -1218,6 +1261,7 @@
     renderRows();
     renderLookup();
     renderToolbarState();
+    restoreHeadFocus();
   }
 
   function renderSubtitle() {
@@ -1240,8 +1284,9 @@
     const languages = languageContext();
     if (languages) {
       separator(node);
+      // A short phrase never breaks in the middle ("Base / language en").
       node.appendChild(el(
-        "span", languages.assumedBase ? "flagword" : "",
+        "span", languages.assumedBase ? "flagword" : "keep",
         languages.assumedBase
           ? "Base language assumed to be " + str(languages.baseLanguage) +
             " — glide.sys.language could not be read"
@@ -1327,12 +1372,15 @@
     clearNode(node);
 
     if (panel.result && panel.result.unavailable) {
-      node.appendChild(el(
+      /* Unchanged: one line, as before the summary had three. */
+      const line = el("div", "sum-line");
+      line.appendChild(el(
         "span", "chip-stop",
         "Active languages could not be read — nothing on this page was assessed."
       ));
       const failures = (panel.result.failures || []).length;
-      if (failures) node.appendChild(el("span", "chip-warn", plural(failures, "read failure")));
+      if (failures) line.appendChild(el("span", "chip-warn", plural(failures, "read failure")));
+      node.appendChild(line);
       return;
     }
 
@@ -1366,13 +1414,44 @@
           (unfinished ? "the scan for them did not finish" : "") + "."
         : reading
     );
-    node.appendChild(score);
+    /* Line 1: the score and what it measures. It counts language slots,
+     * which the row counts on line 2 do not, so it says so. */
+    const counted = countedLanguageIds();
+    const line1 = el("div", "sum-line");
+    const phrase = el("span", "sum-score");
+    phrase.appendChild(score);
     if (!summary.counted) {
-      node.appendChild(el(
+      phrase.appendChild(el(
         "span", "muted",
         scope ? "nothing counted in the selected languages" : "nothing counted yet"
       ));
+    } else {
+      phrase.appendChild(el(
+        "span", "sum-words",
+        "of translations exist, across the " +
+          (scope ? plural(scope.length, "language") + " selected"
+            : plural(counted.length, "language") + " shown")
+      ));
     }
+    /* The counts follow the selection. This one never does, and it is drawn
+     * whenever the two can differ, so narrowing the picker can never be
+     * mistaken for closing a gap. */
+    if (scope) {
+      const overall = overallMainSummary();
+      separator(phrase);
+      const all = el(
+        "span", "muted",
+        overall.counted
+          ? "all " + counted.length + " languages: " + overall.percent + "%"
+          : "all " + counted.length + " languages: nothing counted"
+      );
+      all.title =
+        "Coverage across every counted language. Hiding a language moves the " +
+        "score on the left, never this one.";
+      phrase.appendChild(all);
+    }
+    line1.appendChild(phrase);
+    node.appendChild(line1);
 
     /* The score answers "are the translations stored?". This answers "will
      * the form actually show them?", and the two can disagree completely. It
@@ -1396,78 +1475,65 @@
         "any language and are counted by no score here. Opens the list of them."
       );
       chip.addEventListener("click", revealHardcoded);
-      node.appendChild(chip);
-    }
-
-    addCount(node, summary.complete, "complete");
-    separator(node);
-    addCount(node, summary.partial, "partial");
-    separator(node);
-    addCount(node, summary.none, "missing / none");
-
-    const counted = countedLanguageIds();
-    const visible = visibleLanguageIds();
-    separator(node);
-    node.appendChild(el(
-      "span", "muted",
-      counted.length
-        ? visible.length + " of " + counted.length + " languages shown"
-        : "languages not read yet"
-    ));
-
-    /* The counts above follow the selection. This one never does, and it is
-     * drawn whenever the two can differ, so narrowing the picker can never be
-     * mistaken for closing a gap. */
-    if (scope) {
-      const overall = overallMainSummary();
-      separator(node);
-      const all = el(
-        "span", "muted",
-        overall.counted
-          ? "all " + counted.length + " languages: " + overall.percent + "%"
-          : "all " + counted.length + " languages: nothing counted"
-      );
-      all.title =
-        "Coverage across every counted language. Hiding a language moves the " +
-        "score on the left, never this one.";
-      node.appendChild(all);
+      line1.appendChild(chip);
     }
 
     if (!complete && !panel.errorMessage) {
-      node.appendChild(el("span", "chip-msg", "still reading — counts are partial"));
+      line1.appendChild(el("span", "check msg", "still reading — counts are partial"));
     }
 
+    /* Line 2: rows, gaps first. Plain text, not filters. "missing / none"
+     * keeps its words: summary.none counts rows with no COVERED language
+     * (Direct or Same as source), which includes rows that are all Fallback,
+     * Partial or Conflict, not only rows with no translation at all. */
+    const line2 = el("div", "sum-line");
+    line2.appendChild(el("span", "sum-head", "Rows:"));
+    addCount(line2, summary.none, "missing / none");
+    separator(line2);
+    addCount(line2, summary.partial, "partial");
+    separator(line2);
+    addCount(line2, summary.complete, "complete");
+    node.appendChild(line2);
+
+    /* Line 3: what else to check, in the colours the advisories had as
+     * chips, but as words. Not drawn when there is nothing on it. */
+    const checks = [];
+    const check = (tone, count, rest, lead) => checks.push({ tone, count, rest, lead: lead || "" });
+    const rows = (count) => (count === 1 ? " row" : " rows");
     const warnings = warningCounts();
-    if (warnings.conflict) node.appendChild(el("span", "chip-warn", plural(warnings.conflict, "row") + " with a conflict"));
-    if (warnings.unavailable) node.appendChild(el("span", "chip-warn", plural(warnings.unavailable, "row") + " not read"));
-    if (warnings.nearDuplicate) node.appendChild(el("span", "chip-warn", plural(warnings.nearDuplicate, "row") + " with near-duplicates"));
-    if (warnings.stranded) node.appendChild(el("span", "chip-warn", plural(warnings.stranded, "row") + " with stranded rows"));
-    if (warnings.override) node.appendChild(el("span", "chip-warn", plural(warnings.override, "row") + " with overrides"));
+    if (warnings.conflict) check("warn", warnings.conflict, rows(warnings.conflict) + " with a conflict");
+    if (warnings.unavailable) check("warn", warnings.unavailable, rows(warnings.unavailable) + " not read");
+    if (warnings.nearDuplicate) check("warn", warnings.nearDuplicate, rows(warnings.nearDuplicate) + " with near-duplicates");
+    if (warnings.stranded) check("warn", warnings.stranded, rows(warnings.stranded) + " with stranded rows");
+    if (warnings.override) check("warn", warnings.override, rows(warnings.override) + " with overrides");
     if (warnings.scriptOverride) {
-      node.appendChild(el(
-        "span", "chip-warn",
-        plural(warnings.scriptOverride, "row") + " a script writes over"
-      ));
+      check("warn", warnings.scriptOverride, rows(warnings.scriptOverride) + " a script writes over");
     }
     if (hardcodedUnfinished()) {
       const scan = hardcodedScan() || {};
-      node.appendChild(el(
-        "span", "chip-warn",
-        "hardcoded scan stopped early — " +
-        plural(Number(scan.skippedCount), "script") + " unchecked"
-      ));
+      const skipped = Number(scan.skippedCount);
+      check("warn", skipped, (skipped === 1 ? " script" : " scripts") + " unchecked",
+        "hardcoded scan stopped early — ");
     }
-
     const failures = ((panel.result && panel.result.failures) || []).length;
-    if (failures) node.appendChild(el("span", "chip-warn", plural(failures, "read failure")));
-
+    if (failures) check("warn", failures, failures === 1 ? " read failure" : " read failures");
     const messages = messagesSummary();
     if (messages && messages.rowCount) {
-      node.appendChild(el(
-        "span", "chip-msg",
-        "Messages " + messages.covered + "/" + messages.counted +
-        " across " + plural(messages.rowCount, "key") + " — counted separately"
-      ));
+      check("msg", messages.covered + "/" + messages.counted,
+        " across " + plural(messages.rowCount, "key") + " — counted separately", "Messages ");
+    }
+    if (checks.length) {
+      const line3 = el("div", "sum-line");
+      line3.appendChild(el("span", "sum-head", "Also check:"));
+      checks.forEach((item, index) => {
+        if (index) separator(line3);
+        const words = el("span", "check " + item.tone);
+        if (item.lead) words.appendChild(el("span", "", item.lead));
+        words.appendChild(el("b", "", String(item.count)));
+        words.appendChild(el("span", "", item.rest));
+        line3.appendChild(words);
+      });
+      node.appendChild(line3);
     }
   }
 
@@ -1786,7 +1852,14 @@
   }
 
   function chipTitle(entry, kind, store, languageId) {
-    const parts = [languageName(languageId) + " (" + languageId + ")"];
+    return [languageName(languageId) + " (" + languageId + ")"]
+      .concat(chipTitleNotes(entry, kind, store))
+      .join(" — ");
+  }
+
+  /* The sentences a title adds after the language's name. */
+  function chipTitleNotes(entry, kind, store) {
+    const parts = [];
     if (entry && str(entry.reason)) parts.push(str(entry.reason));
     if (PRESENCE_ONLY_STORES.has(str(store)) && entry && Number(entry.duplicateCount)) {
       parts.push("Repeated rows are counted but never compared: this store's text column is never read.");
@@ -1801,41 +1874,7 @@
       parts.push("A row's key may be this source string spelled differently, but whether the platform matches the two has not been measured. Counted neither as covered nor as missing.");
     }
     if (kind === "unavailable") parts.push("The read did not complete, so this is unknown — not missing.");
-    return parts.join(" — ");
-  }
-
-  function stateChip(options) {
-    const opts = options || {};
-    const languageId = str(opts.languageId);
-    const entry = (opts.states || {})[languageId] || null;
-    const kind = stateKind(entry);
-    const meta = metaFor(kind);
-    /* Missing opens a prefilled new record; Blank opens the existing row(s)
-     * for that language, never a new record beside them. */
-    let url = "";
-    if (kind === "missing") url = newRecordUrl(opts.links, languageId);
-    else if (kind === "blank") url = existingRowsUrl(opts.links, languageId);
-    const node = url ? el("button", "chip " + meta.tone) : el("span", "chip " + meta.tone);
-    if (url) {
-      node.type = "button";
-      node.setAttribute(
-        "aria-label",
-        kind === "blank"
-          ? "Open the existing blank " + storeLabel(opts.store) + " row for " +
-            languageName(languageId)
-          : "Open a prefilled new " + storeLabel(opts.store) + " record for " +
-            languageName(languageId)
-      );
-      node.addEventListener("click", (event) => {
-        if (event && isFn(event.stopPropagation)) event.stopPropagation();
-        openUrl(url);
-      });
-    }
-    node.appendChild(el("span", "sym", meta.symbol));
-    node.appendChild(el("span", "lang", languageId));
-    node.appendChild(el("span", "what", chipWords(entry, kind, opts.store)));
-    node.title = chipTitle(entry, kind, opts.store, languageId);
-    return node;
+    return parts;
   }
 
   function extraChips(parent, row) {
@@ -1995,10 +2034,22 @@
     if (list.children && list.children.length) detail.appendChild(list);
   }
 
+  /* Said once above the choice list, not under every choice. */
+  const CHOICE_LINK_SENTENCE = {
+    missing: "A missing language opens a new record, prefilled for that choice and language.",
+    blank: "A blank language opens that choice's existing blank row.",
+  };
+
+  /* Each choice gets the same answer list a field's opened row has, so a
+   * choice's gaps read, and link, the way a field's do. One label width for
+   * every choice, so the languages start at the same place all the way down.
+   * What a field says under an answer would repeat under every choice here,
+   * so it is gathered and said once, above the list. */
   function renderChoices(detail, row, languages) {
     const entries = choiceEntries(row);
     if (!entries.length) return;
-    const wrap = el("div", "choice-list");
+    const explain = { linked: new Set(), notes: [] };
+    const lines = [];
     entries.slice(0, CHOICE_RENDER_CAP).forEach((entry) => {
       const line = el("div", "choice");
       const label = el("div", "choice-label");
@@ -2017,35 +2068,48 @@
           : "not counted"
       ));
 
-      const chips = el("div", "chips");
-      languages.forEach((id) => {
-        chips.appendChild(stateChip({
+      const body = el("div", "choice-body");
+      if (languages.length) {
+        body.appendChild(renderAnswers({
           states: entry.states,
-          links: entry.links,
           store: entry.store || row.store,
-          languageId: id,
-        }));
-      });
+          links: entry.links,
+        }, languages, { explain }));
+      }
+      const tags = el("div", "choice-tags");
       const near = entryNearDuplicates(entry);
       if (near && near.rowCount) {
-        chips.appendChild(el("span", "tag flag", plural(near.rowCount, "near-duplicate")));
+        tags.appendChild(el("span", "tag flag", plural(near.rowCount, "near-duplicate")));
       }
       const variants = entryCapitalisationVariants(entry);
       if (variants && variants.rowCount) {
-        chips.appendChild(el("span", "tag info", plural(variants.rowCount, "differently capitalised key")));
+        tags.appendChild(el("span", "tag info", plural(variants.rowCount, "differently capitalised key")));
       }
       const spelling = entryEvidence(entry, "spellingVariants");
       if (spelling && spelling.rowCount) {
-        chips.appendChild(el("span", "tag info", plural(spelling.rowCount, "differently accented or spaced key")));
+        tags.appendChild(el("span", "tag info", plural(spelling.rowCount, "differently accented or spaced key")));
       }
       const unproven = entryEvidence(entry, "unprovenVariants");
       if (unproven && unproven.rowCount) {
-        chips.appendChild(el("span", "tag flag",
+        tags.appendChild(el("span", "tag flag",
           plural(unproven.rowCount, "unconfirmed key match", "unconfirmed key matches")));
       }
-      line.appendChild(chips);
-      wrap.appendChild(line);
+      if (tags.children.length) body.appendChild(tags);
+      line.appendChild(body);
+      lines.push(line);
     });
+
+    const wrap = el("div", "choice-list");
+    const said = [];
+    if (explain.linked.has("missing")) said.push(CHOICE_LINK_SENTENCE.missing);
+    if (explain.linked.has("blank")) said.push(CHOICE_LINK_SENTENCE.blank);
+    const notes = said.concat(explain.notes);
+    if (notes.length) {
+      const head = el("div", "choice-notes");
+      notes.forEach((text) => head.appendChild(el("span", "group-line", text)));
+      wrap.appendChild(head);
+    }
+    lines.forEach((line) => wrap.appendChild(line));
     if (entries.length > CHOICE_RENDER_CAP) {
       wrap.appendChild(el(
         "div", "chips-note",
@@ -2055,55 +2119,194 @@
     detail.appendChild(wrap);
   }
 
+  /* The order answers are listed in: gaps first, then what is merely
+   * unknown, then what renders some other way, then what is covered. Every
+   * kind stateKind can return is placed; one this list does not know goes
+   * just before Direct, so nothing new can hide at the bottom or vanish. */
+  const ANSWER_ORDER = [
+    "missing", "blank", "partial", "conflict", "unavailable", "unverified",
+    "fallback", "same_as_source", "not_applicable",
+  ];
+
+  /* The answer words plus what one language adds to them ("via pt",
+   * "(x missing)", "· 2 duplicates"). chipWords stays the single source, so
+   * the Extra chips and this list cannot drift apart. */
+  function languageNote(entry, kind, store) {
+    const words = chipWords(entry, kind, store);
+    const base = metaFor(kind).text;
+    return words.indexOf(base) === 0 ? words.slice(base.length).trim() : "";
+  }
+
+  function languageItem(entry, kind, store, links, languageId) {
+    let url = "";
+    if (kind === "missing") url = newRecordUrl(links, languageId);
+    else if (kind === "blank") url = existingRowsUrl(links, languageId);
+    const item = el("span", "lang-item");
+    const words = languageName(languageId) + " (" + languageId + ")";
+    const label = url ? el("button", "link", words) : el("span", "", words);
+    label.title = chipTitle(entry, kind, store, languageId);
+    if (url) {
+      label.type = "button";
+      /* Same actions and names as the state chips had. */
+      label.setAttribute(
+        "aria-label",
+        kind === "blank"
+          ? "Open the existing blank " + storeLabel(store) + " row for " + languageName(languageId)
+          : "Open a prefilled new " + storeLabel(store) + " record for " + languageName(languageId)
+      );
+      label.addEventListener("click", (event) => {
+        if (event && isFn(event.stopPropagation)) event.stopPropagation();
+        openUrl(url);
+      });
+    }
+    item.appendChild(label);
+    const note = languageNote(entry, kind, store);
+    if (note) item.appendChild(el("span", "lang-note", note));
+    return { item, linked: Boolean(url) };
+  }
+
+  const LINK_SENTENCE = {
+    missing: "Each opens a new record, prefilled for that language.",
+    blank: "Each opens the existing blank row.",
+  };
+
+  /* One labelled list: each answer once, in its tone, with its languages.
+   * options.explain (a choice's list) collects what would be said under an
+   * answer, so the choice list can say it once. */
+  function renderAnswers(row, languages, options) {
+    const opts = options || {};
+    const explain = opts.explain || null;
+    const groups = new Map();
+    languages.forEach((id) => {
+      const entry = (row.states || {})[id] || null;
+      const kind = stateKind(entry);
+      if (!groups.has(kind)) groups.set(kind, []);
+      groups.get(kind).push({ id, entry });
+    });
+    const known = ANSWER_ORDER.filter((kind) => groups.has(kind));
+    const unknown = Array.from(groups.keys())
+      .filter((kind) => kind !== "direct" && ANSWER_ORDER.indexOf(kind) < 0);
+    const order = known.concat(unknown, groups.has("direct") ? ["direct"] : []);
+
+    const list = el("dl", explain ? "facts answers in-choice" : "facts answers");
+    order.forEach((kind) => {
+      const members = groups.get(kind);
+      const meta = metaFor(kind);
+      /* A real space, so the word and its count are read as two words. */
+      const label = el("dt", meta.tone, meta.text + " ");
+      label.appendChild(el("span", "n", String(members.length)));
+      list.appendChild(label);
+      const value = el("dd");
+      const langs = el("div", "langs");
+      const notes = [];
+      let linked = false;
+      members.forEach((member) => {
+        const made = languageItem(member.entry, kind, row.store, row.links, member.id);
+        langs.appendChild(made.item);
+        linked = linked || made.linked;
+        /* Tooltip-only explanations today; said once under the group. */
+        chipTitleNotes(member.entry, kind, row.store).forEach((text) => {
+          if (notes.indexOf(text) < 0) notes.push(text);
+        });
+      });
+      value.appendChild(langs);
+      if (explain) {
+        if (linked) explain.linked.add(kind);
+        notes.forEach((text) => {
+          if (explain.notes.indexOf(text) < 0) explain.notes.push(text);
+        });
+      } else {
+        if (linked && LINK_SENTENCE[kind]) value.appendChild(el("span", "group-line", LINK_SENTENCE[kind]));
+        notes.forEach((text) => value.appendChild(el("span", "group-line", text)));
+      }
+      list.appendChild(value);
+    });
+    return list;
+  }
+
+  /* Store facts join the answers' list when there is one, under a rule, so
+   * one label column serves both. The first of them carries the rule.
+   * Whether a fact is the first is passed in, never read back off the list:
+   * `children` is a live HTMLCollection in Chrome, with no array methods. */
+  function storeFact(facts, label, fill) {
+    const rule = facts.placed === 0 && facts.underAnswers ? " rule" : "";
+    const dt = el("dt", "store" + rule, label);
+    const dd = el("dd", "store" + rule);
+    fill(dd);
+    facts.list.appendChild(dt);
+    facts.list.appendChild(dd);
+    facts.placed += 1;
+  }
+
+  function monoFact(facts, label, value) {
+    if (!str(value)) return;
+    storeFact(facts, label, (dd) => dd.appendChild(el("span", "mono", value)));
+  }
+
   function renderRowDetail(row, languages) {
     const detail = el("div", "row-detail");
 
-    const meta = el("div", "meta");
-    metaItem(meta, "Store", row.store ? storeLabel(row.store) + " · " + str(row.store) : "", true);
-    metaItem(meta, "Type", str(row.internalType), true);
-    metaItem(meta, "Defined on", str(row.definingTable), true);
-    metaItem(meta, "This table", str(row.concreteTable), true);
-    metaItem(meta, "Registered under", str(row.registrationTable), true);
-    if (meta.children && meta.children.length) detail.appendChild(meta);
-
-    const listUrl = rowListUrl(row);
-    if (listUrl) {
-      const open = el("button", "chip info", null);
-      open.type = "button";
-      open.appendChild(el("span", "sym", "↗"));
-      open.appendChild(el("span", "what", "Open the matching rows in the platform"));
-      open.addEventListener("click", (event) => {
-        if (event && isFn(event.stopPropagation)) event.stopPropagation();
-        openUrl(listUrl);
-      });
-      detail.appendChild(open);
-    }
-
-    const chips = el("div", "chips");
     if (!languages.length) {
       const counted = countedLanguageIds();
-      chips.appendChild(el(
+      detail.appendChild(el(
         "div", "chips-note",
         counted.length
           ? "Every language is hidden by the language filter. The score above still counts all " +
             counted.length + "."
           : "The active language list has not been read yet."
       ));
-    } else {
-      languages.forEach((id) => {
-        chips.appendChild(stateChip({
-          states: row.states,
-          links: row.links,
-          store: row.store,
-          languageId: id,
-        }));
-      });
-      extraChips(chips, row);
     }
-    detail.appendChild(chips);
+    /* A choices row's own answers only repeat its choices': a language
+     * missing there is missing, and linked, on each choice. So the choices
+     * are its answers and come first, and no summary is drawn above them.
+     * The row's head still shows its score. A choices row with no choices to
+     * list keeps its summary, as it has nothing else to show. */
+    const byChoice = choiceEntries(row).length > 0;
+    if (byChoice) renderChoices(detail, row, languages);
+    const answered = languages.length > 0 && !byChoice;
+    const list = answered ? renderAnswers(row, languages) : el("dl", "facts store");
+    if (languages.length) {
+      /* Languages outside the counted set keep their chips, as their own
+       * answer in the same list; on a choices row, at the top of its facts. */
+      const extras = el("div", "chips");
+      extraChips(extras, row);
+      if (extras.children.length) {
+        const meta = STATE_META.extra;
+        list.appendChild(el("dt", meta.tone, meta.text));
+        const dd = el("dd");
+        dd.appendChild(extras);
+        list.appendChild(dd);
+      }
+    }
+
+    /* Where the translation is stored, as labelled facts. */
+    const facts = { list, placed: 0, underAnswers: answered };
+    if (row.store) {
+      storeFact(facts, "Store", (dd) => {
+        dd.appendChild(el("span", "", storeLabel(row.store) + " "));
+        dd.appendChild(el("span", "mono", str(row.store)));
+      });
+    }
+    monoFact(facts, "Type", str(row.internalType));
+    monoFact(facts, "Defined on", str(row.definingTable));
+    monoFact(facts, "This table", str(row.concreteTable));
+    monoFact(facts, "Registered under", str(row.registrationTable));
+    if (list.children.length) detail.appendChild(list);
+
+    const listUrl = rowListUrl(row);
+    if (listUrl) {
+      const line = el("div", "row-link");
+      const open = el("button", "link", "Open the matching rows in the platform");
+      open.type = "button";
+      open.addEventListener("click", (event) => {
+        if (event && isFn(event.stopPropagation)) event.stopPropagation();
+        openUrl(listUrl);
+      });
+      line.appendChild(open);
+      detail.appendChild(line);
+    }
 
     renderEvidence(detail, row);
-    renderChoices(detail, row, languages);
     return detail;
   }
 
@@ -2120,10 +2323,12 @@
       name.appendChild(el("span", "row-el", str(row.element)));
     }
     head.appendChild(name);
-    head.appendChild(el("span", "badge", aspectLabel(row.aspect)));
+    head.appendChild(el("span", "kind-word", aspectLabel(row.aspect)));
     head.appendChild(coverageCell(row));
     head.appendChild(tagCell(row));
-    head.appendChild(el("span", "caret", expanded ? "▾" : "▸"));
+    const caret = el("span", "caret", expanded ? "▾" : "▸");
+    caret.setAttribute("aria-hidden", "true");
+    head.appendChild(caret);
     head.addEventListener("click", () => {
       if (panel.expandAll) {
         /* Collapsing one row out of an expand-all leaves the others open. */
@@ -2132,10 +2337,35 @@
       }
       if (panel.expanded.has(key)) panel.expanded.delete(key);
       else panel.expanded.add(key);
+      panel.focusHead = "row:" + key;
       paint();
     });
+    rememberHead("row:" + key, head);
     parent.appendChild(head);
-    if (expanded) parent.appendChild(renderRowDetail(row, languages));
+    if (expanded) {
+      const detail = renderRowDetail(row, languages);
+      /* Only an open row has a detail to point at. */
+      detail.id = "snh-tl-detail-" + (++panel.detailSeq);
+      head.setAttribute("aria-controls", detail.id);
+      parent.appendChild(detail);
+    }
+  }
+
+  /* A toggle repaints the list, which replaces the head that was pressed and
+   * would drop keyboard focus to the page. Heads are kept by key during a
+   * render, and paint() puts focus back on the one that was toggled. */
+  function rememberHead(id, node) {
+    if (panel.headNodes) panel.headNodes.set(id, node);
+  }
+
+  function restoreHeadFocus() {
+    const id = panel.focusHead;
+    panel.focusHead = "";
+    if (!id || !panel.headNodes) return;
+    const node = panel.headNodes.get(id);
+    if (node && isFn(node.focus)) {
+      try { node.focus({ preventScroll: true }); } catch (error) { node.focus(); }
+    }
   }
 
   function allRowKeys() {
@@ -2203,9 +2433,24 @@
     head.addEventListener("click", () => {
       if (collapsed) panel.collapsedSections.delete(id);
       else panel.collapsedSections.add(id);
+      panel.focusHead = "group:" + id;
       paint();
     });
+    rememberHead("group:" + id, head);
     return head;
+  }
+
+  /* What a group head opens: everything under it, in one element whose id the
+   * head names in aria-controls. It is always drawn, so the head always has a
+   * target; a collapsed group's is empty and hidden, as Debug Timeline does
+   * for a closed row. It has no style of its own. */
+  function groupBody(group, head, collapsed) {
+    const body = el("div", "group-body");
+    body.id = "snh-tl-group-" + (++panel.detailSeq);
+    head.setAttribute("aria-controls", body.id);
+    if (collapsed) body.hidden = true;
+    group.appendChild(body);
+    return body;
   }
 
   function renderGroup(parent, section, languages, isSub) {
@@ -2216,11 +2461,13 @@
 
     const group = el("div", "group");
     const collapsed = isCollapsed(id);
-    group.appendChild(groupHead(section, id, collapsed, rows.length, total, isSub));
+    const head = groupHead(section, id, collapsed, rows.length, total, isSub);
+    group.appendChild(head);
+    const body = groupBody(group, head, collapsed);
 
     if (!collapsed) {
       const note = sectionNote(section);
-      if (note) group.appendChild(el("div", "section-note", note));
+      if (note) body.appendChild(el("div", "section-note", note));
       if (!rows.length) {
         const folded = foldedMatchCount(section, id);
         /* An engine note already explains an empty section; the generic line
@@ -2231,9 +2478,9 @@
               " folded away. Use Minor rows to show " + (folded === 1 ? "it" : "them") + "."
             : "No row in this section matches the current filter or search.")
           : (str(section.note) ? "" : "The engine produced no rows of this kind for this surface.");
-        if (emptyText) group.appendChild(el("div", "section-note", emptyText));
+        if (emptyText) body.appendChild(el("div", "section-note", emptyText));
       }
-      rows.forEach((row) => renderRow(group, row, id, languages));
+      rows.forEach((row) => renderRow(body, row, id, languages));
     }
     parent.appendChild(group);
     return rows.length;
@@ -2255,8 +2502,10 @@
 
     const group = el("div", "group");
     const collapsed = isCollapsed(id);
-    group.appendChild(groupHead(section, id, collapsed, shown, total, false));
-    if (!collapsed) subs.forEach((sub) => renderGroup(group, sub, languages, true));
+    const head = groupHead(section, id, collapsed, shown, total, false);
+    group.appendChild(head);
+    const body = groupBody(group, head, collapsed);
+    if (!collapsed) subs.forEach((sub) => renderGroup(body, sub, languages, true));
     parent.appendChild(group);
     return shown;
   }
@@ -2391,8 +2640,9 @@
       paint();
     });
     group.appendChild(head);
+    const body = groupBody(group, head, collapsed);
     if (!collapsed && (findings.length || scan.timedOut)) {
-      if (findings.length) group.appendChild(el("div", "section-note", HARDCODED_NOTE));
+      if (findings.length) body.appendChild(el("div", "section-note", HARDCODED_NOTE));
       /* Shown a page at a time. The whole list is in hand -- this is about
        * how many nodes the panel builds on each paint, not about hiding
        * anything -- so the button reveals the rest rather than re-reading.
@@ -2403,7 +2653,7 @@
         : Math.min(findings.length, panel.hardcodedShown || FINDING_PAGE);
       const list = el("div", "findings");
       findings.slice(0, shown).forEach((finding) => renderHardcodedFinding(list, finding));
-      group.appendChild(list);
+      body.appendChild(list);
       if (shown < findings.length) {
         const more = el("button", "more", "Show " +
           Math.min(FINDING_PAGE, findings.length - shown) + " more of " + findings.length);
@@ -2412,17 +2662,17 @@
           panel.hardcodedShown = shown + FINDING_PAGE;
           paint();
         });
-        group.appendChild(more);
+        body.appendChild(more);
         const all = el("button", "more", "Show all " + findings.length);
         all.type = "button";
         all.addEventListener("click", () => {
           panel.hardcodedShowAll = true;
           paint();
         });
-        group.appendChild(all);
+        body.appendChild(all);
       }
       if (scan.timedOut) {
-        group.appendChild(el(
+        body.appendChild(el(
           "div", "section-note",
           "The scan stopped at its time limit to keep the page responsive; " +
           plural(Number(scan.skippedCount), "script") + " were not scanned. " +
@@ -2430,7 +2680,7 @@
         ));
       }
       if (scan.capped) {
-        group.appendChild(el(
+        body.appendChild(el(
           "div", "section-note",
           "The list hit its cap; " + plural(Number(scan.omittedCount), "further finding") +
           " were omitted."
@@ -2461,6 +2711,7 @@
       paint();
     });
     group.appendChild(head);
+    const body = groupBody(group, head, collapsed);
     if (!collapsed) {
       const list = el("ul", "evidence");
       failures.forEach((failure) => {
@@ -2473,7 +2724,7 @@
       });
       const wrap = el("div", "section-note");
       wrap.appendChild(list);
-      group.appendChild(wrap);
+      body.appendChild(wrap);
     }
     parent.appendChild(group);
   }
@@ -2503,11 +2754,14 @@
     head.addEventListener("click", () => {
       if (collapsed) panel.collapsedSections.delete("__lookups");
       else panel.collapsedSections.add("__lookups");
+      panel.focusHead = "group:__lookups";
       paint();
     });
+    rememberHead("group:__lookups", head);
     group.appendChild(head);
+    const body = groupBody(group, head, collapsed);
     if (!collapsed) {
-      rows.forEach((row) => renderRow(group, row, "__lookups", languages));
+      rows.forEach((row) => renderRow(body, row, "__lookups", languages));
     }
     parent.appendChild(group);
     return rows.length;
@@ -2520,6 +2774,8 @@
      * from a freshly derived selection. */
     invalidateLanguageScope();
     clearNode(node);
+    panel.headNodes = new Map();
+    panel.detailSeq = 0;
     const languages = visibleLanguageIds();
     let shown = 0;
     let groups = 0;

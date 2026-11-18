@@ -210,8 +210,8 @@ Presentation rules that must survive future commands:
 - **A label match outranks a description match.** Because descriptions and
   keywords are searched too, a command's own complete label can also match some
   *other* command through that command's description — "Variable Values" matches
-  Variable Prefill, whose description reads "Copy catalog-variable values from
-  another ticket". `paletteMatchTier` therefore scores exact label, label prefix,
+  Variable Prefill, whose description reads "Copy variable values from another
+  ticket". `paletteMatchTier` therefore scores exact label, label prefix,
   label substring, then everything else, and `orderPaletteCommands` sorts by it.
   Without this, ordering was declaration order alone and Enter ran the wrong
   command. `tests/command_palette.test.js` asserts every built-in command ranks
@@ -1029,10 +1029,27 @@ shell. The values on screen are real people's names, titles and email
 addresses read from an instance we do not control, so leaving no markup path is
 one fewer thing a test has to prove is static.
 
+**One line per person under a column header**, as in Record Lens: Name, User
+ID, Email and Title when anyone has one, then each extra field the engine sent
+(merged across rows in the engine's order, five values at most), the role
+column on a role search only, then Impersonate. The header is `aria-hidden`;
+each value is a `dl.facts` pair with a visually hidden `dt`, an empty cell is a
+dash read as "empty", and the body's `data-values`, `data-role` and
+`data-width` drive the shared grid template and the container queries that
+stack a row into a fact list (empty facts left out) when the panel is too
+narrow. The engine says a role filter was applied, not which role, so the role
+column is headed "Selected role" unless the result names it. Recent
+impersonations use the same header and rows.
+
+**The name opens the user record** in a new tab and never changes the
+session; there is no separate "Open user". **Impersonate** is outlined until
+its row is hovered or focused, so one row at a time carries the pink.
+
 **A row click never impersonates.** Only the labelled button enters a
 confirmation, which repeats the identity in full, says the instance session
 will change, and disables while in flight so a second click, Enter, rerender or
-late callback cannot send a second request.
+late callback cannot send a second request. Both of a row's buttons — the name
+and Impersonate — are disabled while a request is out.
 
 The confirmation also lists the person's roles, read by `readUserRoles` after
 it opens. **Start** never waits for them: the roles help you choose a test
@@ -1848,16 +1865,49 @@ secret and listed redacted. Numeric type `18` is not treated as Hidden; only an
 explicit Hidden type label may supply that bucket, avoiding the verified Lookup
 Select Box misclassification.
 
-Variable insight icons open Catalog Insight scoped to an individual variable's
+Variable Insight marks open Catalog Insight scoped to an individual variable's
 onChange client scripts and UI policy actions. The variable name and definition
 sys_id exist only in Service Portal's Angular field model, so a MAIN-world
 helper stamps `data-snh-var*` attributes and the isolated-world content script
-anchors icons to those attributes.
+anchors marks to those attributes.
 
 Restamping is Service Portal-specific and occurs only for unstamped variables.
 Do not reuse the classic toggle-persistence observer. Per-variable attribution
 is valid for onChange scripts and matching UI policy actions; onLoad/onSubmit
 scripts and variable-less policies remain form-level behavior.
+
+- **Only a variable something acts on gets a mark.** `varInsightTargets` is the
+  one rule: stamped, not a rich-text label, and a count above zero.
+  `injectVariableInsightIcons` and `varInsightStale` both read it, and must: if
+  the staleness check counted a variable the injector skips, the observer
+  would re-apply forever.
+- **A mark is a real `<button type="button">`** built node by node (an SVG via
+  `createElementNS`, the count as a text node), named and titled by the
+  variable's label — "3 scripts and policies act on “Requested for”. Open them
+  in Catalog Logic." The marks sit in the page's own DOM, so they are styled
+  from one injected `<style id="snh-var-insight-style">` that starts with
+  `all:initial` and leaves with the marks. The mark brings its own background
+  (white on `#0b5f57`, 7.5:1), a thin white edge for dark themes, its own focus
+  ring outside that edge, and a `forced-colors` rule. A focused mark that
+  Angular re-creates takes focus back only while focus sits on the page body.
+- **A mark sits beside the field's `<label>`, not inside it.** The anchor
+  span is inside `label.field-label[for]`, and inside it the mark's own name
+  became part of the field's: measured in Chrome on that structure, a text
+  field read "Mandatory Name 5 scripts and policies act on “Name”. Open them
+  in Catalog Logic.", and "Mandatory Name" with the mark placed after the
+  label. On the PDI's portal the label is `inline-block` with no next sibling,
+  so the mark stays on the label's line (checked live). A checkbox's anchor is
+  its control container, not in a label, and its mark goes inside as before.
+  `varInsightMarkFor` finds a mark in either place.
+- **Every notice is heard on both routes.** `showToast` writes only to an open
+  palette, so Alt+double-click — palette closed — said nothing while reading,
+  on success or on failure. `showVariableInsightNotice` uses the palette's line
+  when it is open and otherwise a page-corner notice: its own closed shadow
+  root, `role="status"` created once and kept empty between notices (a region
+  inserted already holding its text is often not announced), text by
+  `textContent`, no pointer events. The first write waits 60 ms for a new
+  region, and only the newest pending notice is then written. Turning the marks
+  off says "Variable marks removed." on either route.
 
 Catalog prefill waits for observable GlideAjax work rather than matching known
 variable names. `fillPortalVariables` temporarily wraps `getXML`,
@@ -1890,10 +1940,22 @@ impersonation, read as the real account, impersonate the same account again,
 and only then fill. Both switches run on the page's own `g_ck`, which stays
 valid across them on both instances, so the form is never reloaded.
 
-- **It runs only from an explicit click** on the palette's confirmation, which
-  names the account and the ticket, lists the four steps, and says that
-  ServiceNow records both switches in its audit log. Focus stays in the input,
-  so Enter there re-runs the read instead of confirming.
+- **It runs only from an explicit click** on the palette's confirmation. Its
+  heading is the reason alone (the account and the ticket), then the
+  consequence in Impersonate's amber — ServiceNow records both switches in its
+  audit log, and other tabs act as you for a moment — then "To prefill,
+  GlideLens will:" and the four steps. Focus stays in the input, so Enter there
+  re-runs the read instead of confirming.
+- **The four steps stay on screen and tick off** once confirmed: done is a
+  tick, current a spinner, pending its number. A failure is placed under the
+  step it stopped on — the one still running, or for a read that failed or
+  found nothing, the read step, while the switch back still ticks — and later
+  steps stay pending, so where the session was left is shown as well as said.
+  The list is drawn from `prefillSwitchSteps`, which the switch itself never
+  reads; the step-2 bookkeeping before the switch back cannot throw. The list
+  is `aria-hidden`: the status region still speaks each "Step n of 4 · …" as
+  it starts, and the final report or message. The line saying the session is
+  back as the impersonated account is left to the list, whose ticks say it.
 - **One run at a time.** Enter while a run is going is refused with a message,
   not queued, and the worker refuses `FILL_PORTAL_VARIABLES` for a tab whose
   switch is in progress, from BEGIN's first await until END has settled.
@@ -1916,7 +1978,7 @@ valid across them on both instances, so the form is never reloaded.
   surface as "No copyable variables found". **A partial refusal is offered the
   switch too** ("can't read all of …"): measured, an itil requester was refused
   every case answer but could read the two multi-row sets, and used to get
-  "Done. Filled 2 of 2". Not impersonating, or with no way home, a partial read
+  "Filled 2 of 2". Not impersonating, or with no way home, a partial read
   fills what it read and says the form may have gaps. For a request-item
   source, a refused or failed `question_answer` read is ignored once the
   request item's own answers (`sc_item_option_mtom`) were read: on the
@@ -2070,11 +2132,21 @@ referenced table, `sys_id` only, chunked at 100 (about 400 ids answered 414):
   empty too, because an unchecked id is how a dangling reference gets submitted.
 
 A text variable that happens to hold a sys_id is copied as it is; its type says
-nothing, and guessing from the value would damage real text. The summary's
-denominator is the number **read**, with what was held back counted as "not
-filled". No message ever shows a value or a sys_id — a ticket named by a link
-is "the linked ticket" until the read answers with its number — and a finished
-message draws its notes as plain text, not in the success colour.
+nothing, and guessing from the value would damage real text. The headline's
+denominator is the number **read**, with what was held back counted under
+"Held back". No message ever shows a value or a sys_id — a ticket named by a
+link is "the linked ticket" until the read answers with its number.
+
+**The finished message** is a headline ("Filled 11 of 16 variables", with the
+tick and the success colour), then labelled facts, then the notes, then the
+close hint. A fact with a zero or no value is left out: Read from, Filled as,
+Already set ("1, left as it was"), Not on this form, Can't be copied (a type
+Prefill never copies, known before the fill), Couldn't be filled (the page's
+own skips, which are fills that failed after every retry, so they are not
+called a type), and Held back (a count only — the notes, which begin "Held
+back, because …", name each variable and why, once). Facts are drawn as one `dl`, every line its own block, each set by
+`textContent`; the message text joins them as "Label: value" for the status
+region and the tests.
 
 **Three guards in the shared reader.** `tableApiGetInPage` serves every caller,
 and each guard only turns a throw or a wrong-frame answer into a clear refusal:
@@ -2697,6 +2769,26 @@ When delegation does occur, the per-instance `glideAjaxOwnedElsewhere` flag
 keeps the inner call silent so one request is not recorded twice. Frame
 discovery uses the shared announced frame IDs because injecting into every
 frame can hang on `about:blank` helper frames.
+
+The results panel shows one row per GlideAjax call. An asynchronous call's
+completion carries `details.startId`, the `id` of the start event it answers;
+ids are unique within one frame's recording, so the panel pairs on `frameId`
+plus that id. Never pair by Script Include and method: concurrent calls to one
+processor are identical by name and answer in any order. An answered start is
+left out; the finished row shows when the call was sent and the start's call
+stack, because a completion is recorded in its callback and carries no useful
+stack of its own. A start with no paired completion keeps its own row, as does
+every start in a trace from a recorder that predates the link. `getXMLWait`
+records no start, so its completion carries no link.
+
+The panel also leaves out a `setValue` the recorder marked `noValueChange`, and
+a repeat of the same `hideFieldMsg`, `setMandatory`, `setVisible`,
+`setDisplay`, `setReadOnly` or `setDisabled` call with the same arguments within
+5 seconds of the previous one on that field (the first stays). There is no
+toggle to show them: the owner judged a "show hidden rows" switch more
+confusing than useful. The recorder still captures them. The panel's event
+count and the copied trace both cover only what is shown, and the copy prints a
+finished call's "Sent" time and its start's stack in place of the start.
 
 ## Code Search
 

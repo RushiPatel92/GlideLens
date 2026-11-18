@@ -71,7 +71,7 @@
     *{box-sizing:border-box}
     :host{all:initial;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
       --teal:#31d4c4;--pink:#ff6fae;--panel:#1e1e2e;--raised:#202038;
-      --border:#3a3a5c;--text:#dedeee;--muted:#9292aa}
+      --border:#3a3a5c;--text:#dedeee;--muted:#9a9ab3}
     button,input{font:inherit}
     .overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.52);
       display:flex;align-items:center;justify-content:center;padding:24px}
@@ -96,7 +96,7 @@
     input{width:100%;background:#151522;border:1px solid #555578;border-radius:7px;
       color:#f0f0fa;outline:none;padding:9px 10px;font-size:13px;font-weight:400}
     input:focus{border-color:var(--teal);background:#191929;box-shadow:0 0 0 3px rgba(49,212,196,.12)}
-    input::placeholder{color:#797993}.combo{position:relative}
+    input::placeholder{color:#a4a4be}.combo{position:relative}
     .table-menu{position:absolute;left:0;right:0;top:calc(100% + 5px);z-index:5;
       max-height:270px;overflow:auto;background:#171724;border:1px solid #565681;
       border-radius:8px;box-shadow:0 16px 38px rgba(0,0,0,.55);padding:5px}
@@ -106,7 +106,7 @@
     .table-option:hover,.table-option.active{background:#2c2d49;border-color:#4d5079}
     .table-option.active{box-shadow:inset 3px 0 0 var(--teal)}
     .table-label{font-size:12px;font-weight:650;min-width:0;line-height:1.35;
-      overflow-wrap:anywhere;white-space:normal}.table-name{min-width:0;color:#9494af;line-height:1.35;
+      overflow-wrap:anywhere;white-space:normal}.table-name{min-width:0;color:#9a9ab3;line-height:1.35;
       font:10px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;
       white-space:normal}
     .menu-message{padding:11px;color:#9999b1;font-size:11px;line-height:1.4}
@@ -115,7 +115,7 @@
       border-radius:4px;color:#e2b864;font-size:10px;font-weight:600;line-height:1.5}
     .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
       clip:rect(0,0,0,0);white-space:nowrap;border:0}
-    .search-btn,.toolbar button,.fields-button,.columns-button,.star-btn,.result-action{border:1px solid #5b5b86;
+    .search-btn,.toolbar button,.fields-button,.columns-button,.star-btn{border:1px solid #5b5b86;
       background:#3f4067;color:#e6e6f5;border-radius:7px;padding:8px 13px;cursor:pointer;font-size:12px}
     .search-btn{background:var(--pink);border-color:var(--pink);color:#2a0d1a;
       font-weight:650;height:36px}.search-btn:hover{background:#ff85bb}
@@ -146,7 +146,7 @@
     .option:hover,.option.active{background:#2c2d49;border-color:#4d5079}
     .option.active{box-shadow:inset 3px 0 0 var(--teal)}
     .option-label{font-size:12px;font-weight:650;line-height:1.35;overflow-wrap:anywhere}
-    .option-hint{color:#9494af;line-height:1.35;
+    .option-hint{color:#9a9ab3;line-height:1.35;
       font:10px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
     .filter-remove{border:1px solid #5b5b86;background:#30314f;color:#e6e6f5;border-radius:7px;
       padding:8px 11px;cursor:pointer;font-size:12px;height:36px}
@@ -163,7 +163,7 @@
     .field-menu[hidden],.column-menu[hidden]{display:none}
     .picker-find{flex:none;margin-bottom:4px;padding:7px 9px;font-size:12px}
     .picker-list{overflow:auto;min-height:0}
-    .picker-heading{padding:6px 8px 3px;color:#8f8fa9;font-size:9px;font-weight:650;
+    .picker-heading{padding:6px 8px 3px;color:#9a9ab3;font-size:9px;font-weight:650;
       letter-spacing:.06em;text-transform:uppercase}
     .picker-heading.rest{margin-top:4px;padding-top:8px;border-top:1px solid #2e2e4e}
     .picker-none:empty{display:none}
@@ -172,16 +172,14 @@
       font-size:11px;font-weight:400;cursor:pointer}
     .field-option:hover,.column-option:hover{background:#292943}
     .field-option input,.column-option input{width:auto;margin:0;accent-color:var(--teal)}
-    .menu-note{padding:4px 8px 7px;color:#8f8fa9;font-size:10px;line-height:1.4}
+    .menu-note{padding:4px 8px 7px;color:#9a9ab3;font-size:10px;line-height:1.4}
     .kind{color:#8fb8e8;font-size:9px}
     .order{display:inline-block;min-width:16px;margin-right:6px;padding:0 4px;border-radius:8px;
       background:#173d3a;color:#c4f7f1;font-size:9px;font-weight:650;text-align:center}
-    .value.matched .value-label{color:#6fb3ab}.match-tag{margin-left:5px;padding:0 4px;
-      border:1px solid #2f6f68;border-radius:4px;color:#8fe0d6;font-size:9px}
-    .field-tech{color:#8585a1;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .field-tech{color:#9a9ab3;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
     .manual{color:#e1b678;font-size:9px}.field-summary{min-width:0;color:#9f9fb7;
       font-size:11px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .field-summary strong{color:#e4e4f1;font-weight:600}.selected-table{color:#8f8fa9}
+    .field-summary strong{color:#e4e4f1;font-weight:600}.selected-table{color:#9a9ab3}
     /* The band keeps its full width; its right padding holds the text to
        about 90 characters on a wide screen. */
     .status{min-height:40px;display:flex;align-items:center;gap:9px;
@@ -196,27 +194,110 @@
        class when nothing matched, and must stay a status line. */
     .rows{flex:1;overflow:auto;padding:6px 0}.rows>.empty{padding:46px 20px;text-align:center;
       color:var(--muted);font-size:13px;line-height:1.5;max-width:90ch;margin:0 auto}
-    .rows>.empty small{display:block;margin-top:7px;color:#74748d}
-    .row{position:relative;padding:12px 20px;border-bottom:1px solid #282841;outline:none}
+    .rows>.empty small{display:block;margin-top:7px;color:#9a9ab3}
+    /* Results: one line per record under a column header. The header and
+       every row share one template, so a column lines up down the list.
+       The tracks are fixed fractions rather than subgrid, which needs Chrome
+       117 (the manifest allows 111): [title] [values] [sys_id + Copy URL],
+       and the values track holds one fraction per shown value. */
+    .rows{container:results / inline-size}
+    .cols,.row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,var(--vals,0fr)) 290px;
+      column-gap:14px;align-items:start;padding:0 20px}
+    .results[data-values="0"]{--vals:0fr}.results[data-values="1"]{--vals:1fr}
+    .results[data-values="2"]{--vals:2fr}.results[data-values="3"]{--vals:3fr}
+    .results[data-values="4"]{--vals:4fr}.results[data-values="5"]{--vals:5fr}
+    .vals,.facts{display:grid;grid-template-columns:repeat(var(--n,1),minmax(0,1fr));column-gap:14px;
+      margin:0;min-width:0}
+    .results[data-values="2"]{--n:2}.results[data-values="3"]{--n:3}
+    .results[data-values="4"]{--n:4}.results[data-values="5"]{--n:5}
+    /* Sticky at the list's own top edge: top:0 would stop 6px short, under
+       its padding, and a scrolled row showed through the gap. */
+    .cols{position:sticky;top:-6px;z-index:1;background:var(--panel);padding-top:7px;padding-bottom:7px;
+      border-bottom:1px solid #2e2e4e;color:#9a9ab3;font-size:11px}
+    .cols>span,.vals>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .cols .end{display:block;text-align:right}
+    /* Placed, not flowed: with no values the middle track is empty. */
+    .col-title,.row>.title{grid-column:1}.vals,.facts{grid-column:2}.cols>.end,.row>.end{grid-column:3}
+    .row{position:relative;padding-top:9px;padding-bottom:9px;row-gap:4px;
+      border-bottom:1px solid #282841;outline:none}
     .row:hover{background:#282842}.row:focus-visible{outline:2px solid var(--teal);outline-offset:-2px;
-      background:#282842}.row-top{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
-    .title{color:#f0f0fa;font-size:13px;font-weight:650;min-width:0;overflow:hidden;
-      text-overflow:ellipsis;white-space:nowrap}.sys-id{margin-left:auto;color:#767690;
-      font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
-    .values{display:flex;flex-wrap:wrap;gap:5px 12px;color:#aaaac1;font-size:11px;line-height:1.5}
-    .value-label{color:#75758e}.row-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
-    .result-action{padding:4px 8px;background:#30314f;font-size:10px}
-    .result-action:hover{background:#45466e;color:#fff}
-    .result-action.copied{background:#173d3a;border-color:var(--teal);color:#c4f7f1;font-weight:650}
-    .result-action.copy-failed{background:#4a2330;border-color:#ef9b9b;color:#ffd9d9;font-weight:650}
+      background:#282842}
+    .link,.title,.sys-id{border:0;background:transparent;padding:0;margin:0;cursor:pointer;text-align:left;
+      text-underline-offset:2px}
+    .link:focus-visible,.title:focus-visible,.sys-id:focus-visible{outline:2px solid var(--teal);
+      outline-offset:2px;border-radius:3px}
+    .title{justify-self:start;max-width:100%;color:#f0f0fa;font-size:13px;font-weight:650;line-height:1.35;
+      text-decoration:underline;text-decoration-color:#6c6c90;overflow-wrap:anywhere;
+      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .title:hover{color:#fff;text-decoration-color:var(--teal)}
+    .title.empty{color:#9a9ab3;font-weight:400}
+    .link{color:#8fd6cf;font-size:11.5px;text-decoration:underline;white-space:nowrap}
+    .link:hover{color:#d9fbf7}
+    .fact{min-width:0}
+    .fact dt{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+      clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .fact dd{margin:0;color:#c9c9dc;font-size:12px;line-height:1.45;overflow-wrap:anywhere;
+      display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .fact .none{color:#9a9ab3}
+    .end{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:baseline;gap:4px 12px;min-width:0}
+    .sys-id{color:#9a9ab3;font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
+      text-decoration:underline dotted;white-space:nowrap}
+    .sys-id:hover{color:#dedeee}
+    .copied{color:#8ff0e6;font-weight:650;text-decoration:none}
+    .copy-failed{color:#ffb3b3;font-weight:650;text-decoration:none}
+    .matched{grid-column:2 / -1;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;
+      font-size:11px;line-height:1.45;color:#c9c9dc;min-width:0}
+    .matched-label{color:#9a9ab3}
+    .matched-value{min-width:0;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;
+      -webkit-box-orient:vertical;overflow:hidden}
+    .match-tag{padding:0 5px;border:1px solid #2f6f68;border-radius:4px;color:#8fe0d6;font-size:10px}
+    /* Stacked: the title link, the values as a labelled fact list, then
+       sys_id and Copy URL on a wrapping line. The same nodes in both forms,
+       so assistive technology only ever meets one and focus survives the
+       switch. Show allows six columns: the title and at most five values.
+       Up to three values stack below 900px; four need 1020px and five 1150px
+       to give each value about 120px. */
+    @container results (max-width:899px){
+      .cols{display:none}
+      .row{display:block;padding:11px 16px}
+      .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin-top:6px}
+      .fact{display:contents}
+      .fact dt{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;
+        white-space:normal;color:#9a9ab3;font-size:11px;line-height:1.45}
+      .end{justify-content:flex-start;margin-top:7px}
+      .matched{margin-top:6px}
+    }
+    @container results (max-width:1019px){
+      .results[data-values="4"] .cols,.results[data-values="5"] .cols{display:none}
+      .results[data-values="4"] .row,.results[data-values="5"] .row{display:block;padding:11px 16px}
+      .results[data-values="4"] .facts,.results[data-values="5"] .facts{display:grid;
+        grid-template-columns:max-content minmax(0,1fr);gap:2px 10px;margin-top:6px}
+      .results[data-values="4"] .fact,.results[data-values="5"] .fact{display:contents}
+      .results[data-values="4"] .fact dt,.results[data-values="5"] .fact dt{position:static;width:auto;
+        height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;color:#9a9ab3;font-size:11px;
+        line-height:1.45}
+      .results[data-values="4"] .end,.results[data-values="5"] .end{justify-content:flex-start;margin-top:7px}
+      .results[data-values="4"] .matched,.results[data-values="5"] .matched{margin-top:6px}
+    }
+    @container results (max-width:1149px){
+      .results[data-values="5"] .cols{display:none}
+      .results[data-values="5"] .row{display:block;padding:11px 16px}
+      .results[data-values="5"] .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);
+        gap:2px 10px;margin-top:6px}
+      .results[data-values="5"] .fact{display:contents}
+      .results[data-values="5"] .fact dt{position:static;width:auto;height:auto;margin:0;overflow:visible;
+        clip:auto;white-space:normal;color:#9a9ab3;font-size:11px;line-height:1.45}
+      .results[data-values="5"] .end{justify-content:flex-start;margin-top:7px}
+      .results[data-values="5"] .matched{margin-top:6px}
+    }
     .toolbar{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid #2e2e4e;
-      background:#20203a}.toolbar-note{flex:1;color:#85859d;font-size:11px;max-width:90ch;margin-right:auto}
+      background:#20203a}.toolbar-note{flex:1;color:#9a9ab3;font-size:11px;max-width:90ch;margin-right:auto}
     .toolbar button:hover:not(:disabled){background:#4a4b78;color:#fff}
     @media(max-width:680px){.overlay{padding:8px}.panel{width:100%;height:calc(100vh - 16px)}
       .form-main{grid-template-columns:1fr}.search-btn{width:100%}.header{padding:14px}
       .field-line{grid-template-columns:1fr}.field-line .field-summary{grid-column:auto}
       .filter-row{grid-template-columns:1fr}
-      .fields-button,.columns-button,.star-btn{width:100%}.sys-id{display:none}
+      .fields-button,.columns-button,.star-btn{width:100%}
       .field-menu,.column-menu{width:calc(100vw - 56px);max-height:max(160px,calc(100vh - 340px))}}
   `;
 
@@ -1507,11 +1588,8 @@
       : "No fields selected";
     summary.appendChild(table);
     summary.appendChild(fieldsText);
-    if (shown.length || showsSearched) {
-      summary.appendChild(el("span", "selected-table", " · Showing: " + (showsSearched
-        ? "the searched fields"
-        : shown.map((field) => field.label).join(", "))));
-    }
+    /* What is shown is named by the results' column header and the Show
+     * button, so the summary says only what is searched. */
   }
 
   /* Both pickers share one shape: a find box, a note, then the ticked
@@ -1757,6 +1835,7 @@
   function flashResultAction(button, copied) {
     if (!button) return;
     if (button.flashRestore === undefined) button.flashRestore = button.textContent;
+    if (button.flashClass === undefined) button.flashClass = button.className;
     if (!button.flashTimer && button.style && button.offsetWidth) {
       button.style.minWidth = button.offsetWidth + "px";
     }
@@ -1767,12 +1846,12 @@
       button.appendChild(tick);
     }
     button.appendChild(document.createTextNode(copied ? "Copied" : "Copy failed"));
-    button.className = "result-action " + (copied ? "copied" : "copy-failed");
+    button.className = button.flashClass + " " + (copied ? "copied" : "copy-failed");
     clearTimeout(button.flashTimer);
     button.flashTimer = setTimeout(() => {
       button.flashTimer = null;
       button.textContent = button.flashRestore;
-      button.className = "result-action";
+      button.className = button.flashClass;
       if (button.style) button.style.minWidth = "";
     }, COPY_FLASH_MS);
   }
@@ -1802,16 +1881,153 @@
     rows[next].scrollIntoView({ block: "nearest" });
   }
 
-  function addResultAction(container, label, action) {
+  function resultButton(className, label, action) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "result-action";
+    button.className = className;
     button.textContent = label;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       action(button);
     });
-    container.appendChild(button);
+    return button;
+  }
+
+  /*
+   * What the header shows: the columns this search asked for, in shown
+   * order, the first being the title. With none asked for, a row shows what
+   * was searched, so the columns are read off the answer's own values. The
+   * engine drops an empty value, so this list, not the row, decides the cells.
+   */
+  function resultColumnsFor(results, requested) {
+    const labels = new Map(allFields().map((field) => [field.name, field.label]));
+    let names = Array.isArray(requested) ? requested.slice() : [];
+    if (!names.length) {
+      results.forEach((row) => (row.values || []).forEach((item) => {
+        if (!item.matched && item.field && !names.includes(item.field)) names.push(item.field);
+      }));
+    }
+    names = names.filter((name, index) => name && names.indexOf(name) === index);
+    return names.map((name) => {
+      let label = labels.get(name) || "";
+      if (!label) {
+        results.some((row) => (row.values || []).some((item) => {
+          if (item.field === name && item.label) label = item.label;
+          return Boolean(label);
+        }));
+      }
+      return { name, label: label || name };
+    });
+  }
+
+  function renderResultHeader(columns) {
+    const header = el("div", "cols");
+    /* For sight: each value carries its own label for assistive technology. */
+    header.setAttribute("aria-hidden", "true");
+    header.appendChild(el("span", "col-title", columns.length ? columns[0].label : "Record"));
+    const vals = el("span", "vals");
+    columns.slice(1).forEach((column) => {
+      const cell = el("span", null, column.label);
+      cell.title = column.label;
+      vals.appendChild(cell);
+    });
+    header.appendChild(vals);
+    header.appendChild(el("span", "end", "sys_id · click to copy"));
+    return header;
+  }
+
+  function renderResultRow(resultRow, index, columns) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.tabIndex = 0;
+    row.setAttribute("role", "group");
+    row.setAttribute(
+      "aria-label",
+      (resultRow.title || resultRow.sysId) + " result. Press Enter to open."
+    );
+    row.dataset.index = String(index);
+    /* No whole-row click: a value can be selected and copied. The title is
+     * the control that opens the record, and Enter on the row still does. */
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveResultFocus(row, event.key === "ArrowDown" ? 1 : -1);
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        moveResultFocus(row, event.key.toLowerCase());
+      } else if ((event.key === "Enter" || event.key === " ") && event.target === row) {
+        event.preventDefault();
+        openRecord(resultRow);
+      }
+    });
+
+    const byField = new Map();
+    (resultRow.values || []).forEach((item) => {
+      if (!item.matched && item.field && !byField.has(item.field)) byField.set(item.field, item);
+    });
+
+    /* The title cell is the first column's own value, looked up by field like
+     * every other cell. The engine's title is the first NON-empty value, so
+     * using it here would put the second column's value under the first
+     * column's header, and again in its own cell. With no columns at all
+     * there is nothing to misplace, and the engine's title (the sys_id) is
+     * shown. */
+    const firstColumn = columns[0] || null;
+    const firstItem = firstColumn ? byField.get(firstColumn.name) : null;
+    const firstValue = firstItem && firstItem.value ? firstItem.value : "";
+    const titleEmpty = Boolean(firstColumn) && !firstValue;
+    const title = resultButton(titleEmpty ? "title empty" : "title",
+      titleEmpty ? "(empty)" : firstColumn ? firstValue : (resultRow.title || resultRow.sysId),
+      () => openRecord(resultRow));
+    title.title = "Open the record";
+    if (titleEmpty) title.setAttribute("aria-label", "Open record, " + firstColumn.label + " empty");
+    row.appendChild(title);
+    const valueColumns = columns.slice(1);
+    if (valueColumns.length) {
+      const facts = el("dl", "facts");
+      valueColumns.forEach((column) => {
+        const item = byField.get(column.name);
+        const fact = el("div", "fact");
+        fact.appendChild(el("dt", null, column.label));
+        const value = el("dd");
+        if (item && item.value) {
+          value.textContent = item.value;
+          value.title = item.value;
+        } else {
+          /* The cell stays, so the columns stay in line. */
+          const dash = el("span", "none", "–");
+          dash.setAttribute("aria-hidden", "true");
+          value.appendChild(dash);
+          value.appendChild(el("span", "sr-only", "empty"));
+        }
+        fact.appendChild(value);
+        facts.appendChild(fact);
+      });
+      row.appendChild(facts);
+    }
+
+    const end = el("div", "end");
+    const sysId = resultButton("sys-id", resultRow.sysId,
+      (button) => copyResult(resultRow.sysId, "sys_id", button));
+    sysId.setAttribute("aria-label", "Copy sys_id " + resultRow.sysId);
+    sysId.title = "Copy sys_id";
+    end.appendChild(sysId);
+    end.appendChild(resultButton("link copy-url", "Copy URL",
+      (button) => copyResult(resultUrl(resultRow), "Record URL", button)));
+    row.appendChild(end);
+
+    /* Text matched a field that is not a column: named on its own line, so
+     * no row appears without what it matched on. */
+    (resultRow.values || []).filter((item) => item.matched && item.value).forEach((item) => {
+      const line = el("div", "matched");
+      line.appendChild(el("span", "matched-label", item.label || item.field));
+      const snippet = el("span", "matched-value", item.value);
+      snippet.title = item.value;
+      line.appendChild(snippet);
+      line.appendChild(el("span", "match-tag", "matched your text"));
+      row.appendChild(line);
+    });
+    return row;
   }
 
   function updateListButton() {
@@ -1843,7 +2059,7 @@
     updateFieldSummary();
   }
 
-  function renderResults(result, pendingRows) {
+  function renderResults(result, pendingRows, requestedColumns) {
     if (!shadow || !result) return;
     lastResult = result;
     updateListButton();
@@ -1900,70 +2116,14 @@
       return;
     }
 
-    results.forEach((resultRow, index) => {
-      const row = document.createElement("div");
-      row.className = "row";
-      row.tabIndex = 0;
-      row.setAttribute("role", "group");
-      row.setAttribute(
-        "aria-label",
-        (resultRow.title || resultRow.sysId) + " result. Press Enter to open."
-      );
-      row.dataset.index = String(index);
-      row.addEventListener("click", (event) => {
-        if (!event.target.closest("button")) openRecord(resultRow);
-      });
-      row.addEventListener("keydown", (event) => {
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-          event.preventDefault();
-          moveResultFocus(row, event.key === "ArrowDown" ? 1 : -1);
-        } else if (event.key === "Home" || event.key === "End") {
-          event.preventDefault();
-          moveResultFocus(row, event.key.toLowerCase());
-        } else if ((event.key === "Enter" || event.key === " ") && event.target === row) {
-          event.preventDefault();
-          openRecord(resultRow);
-        }
-      });
-
-      const top = document.createElement("div");
-      top.className = "row-top";
-      const title = document.createElement("span");
-      title.className = "title";
-      title.textContent = resultRow.title || resultRow.sysId;
-      const sysId = document.createElement("span");
-      sysId.className = "sys-id";
-      sysId.textContent = resultRow.sysId;
-      top.appendChild(title);
-      top.appendChild(sysId);
-      row.appendChild(top);
-
-      const values = document.createElement("div");
-      values.className = "values";
-      (resultRow.values || []).forEach((item, valueIndex) => {
-        if (!item.value || (valueIndex === 0 && item.value === resultRow.title)) return;
-        const value = el("span", item.matched ? "value matched" : "value");
-        value.appendChild(el("span", "value-label", (item.label || item.field) + ": "));
-        value.appendChild(document.createTextNode(item.value));
-        /* Text matched a field the row does not show: it is named here so
-         * no row appears without what it matched on. */
-        if (item.matched) {
-          value.title = "Matched your text. Not one of the shown columns.";
-          value.appendChild(document.createTextNode(" "));
-          value.appendChild(el("span", "match-tag", "match"));
-        }
-        values.appendChild(value);
-      });
-      if (values.childNodes.length) row.appendChild(values);
-
-      const actions = document.createElement("div");
-      actions.className = "row-actions";
-      addResultAction(actions, "Open record", () => openRecord(resultRow));
-      addResultAction(actions, "Copy sys_id", (button) => copyResult(resultRow.sysId, "sys_id", button));
-      addResultAction(actions, "Copy URL", (button) => copyResult(resultUrl(resultRow), "Record URL", button));
-      row.appendChild(actions);
-      rows.appendChild(row);
-    });
+    const columns = resultColumnsFor(results, requestedColumns);
+    const list = el("div", "results");
+    /* The stylesheet sizes the values track and picks the stacking width
+     * from this count; Show allows at most six columns, so five values. */
+    list.dataset.values = String(Math.min(5, Math.max(0, columns.length - 1)));
+    list.appendChild(renderResultHeader(columns));
+    results.forEach((resultRow, index) => list.appendChild(renderResultRow(resultRow, index, columns)));
+    rows.appendChild(list);
   }
 
   /* ------------------------------------------------------------------ *
@@ -2187,6 +2347,9 @@
       /* The same remembered list the table was resolved with, so the search
        * verifies its fields against the same live read. */
       const requested = (value) => (value && Array.isArray(value.requested) ? value.requested.slice() : []);
+      /* The header's columns: what is shown, or, with nothing named, what
+       * is searched, which is what the engine then shows. */
+      const columns = selectedColumns.length ? selectedColumns.slice() : Array.from(selectedFields);
       const result = await onSearch({
         table: selectedTable.name,
         term,
@@ -2197,7 +2360,7 @@
         filters,
       });
       if (sequence !== requestSequence || !result || result.stale) return;
-      renderResults(result, pendingRows);
+      renderResults(result, pendingRows, columns);
     } catch (error) {
       if (sequence !== requestSequence) return;
       /* A failed question is not an answered one: the next change asks again. */

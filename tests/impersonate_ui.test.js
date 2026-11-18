@@ -1641,14 +1641,17 @@ test("the recent list fills the start, in the platform's order, with a result's 
   assert.ok(/Recent impersonations/.test(sectionHeading(shadow).textContent));
   assert.ok(/Kept by ServiceNow/.test(sectionHeading(shadow).textContent));
   const rows = byClass(shadow, "row");
-  assert.deepStrictEqual(rows.map((row) => byClass(row, "title")[0].textContent),
+  assert.deepStrictEqual(rows.map((row) => byClass(row, "name")[0].textContent),
     ["Zed Recent", "Amy Recent"], "the platform's order, as its own dialog shows it");
   assert.ok(rows[1].textContent.includes("amy@example.com"), "as much detail as a result");
   assert.ok(/to begin/.test(byClass(shadow, "status")[0].textContent),
     "no question has been asked, so the status still invites one");
 
-  buttonsLabelled(rows[0], "Open user")[0].fire("click", {});
+  /* The name is what opens the user record; there is no "Open user". */
+  assert.strictEqual(buttonsLabelled(rows[0], "Open user").length, 0);
+  buttonsLabelled(rows[0], "Zed Recent")[0].fire("click", {});
   assert.strictEqual(opened, later);
+  assert.strictEqual(byClass(shadow, "confirm").length, 0, "opening the record never confirms");
   /* And a recent row is exactly as far from a session change as a result. */
   rows[0].fire("click", {});
   rows[0].fire("keydown", { key: "Enter" });
@@ -2182,6 +2185,199 @@ test("the role badge is shown only for the selected role and claims no provenanc
   badges.forEach((badge) => {
     assert.ok(!/via|group/i.test(badge), "provenance cannot be claimed: " + badge);
   });
+});
+
+/* ------------------------------------------------------------------ *
+ * Aligned rows: one line per person under a column header
+ * ------------------------------------------------------------------ */
+
+const header = (shadow) => byClass(shadow, "cols")[0] || null;
+const headerLabels = (shadow) => findAll(header(shadow), (node) =>
+  node.tagName === "SPAN" && !node.children.length).map((node) => node.textContent);
+const rowButton = (row, className) => (row.children || []).find((node) => node.className === className);
+const factLabels = (row) => findAll(row, (node) => node.tagName === "DT").map((node) => node.textContent);
+
+function peopleResult(extra) {
+  return resultSet({
+    results: [
+      user({
+        name: "Ada Example", userName: "ada.example", email: "ada@example.com", title: "Catalog Lead",
+        details: [{ field: "department", label: "Department", value: "Example Services" }],
+      }),
+      user({
+        name: "Ben Example", userName: "ben.example", email: "ben@example.com",
+        details: [
+          { field: "country", label: "Country", value: "Exampleland" },
+          { field: "department", label: "Department", value: "Procurement" },
+        ],
+      }),
+    ],
+    extra,
+  });
+}
+
+test("people sit under one column header, and each value keeps its own label", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults(peopleResult());
+  const shadow = harness.shadow();
+
+  /* For sight only: assistive technology reads each value's own label. */
+  assert.strictEqual(header(shadow).getAttribute("aria-hidden"), "true");
+  /* A field one row lacks still lands where the other rows put it. */
+  assert.deepStrictEqual(headerLabels(shadow),
+    ["Name", "User ID", "Email", "Title", "Country", "Department"]);
+
+  const rows = byClass(shadow, "row");
+  assert.strictEqual(rows.length, 2);
+  rows.forEach((row) => {
+    assert.deepStrictEqual(factLabels(row), ["Email", "Title", "Country", "Department"],
+      "every row has a cell under every column, labelled for a screen reader");
+    assert.strictEqual(byClass(row, "facts")[0].tagName, "DL");
+    /* Two buttons and no more: the name, and Impersonate. */
+    assert.deepStrictEqual(findAll(row, (node) => node.tagName === "BUTTON").map((node) => node.className),
+      ["name", "row-go"]);
+  });
+  assert.ok(byClass(rows[0], "user-id")[0].textContent.includes("ada.example"));
+  assert.strictEqual(byClass(rows[0], "user-id")[0].textContent, "User ID ada.example",
+    "the user ID is labelled for assistive technology too");
+  const body = byClass(shadow, "body")[0];
+  assert.strictEqual(body.getAttribute("data-values"), "4");
+  assert.strictEqual(body.getAttribute("data-role"), "0");
+  assert.strictEqual(body.getAttribute("data-width"), "1", "four value columns stack one step wider");
+});
+
+test("an empty cell keeps its place and is read as empty", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults(peopleResult());
+  const ben = byClass(harness.shadow(), "row")[1];
+  const facts = byClass(ben, "fact");
+  const title = facts[factLabels(ben).indexOf("Title")];
+  assert.ok(title.className.split(" ").includes("blank"), "left out when the rows stack");
+  const dash = byClass(title, "none")[0];
+  assert.strictEqual(dash.textContent, "–");
+  assert.strictEqual(dash.getAttribute("aria-hidden"), "true", "the dash is not read");
+  assert.strictEqual(byClass(title, "sr-only")[0].textContent, "empty");
+  const filled = facts[factLabels(ben).indexOf("Email")];
+  assert.ok(!filled.className.split(" ").includes("blank"));
+  assert.strictEqual(byClass(filled, "sr-only").length, 0);
+});
+
+test("the role column appears only for a role search", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults(peopleResult());
+  const shadow = harness.shadow();
+  assert.strictEqual(byClass(shadow, "col-role").length, 0, "a name search has no role column");
+  assert.strictEqual(byClass(shadow, "role").length, 0);
+  assert.strictEqual(byClass(shadow, "badge").length, 0);
+
+  harness.ui.showResults(resultSet({
+    results: [
+      user({ name: "Direct Holder", membership: { inherited: false } }),
+      user({ name: "Inherited Holder", membership: { inherited: true } }),
+    ],
+    extra: { roleFilter: { status: "applied" } },
+  }));
+  /* The engine says a role filter was applied, not which role. */
+  assert.strictEqual(byClass(shadow, "col-role")[0].textContent, "Selected role");
+  assert.strictEqual(byClass(shadow, "body")[0].getAttribute("data-role"), "1");
+  const roles = byClass(shadow, "role");
+  assert.deepStrictEqual(roles.map((cell) => cell.textContent),
+    ["Selected role: Direct role", "Selected role: Inherited role"],
+    "each verdict is read with the column it belongs to; the badge text is unchanged");
+
+  harness.ui.showResults(resultSet({
+    results: [user({ name: "Named Holder", membership: { inherited: false } })],
+    extra: { roleFilter: { status: "applied", name: "example_role" } },
+  }));
+  assert.strictEqual(byClass(shadow, "col-role")[0].textContent, "example_role",
+    "headed with the role's own name when the result carries it");
+});
+
+test("the recent list uses the same header and rows as a result", () => {
+  const harness = load();
+  openPanel(harness);
+  const shadow = harness.shadow();
+  harness.ui.showRecent({
+    users: [
+      user({ name: "Recent One", userName: "recent.one", email: "one@example.com" }),
+      user({ name: "Recent Two", userName: "recent.two", title: "Example Title" }),
+    ],
+    hidden: 0,
+  });
+  assert.deepStrictEqual(headerLabels(shadow), ["Name", "User ID", "Email", "Title"]);
+  const rows = byClass(shadow, "row");
+  assert.strictEqual(rows.length, 2);
+  rows.forEach((row) => {
+    assert.deepStrictEqual(factLabels(row), ["Email", "Title"]);
+    assert.ok(rowButton(row, "name") && rowButton(row, "row-go"));
+  });
+  assert.strictEqual(byClass(shadow, "col-role").length, 0, "a recent account has no role verdict");
+  /* The section heading comes first, then the header, then the rows. */
+  const order = byClass(shadow, "body")[0].children.map((node) => node.className);
+  assert.deepStrictEqual(order, ["section-heading", "cols", "row", "row"]);
+});
+
+test("Cancel returns focus to the Impersonate button of the same row", () => {
+  const harness = load();
+  openPanel(harness);
+  harness.ui.showResults(resultSet({
+    results: [user({ name: "Row One" }), user({ name: "Row Two" }), user({ name: "Row Three" })],
+  }));
+  const shadow = harness.shadow();
+  rowButton(byClass(shadow, "row")[1], "row-go").fire("click", {});
+  buttonsLabelled(shadow, "Cancel")[0].fire("click", {});
+  const rows = byClass(shadow, "row");
+  assert.strictEqual(rows.length, 3);
+  assert.strictEqual(harness.dom.document.activeElement, rowButton(rows[1], "row-go"),
+    "the redrawn button in the row it came from, not the first one");
+});
+
+test("both of a row's buttons are disabled while a request is out", async () => {
+  const harness = load();
+  let release = null;
+  openPanel(harness, {
+    onStop: () => new Promise((resolve) => { release = resolve; }),
+  });
+  harness.ui.showCurrentState({
+    isImpersonating: true, currentUserName: "example.identity", hasStopTarget: true,
+  });
+  harness.ui.showResults(peopleResult());
+  const shadow = harness.shadow();
+  const buttons = () => byClass(shadow, "row").flatMap((row) =>
+    [rowButton(row, "name"), rowButton(row, "row-go")]);
+  assert.ok(buttons().every((button) => button.disabled === false));
+
+  buttonsLabelled(shadow, "Stop impersonating")[0].fire("click", {});
+  await tick();
+  assert.strictEqual(buttons().length, 4);
+  assert.ok(buttons().every((button) => button.disabled === true), "locked in place");
+
+  /* And a rerender while the request is out draws them locked. */
+  harness.ui.showResults(peopleResult());
+  assert.ok(buttons().every((button) => button.disabled === true), "drawn locked");
+
+  release({ ok: false, code: "access", message: "Refused." });
+  await tick();
+  await tick();
+  assert.ok(buttons().every((button) => button.disabled === false), "a refusal releases them");
+});
+
+test("a row click, Enter and Space on a row do nothing, even with values in it", async () => {
+  const harness = load();
+  let opened = 0;
+  openPanel(harness, { onOpenUser: () => { opened += 1; } });
+  harness.ui.showResults(peopleResult());
+  const shadow = harness.shadow();
+  const row = byClass(shadow, "row")[0];
+  row.fire("click", {});
+  row.fire("keydown", { key: "Enter" });
+  row.fire("keydown", { key: " " });
+  await tick();
+  assert.strictEqual(byClass(shadow, "confirm").length, 0);
+  assert.strictEqual(opened, 0, "nor does it open the user record");
 });
 
 test("an error is shown with its own category rather than as an empty result", () => {

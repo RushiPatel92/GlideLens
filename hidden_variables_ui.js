@@ -71,7 +71,7 @@
     }
     .heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:#85859f;line-height:1.45;max-width:90ch}
+    .subtitle{font-size:12px;color:#9a9ab3;line-height:1.45;max-width:90ch}
     .best-effort{
       display:inline-flex;margin-left:7px;padding:3px 7px;border-radius:999px;
       color:#c7b9ff;background:#302b50;border:1px solid #4a4271;
@@ -79,7 +79,7 @@
       vertical-align:2px;
     }
     .close{
-      border:0;background:transparent;color:#85859f;padding:3px 5px;
+      border:0;background:transparent;color:#9a9ab3;padding:3px 5px;
       font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
     }
     .close:hover{color:#fff;background:#2d2d48}
@@ -131,36 +131,45 @@
     }
     .search:focus{border-color:var(--teal);background:#37375a}
     .search::placeholder{color:#a4a4be}
-    .rows{flex:1;overflow:auto;padding:6px 0}
+    /* A container, so a list too narrow for its columns can stack its rows
+       (stackRules) instead of scrolling sideways. */
+    .rows{flex:1;overflow:auto;padding:0 0 6px;container:rows/inline-size}
+    /* The header and every row take their tracks from --cols, which one
+       function (rowLayout) writes from the same column list that decides
+       which cells the row holds. */
+    .cols,.row{display:grid;grid-template-columns:var(--cols);gap:12px}
+    .cols{
+      position:sticky;top:0;z-index:2;padding:7px 18px;background:#1e1e2e;
+      border-bottom:1px solid #2e2e4e;font-size:11px;color:#9a9ab3;
+    }
+    .cols span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .row{
-      display:grid;grid-template-columns:1fr 130px 140px 1fr;gap:12px;
       align-items:center;padding:10px 18px;border-bottom:1px solid #292941;
       font-size:12px;color:#d7d7e8;
     }
-    .row.native{grid-template-columns:minmax(180px,1fr) 110px 125px 135px minmax(240px,1.35fr)}
-    .row.native.stored-side{grid-template-columns:minmax(220px,1fr) 130px minmax(280px,1.4fr)}
     .row-name{min-width:0}
     .row-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#f0f0fa}
     .row-var{
-      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#85859f;
+      font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9a9ab3;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     }
-    .row-type{color:#9898b2;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .row-type{color:#c8c8dc;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+      clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    /* A badge is for an exception only: a visible variable has none. The
+       Update Set Lens form; the label stays as written and is uppercased here. */
     .badge{
-      justify-self:start;padding:3px 7px;border-radius:4px;font-size:10px;
-      color:#aeb0d4;background:#2c2d4a;border:1px solid #3c3e62;white-space:nowrap;
+      justify-self:start;font-size:10.5px;font-weight:700;letter-spacing:.04em;
+      text-transform:uppercase;padding:1px 7px;border-radius:5px;
+      border:1px solid transparent;white-space:nowrap;
     }
-    .badge.hidden-type{color:#ffb1b1;background:#432a36;border-color:#684050}
-    .badge.invisible{color:#a9d5ff;background:#24364a;border-color:#365573}
-    .badge.absent{color:#b5e4c2;background:#263b35;border-color:#39594d}
-    .badge.visibility-unknown{color:#c9c9d6;background:#2b2b38;border-color:#43435a}
-    .badge.visible{color:#8f9bb3;background:#252539;border-color:#34344f}
-    .badge.mrvs{color:#e6c78f;background:#3a3320;border-color:#5c5031}
-    .badge.match{color:#9de0c0;background:#203a32;border-color:#315b4d}
-    .badge.differs{color:#ffb5c5;background:#432936;border-color:#734156}
-    .badge.not-comparable{color:#d7c896;background:#393422;border-color:#5d5330}
+    .badge.b-hidden{background:#1f3044;border-color:#365573;color:#8ec5ff}
+    .badge.b-unknown{background:#26263b;border-color:#4a4a6e;color:#c3c3d8}
+    .badge.b-differs{background:#3a2531;border-color:#734156;color:#ff9db8}
+    .row.edge-hidden{box-shadow:inset 3px 0 0 #8ec5ff}
+    .row.edge-differs{box-shadow:inset 3px 0 0 #ff9db8}
     .row-set{
-      font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#6f6f88;
+      font:10px ui-monospace,SFMono-Regular,Consolas,monospace;color:#9a9ab3;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;
     }
     .row-value{
@@ -175,12 +184,21 @@
       white-space:normal;overflow:visible;text-overflow:clip;
       display:flex;gap:9px;align-items:baseline;
     }
-    .value-tag{color:#75758c;font-style:italic;margin-left:6px}
+    /* The panel's own words ("(empty)", "(not read)"...) are the tool
+       talking, so they are not drawn like a value. Set where the words are
+       produced, never by reading the text back. */
+    .row-value.placeholder,.native-value-text.placeholder{
+      font:11.5px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9ab3;
+    }
+    .value-note{
+      font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#9a9ab3;margin-left:8px;
+    }
     .comparison{min-width:0}
-    .comparison-reason{margin-top:4px;color:#85859f;font-size:10px;line-height:1.35}
+    .cmp-plain{color:#9a9ab3}
+    .comparison-reason{margin-top:3px;color:#c8c8dc;font-size:11.5px;line-height:1.4}
     .native-values{min-width:0;display:grid;gap:5px}
     .native-value{display:grid;grid-template-columns:48px minmax(0,1fr);gap:7px;align-items:baseline}
-    .native-value-label{color:#77778f;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+    .native-value-label{color:#9a9ab3;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
     .native-value-text{font:11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#c1c1d6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .native-value-text.expandable{cursor:pointer}
     .native-value-text.expanded{white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word}
@@ -194,7 +212,7 @@
       border:1px solid #33334f;border-radius:6px;background:#22223a;
     }
     .mrvs-caption{
-      padding:6px 10px;color:#85859f;font-size:10px;border-bottom:1px solid #2e2e48;
+      padding:6px 10px;color:#9a9ab3;font-size:10px;border-bottom:1px solid #2e2e48;
     }
     .mrvs-table + .mrvs-caption{border-top:1px solid #2e2e48}
     .mrvs-table{
@@ -210,14 +228,14 @@
       font-weight:600;background:#26263f;
     }
     .mrvs-table tbody tr:last-child td{border-bottom:none}
-    .mrvs-index{color:#6f6f88;width:26px}
+    .mrvs-index{color:#9a9ab3;width:26px}
     .mrvs-cell-differs{color:#ffb5c5;background:#3a2531}
-    .empty{padding:48px 20px;text-align:center;color:#74748b;font-size:13px;max-width:90ch;margin:0 auto}
+    .empty{padding:48px 20px;text-align:center;color:#9a9ab3;font-size:13px;max-width:90ch;margin:0 auto}
     .toolbar{
       display:flex;align-items:center;gap:8px;padding:11px 14px;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
-    .toolbar-note{font-size:11px;color:#67677e;flex:1;max-width:90ch;margin-right:auto}
+    .toolbar-note{font-size:11px;color:#9a9ab3;flex:1;max-width:90ch;margin-right:auto}
     .toolbar button{
       border:1px solid #3a3a5c;background:#292941;color:#d8d8ea;
       border-radius:6px;padding:6px 9px;cursor:pointer;font-size:12px;
@@ -233,7 +251,8 @@
       .header{padding:14px}.summary{padding:9px 14px;gap:10px;flex-wrap:wrap}
       .warning{width:100%;margin-left:0}.controls{align-items:stretch;flex-direction:column}
       .search{width:100%;max-width:none;margin-left:0}
-      .row,.row.native{grid-template-columns:1fr;gap:4px;padding:10px 14px}
+      .cols{display:none}
+      .row{grid-template-columns:1fr;gap:4px;padding:10px 14px}
     }
   `;
 
@@ -310,19 +329,35 @@
     return null;
   };
 
-  const valueCellText = (row) => {
-    if (row.valueSource === "redacted") return "[REDACTED]";
+  /*
+   * A value cell is { text, placeholder, note }. `placeholder` marks words the
+   * panel itself produced -- "(empty)", "(not read)" -- and is decided HERE,
+   * where they are produced, never by comparing text afterwards: a variable can
+   * really hold the string "(empty)", and that is a value. `note` is a remark
+   * about the value ("default, not live") drawn beside it, not as part of it.
+   * The copied list joins them back into exactly the string it always had.
+   */
+  const said = (text) => ({ text, placeholder: true, note: "" });
+  const shown = (text) => ({ text: String(text), placeholder: false, note: "" });
+  const partsText = (parts) => parts.note ? parts.text + " (" + parts.note + ")" : parts.text;
+
+  const valueCellParts = (row) => {
+    if (row.valueSource === "redacted") return shown("[REDACTED]");
     if (row.isMrvs) {
       const raw = row.valueSource === "live" ? row.value : "";
-      if (!raw || raw === "[]") return "(no rows)";
+      if (!raw || raw === "[]") return said("(no rows)");
       const count = mrvsRowCount(raw);
       const prefix = count == null ? "" : count + (count === 1 ? " row: " : " rows: ");
-      return prefix + raw;
+      return shown(prefix + raw);
     }
-    if (row.valueSource === "default") return (row.value || "") + " (default, not live)";
-    if (row.valueSource === "live") return row.value || "(empty)";
-    return "(no value)";
+    if (row.valueSource === "default") {
+      return { text: String(row.value || ""), placeholder: false, note: "default, not live" };
+    }
+    if (row.valueSource === "live") return row.value ? shown(row.value) : said("(empty)");
+    return said("(no value)");
   };
+
+  const valueCellText = (row) => partsText(valueCellParts(row));
 
   const comparisonLabel = (comparison) => ({
     match: "Match",
@@ -330,29 +365,33 @@
     "not-comparable": "Not comparable",
   }[comparison] || "Not comparable");
 
-  const nativeMrvsText = (raw, count) => {
+  const nativeMrvsParts = (raw, count) => {
     const text = String(raw == null ? "" : raw);
-    if (!text || text === "[]") return "(no rows)";
+    if (!text || text === "[]") return said("(no rows)");
     const rows = count == null ? mrvsRowCount(text) : count;
     const prefix = rows == null ? "" : rows + (rows === 1 ? " row: " : " rows: ");
-    return prefix + text;
+    return shown(prefix + text);
   };
 
   // "(not stored)" is a claim about the record, so it is reserved for a lookup
   // that actually ran and found nothing. Anything we declined or failed to read
   // says so instead.
-  const nativeSideText = (row, side) => {
-    if (row.secret) return "Not read (secret)";
+  const nativeSideParts = (row, side) => {
+    if (row.secret) return said("Not read (secret)");
     if (side === "stored") {
-      if (row.storedLookup === "absent") return "(not stored)";
-      if (row.storedLookup !== "found" || row.storedValue == null) return "(not read)";
-      if (row.isMrvs) return nativeMrvsText(row.storedValue, row.storedRowCount);
-      return String(row.storedValue) || "(empty)";
+      if (row.storedLookup === "absent") return said("(not stored)");
+      if (row.storedLookup !== "found" || row.storedValue == null) return said("(not read)");
+      if (row.isMrvs) return nativeMrvsParts(row.storedValue, row.storedRowCount);
+      const stored = String(row.storedValue);
+      return stored ? shown(stored) : said("(empty)");
     }
-    if (!row.liveValueAvailable) return "(not available)";
-    if (row.isMrvs) return nativeMrvsText(row.liveValue, row.liveRowCount);
-    return String(row.liveValue == null ? "" : row.liveValue) || "(empty)";
+    if (!row.liveValueAvailable) return said("(not available)");
+    if (row.isMrvs) return nativeMrvsParts(row.liveValue, row.liveRowCount);
+    const live = String(row.liveValue == null ? "" : row.liveValue);
+    return live ? shown(live) : said("(empty)");
   };
+
+  const nativeSideText = (row, side) => nativeSideParts(row, side).text;
 
   /*
    * A multi-row set's value is a JSON array of row objects. As one line it is
@@ -565,26 +604,228 @@
     return mrvsRowObjects(row.liveValue);
   };
 
-  const mrvsCountLabel = (rows) => {
-    if (!rows.length) return "(no rows)";
-    return rows.length === 1 ? "1 row" : String(rows.length) + " rows";
+  const mrvsCountParts = (rows) => {
+    if (!rows.length) return said("(no rows)");
+    return shown(rows.length === 1 ? "1 row" : String(rows.length) + " rows");
   };
 
   // On screen a set says how many rows it has and offers the table. The copy
   // output is deliberately NOT changed: it keeps the full JSON array, which is
   // what someone pastes into a script or a ticket.
-  const nativeSideDisplayText = (row, side) => {
-    if (!row.isMrvs) return nativeSideText(row, side);
+  const nativeSideDisplayParts = (row, side) => {
+    if (!row.isMrvs) return nativeSideParts(row, side);
     const rows = nativeMrvsSideRows(row, side);
-    return rows ? mrvsCountLabel(rows) : nativeSideText(row, side);
+    return rows ? mrvsCountParts(rows) : nativeSideParts(row, side);
   };
 
   const portalMrvsRows = (row) =>
     (row.isMrvs && row.valueSource === "live") ? mrvsRowObjects(row.value) : null;
 
-  const valueCellDisplayText = (row) => {
+  const valueCellDisplayParts = (row) => {
     const rows = portalMrvsRows(row);
-    return rows ? mrvsCountLabel(rows) : valueCellText(row);
+    return rows ? mrvsCountParts(rows) : valueCellParts(row);
+  };
+
+  // Text first, then the note as its own element, so the note can never be
+  // read as part of the value.
+  const fillValue = (cell, parts) => {
+    cell.textContent = parts.text;
+    if (parts.placeholder) cell.classList.add("placeholder");
+    if (parts.note) {
+      const note = document.createElement("span");
+      note.className = "value-note";
+      note.textContent = parts.note;
+      cell.appendChild(note);
+    }
+  };
+
+  /*
+   * The columns a row shows, in order, with each one's header words and grid
+   * track. renderRows builds a row's cells by walking this list and the header
+   * from the same list, so the two cannot disagree for any combination of
+   * capabilities. The tracks reproduce the earlier templates: the compared
+   * native layout, and the wider "stored side" one when nothing is compared.
+   */
+  const rowLayout = (row, capabilities) => {
+    if (row.mode !== "native") {
+      return [
+        { key: "name", head: "Variable", track: "1fr" },
+        { key: "type", head: "Type", track: "130px" },
+        { key: "visibility", head: "Visibility", track: "190px" },
+        { key: "value", head: "Value", track: "1fr" },
+      ];
+    }
+    const compared = capabilities.comparison;
+    const columns = [
+      { key: "name", head: "Variable", track: compared ? "minmax(180px,1fr)" : "minmax(220px,1fr)" },
+      { key: "type", head: "Type", track: compared ? "110px" : "130px" },
+    ];
+    if (capabilities.liveVisibility) {
+      columns.push({ key: "visibility", head: "Visibility", track: "190px" });
+    }
+    if (compared) columns.push({ key: "comparison", head: "Stored vs live", track: "150px" });
+    columns.push({
+      key: "values",
+      head: "Values",
+      track: compared ? "minmax(240px,1.35fr)" : "minmax(280px,1.4fr)",
+    });
+    return columns;
+  };
+
+  const layoutTracks = (columns) => columns.map((column) => column.track).join(" ");
+
+  /*
+   * The narrowest list a layout's columns fit in: each track's least width,
+   * the 12px gaps between them and the row's 18px padding each side. The
+   * compared layout with visibility needs 954px, more than the panel has in a
+   * window under about 1000px, where the rows used to scroll sideways until
+   * the 640px rule stacked them. Now a list narrower than its layout's fit
+   * stacks each row, as that rule does. The rules come from rowLayout itself,
+   * one per width any native layout can need, so a changed track moves its
+   * rule with it. A portal layout's tracks are flexible and never need one.
+   */
+  const trackMin = (track) => {
+    const match = /^(?:minmax\()?(\d+)px/.exec(track);
+    return match ? Number(match[1]) : 0;
+  };
+  const layoutFit = (columns) =>
+    columns.reduce((sum, column) => sum + trackMin(column.track), 0) +
+    12 * (columns.length - 1) + 36;
+  const stackRules = () => {
+    const fits = new Set();
+    [false, true].forEach((comparison) => [false, true].forEach((liveVisibility) => {
+      fits.add(layoutFit(rowLayout({ mode: "native" }, { comparison, liveVisibility })));
+    }));
+    return Array.from(fits).map((fit) =>
+      `@container rows (max-width:${fit - 1}px){` +
+      `.rows[data-fit="${fit}"] .cols{display:none}` +
+      `.rows[data-fit="${fit}"] .row{grid-template-columns:1fr;gap:4px;padding:10px 14px}}`
+    ).join("\n");
+  };
+
+  // For sight: the header repeats what each row's cells already are, so it is
+  // hidden from assistive technology, as Catalog Logic's is.
+  const buildHeader = (columns) => {
+    const header = document.createElement("div");
+    header.className = "cols";
+    header.setAttribute("aria-hidden", "true");
+    header.style.setProperty("--cols", layoutTracks(columns));
+    columns.forEach((column) => {
+      const cell = document.createElement("span");
+      cell.textContent = column.head;
+      header.appendChild(cell);
+    });
+    return header;
+  };
+
+  const HIDDEN_BUCKETS = ["hidden-type", "invisible", "absent"];
+  const UNKNOWN_BUCKETS = ["visibility-unknown", "live-unavailable"];
+
+  /*
+   * Visible needs no badge: the cell keeps its place in the grid and says the
+   * word to assistive technology only. A multi-row set says nothing here; the
+   * Type column already names it. Hidden is one colour whichever of the three
+   * ways it is hidden, and an unknown visibility is the same badge in grey.
+   */
+  const visibilityCell = (row) => {
+    const cell = document.createElement("span");
+    const label = BUCKET_LABELS[row.bucket] || row.bucket;
+    if (row.bucket === "visible") {
+      cell.className = "vis-none";
+      const spoken = document.createElement("span");
+      spoken.className = "sr-only";
+      spoken.textContent = label;
+      cell.appendChild(spoken);
+      return cell;
+    }
+    if (row.bucket === "mrvs") {
+      cell.className = "vis-none";
+      return cell;
+    }
+    cell.className = "badge " + (HIDDEN_BUCKETS.includes(row.bucket) ? "b-hidden" : "b-unknown");
+    cell.textContent = label;
+    return cell;
+  };
+
+  /*
+   * The sentences the engine (content.js, buildNativeVariableRows) writes for
+   * an equal comparison. Under the word "Match" they only say it again, so the
+   * cell leaves them out and keeps whatever else the reason carries: a date
+   * note, "Inactive variable.", a definition taken from the record's answer.
+   * This is the one place the panel reads engine wording; a test pins each
+   * sentence to content.js so a rewording fails there rather than reappearing
+   * here. The copied list keeps the whole reason.
+   */
+  const STOCK_MATCH_SENTENCES = [
+    "Stored and live values match.",
+    "Stored and live Workspace values match.",
+    "Stored and live rows match.",
+    "Stored and live Workspace rows match.",
+  ];
+
+  const matchReasonRemainder = (reason) => {
+    let text = String(reason || "");
+    STOCK_MATCH_SENTENCES.forEach((sentence) => {
+      text = text.split(sentence + " ").join("").split(sentence).join("");
+    });
+    return text.trim();
+  };
+
+  // Match is an ordinary fact and reads as a plain word, and Not comparable is
+  // an unknown, in the grey of the other unknowns; only Differs is a warning.
+  // The reason sits under the verdict.
+  const comparisonCell = (row) => {
+    const cell = document.createElement("div");
+    cell.className = "comparison";
+    const verdict = document.createElement("span");
+    if (row.comparison === "match") verdict.className = "cmp-plain";
+    else verdict.className = "badge " + (row.comparison === "differs" ? "b-differs" : "b-unknown");
+    verdict.textContent = comparisonLabel(row.comparison);
+    cell.appendChild(verdict);
+    const reasonText = row.comparison === "match"
+      ? matchReasonRemainder(row.reason)
+      : String(row.reason || "");
+    if (reasonText) {
+      const reason = document.createElement("div");
+      reason.className = "comparison-reason";
+      reason.textContent = reasonText;
+      cell.appendChild(reason);
+    }
+    return cell;
+  };
+
+  // The left edge marks a row that Differs, otherwise a hidden row -- and
+  // only from columns the row actually shows.
+  const rowEdge = (row, columns) => {
+    const keys = columns.map((column) => column.key);
+    if (keys.includes("comparison") && row.comparison === "differs") return "edge-differs";
+    if (keys.includes("visibility") && HIDDEN_BUCKETS.includes(row.bucket)) return "edge-hidden";
+    return "";
+  };
+
+  // A long value opens in place on click or Enter; a short one has a tooltip.
+  const makeExpandable = (cell, text, ariaLabel) => {
+    if (text.length > 28) {
+      cell.classList.add("expandable");
+      cell.tabIndex = 0;
+      cell.setAttribute("role", "button");
+      cell.setAttribute("aria-label", ariaLabel);
+      /* It opens in place, so it says whether it is open. */
+      cell.setAttribute("aria-expanded", "false");
+      const toggleExpanded = () => {
+        const open = cell.classList.toggle("expanded");
+        cell.setAttribute("aria-expanded", open ? "true" : "false");
+      };
+      cell.addEventListener("click", toggleExpanded);
+      cell.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleExpanded();
+        }
+      });
+    } else {
+      cell.title = text;
+    }
   };
 
   const renderRows = () => {
@@ -594,6 +835,10 @@
     list.textContent = "";
 
     const rows = filteredRows();
+    const capabilities = resultCapabilities(lastResult);
+    const headerColumns = rows.length ? rowLayout(rows[0], capabilities) : [];
+    // Written on every redraw; no stacking rule matches 0, an empty list.
+    list.setAttribute("data-fit", String(rows.length ? layoutFit(headerColumns) : 0));
     if (!rows.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
@@ -602,12 +847,14 @@
       return;
     }
 
-    const capabilities = resultCapabilities(lastResult);
+    list.appendChild(buildHeader(headerColumns));
     rows.forEach((row) => {
+      const columns = rowLayout(row, capabilities);
+      const edge = rowEdge(row, columns);
       const el = document.createElement("div");
-      el.className = "row" + (row.mode === "native" ? " native" : "") +
-        (row.mode === "native" && !capabilities.comparison ? " stored-side" : "");
+      el.className = "row" + (row.mode === "native" ? " native" : "") + (edge ? " " + edge : "");
       el.setAttribute("role", "listitem");
+      el.style.setProperty("--cols", layoutTracks(columns));
 
       const nameCell = document.createElement("div");
       nameCell.className = "row-name";
@@ -632,9 +879,13 @@
       typeCell.textContent = row.type || "";
       typeCell.title = row.type || "";
 
-      const bucketCell = document.createElement("span");
-      bucketCell.className = "badge " + row.bucket;
-      bucketCell.textContent = BUCKET_LABELS[row.bucket] || row.bucket;
+      // Every cell a row can hold; the layout picks which, and in what order.
+      const cells = {
+        name: nameCell,
+        type: typeCell,
+        visibility: visibilityCell(row),
+        comparison: comparisonCell(row),
+      };
 
       if (row.mode === "native") {
         const valuesCell = document.createElement("div");
@@ -647,42 +898,15 @@
           sideLabel.textContent = side;
           const sideValue = document.createElement("span");
           sideValue.className = "native-value-text";
-          sideValue.textContent = nativeSideDisplayText(row, side);
-          if (!row.secret && sideValue.textContent.length > 28) {
-            sideValue.classList.add("expandable");
-            sideValue.tabIndex = 0;
-            sideValue.setAttribute("role", "button");
-            sideValue.setAttribute("aria-label", "Expand " + side + " value for " + (row.label || row.name));
-            const toggleExpanded = () => sideValue.classList.toggle("expanded");
-            sideValue.addEventListener("click", toggleExpanded);
-            sideValue.addEventListener("keydown", (event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                toggleExpanded();
-              }
-            });
-          } else {
-            sideValue.title = sideValue.textContent;
-          }
+          const sideParts = nativeSideDisplayParts(row, side);
+          fillValue(sideValue, sideParts);
+          if (row.secret) sideValue.title = sideParts.text;
+          else makeExpandable(sideValue, sideParts.text, "Expand " + side + " value for " + (row.label || row.name));
           line.append(sideLabel, sideValue);
           valuesCell.appendChild(line);
         });
-        const nativeCells = [nameCell, typeCell];
-        if (capabilities.liveVisibility) nativeCells.push(bucketCell);
-        if (capabilities.comparison) {
-          const comparisonCell = document.createElement("div");
-          comparisonCell.className = "comparison";
-          const comparisonBadge = document.createElement("span");
-          comparisonBadge.className = "badge " + (row.comparison || "not-comparable");
-          comparisonBadge.textContent = comparisonLabel(row.comparison);
-          const reason = document.createElement("div");
-          reason.className = "comparison-reason";
-          reason.textContent = row.reason || "";
-          comparisonCell.append(comparisonBadge, reason);
-          nativeCells.push(comparisonCell);
-        }
-        nativeCells.push(valuesCell);
-        el.append(...nativeCells);
+        cells.values = valuesCell;
+        columns.forEach((column) => el.appendChild(cells[column.key]));
         if (row.isMrvs) {
           const storedRows = nativeMrvsSideRows(row, "stored");
           const liveRows = capabilities.liveValues
@@ -711,25 +935,19 @@
         const valueCell = document.createElement("div");
         valueCell.className = "row-value" + (row.valueSource === "redacted" ? " redacted" : "");
         const portalRows = portalMrvsRows(row);
-        valueCell.textContent = valueCellDisplayText(row);
-        if (portalRows) valueCell.classList.add("mrvs");
-        if (!portalRows && valueCell.textContent.length > 28) {
-          valueCell.classList.add("expandable");
-          valueCell.tabIndex = 0;
-          valueCell.setAttribute("role", "button");
-          valueCell.setAttribute("aria-label", "Expand value for " + (row.label || row.name));
-          const toggleExpanded = () => valueCell.classList.toggle("expanded");
-          valueCell.addEventListener("click", toggleExpanded);
-          valueCell.addEventListener("keydown", (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              toggleExpanded();
-            }
-          });
+        const valueParts = valueCellDisplayParts(row);
+        fillValue(valueCell, valueParts);
+        // Measured and titled on the whole string, note included, exactly as
+        // before the note became its own element.
+        const valueText = partsText(valueParts);
+        if (portalRows) {
+          valueCell.classList.add("mrvs");
+          valueCell.title = valueText;
         } else {
-          valueCell.title = valueCell.textContent;
+          makeExpandable(valueCell, valueText, "Expand value for " + (row.label || row.name));
         }
-        el.append(nameCell, typeCell, bucketCell, valueCell);
+        cells.value = valueCell;
+        columns.forEach((column) => el.appendChild(cells[column.key]));
         if (portalRows) {
           // The portal path reads live values only, so there is no second side
           // and nothing to compare against.
@@ -920,7 +1138,7 @@
       ? "Stored Variables"
       : "Variable Values";
     resultsShadow.innerHTML = `
-      <style>${UI_CSS}</style>
+      <style>${UI_CSS}${stackRules()}</style>
       <div class="overlay">
         <section class="panel" role="dialog" aria-modal="true" aria-labelledby="snh-hidden-title">
           <header class="header">

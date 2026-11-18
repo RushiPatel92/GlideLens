@@ -107,13 +107,13 @@
     }
     .heading{flex:1;min-width:0}
     h2{font-size:17px;line-height:1.2;margin:0 0 5px;color:#f5f5ff;font-weight:650}
-    .subtitle{font-size:12px;color:#85859f;line-height:1.5}
+    .subtitle{font-size:12px;color:#9a9ab3;line-height:1.5}
     .subtitle .mono{
       font:11px ui-monospace,SFMono-Regular,Consolas,monospace;
       color:color-mix(in srgb, var(--teal) 70%, #cfeee9);
     }
     .close{
-      border:0;background:transparent;color:#85859f;padding:3px 5px;
+      border:0;background:transparent;color:#9a9ab3;padding:3px 5px;
       font-size:12px;line-height:1;cursor:pointer;border-radius:5px;
     }
     .close:hover{color:#fff;background:#2d2d48}
@@ -137,9 +137,9 @@
       min-width:2.6em;text-align:right;font-variant-numeric:tabular-nums;
       font-weight:650;color:#f0f0fa;
     }
-    .tally .why{color:#85859f;font-size:12px}
+    .tally .why{color:#9a9ab3;font-size:12px}
     .tally li.total{border-top:1px solid #2e2e4e;margin-top:6px;padding-top:9px}
-    .tally li.none .n,.tally li.none .what{color:#85859f;font-weight:400}
+    .tally li.none .n,.tally li.none .what{color:#9a9ab3;font-weight:400}
     .primary{margin:16px 0 12px}
     .primary button{
       background:color-mix(in srgb, var(--pink) 82%, #3a2740);
@@ -148,7 +148,7 @@
     }
     .primary button:hover{background:color-mix(in srgb, var(--pink) 92%, #3a2740)}
     .hint{color:#c9c9dc;margin:0 0 6px}
-    .privacy{color:#85859f;font-size:12px;margin:0 0 12px}
+    .privacy{color:#9a9ab3;font-size:12px;margin:0 0 12px}
     .secondary{
       background:none;border:0;padding:0;cursor:pointer;font-size:12px;
       color:color-mix(in srgb, var(--teal) 84%, white);text-decoration:underline;
@@ -211,8 +211,8 @@
     }
     .excluded-list .src{color:#ececf8}
     .excluded-list .tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
-    .excluded-list .untranslated{display:block;color:#85859f;font-size:12px}
-    .excluded-list .where{color:#85859f}
+    .excluded-list .untranslated{display:block;color:#9a9ab3;font-size:12px}
+    .excluded-list .where{color:#9a9ab3}
     .verify-none{font-size:11px;color:#b9ad8a}
     .step{margin:22px 0 0;padding:16px 0 0;border-top:1px solid #2e2e4e}
     h3{font-size:14px;line-height:1.3;margin:0 0 5px;color:#f0f0fa;font-weight:650}
@@ -247,17 +247,17 @@
     .report-list .field,.report-list .src,.report-list .pair dd{
       display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     }
-    .report-list .field{font-size:11px;color:#85859f;margin-bottom:1px}
+    .report-list .field{font-size:11px;color:#9a9ab3;margin-bottom:1px}
     .report-list .src{color:#ececf8;font-weight:650}
     .report-list .pair{
       display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:10px;row-gap:2px;
       margin:4px 0 0;font-size:12px;
     }
-    .report-list .pair dt{color:#85859f;white-space:nowrap}
+    .report-list .pair dt{color:#9a9ab3;white-space:nowrap}
     .report-list .pair dd{margin:0}
     .report-list .pair dd.tgt{color:color-mix(in srgb, var(--teal) 70%, #cfeee9)}
     .report-list .pair dd.was{color:#c9c9dc}
-    .report-list .pair .mem{margin-left:8px;font-size:11px;color:#85859f}
+    .report-list .pair .mem{margin-left:8px;font-size:11px;color:#9a9ab3}
     .report-list .verdict{display:flex;align-items:center;gap:12px;margin-top:6px}
     .report-list .reason{flex:1;min-width:0;color:var(--flag);font-size:12px;line-height:1.4}
     .choice{
@@ -269,12 +269,14 @@
       display:flex;align-items:center;gap:8px;padding:11px 14px;flex-wrap:wrap;
       border-top:1px solid #2e2e4e;background:#1b1b2b;
     }
-    .toolbar-note{font-size:11px;color:#67677e;flex:1;min-width:150px}
+    .toolbar-note{font-size:11px;color:#9a9ab3;flex:1;min-width:150px}
     .toolbar button{
       border:1px solid #3a3a5c;background:#292941;color:#d8d8ea;
       border-radius:6px;padding:6px 9px;cursor:pointer;font-size:12px;
     }
     .toolbar button:hover{background:#343453;color:#fff}
+    .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+      clip:rect(0 0 0 0);white-space:nowrap;border:0}
     :focus-visible{outline:2px solid var(--teal);outline-offset:1px}
     @media (prefers-reduced-motion: reduce){
       *{animation:none !important;transition:none !important}
@@ -287,6 +289,13 @@
   let shadow = null;
   let bodyEl = null;
   let subtitleEl = null;
+  /* The panel's one live region, never redrawn. The body is not live: it is
+   * replaced whole at each phase, and a live body asked a screen reader to
+   * read all of it again. Each phase whose own line goes with the body says
+   * its outcome here instead, once. */
+  let liveEl = null;
+  /* Ids for the parts the show/hide toggles control. */
+  let controlSeq = 0;
   let callbacks = {};
   let runFingerprint = null;
   let previousFocus = null;
@@ -320,7 +329,14 @@
     return !!runFingerprint && !!fingerprint && fingerprint === runFingerprint;
   }
 
+  function announce(text) {
+    if (liveEl) liveEl.textContent = str(text);
+  }
+
+  /* The palette's toast is gone by the time this panel shows (see flash), so
+   * what a download or copy did is also said in the panel's live region. */
   function notify(message, isError) {
+    announce(message);
     if (isFn(callbacks.onNotify)) callbacks.onNotify(message, !!isError);
   }
 
@@ -603,6 +619,7 @@
     shadow = null;
     bodyEl = null;
     subtitleEl = null;
+    liveEl = null;
     runFingerprint = null;
     filling = false;
     fillHistory = new Map();
@@ -665,7 +682,6 @@
     panel.appendChild(header);
 
     bodyEl = el("div", "body");
-    bodyEl.setAttribute("aria-live", "polite");
     panel.appendChild(bodyEl);
 
     /* The footer every GlideLens panel carries: what the panel will never do,
@@ -679,6 +695,11 @@
     footerClose.addEventListener("click", () => userClose("footer-close"));
     toolbar.appendChild(footerClose);
     panel.appendChild(toolbar);
+
+    liveEl = el("div", "sr-only");
+    liveEl.setAttribute("role", "status");
+    liveEl.setAttribute("aria-live", "polite");
+    panel.appendChild(liveEl);
 
     overlay.appendChild(panel);
     shadow.appendChild(overlay);
@@ -721,6 +742,7 @@
     mount(request.context);
     clear(bodyEl);
     bodyEl.appendChild(el("p", "status", "Reading this item…"));
+    announce("Reading this item…");
     /* The house's indeterminate bar, so a slow frame read looks like work
      * rather than a stall. Reduced motion freezes it at full width. */
     const bar = el("div", "bar-indeterminate");
@@ -733,8 +755,10 @@
     const request = options || {};
     if (!sameRun(request.fingerprint)) return false;
     clear(bodyEl);
-    bodyEl.appendChild(el("p", "error",
-      str(request.message) || "Translation Assistant could not read this page."));
+    const error = el("p", "error",
+      str(request.message) || "Translation Assistant could not read this page.");
+    bodyEl.appendChild(error);
+    announce(error.textContent);
     return true;
   }
 
@@ -790,10 +814,13 @@
       if (!entries.length) return;
       const detail = el("li", "detail");
       detail.hidden = true;
+      controlSeq += 1;
+      detail.id = "snh-ta-excluded-" + controlSeq;
       detail.appendChild(excludedList(entries, draft.languages));
       const toggle = el("button", "toggle", "Show them");
       toggle.type = "button";
       toggle.setAttribute("aria-expanded", "false");
+      toggle.setAttribute("aria-controls", detail.id);
       toggle.addEventListener("click", () => {
         detail.hidden = !detail.hidden;
         toggle.textContent = detail.hidden ? "Show them" : "Hide";
@@ -887,11 +914,16 @@
     bodyEl.appendChild(tallyList(draft));
 
     if (!count(draft.counts && draft.counts.eligible)) {
-      bodyEl.appendChild(el("p", "hint",
-        "Nothing to translate here. Every field is excluded for one of the reasons above."));
+      const nothing = el("p", "hint",
+        "Nothing to translate here. Every field is excluded for one of the reasons above.");
+      bodyEl.appendChild(nothing);
       bodyEl.appendChild(unlockNote());
+      announce(nothing.textContent);
       return true;
     }
+    /* The tally's last line, as the tally counts it. */
+    const counts = draft.counts || {};
+    announce((count(counts.eligibleFields) || count(counts.eligible)) + " to translate.");
 
     const primary = el("div", "primary");
     const button = el("button", "", "Download JSON");
@@ -993,6 +1025,8 @@
      * instance, which is not something the user does on the way past. */
     const ul = el("ul", "shared-list");
     ul.hidden = true;
+    controlSeq += 1;
+    ul.id = "snh-ta-shared-" + controlSeq;
     list.forEach((row) => {
       const li = el("li");
       li.appendChild(el("span", "src", `“${str(row.source)}”`));
@@ -1027,6 +1061,7 @@
     const toggle = el("button", "toggle", shut);
     toggle.type = "button";
     toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", ul.id);
     toggle.addEventListener("click", () => {
       ul.hidden = !ul.hidden;
       toggle.textContent = ul.hidden ? shut : "Hide";
@@ -1397,12 +1432,18 @@
   function showReport(request, result) {
     clear(bodyEl);
     const res = result || {};
+    /* The report's first line is what the fill came to; the status line that
+     * said "Filling the page…" went with the body, so it is said here. */
+    const headline = (node) => {
+      bodyEl.appendChild(node);
+      announce(node.textContent);
+    };
     if (!res.ok) {
       if (res.indeterminate) {
-        bodyEl.appendChild(el("p", "note flag", str(res.message) ||
+        headline(el("p", "note flag", str(res.message) ||
           "The fill may still be running. Check the page before filling again."));
       } else {
-        bodyEl.appendChild(el("p", "error", str(res.message) || "Nothing was filled."));
+        headline(el("p", "error", str(res.message) || "Nothing was filled."));
         if (str(res.excerpt)) {
           bodyEl.appendChild(el("p", "report-sub", "The reply starts:"));
           bodyEl.appendChild(el("pre", "excerpt", str(res.excerpt)));
@@ -1453,17 +1494,17 @@
       /* The event fired and the page holds what it took, but the model could
        * not be read back: no count is honest, so every attempted field is one
        * to look at. */
-      bodyEl.appendChild(el("p", "note flag",
+      headline(el("p", "note flag",
         `Attempted to fill ${attempted} ${plural(attempted, "field")}, but the page could not confirm it` +
         (str(res.why) ? ` (${str(res.why)})` : "") + ". Check each one on the page before you publish."));
     } else if (res.written && landed === attempted) {
-      bodyEl.appendChild(el("p", "report-head", `Filled ${landed} ${plural(landed, "field")}.`));
+      headline(el("p", "report-head", `Filled ${landed} ${plural(landed, "field")}.`));
     } else if (res.written) {
-      bodyEl.appendChild(el("p", "note flag",
+      headline(el("p", "note flag",
         `Filled ${landed} of ${attempted} fields — ${attempted - landed} did not take on the page. ` +
         "Check those before you publish."));
     } else {
-      bodyEl.appendChild(el("p", "report-head", "Nothing was filled."));
+      headline(el("p", "report-head", "Nothing was filled."));
     }
     if (res.written) {
       bodyEl.appendChild(el("p", "hint",
@@ -1564,7 +1605,12 @@
     again.addEventListener("click", () => {
       if (filling) return;
       clear(bodyEl);
-      bodyEl.appendChild(replySection(""));
+      const section = replySection("");
+      bodyEl.appendChild(section);
+      /* The button that was pressed has gone with the body; focus goes to the
+       * step's first control, the empty reply box, not to the page. */
+      const box = Array.from(section.children).find((node) => node.tagName === "TEXTAREA");
+      if (box && isFn(box.focus)) box.focus();
     });
     controls.push(again);
     bodyEl.appendChild(again);
