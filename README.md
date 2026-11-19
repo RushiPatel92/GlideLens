@@ -12,10 +12,9 @@ walkthrough.
 
 [![See what it does](https://img.shields.io/badge/See_what_it_does-1f9c92?style=for-the-badge)](https://rushipatel92.github.io/GlideLens/)
 
-![Update Set Lens on a completed update set of eight updates, three of them Stale: each Stale row opens as a card for this instance naming the in-progress hotfix set that holds a newer version, who saved it and when, with links to the update, the record and the newer set.](docs/shots/update-set-lens.png)
+![The GlideLens command palette open over a new incident form: a search box, then the Tools commands (Translation Lens, Debug Timeline, Code Search, Impersonate, Search Sources, Update Set Lens) and the Record commands, each with a one-line description of what it does.](docs/shots/command-palette.png)
 
-*Update Set Lens, before promoting: three of this set's eight updates already
-have a newer version in another set.*
+*Press `\` on any ServiceNow page: every GlideLens tool, one keystroke away.*
 
 ## What it does
 
