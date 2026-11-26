@@ -1183,3 +1183,648 @@ test("banners render as text with their links", () => {
   assert.deepStrictEqual(opened, [ORIGIN + "/sys_remote_update_set.do?sys_id=4"]);
   void plain;
 });
+
+/* ------------------------------------------------------------------ *
+ * Sets checked together: one story's separate sets
+ * ------------------------------------------------------------------ */
+
+const GID = (n) => String(n).padStart(32, "0");
+const GSETS = [
+  { sysId: GID(11), name: "Team_V1", stateLabel: "Complete", createdOn: "1 Oct 2026", isDefault: false },
+  { sysId: GID(12), name: "Team_V2", stateLabel: "Complete", createdOn: "3 Oct 2026", isDefault: false },
+  { sysId: GID(13), name: "Team_V3", stateLabel: "In progress", createdOn: "5 Oct 2026", isDefault: false },
+];
+
+/* V1 holds a record's newest version that V2 also changed: V2 goes first. */
+function reordered(extra) {
+  return Object.assign({
+    sets: [
+      Object.assign({}, GSETS[1], { after: [], held: 0 }),
+      Object.assign({}, GSETS[0], { after: [{ sysId: GID(12), name: "Team_V2", records: 1 }], held: 1 }),
+      Object.assign({}, GSETS[2], {
+        after: [{ sysId: GID(11), name: "Team_V1", records: 2 }, { sysId: GID(12), name: "Team_V2", records: 1 }],
+        held: 2,
+      }),
+    ],
+    rules: 2,
+    records: 3,
+    matchesCreation: false,
+    against: [{ firstId: GID(12), first: "Team_V2", thenId: GID(11), then: "Team_V1", records: 1 }],
+    cycle: null,
+    soFar: false,
+  }, extra);
+}
+
+function groupView(rows, order, extra) {
+  return view(rows, Object.assign({
+    subject: null,
+    unit: "group",
+    group: { story: "STRY0000101", included: true, fixed: true, more: false, others: 3, sets: GSETS, order },
+  }, extra));
+}
+
+const orderText = (shadow) => {
+  const block = byClass(shadow, "order")[0];
+  return block ? block.textContent : "";
+};
+
+test("sets checked together: the story heads the panel, the commit order is listed, and a sibling's row is in these sets", () => {
+  const harness = load();
+  const sibling = row("batch", { childSet: "Team_V1", text: "Newer version is in “Team_V3”, one of the sets checked together" });
+  const shadow = open(harness, groupView([sibling, row("current", { childSet: "Team_V3" })], reordered()));
+  assert.strictEqual(byClass(shadow, "subtitle")[0].textContent, "STRY0000101 · 3 update sets checked together · 2 updates");
+  const text = orderText(shadow);
+  assert.ok(text.startsWith("Commit in this order"));
+  assert.ok(text.includes("Not the order they were created in: commit 2 after 1."), "by number in the list, never by name");
+  assert.ok(!harness.text().includes("Nothing needs attention"), "an order to change is something to look at");
+  const items = findAll(byClass(shadow, "order-list")[0], (node) => node.tagName === "LI");
+  assert.deepStrictEqual(items.map((item) => byClass(item, "o-name")[0].textContent), ["Team_V2", "Team_V1", "Team_V3"]);
+  const late = byClass(items[1], "o-after")[0];
+  assert.strictEqual(late.textContent, "After 1: it holds the newer version of 1 record that set also changed.");
+  assert.ok(hasClass(late, "warn"), "the move creation order gets wrong is amber");
+  const right = byClass(items[2], "o-after")[0];
+  assert.strictEqual(right.textContent, "After 1 and 2: it holds the newer version of 2 records those sets also changed.",
+    "sets it follows by their number, records counted once");
+  assert.ok(!hasClass(right, "warn"), "one creation order already gets right is not");
+  assert.ok(byClass(items[2], "o-meta")[0].textContent.startsWith("In progress · created 5 Oct 2026"));
+  assert.ok(findAll(shadow, (node) => hasClass(node, "badge") && node.textContent === "IN THESE SETS").length);
+  assert.ok(chip(shadow, "In these sets"), "the sibling chip says these sets");
+  assert.ok(findAll(shadow, (node) => hasClass(node, "sum-badge") && node.textContent === "1 in these sets").length);
+  assert.ok(!byClass(shadow, "check")[0].hidden, "Check on works for sets checked together");
+  assert.ok(!findAll(shadow, (node) => node.tagName === "INPUT" && node.getAttribute("type") === "checkbox").length,
+    "picked in the palette: nothing to untick");
+});
+
+test("the commit order line: creation order works, no order needed, no order works, and so far", () => {
+  const harness = load();
+  const rows = [row("current", { childSet: "Team_V1" })];
+  const shadow = open(harness, groupView(rows, reordered({ matchesCreation: true, against: [] })));
+  assert.ok(orderText(shadow).includes("Commit them in the order they were created."));
+  assert.ok(byClass(shadow, "order-status")[0] && hasClass(byClass(shadow, "order-status")[0], "ok"));
+  assert.ok(harness.text().includes("Nothing needs attention before promoting."));
+
+  harness.ui.update(groupView(rows, reordered({ rules: 0, records: 0, matchesCreation: true, against: [],
+    sets: GSETS.map((set) => Object.assign({}, set, { after: [] })) })));
+  assert.ok(orderText(harness.shadow()).startsWith("Sets checked together"));
+  assert.ok(orderText(harness.shadow()).includes("No record is changed by two of these sets with different content, so the order doesn't matter."));
+
+  harness.ui.update(groupView(rows, reordered({ matchesCreation: false, against: [], cycle: ["Team_V1", "Team_V2"],
+    cycleIds: [GID(11), GID(12)] })));
+  assert.ok(orderText(harness.shadow()).includes("No order works for sets 1 and 2: each holds the newest version of a record " +
+    "the other also changed. Make them one batch: ServiceNow then commits only the newest version of each record."));
+  assert.ok(orderText(harness.shadow()).startsWith("Sets checked together"), "no \"Commit in this order\" above an order that can't work");
+  assert.ok(!harness.text().includes("Nothing needs attention"), "sets no order can place need attention");
+
+  harness.ui.update(groupView(rows, reordered({ soFar: true })));
+  assert.ok(orderText(harness.shadow()).includes("So far: Not the order they were created in"));
+
+  /* Records two sets changed whose order can't be told: amber, and never
+   * "doesn't matter" or a tick. */
+  harness.ui.update(groupView(rows, reordered({ rules: 0, records: 0, unplaced: 2, matchesCreation: true, against: [],
+    sets: GSETS.map((set) => Object.assign({}, set, { after: [] })) })));
+  let text = orderText(harness.shadow());
+  assert.ok(text.includes("2 records were changed differently by two of these sets, and which set should go last for them " +
+    "can't be told here. Show them"));
+  assert.ok(!text.includes("doesn't matter") && !text.includes("✓"));
+  assert.ok(!harness.text().includes("Nothing needs attention"));
+  harness.ui.update(groupView(rows, reordered({ unplaced: 1, matchesCreation: true, against: [] })));
+  text = orderText(harness.shadow());
+  assert.ok(text.includes("Where the order is known, commit them in the order they were created."));
+  assert.ok(!text.includes("✓"));
+
+  /* Sets committed here from elsewhere: the order is the order they ran here. */
+  harness.ui.update(groupView(rows, reordered({ matchesCreation: true, against: [],
+    sets: reordered().sets.map((set) => Object.assign({}, set, { arrived: true })) })));
+  assert.ok(orderText(harness.shadow()).includes("Read the order on the instance where the work was done."));
+  assert.ok(!orderText(harness.shadow()).includes("created 1 Oct 2026"), "no dates while creation order works");
+
+  harness.ui.update(groupView(rows, null, { phase: "running", busy: true }));
+  assert.ok(orderText(harness.shadow()).startsWith("Sets checked together"), "before the run ends, the sets oldest first");
+  assert.ok(!byClass(harness.shadow(), "order-status").length);
+});
+
+test("a set named for a story offers its other sets behind a tick box", () => {
+  const harness = load();
+  const toggled = [];
+  const single = (others, included) => view([row("stale")], {
+    unit: included ? "group" : "set",
+    group: { story: "STRY0000101", included, fixed: false, more: false, others, sets: GSETS, order: null },
+  });
+  const shadow = open(harness, single(2, false), { onToggleStory: (on) => toggled.push(on) });
+  const box = findAll(shadow, (node) => node.tagName === "INPUT" && node.getAttribute("type") === "checkbox")[0];
+  assert.strictEqual(box.checked, false);
+  assert.ok(harness.text().includes("Also check the 2 other sets for STRY0000101"));
+  assert.strictEqual(orderText(shadow), "", "no order until they are checked together");
+  box.checked = true;
+  box.fire("change");
+  assert.deepStrictEqual(toggled, [true]);
+  harness.ui.update(single(1, false));
+  assert.ok(harness.text().includes("Also check the other set for STRY0000101"));
+  harness.ui.update(single(2, true));
+  assert.ok(orderText(harness.shadow()).startsWith("Sets checked together"));
+});
+
+test("records whose order can't be told: the amber line's Show them and the Order unknown chip list just their rows", () => {
+  const harness = load();
+  const note = "which of these sets should go last for it can't be told: this set's version was backed out here";
+  const unknownA = row("batch", { childSet: "Team_V2", orderUnknown: true, notes: [note] });
+  const unknownB = row("current", { childSet: "Team_V1", orderUnknown: true, notes: [note] });
+  const plainRow = row("current", { childSet: "Team_V3" });
+  const shadow = open(harness, groupView([unknownA, unknownB, plainRow], reordered({ rules: 0, records: 0, unplaced: 1,
+    matchesCreation: true, against: [], sets: GSETS.map((set) => Object.assign({}, set, { after: [] })) })));
+  assert.ok(orderText(shadow).includes("1 record was changed differently by two of these sets, and which set should go last for it " +
+    "can't be told here. Show it"));
+  assert.ok(chip(shadow, "Order unknown"), "a chip while there are any");
+  assert.strictEqual(chip(shadow, "Order unknown").textContent, "Order unknown 2");
+  buttons(shadow, "Show it")[0].click();
+  const shown = visibleRows(harness.shadow()).map((node) => byClass(node, "r-name")[0].textContent.replace(/in .*$/, ""));
+  assert.deepStrictEqual(shown.sort(), [unknownA.target, unknownB.target].sort());
+  assert.strictEqual(chip(harness.shadow(), "Order unknown").getAttribute("aria-pressed"), "true");
+  /* Opened, the row's card says why. */
+  headOf(visibleRows(harness.shadow())[0]).click();
+  assert.ok(harness.text().includes(note));
+  /* Gone once nothing is unplaced, and the filter lapses with it. */
+  harness.ui.update(groupView([plainRow], reordered({ matchesCreation: true, against: [] })));
+  assert.ok(!chip(harness.shadow(), "Order unknown"));
+  assert.strictEqual(visibleRows(harness.shadow()).length, 1);
+});
+
+test("unticking the story while a check runs drops that check's late answer", () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const sibling = row("batch", { childSet: "Team_V1" });
+  const toggled = [];
+  const shadow = open(harness, groupView([sibling], reordered(), {
+    subject: view([]).subject,
+    group: { story: "STRY0000101", included: true, fixed: false, more: false, others: 2, sets: GSETS, order: reordered() },
+  }), { onCheckRemote: () => {}, onToggleStory: (on) => toggled.push(on) }, { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  const box = findAll(shadow, (node) => node.tagName === "INPUT" && node.getAttribute("type") === "checkbox")[0];
+  box.checked = false;
+  box.fire("change");
+  assert.deepStrictEqual(toggled, [false]);
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "ok", text: "exampletest matches." }],
+    perRow: { [sibling.key]: { kind: "other", text: "On exampletest: runs another version" } },
+    counts: {},
+  }, 1);
+  assert.ok(!byClass(harness.shadow(), "b-there").length, "the answer for the old scope is dropped");
+  assert.ok(!harness.text().includes("exampletest matches."));
+});
+
+test("the copy summary of sets checked together holds counts and the order's outcome, no names", async () => {
+  const harness = load();
+  const copied = [];
+  const shadow = open(harness, groupView([row("batch", { childSet: "Team_V1" }), row("current", { childSet: "Team_V3" })], reordered()),
+    { onCopy: async (text) => { copied.push(text); return true; } });
+  buttons(shadow, "Copy summary")[0].click();
+  await flush();
+  assert.strictEqual(copied[0], "Update Set Lens: a group of 3 update sets checked together.\nChecked 2 of 2 updates.\n" +
+    "Stale 0, can't tell 0, in these sets 1, same content 0, current 1.\n" +
+    "Commit order: differs from creation order for 1 pair of sets.");
+  assert.doesNotMatch(copied[0], /Team_|STRY|Utility|sys_script_include|https?:|service-now|[0-9a-f]{32}/);
+});
+
+/* The palette's list of sets lives in content.js; it is lifted out by its
+ * anchors and run against the same shim. */
+const CONTENT_SOURCE = fs.readFileSync(path.join(root, "content.js"), "utf8").replace(/\r\n/g, "\n");
+
+function loadChooser() {
+  const dom = createDom();
+  const start = CONTENT_SOURCE.indexOf("/* Every listed set has a tick box");
+  const end = CONTENT_SOURCE.indexOf("async function runUpdateSetLensInput(", start);
+  assert.ok(start >= 0 && end > start, "the chooser's source block moved");
+  const chooser = dom.document.createElement("div");
+  dom.document.documentElement.appendChild(chooser);
+  const input = dom.document.createElement("input");
+  dom.document.documentElement.appendChild(input);
+  const state = { chooser, hint: dom.document.createElement("div"), input, keydown: () => {}, typed: null };
+  const started = [];
+  let closed = 0;
+  const show = new Function(
+    "document", "updateSetChooser", "closePalette", "startUpdateSetLens", "updateSetChoiceMeta",
+    CONTENT_SOURCE.slice(start, end) + "\nreturn showUpdateSetChoices;"
+  )(dom.document, state, () => { closed += 1; }, (resolution) => started.push(resolution), (set) => set.stateLabel || "");
+  return { show, chooser, state, started, closed: () => closed };
+}
+
+test("the palette lists a story's sets with tick boxes: its live ones ticked, checked together from one button", () => {
+  const chooser = loadChooser();
+  const set = (n, name, stateLabel) => ({ sysId: GID(n), name, stateLabel, isDefault: false });
+  const sets = [set(14, "Team_old", "Ignore"), set(11, "Team_V1", "Complete"), set(12, "Team_V2", "Complete"), set(13, "Team_V3", "In progress")];
+  chooser.show({ kind: "story", typed: "stry0000101", story: "STRY0000101", sets, preselected: [GID(11), GID(12), GID(13)], more: false });
+  const boxes = findAll(chooser.chooser, (node) => node.tagName === "INPUT");
+  assert.deepStrictEqual(boxes.map((box) => box.checked), [false, true, true, true]);
+  assert.strictEqual(boxes[1].getAttribute("aria-label"), "Include “Team_V1”");
+  const together = byClass(chooser.chooser, "usl-together")[0];
+  assert.strictEqual(together.textContent, "Check the 3 ticked sets together");
+  assert.ok(chooser.chooser.textContent.startsWith("4 sets for STRY0000101, oldest first."));
+
+  boxes[2].checked = false;
+  boxes[2].fire("change");
+  boxes[3].checked = false;
+  boxes[3].fire("change");
+  assert.strictEqual(together.textContent, "Tick two or more sets to check them together");
+  assert.strictEqual(together.disabled, true);
+  together.click();
+  assert.strictEqual(chooser.started.length, 0, "one ticked set is not a group");
+
+  boxes[3].checked = true;
+  boxes[3].fire("change");
+  assert.strictEqual(together.textContent, "Check the 2 ticked sets together");
+  together.click();
+  assert.strictEqual(chooser.closed(), 1);
+  assert.deepStrictEqual(plain(chooser.started), [{ kind: "group", sets: [sets[1], sets[3]], story: "STRY0000101" }]);
+
+  /* A name still opens that one set alone. */
+  const option = byClass(chooser.chooser, "usl-option")[2];
+  option.click();
+  assert.deepStrictEqual(plain(chooser.started[1]), { kind: "set", set: sets[2] });
+  assert.ok(hasClass(chooser.chooser, "story"), "a story's list is the taller one");
+});
+
+test("the palette list moves by arrow keys along a column and across a row; Enter ticks a box", () => {
+  const chooser = loadChooser();
+  const sets = [1, 2, 3].map((n) => ({ sysId: GID(30 + n), name: "Set " + n, stateLabel: "Complete" }));
+  chooser.show({ kind: "story", typed: "stry0000303", story: "STRY0000303", sets, preselected: sets.map((set) => set.sysId), more: false });
+  const options = byClass(chooser.chooser, "usl-option");
+  const boxes = findAll(chooser.chooser, (node) => node.tagName === "INPUT");
+  const together = byClass(chooser.chooser, "usl-together")[0];
+  const key = (node, name) => node.onkeydown({ key: name, preventDefault() {}, stopPropagation() {} });
+  const reset = () => [].concat(options, boxes, [together, chooser.state.input]).forEach((node) => { node.focused = 0; });
+
+  options[0].focus();
+  reset();
+  key(options[0], "ArrowDown");
+  assert.strictEqual(options[1].focused, 1, "Down moves along the names");
+  reset();
+  key(options[1], "ArrowLeft");
+  assert.strictEqual(boxes[1].focused, 1, "Left crosses to the row's tick box");
+  reset();
+  key(boxes[1], "ArrowUp");
+  assert.strictEqual(boxes[0].focused, 1, "Up moves along the tick boxes");
+  reset();
+  key(boxes[0], "ArrowRight");
+  assert.strictEqual(options[0].focused, 1, "Right crosses back to the name");
+  reset();
+  key(options[0], "ArrowUp");
+  assert.strictEqual(chooser.state.input.focused, 1, "Up from the first row returns to the input");
+  reset();
+  key(options[2], "ArrowDown");
+  assert.strictEqual(together.focused, 1, "Down from the last name reaches the button");
+  reset();
+  key(together, "ArrowUp");
+  assert.strictEqual(options[2].focused, 1);
+
+  /* Enter on a box ticks it (the shim's click does not toggle, so the change
+   * is fired the way Chrome fires it after a click). */
+  let clicked = 0;
+  boxes[2].addEventListener("click", () => { clicked += 1; boxes[2].checked = !boxes[2].checked; boxes[2].fire("change"); });
+  key(boxes[2], "Enter");
+  assert.strictEqual(clicked, 1);
+  assert.strictEqual(together.textContent, "Check the 2 ticked sets together");
+});
+
+test("a name search's list starts with nothing ticked, and two ticked sets check together with no story", () => {
+  const chooser = loadChooser();
+  const sets = [{ sysId: GID(21), name: "Approval fix", stateLabel: "Complete" }, { sysId: GID(22), name: "Approval fix 2", stateLabel: "Complete" }];
+  chooser.show({ kind: "suggest", typed: "approval", sets, more: false });
+  const boxes = findAll(chooser.chooser, (node) => node.tagName === "INPUT");
+  assert.deepStrictEqual(boxes.map((box) => box.checked), [false, false]);
+  boxes.forEach((box) => { box.checked = true; box.fire("change"); });
+  byClass(chooser.chooser, "usl-together")[0].click();
+  assert.deepStrictEqual(plain(chooser.started), [{ kind: "group", sets, story: "" }]);
+});
+
+/* The input row as the palette mounts it, from the chooser's mount through
+ * the typed lookup, with the engine's lookup answered by the test. */
+function loadInputRow() {
+  const dom = createDom();
+  const start = CONTENT_SOURCE.indexOf("/* U1: when a name matches several sets");
+  const end = CONTENT_SOURCE.indexOf("async function loadUpdateSetCheckOrigins(", start);
+  assert.ok(start >= 0 && end > start, "the input row's source block moved");
+  const timers = [];
+  const asked = [];
+  const started = [];
+  const toasts = [];
+  let closed = 0;
+  let hidden = 0;
+  const engine = {
+    resolveUpdateSetInput(text, ctx) {
+      let answer;
+      const promise = new Promise((resolve) => { answer = resolve; });
+      asked.push({ text, answer, ctx });
+      return promise;
+    },
+  };
+  const api = new Function(
+    "document", "updateSetChooser", "closePalette", "startUpdateSetLens", "paletteHost", "showToast",
+    "hidePaletteToast", "updateSetLensContext", "globalThis", "setTimeout", "clearTimeout",
+    CONTENT_SOURCE.slice(start, end) +
+      "\nreturn { mount: mountUpdateSetChooser, run: runUpdateSetLensInput, state: () => updateSetChooser };"
+  )(
+    dom.document, null, () => { closed += 1; }, (resolution) => started.push(resolution), {},
+    (text, isError) => toasts.push({ text, isError }), () => { hidden += 1; }, (extra) => Object.assign({}, extra),
+    { SNUpdateSetLens: engine },
+    (fn, ms) => { timers.push({ fn, ms, cancelled: false }); return timers.length; },
+    (handle) => { if (timers[handle - 1]) timers[handle - 1].cancelled = true; }
+  );
+  const row = dom.document.createElement("div");
+  dom.document.documentElement.appendChild(row);
+  const input = dom.document.createElement("input");
+  row.appendChild(input);
+  api.mount({ row, input, keydown: () => {} });
+  const state = api.state();
+  return {
+    api, state, asked, started, toasts, timers, dom, row, input,
+    closed: () => closed,
+    hidden: () => hidden,
+    type(value) {
+      input.value = value;
+      input.fire("input");
+    },
+    pause() {
+      timers.forEach((timer) => {
+        if (!timer.cancelled && !timer.done) {
+          timer.done = true;
+          timer.fn();
+        }
+      });
+    },
+    enter() { return api.run(input.value); },
+  };
+}
+
+test("a pause in typing lists the matching sets, without Enter", async () => {
+  const typed = loadInputRow();
+  assert.ok(typed.state.hint.textContent.startsWith("Type a set's name or a story number: matching sets are listed as you type."));
+  typed.type("appr");
+  typed.type("approval");
+  assert.strictEqual(typed.asked.length, 0, "nothing is asked while typing goes on");
+  assert.deepStrictEqual(typed.timers.map((timer) => [timer.ms, timer.cancelled]), [[500, true], [500, false]]);
+  typed.pause();
+  assert.deepStrictEqual(typed.asked.map((entry) => entry.text), ["approval"], "one lookup, for the whole word");
+  assert.strictEqual(typed.state.hint.textContent, "Looking for sets…");
+  const sets = [{ sysId: GID(41), name: "Approval fix", stateLabel: "Complete" }, { sysId: GID(42), name: "Approval fix 2", stateLabel: "Complete" }];
+  typed.asked[0].answer({ kind: "suggest", typed: "approval", sets, more: false });
+  await flush();
+  assert.strictEqual(typed.state.chooser.hidden, false);
+  assert.deepStrictEqual(byClass(typed.state.chooser, "usl-option-name").map((node) => node.textContent), ["Approval fix", "Approval fix 2"]);
+  assert.strictEqual(typed.started.length + typed.closed(), 0, "a list opens nothing");
+
+  /* Enter on the same text leaves the list standing, as before. */
+  await typed.enter();
+  assert.strictEqual(typed.asked.length, 1);
+  assert.strictEqual(typed.state.chooser.hidden, false);
+});
+
+test("a pause never opens a lone match: the hint names it and Enter opens it without asking again", async () => {
+  const typed = loadInputRow();
+  typed.type("Fix");
+  typed.pause();
+  const set = { sysId: GID(51), name: "Fix", stateLabel: "In progress" };
+  typed.asked[0].answer({ kind: "set", set });
+  await flush();
+  assert.strictEqual(typed.started.length + typed.closed(), 0, "\"Fix\" may be the start of a longer name");
+  assert.strictEqual(typed.state.chooser.hidden, true);
+  assert.strictEqual(typed.state.hint.textContent, "Press Enter to open “Fix”.");
+  await typed.enter();
+  assert.strictEqual(typed.asked.length, 1, "Enter uses what the pause found");
+  assert.strictEqual(typed.closed(), 1);
+  assert.deepStrictEqual(plain(typed.started), [{ kind: "set", set }]);
+});
+
+test("a pause on a retrieved set's sys_id says it is the retrieved set", async () => {
+  const typed = loadInputRow();
+  typed.type(GID(61));
+  typed.pause();
+  typed.asked[0].answer({ kind: "retrieved", remote: { sysId: GID(61), name: "Imported fixes" } });
+  await flush();
+  assert.strictEqual(typed.state.hint.textContent, "Press Enter to open the retrieved set “Imported fixes”.");
+  assert.strictEqual(typed.started.length, 0);
+});
+
+test("short text lists nothing, clearing the field puts the first hint back, and a miss is said in the hint", async () => {
+  const typed = loadInputRow();
+  const idle = typed.state.hint.textContent;
+  typed.type("ap");
+  typed.pause();
+  assert.strictEqual(typed.asked.length, 0, "two characters ask nothing");
+  assert.strictEqual(typed.state.hint.textContent, "Keep typing: sets are listed from 3 characters.");
+  typed.type("");
+  typed.pause();
+  assert.strictEqual(typed.state.hint.textContent, idle);
+  typed.type("zzzz");
+  typed.pause();
+  typed.asked[0].answer({ kind: "none", message: "No update set named \"zzzz\" here, or you can't read it." });
+  await flush();
+  assert.strictEqual(typed.state.hint.textContent, "No update set named \"zzzz\" here, or you can't read it.");
+  assert.strictEqual(typed.toasts.length, 0, "a pause's miss is no red line");
+});
+
+test("an answer for text since typed over, or overtaken by Enter, is dropped", async () => {
+  const typed = loadInputRow();
+  const sets = [{ sysId: GID(71), name: "Old A" }, { sysId: GID(72), name: "Old B" }];
+  typed.type("old");
+  typed.pause();
+  typed.type("older");
+  typed.asked[0].answer({ kind: "suggest", typed: "old", sets, more: false });
+  await flush();
+  assert.strictEqual(typed.state.chooser.hidden, true, "the list for \"old\" never shows under \"older\"");
+
+  /* Enter while a pause's lookup runs: Enter's answer is the one that counts. */
+  typed.pause();
+  const enter = typed.enter();
+  assert.deepStrictEqual(typed.asked.map((entry) => entry.text), ["old", "older", "older"]);
+  typed.asked[1].answer({ kind: "suggest", typed: "older", sets, more: false });
+  await flush();
+  assert.strictEqual(typed.state.chooser.hidden, true, "the pause's answer is dropped");
+  const set = { sysId: GID(73), name: "older" };
+  typed.asked[2].answer({ kind: "set", set });
+  await enter;
+  assert.deepStrictEqual(plain(typed.started), [{ kind: "set", set }]);
+});
+
+test("typing on after Enter drops Enter's answer for the older text, before the next pause asks", async () => {
+  const typed = loadInputRow();
+  typed.type("Fix");
+  const enter = typed.enter();
+  const hiddenBefore = typed.hidden();
+  typed.type("Fix login");
+  assert.ok(typed.hidden() > hiddenBefore, "the keystroke takes Enter's busy line away");
+  assert.strictEqual(typed.asked[0].ctx.shouldStop(), true, "Enter's reads stop at the next one");
+  /* Answered inside the 500 ms, before any pause. */
+  typed.asked[0].answer({ kind: "set", set: { sysId: GID(81), name: "Fix" } });
+  await enter;
+  assert.strictEqual(typed.started.length + typed.closed(), 0, "\"Fix\" is not opened under \"Fix login\"");
+  typed.pause();
+  const sets = [{ sysId: GID(82), name: "Fix login V1" }, { sysId: GID(83), name: "Fix login V2" }];
+  typed.asked[1].answer({ kind: "suggest", typed: "Fix login", sets, more: false });
+  await flush();
+  assert.strictEqual(typed.state.chooser.hidden, false);
+});
+
+test("a list replaced or hidden while in use hands focus back to the input, not to a set never chosen", async () => {
+  const typed = loadInputRow();
+  const sets = (...names) => names.map((name, index) => ({ sysId: GID(90 + index), name, stateLabel: "Complete" }));
+  typed.type("STRY00123");
+  typed.pause();
+  typed.asked[0].answer({ kind: "suggest", typed: "STRY00123", sets: sets("STRY0012345 V1", "STRY0012399 V1"), more: false });
+  await flush();
+  const oldBox = findAll(typed.state.chooser, (node) => node.tagName === "INPUT")[0];
+  typed.type("STRY0012345");
+  /* ArrowDown, or a click on a tick box, before the new list lands. */
+  oldBox.focus();
+  typed.pause();
+  typed.asked[1].answer({ kind: "story", typed: "STRY0012345", story: "STRY0012345",
+    sets: sets("STRY0012345 V1", "STRY0012345 V2"), preselected: [GID(90), GID(91)], more: false });
+  await flush();
+  assert.strictEqual(oldBox.isConnected, false, "the old list is gone");
+  /* Not the new list's first name: a Space or Enter already on its way
+   * would open that set alone. */
+  assert.strictEqual(typed.dom.document.activeElement, typed.input, "focus goes back to the input, not the page");
+  await typed.enter();
+  assert.strictEqual(typed.started.length + typed.closed(), 0, "Enter in the input opens nothing while the list stands");
+  assert.strictEqual(typed.asked.length, 2);
+
+  typed.type("STRY0012345 V2");
+  byClass(typed.state.chooser, "usl-option")[0].focus();
+  typed.pause();
+  typed.asked[2].answer({ kind: "set", set: { sysId: GID(91), name: "STRY0012345 V2" } });
+  await flush();
+  assert.strictEqual(typed.dom.document.activeElement, typed.input, "a list hidden under focus hands it to the input");
+});
+
+test("the hint follows the text at once: it stops naming a set Enter would not open, and comes back with the text", async () => {
+  const typed = loadInputRow();
+  const idle = typed.state.hint.textContent;
+  typed.type("Fix");
+  typed.pause();
+  typed.asked[0].answer({ kind: "set", set: { sysId: GID(140), name: "Fix" } });
+  await flush();
+  assert.strictEqual(typed.state.hint.textContent, "Press Enter to open “Fix”.");
+  typed.type("Fix login");
+  assert.strictEqual(typed.state.hint.textContent, idle, "before any pause, Enter would no longer open \"Fix\"");
+  typed.type("Fix");
+  assert.strictEqual(typed.state.hint.textContent, "Press Enter to open “Fix”.", "typed back, the line names it again");
+
+  typed.type("appr");
+  typed.pause();
+  typed.asked[1].answer({ kind: "suggest", typed: "appr", sets: [{ sysId: GID(141), name: "Approval fix" }, { sysId: GID(142), name: "Approval fix 2" }], more: false });
+  await flush();
+  const listHint = typed.state.hint.textContent;
+  typed.type("apprx");
+  typed.pause();
+  assert.strictEqual(typed.state.hint.textContent, "Looking for sets…");
+  typed.type("appr");
+  assert.strictEqual(typed.state.hint.textContent, listHint, "nothing is read for \"appr\", so the list's line comes back at once");
+  typed.type("apprxy");
+  assert.strictEqual(typed.state.hint.textContent, listHint, "typing on past a list does not swap the line on every key");
+  assert.strictEqual(typed.asked.length, 3);
+});
+
+test("a hidden list holds no rows, so Tab from the input has nowhere hidden to go", async () => {
+  const typed = loadInputRow();
+  typed.type("appr");
+  typed.pause();
+  typed.asked[0].answer({ kind: "suggest", typed: "appr", sets: [{ sysId: GID(101), name: "Approval fix" }, { sysId: GID(102), name: "Approval fix 2" }], more: false });
+  await flush();
+  assert.ok(typed.state.chooser.children.length > 0);
+  typed.type("Approval fix 2");
+  typed.pause();
+  typed.asked[1].answer({ kind: "set", set: { sysId: GID(102), name: "Approval fix 2" } });
+  await flush();
+  assert.strictEqual(typed.state.chooser.hidden, true);
+  assert.strictEqual(typed.state.chooser.children.length, 0, "a lone match empties the list");
+  typed.type("zz");
+  typed.pause();
+  assert.strictEqual(typed.state.chooser.children.length, 0, "short text leaves it empty");
+});
+
+test("the same text asked again reads nothing and keeps the ticks", async () => {
+  const typed = loadInputRow();
+  const sets = [1, 2, 3].map((n) => ({ sysId: GID(110 + n), name: "Team_V" + n, stateLabel: "Complete" }));
+  typed.type("STRY0000101");
+  typed.pause();
+  typed.asked[0].answer({ kind: "story", typed: "STRY0000101", story: "STRY0000101", sets,
+    preselected: sets.map((set) => set.sysId), more: false });
+  await flush();
+  const listHint = typed.state.hint.textContent;
+  const boxes = findAll(typed.state.chooser, (node) => node.tagName === "INPUT");
+  boxes[1].checked = false;
+  boxes[1].fire("change");
+  typed.type("STRY0000101 ");
+  typed.pause();
+  typed.type("STRY0000101x");
+  typed.pause();
+  assert.strictEqual(typed.state.hint.textContent, "Looking for sets…");
+  typed.type("STRY0000101");
+  typed.pause();
+  assert.strictEqual(typed.asked.length, 2, "only the different text asked");
+  assert.strictEqual(typed.state.hint.textContent, listHint, "the list's own line comes back");
+  assert.deepStrictEqual(findAll(typed.state.chooser, (node) => node.tagName === "INPUT").map((box) => box.checked), [true, false, true]);
+  assert.strictEqual(byClass(typed.state.chooser, "usl-together")[0].textContent, "Check the 2 ticked sets together");
+  await typed.enter();
+  assert.strictEqual(typed.asked.length, 2, "Enter on that text leaves the list standing");
+
+  /* A lone match typed away from and back to is not asked again either. */
+  typed.type("Fix");
+  typed.pause();
+  typed.asked[2].answer({ kind: "set", set: { sysId: GID(120), name: "Fix" } });
+  await flush();
+  typed.type("Fix ");
+  typed.pause();
+  assert.strictEqual(typed.asked.length, 3);
+  assert.strictEqual(typed.state.hint.textContent, "Press Enter to open “Fix”.");
+});
+
+test("Enter's answer after Esc went back to the commands opens nothing, and is not drawn into a row opened again", async () => {
+  const typed = loadInputRow();
+  typed.type("Fix");
+  const enter = typed.enter();
+  typed.row.remove();
+  const hiddenBefore = typed.hidden();
+  typed.asked[0].answer({ kind: "set", set: { sysId: GID(130), name: "Fix" } });
+  await enter;
+  assert.strictEqual(typed.started.length + typed.closed(), 0, "Esc meant go back, not open");
+  assert.ok(typed.hidden() > hiddenBefore, "and its busy line goes");
+
+  /* Esc, then Update Set Lens chosen again while Enter still runs. */
+  const again = loadInputRow();
+  again.type("approval");
+  const second = again.enter();
+  const row = again.dom.document.createElement("div");
+  again.dom.document.documentElement.appendChild(row);
+  const input = again.dom.document.createElement("input");
+  row.appendChild(input);
+  again.row.remove();
+  again.api.mount({ row, input, keydown: () => {} });
+  const fresh = again.api.state();
+  const hiddenNow = again.hidden();
+  again.asked[0].answer({ kind: "suggest", typed: "approval", sets: [{ sysId: GID(131), name: "Approval fix" }, { sysId: GID(132), name: "Approval fix 2" }], more: false });
+  await second;
+  assert.strictEqual(fresh.chooser.hidden, true, "the old answer is not drawn into the new row");
+  assert.strictEqual(fresh.chooser.children.length, 0);
+  assert.strictEqual(again.hidden(), hiddenNow, "the new row's line is not the old Enter's to clear");
+});
+
+test("checked together, a row whose sibling's update runs there says so in these sets' words, in grey", () => {
+  const harness = load();
+  const there = "https://exampletest.service-now.com";
+  const replaced = row("batch", { childSet: "Team_V1" });
+  const shadow = open(harness, groupView([replaced], reordered()), { onCheckRemote: () => {} },
+    { origins: [{ origin: there, label: "exampletest" }] });
+  buttons(shadow, "Check")[0].click();
+  harness.ui.showRemote({
+    state: "done",
+    lines: [{ kind: "ok", text: "exampletest matches: every record runs the newest update of it in these sets." }],
+    perRow: { [replaced.key]: { kind: "inbatch", text: "On exampletest: runs the newest update of it in these sets" } },
+    counts: { runs: 0, same: 0, inBatch: 1, inBatchNewest: 1, built: 0, earlier: 0, behind: 0, diverged: 0, moved: 0, other: 0,
+      otherStale: 0, none: 0, cant: 0 },
+  }, 1);
+  chip(shadow, "All").click();
+  const badge = byClass(visibleRows(harness.shadow())[0], "b-there")[0];
+  assert.strictEqual(badge.textContent, "OTHER SET'S VERSION THERE");
+  assert.ok(hasClass(badge, "same"));
+});

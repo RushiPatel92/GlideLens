@@ -49,8 +49,9 @@ walkthrough.
   updates are no longer the version this instance runs, and where the newer
   one is — then check, on another instance open in your browser, whether the
   set got there and whether that instance runs the same versions, or the ones
-  this set was built on, so promoting it overwrites nothing made there.
-  Read-only on both.
+  this set was built on, so promoting it overwrites nothing made there. Type a
+  story number to check that story's separate sets together, with the order
+  to commit them in. Read-only on both.
 - **Version Lens**: from one record — a business rule, script include, UI
   policy, catalog item, translation, dictionary entry — see which update sets
   captured it, who saved it there and when, whether two open sets hold
@@ -235,7 +236,7 @@ line is the description shown beside it.
 | Code Search | *Search verified code and configuration…* Searches all 14 Table API sources for plain text or a `"quoted phrase"`, including Script Includes, Business Rules, Client Scripts, reference qualifiers, catalog variables, transform logic, record producers, UI Actions, Script Actions, and Scripted REST operations. Results are read-only and open the owning platform record. |
 | Impersonate | *Find a user by identity, role or group and start impersonation.* Searches `sys_user` by name, user ID, email, title or exact `sys_id`, by a filterable field discovered from your instance's own dictionary, by **role** or by **group** — including either one alone, so "who holds `catalog_admin`?" or "who is in this group?" is answerable without knowing a name first. Role membership comes from the effective membership table, so grants that arrive through a group or through role containment are included, and each holder is badged **Direct role** or **Inherited role**. Group membership is the group's direct members, as its Group Members list shows them. Inactive, locked-out and web-service-only accounts are never listed, because impersonating one can end your own session. A typed name searches once you pause. When the panel opens, it lists the people you recently impersonated, from ServiceNow's own list, and checks each one like a search result. Each person is one line under a column header; their name opens the user record in a new tab. A result's **Impersonate** button opens a confirmation rather than acting, and the confirmation lists the roles the person was assigned, directly or through a group, with the roles bundled inside those one click away; **Stop impersonating** returns you to the account you started from, going through ServiceNow's classic impersonation dialog when the usual way back is refused. ServiceNow records impersonation in its own audit log. |
 | Search Sources | *Refresh available Code Search sources.* Re-reads this instance's search-group configuration and field definitions instead of waiting for the weekly cache to expire. Reports what changed. |
-| Update Set Lens | *Check an update set for stale updates and where it has moved…* On an update set's form it opens on that set; anywhere else it asks for a set's name, `sys_id` or link. Each customer update is reported as **Stale** (a newer version from another set, an upgrade or an app install now runs here, named with who recorded it and when), **Can't tell** (with the reason), **Same content**, **In this batch** or **Current**. **Check on** compares the set with another instance open in your browser. Read-only on both instances. |
+| Update Set Lens | *Check an update set for stale updates and where it has moved…* On an update set's form it opens on that set; anywhere else it asks for a set's name, `sys_id` or link. Each customer update is reported as **Stale** (a newer version from another set, an upgrade or an app install now runs here, named with who recorded it and when), **Can't tell** (with the reason), **Same content**, **In this batch** (**In these sets** for sets checked together) or **Current**. Type a story number to list that story's sets and check them together, with the order to commit them in. **Check on** compares the set with another instance open in your browser. Read-only on both instances. |
 
 #### Code Search
 
@@ -288,8 +289,9 @@ opens on that set. A retrieved set's form opens on the local set it was
 committed into, or, when it is not committed here, says where it stands
 (loaded, previewed, backed out) with links to ServiceNow's own form and
 preview problems. Anywhere else, type the set's name, its `sys_id`, or paste
-its link. When several sets share the name, they are listed under the input,
-with Default sets marked and last, and nothing opens until you pick one.
+its link. Matching sets are listed under the input as you type, with Default
+sets marked and last, and nothing opens until you pick one. When exactly one
+set has that name, Enter opens it.
 
 The panel opens on the rows that need attention:
 
@@ -315,6 +317,34 @@ this instance, headed by its name: the verdict and why, the facts behind it
 (the child set, when and by whom a newer version was saved) and links to the
 update, its **record** (found the way ServiceNow's own Show Related Record
 finds it) and its version history.
+
+**Sets checked together.** A story's work often sits in separate sets named
+for it ("… V1", "V2", "V3") rather than in a batch. Type the story number
+(letters then digits, such as `STRY0012345`) and its sets are listed oldest
+first with tick boxes, the in-progress and complete ones already ticked;
+**Check the N ticked sets together** checks them as one. Any list of sets
+offers the tick boxes, and a set's own panel offers **Also check the other
+sets for** its story when its name holds a story number. A newer version in
+one of the ticked sets is **In these sets**, not Stale; a newer version
+anywhere else is still Stale. Separate sets are committed one by one, so the
+set holding a record's newest version has to go last. The panel lists the
+sets in the order to commit them: the order they were created, unless a
+record needs otherwise (a set saved again after a later one), when the line
+turns amber and names the move by the sets' numbers in the list. When neither
+set holds the version that runs here (another story changed the record
+since), a set with the same content as the version that runs goes last if
+it saved it last, and otherwise the two go in the order their own versions
+were saved here. Where that can't be told — one set's version was backed out
+here, or never loaded, another set put an older content back, or two such
+records ask for opposite orders — each of the record's rows says why, and the
+panel says how many records it couldn't place, with **Show them** to list
+those rows, instead of saying the order doesn't matter. If no order works, it says so:
+make them one batch, which commits only the newest version of each record.
+Read the order on the instance where the work was done: on an instance the
+sets were committed to, it is only the order they ran in there, and the
+panel says so. **Check on** reports each set by name, a line each, and
+**Other set's version there** (grey) marks a row whose newer sibling's update
+already runs there.
 
 **Check on** lists the other ServiceNow instances open in tabs of this browser
 (normal and private windows are kept apart). Sign in there first: it asks the

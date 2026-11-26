@@ -10,6 +10,33 @@ Dates are `YYYY-MM-DD` (Europe/London). Releases before 0.4.0 were not tagged
 individually, so 0.3.0 is recorded as a single baseline rather than
 reconstructed version by version.
 
+## [Unreleased]
+
+### Added
+- **Update Set Lens: a story's separate sets, checked together.** Type a
+  story number (such as `STRY0012345`) and its update sets are listed oldest
+  first with tick boxes, the in-progress and complete ones ticked; **Check the
+  N ticked sets together** checks them as one. Any list of sets has the tick
+  boxes, and a set's own panel offers **Also check the other sets for** its
+  story. A newer version in one of the ticked sets is **In these sets**, not
+  Stale, while a newer version anywhere else stays Stale. Because separate
+  sets are committed one by one, the panel lists the order to commit them in:
+  creation order unless a record needs otherwise, with an amber line naming
+  the move, and a plain "no order works" (make them one batch) when nothing
+  can. A record whose order can't be told (a set's version backed out or
+  never loaded here) is counted in amber, never called "doesn't matter".
+  **Check on** says set by set which of them reached the other instance.
+  Measured on a customer instance first: in 38 % of recent multi-set stories,
+  checking one set at a time gave Stale or Can't tell rows whose newer
+  version sat in a sibling set; creation order was right for 75 of 76 such
+  stories, name order wrong for 17.
+
+### Changed
+- **Update Set Lens: sets are listed as you type.** The palette's input lists
+  the matching sets once typing pauses, as Impersonate and Record Lens search,
+  instead of waiting for Enter. A pause never opens a set: when exactly one
+  set has that name, the line under the input names it and Enter opens it.
+
 ## [1.0.0] - 2026-11-18
 
 ### Added

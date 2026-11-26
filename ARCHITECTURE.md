@@ -2269,6 +2269,20 @@ never used to order captures across sets: import time is not change time.
 - **Names match like the server**: `name=` ignores case and trailing spaces,
   so the code-side check folds both. Several matches go to a chooser in the
   palette and are never picked silently; Default is read from `is_default`.
+- **The chooser fills as you type.** `lookUpTypedUpdateSet` runs the same
+  `resolveUpdateSetInput` once typing pauses (500 ms, three characters or
+  more). A pause only lists: a lone match is named in the hint and waits for
+  Enter, because the text so far can be a whole set's name while a longer one
+  is being typed. Every keystroke and every lookup bumps the row's `asked`
+  counter, so only the newest answer lands, and a superseded lookup's reads
+  stop through `shouldStop`. Text whose answer is already on screen (typed
+  away and back) is not asked again, so ticks survive, and its hint comes
+  back on the keystroke; a hint naming a lone match goes back to the first
+  hint once the text moves on. A list replaced or hidden while it has focus
+  hands focus to the input, never to the new list, where a Space or Enter
+  already on its way would open a set nobody chose. A hidden list is emptied,
+  because the palette's Tab trap skips only controls that are hidden
+  themselves.
 
 ### Membership: two shapes, one union
 
@@ -2298,6 +2312,99 @@ A batch parent with no rows of its own (95 of 102 measured) checks its
 children by default. They are walked breadth first on `parent`, at most 6
 levels and 1,000 sets, every visited id kept against cycles, or read once by
 `base_update_set` when the root is its own base.
+
+### Sets checked together
+
+A story's work often sits in separate sets named for it ("… V1", "V2", "V3"),
+not in a batch. Measured on a customer instance (non-default sets from one
+year): 1,806 stories had two or more live sets, and in 76 of the 200 most
+recent, checking one set at a time gave a Stale or Can't tell row whose newer
+version sat in a sibling set (562 rows). A group is a scope the batch path
+already handles: `state.scope` holds the sets and `scopeIds(state)` passes
+their ids to `firstPass` as `batchIds`, so a sibling's version takes verdict
+`batch` (worded **In these sets**) while one anywhere else stays Stale. The
+placing, `remoteRequest` and `remoteView` take the same scope; `scopeUnit`
+(`set`, `batch`, `group`) chooses the words. Version Lens passes its own
+`{ rows, sets, includeChildren, scope }` with no group and is unchanged.
+
+- **Story number.** `storyToken` is the first whole token of two to six
+  letters then five to ten digits, uppercased. Whole token, so a longer number
+  that contains it is never taken. `readStorySets` is one `nameLIKE` read,
+  oldest first, re-checked in code, at most 50 sets (31 of 200 stories had six
+  or more). Typed alone in the palette, a story number lists its sets with
+  tick boxes, in-progress and complete ones ticked (never Ignore or Default);
+  every other list of sets has the boxes unticked. On a set's own panel the
+  story read runs beside `prepare()`'s other reads and offers its other live
+  sets behind a tick box, unless the set is a batch parent, whose line is the
+  batch's.
+- **The commit order.** A ServiceNow batch commits only the newest version
+  of each record, so a batch needs no order. Separate sets are committed one
+  by one, so the set holding the version that runs here must go after every
+  other set of the group that saved the record with different content.
+  `commitOrder` takes each `batch` row whose `newerSameContent` is false as
+  the rule "this row's set before `newerSetId`", but only when rule 6 holds
+  for it: in group mode `classifyRows` also reads such a row's own versions
+  and runs `appliedGuard`, and a row whose own version was backed out here,
+  never loaded, or older than the baseline (6b) makes no rule; it keeps its
+  `batch` verdict with `orderReason` and says why instead of "Newer". Those
+  rules are hard. When the running version is outside the group, soft rules
+  order the holders: two Stale rows go in the order of their own baselines
+  (`ownSavedRaw`, when each set's version was recorded here); a set holding
+  the running version itself (credited elsewhere) goes last; and so does a
+  set with the content that runs here (Same content), but only when its own
+  save is the latest of the holders. Saved earlier, it holds old content
+  another set put back, a revert, and the record is unplaced, as Version
+  Lens's placing never matches a later revert to an older entry. A Same
+  content row is guarded like a `batch` row; when it has no version of its
+  own at all (an identical re-save writes none, nor does adding a record to
+  a set), its update row's `sys_updated_on` (`capturedRaw`) stands in for
+  its save time. That fallback is for that one verdict and reason only, and
+  it cannot point the wrong way: with no version written, the content that
+  runs already existed when the set captured it. Two limits: the time is
+  when the row was last written, so a move or merge into the set also
+  counts (an early capture moved late reads as late, which still leaves the
+  running content on the target); and on an instance the set arrived on it
+  is commit time, which the `arrived` note covers.
+  Soft rules are dropped symmetrically, so the answer never depends on row
+  order: a soft record that alone conflicts with the hard rules goes; the
+  rest are added together; if that leaves no order, every soft record with a
+  pair on a cycle of the combined graph goes. A soft conflict never becomes
+  "no order works, make them one batch": the group can't reproduce a version
+  none of its sets holds. Every other record two sets changed differently is
+  `unplaced`, with its reason, which `view()` adds as a note on that record's
+  rows (`orderUnknown`): a reason about the record on every row, a rule-6
+  reason ("this set's version was backed out here") only on the row of the
+  set it is about, and on the record's other rows "see its row from “…”"; the panel counts them in amber, with **Show them**
+  and an **Order unknown** chip filtering to those rows, rather than saying
+  the order doesn't matter. Measured after review on the same 200 stories:
+  90 of the 97 with shared records got an order (creation order 87, a
+  reorder 3), none had no order, and 22 records in 11 stories were unplaced
+  (19 never loaded here, 1 a revert, 2 whose own versions don't match). On
+  the way: without the Same content rule 570 records were unplaced; with it
+  but unguarded, one story read "no order works" (the revert); guarded
+  without the capture time, 548 Same content captures with no version of
+  their own were unplaced, and all 548 turned out captured after the Stale
+  saves. Kahn's algorithm orders the sets, taking the earliest-created set
+  whenever several may go next. Measured on the same instance, creation
+  order was right for 75 of the 76 stories with a hard rule and name order
+  wrong for 17: names carry the developer's initials before the version
+  number. No story's hard rules contradicted each other; when some do, the
+  sets left on a cycle are named and the panel says to make them one batch.
+  The order is computed from the rows read so far and says so (`soFar`). On
+  an instance the sets were committed to
+  (`arrived`), creation here is commit here and the running version reflects
+  that order, right or wrong, so the panel says to read the order where the
+  work was done. A set's own panel offers the story of the FIRST number in
+  its name; the palette finds a set by any number in it.
+- **Words and the request.** The panel's heading is the story, its banners
+  name each set (Default, backed out here, merged), and every row names its
+  set. `remoteRequest` adds `unit` and `setNames`, which stay in the panel:
+  content.js sends the worker `setIds` and `records` only, and the worker
+  refuses any other field. `remoteView` reports a group's presence a line per
+  set, by name (past ten, the rest tallied without dates), speaks of "the
+  version from these sets" where no set is "this" one, and a row whose newer
+  sibling runs there is **Other set's version there** in grey. The backed-out
+  reads for a group's banners go two at a time, like every other fan-out.
 
 ### Check on another instance
 

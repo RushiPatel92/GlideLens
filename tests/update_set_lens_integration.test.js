@@ -838,6 +838,18 @@ test("Check on places what runs there before it draws, and a failed placing stil
   assert.match(flow.slice(placing - 200, drawing), /catch \(error\) \{\s*placed = null;\s*\}\s*if \(!live\(\)\) return;/);
 });
 
+/* Sets checked together add `unit` and `setNames` to the request the panel
+ * keeps; the worker refuses any field it does not take, so the message
+ * names its four fields one by one and never spreads the request. */
+test("the check message carries the set ids and records only, never the group's local words", () => {
+  const flow = between(contentSource, "async function checkUpdateSetElsewhere(", "/* Open record: one lookup when clicked");
+  const message = between(flow, "chrome.runtime.sendMessage({", "}),");
+  assert.deepStrictEqual(
+    stripComments(message).split(/[\n,]/).map((part) => part.trim()).filter(Boolean),
+    ["chrome.runtime.sendMessage({", 'type: "UPDATE_SET_REMOTE_CHECK"', "origin", "setIds: request.setIds", "records: request.records"]
+  );
+});
+
 test("should every part of the reply fill its budget at once, the placing goes and the check still lands", async () => {
   const block = between(contentSource, "const UPDATE_SET_EXPORT_PROGRESS_MS", "/* =====================================================================\n * IMPERSONATE");
   assert.match(block, /const UPDATE_SET_EXPORT_REPLY_ROOM = 248 \* 1024;/);
