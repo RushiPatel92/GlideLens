@@ -92,6 +92,24 @@
     same: "same content",
     current: "current",
   };
+  /* Sets checked together say "these sets" where a batch says "this batch":
+   * the same verdict, a newer version in a set checked with this one. */
+  const GROUP_WORDS = {
+    badge: "IN THESE SETS",
+    say: "In these sets",
+    summary: "in these sets",
+    there: "OTHER SET'S VERSION THERE",
+  };
+  const grouped = (view) => Boolean(view && view.unit === "group");
+  const badgeWord = (verdict) => (verdict === "batch" && grouped(panel && panel.view) ? GROUP_WORDS.badge : BADGE_WORDS[verdict]);
+  const sayWord = (verdict) => (verdict === "batch" && grouped(panel && panel.view) ? GROUP_WORDS.say : VERDICT_SAY[verdict]);
+  const summaryWord = (key, view) => (key === "batch" && grouped(view) ? GROUP_WORDS.summary : SUMMARY_WORDS[key]);
+  const thereWord = (kind) => (kind === "inbatch" && grouped(panel && panel.view) ? GROUP_WORDS.there : THERE_WORDS[kind]);
+  /* Several sets checked as one: a batch with its children, or sets
+   * checked together. Its own verdict, "batch", then shows. */
+  const checkedAsOne = (view) => Boolean(view && (view.unit === "batch" || view.unit === "group" ||
+    (view.batch && view.batch.included)));
+  const groupOn = (view) => Boolean(view && view.group && view.group.included);
 
   let host = null;
   let shadow = null;
@@ -132,6 +150,18 @@
     .banner.warn{border-color:var(--amber-line);background:#2c2619;color:#f0d9a6}
     .batch-line{display:flex;align-items:center;gap:8px;margin:10px 20px 0;font-size:12px;color:#d6d6ea}
     .batch-line input{accent-color:var(--teal);width:auto}
+    /* Sets checked together: the order to commit them in, oldest first
+       unless a record needs otherwise. */
+    .order{margin:10px 20px 0;font-size:12px;line-height:1.45;color:#d6d6ea;max-width:90ch}
+    .order-head{color:#9a9ab3;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:3px}
+    .order-status{margin:0 0 4px}
+    .order-status.ok{color:#8fe0d6;font-weight:600}
+    .order-status.warn{color:var(--amber);font-weight:600}
+    .order-list{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:2px}
+    .order-list .o-name{color:#f0f0fa;font-weight:600;overflow-wrap:anywhere}
+    .order-list .o-meta{color:#9a9ab3;font-size:11.5px;margin-left:6px}
+    .order-list .o-after{display:block;color:#bdbdd0;font-size:11.5px}
+    .order-list .o-after.warn{color:var(--amber)}
     .summary{padding:12px 20px 10px;border-bottom:1px solid #292944;background:var(--raised);
       display:flex;flex-direction:column;gap:6px;margin-top:10px}
     .sum-main{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13.5px;color:#f0f0fa}
@@ -414,8 +444,12 @@
    * list may be partial or the set isn't one to move: said as a success. */
   function allClear(view, rows) {
     const totals = view.totals || {};
+    /* A commit order to change, sets no order can place, or records whose
+     * order can't be told are all something to look at. */
+    const order = view.group && view.group.included ? view.group.order : null;
+    const stuck = Boolean(order && (order.cycle || (order.against && order.against.length) || order.unplaced));
     return view.phase === "done" && Boolean(totals.exact) && rows.length > 0 && !rows.some(needsAttention) &&
-      !(view.banners || []).some((banner) => banner.kind === "warn");
+      !(view.banners || []).some((banner) => banner.kind === "warn") && !stuck;
   }
 
   /* The checked instance's answer for a row: there is one only where it
@@ -440,7 +474,8 @@
   /* U2: Needs attention while there is any and nothing has been picked. A
    * pick of Differs there lapses with the check that answered it. */
   function activeFilter(rows) {
-    if (panel.filter && (panel.filter !== "there" || rows.some(differsThere))) return panel.filter;
+    if (panel.filter && (panel.filter !== "there" || rows.some(differsThere)) &&
+      (panel.filter !== "unplaced" || rows.some((row) => row.orderUnknown))) return panel.filter;
     return rows.some(needsAttention) ? "attention" : "all";
   }
 
@@ -448,6 +483,7 @@
     if (filter === "all") return true;
     if (filter === "attention") return needsAttention(row);
     if (filter === "there") return differsThere(row);
+    if (filter === "unplaced") return Boolean(row.orderUnknown);
     return row.verdict === filter;
   }
 
@@ -478,14 +514,30 @@
     const rows = (view && view.rows) || [];
     const c = counts(rows);
     const totals = (view && view.totals) || {};
-    const batch = view && view.batch && view.batch.included;
+    const together = groupOn(view);
+    const batch = !together && view && view.batch && view.batch.included;
+    const what = together ? "a group of " + view.group.sets.length + " update sets checked together"
+      : batch ? "a batch of " + ((view.batch.setCount || 0) + 1) + " update sets" : "one update set";
     const lines = [
-      "Update Set Lens: " + (batch ? "a batch of " + ((view.batch.setCount || 0) + 1) + " update sets" : "one update set") + ".",
+      "Update Set Lens: " + what + ".",
       "Checked " + (totals.checked || 0) +
         (totals.total != null ? (totals.exact ? " of " : " of up to ") + totals.total : "") + " updates.",
-      "Stale " + c.stale + ", can't tell " + c.cant + (batch ? ", in this batch " + c.batch : "") +
+      "Stale " + c.stale + ", can't tell " + c.cant +
+        (together ? ", in these sets " + c.batch : batch ? ", in this batch " + c.batch : "") +
         ", same content " + c.same + ", current " + c.current + ".",
     ];
+    /* The order in counts only: no set's name leaves the screen. */
+    const order = together ? view.group.order : null;
+    if (order) {
+      const unplaced = Number(order.unplaced) || 0;
+      const main = order.cycle ? "no order works for " + order.cycle.length + " sets"
+        : order.against.length ? "differs from creation order for " + order.against.length +
+          (order.against.length === 1 ? " pair" : " pairs") + " of sets"
+          : order.rules ? "creation order works"
+            : unplaced ? "" : "doesn't matter, no record is changed by two of these sets";
+      const unknown = unplaced ? unplaced + (unplaced === 1 ? " record" : " records") + " can't be placed" : "";
+      lines.push("Commit order: " + [main, unknown].filter(Boolean).join("; ") + (order.soFar ? " (so far)" : "") + ".");
+    }
     if (remoteCounts) {
       /* What the update's own history placed, only when it placed any, so a
        * check that placed nothing reads as it always did. */
@@ -499,7 +551,8 @@
       lines.push(
         "On the other instance: runs this set's version " + remoteCounts.runs +
         ", same content " + remoteCounts.same +
-        (remoteCounts.inBatch ? ", another update of this batch " + remoteCounts.inBatch : "") +
+        (remoteCounts.inBatch ? (together ? ", another update from these sets " : ", another update of this batch ") +
+          remoteCounts.inBatch : "") +
         placed + ", another version " + remoteCounts.other +
         ", no readable current version " + remoteCounts.none + ", can't tell " + remoteCounts.cant + "."
       );
@@ -534,6 +587,17 @@
       const bits = ["retrieved set", retrieved.stateLabel];
       if (retrieved.loadedOn) bits.push("loaded " + retrieved.loadedOn + (retrieved.source ? " from " + retrieved.source : ""));
       subtitle.appendChild(document.createTextNode(" · " + bits.filter(Boolean).join(" · ")));
+      return;
+    }
+    if (groupOn(view)) {
+      /* Sets checked together: the story they share, then how many. */
+      const count = view.group.sets.length;
+      const story = str(view.group.story);
+      subtitle.appendChild(el("strong", null, story || plural(count, "update set", "update sets")));
+      const bits = [story ? plural(count, "update set", "update sets") + " checked together" : "checked together"];
+      const totals = view.totals || {};
+      if (totals.total != null) bits.push((totals.exact ? "" : "up to ") + plural(totals.total, "update", "updates"));
+      subtitle.appendChild(document.createTextNode(" · " + bits.join(" · ")));
       return;
     }
     if (!view.subject) {
@@ -590,6 +654,130 @@
     els.batch.appendChild(label);
   }
 
+  /* The other sets named for this set's story, behind a tick box like the
+   * batch's; and, while sets are checked together, the order to commit
+   * them in. */
+  function paintGroup(view) {
+    const group = view.group;
+    clear(els.group);
+    setHidden(els.group, !group);
+    if (!group) return;
+    if (!group.fixed) {
+      const label = el("label", "batch-line");
+      const box = el("input");
+      box.type = "checkbox";
+      box.setAttribute("type", "checkbox");
+      box.checked = Boolean(group.included);
+      setDisabled(box, Boolean(view.busy));
+      box.addEventListener("change", () => {
+        panel.filter = null;
+        panel.shown = PAGE_SIZE;
+        panel.expanded.clear();
+        forgetRemote();
+        if (isFn(callbacks.onToggleStory)) callbacks.onToggleStory(Boolean(box.checked));
+      });
+      remember(box, "story-toggle");
+      label.appendChild(box);
+      const others = Number(group.others) || 0;
+      label.appendChild(document.createTextNode(" Also check the " +
+        (others === 1 ? "other set" : others.toLocaleString() + " other sets") + " for " + str(group.story) +
+        (group.more ? " (the first " + (others + 1) + " found)" : "")));
+      els.group.appendChild(label);
+    }
+    if (!group.included) return;
+    els.group.appendChild(orderBlock(view));
+  }
+
+  function numbersList(numbers) {
+    const sorted = numbers.filter(Boolean).sort((a, b) => a - b).map(String);
+    if (sorted.length <= 1) return sorted.join("");
+    return sorted.slice(0, -1).join(", ") + " and " + sorted[sorted.length - 1];
+  }
+
+  /* The sets, numbered, in the order to commit them, with a line saying
+   * whether that is the order they were created in. Everything refers to
+   * sets by their number in the list: set names run past 60 characters,
+   * and repeated in every line they pushed the rows off a live panel. */
+  function orderBlock(view) {
+    const group = view.group;
+    const order = group.order;
+    const block = el("div", "order");
+    block.setAttribute("role", "group");
+    const sets = order ? order.sets : group.sets;
+    const ruled = Boolean(order && order.rules);
+    /* No order to commit in when none works: the heading must not offer one. */
+    const head = el("div", "order-head", ruled && !order.cycle ? "Commit in this order" : "Sets checked together");
+    head.id = "snh-usl-order-head";
+    block.setAttribute("aria-labelledby", head.id);
+    block.appendChild(head);
+    const position = new Map(sets.map((set, index) => [set.sysId, index + 1]));
+    const moved = Boolean(order && (order.cycle || order.against.length));
+    if (order) {
+      const soFar = order.soFar ? "So far: " : "";
+      const unplaced = Number(order.unplaced) || 0;
+      if (order.cycle) {
+        const ids = Array.isArray(order.cycleIds) ? order.cycleIds : [];
+        block.appendChild(markedLine("div", "order-status warn", "≠",
+          soFar + "No order works for sets " + numbersList(ids.map((id) => position.get(id))) +
+          ": each holds the newest version of a record " + (ids.length === 2 ? "the other" : "another of them") +
+          " also changed. Make them one batch: ServiceNow then commits only the newest version of each record."));
+      } else if (order.against.length) {
+        const said = order.against.slice(0, 3).map((rule) => "commit " + position.get(rule.thenId) + " after " + position.get(rule.firstId));
+        const more = order.against.length - said.length;
+        block.appendChild(markedLine("div", "order-status warn", "≠",
+          soFar + "Not the order they were created in: " + said.join("; ") + (more ? "; and " + more + " more" : "") + "."));
+      } else if (ruled && !unplaced) {
+        block.appendChild(markedLine("div", "order-status ok", "✓", soFar + "Commit them in the order they were created."));
+      } else if (ruled) {
+        block.appendChild(el("div", "order-status", soFar + "Where the order is known, commit them in the order they were created."));
+      } else if (!unplaced) {
+        block.appendChild(el("div", "order-status",
+          soFar + "No record is changed by two of these sets with different content, so the order doesn't matter."));
+      }
+      /* Never "the order doesn't matter" or a tick while two sets changed a
+       * record and which goes last can't be told. Each such row says why;
+       * "Show them" filters to them, as a summary badge does. */
+      if (unplaced) {
+        const line = markedLine("div", "order-status warn", "≠",
+          (order.cycle || order.against.length || ruled ? "" : soFar) +
+          (unplaced === 1
+            ? "1 record was changed differently by two of these sets, and which set should go last for it can't be told here. "
+            : plural(unplaced, "record", "records") +
+              " were changed differently by two of these sets, and which set should go last for them can't be told here. "));
+        line.appendChild(remember(button("link", unplaced === 1 ? "Show it" : "Show them", () => setFilter("unplaced")), "order-unplaced"));
+        block.appendChild(line);
+      }
+      if (sets.some((set) => set.arrived)) {
+        block.appendChild(el("div", "order-status",
+          "Some of these sets were committed here from another instance, so this is the order they ran in here. " +
+          "Read the order on the instance where the work was done."));
+      }
+    }
+    const against = new Set(order ? order.against.map((rule) => rule.firstId + "\u0000" + rule.thenId) : []);
+    const list = el("ol", "order-list");
+    sets.forEach((set) => {
+      const item = el("li");
+      item.appendChild(el("span", "o-name", str(set.name) || "Unnamed update set"));
+      /* Dates only where the order departs from creation: there they are
+       * the evidence; otherwise the numbering already says it. */
+      const meta = [set.stateLabel, set.isDefault ? "Default set" : "", moved && set.createdOn ? "created " + set.createdOn : ""]
+        .filter(Boolean).join(" · ");
+      if (meta) item.appendChild(el("span", "o-meta", meta));
+      const after = Array.isArray(set.after) ? set.after : [];
+      if (after.length) {
+        const late = after.some((rule) => against.has(rule.sysId + "\u0000" + set.sysId));
+        const numbers = after.map((rule) => position.get(rule.sysId));
+        const held = Number(set.held) || after.reduce((sum, rule) => sum + (Number(rule.records) || 0), 0);
+        item.appendChild(el("span", "o-after" + (late ? " warn" : ""),
+          "After " + numbersList(numbers) + ": it holds the newer version of " + plural(held, "record", "records") + " " +
+          (numbers.length === 1 ? "that set" : "those sets") + " also changed."));
+      }
+      list.appendChild(item);
+    });
+    block.appendChild(list);
+    return block;
+  }
+
   function newerWork(rows) {
     const bySet = new Map();
     rows.forEach((row) => {
@@ -606,14 +794,15 @@
     const c = counts(rows);
     clear(els.sumMain);
     els.sumMain.appendChild(el("span", "sum-label", "Before promoting:"));
-    const keys = ["stale", "cant", "same"].concat(view.batch && view.batch.included ? ["batch"] : []).concat(["current"]);
+    const keys = ["stale", "cant", "same"].concat(checkedAsOne(view) ? ["batch"] : []).concat(["current"]);
     keys.forEach((key) => {
+      const word = summaryWord(key, view);
       const badge = button(
         "badge sum-badge b-" + key + (c[key] ? "" : " zero"),
-        c[key].toLocaleString() + " " + SUMMARY_WORDS[key],
+        c[key].toLocaleString() + " " + word,
         () => setFilter(key)
       );
-      badge.setAttribute("aria-label", "Show only the " + SUMMARY_WORDS[key] + " rows: " + c[key]);
+      badge.setAttribute("aria-label", "Show only the " + word + " rows: " + c[key]);
       els.sumMain.appendChild(remember(badge, "sum:" + key));
     });
 
@@ -711,8 +900,15 @@
     const tally = {
       attention: c.stale + c.cant, stale: c.stale, cant: c.cant, batch: c.batch,
       same: c.same, current: c.current, all: rows.length, there: rows.filter(differsThere).length,
+      unplaced: rows.filter((row) => row.orderUnknown).length,
     };
-    const chips = CHIPS.filter((chip) => !chip.batchOnly || (view.batch && view.batch.included));
+    const chips = CHIPS.filter((chip) => !chip.batchOnly || checkedAsOne(view))
+      .map((chip) => (chip.id === "batch" && grouped(view) ? Object.assign({}, chip, { label: GROUP_WORDS.say }) : chip));
+    /* Sets checked together: the rows whose commit order can't be told,
+     * shown only while there are any, like Differs on. */
+    if (tally.unplaced) {
+      chips.splice(chips.length - 1, 0, { id: "unplaced", label: "Order unknown", className: "there" });
+    }
     /* After a check, the rows it differs on, just before All. */
     if (tally.there) {
       chips.splice(chips.length - 1, 0, {
@@ -783,7 +979,7 @@
     const card = sideCard(VERDICT_TONE[row.verdict] || "grey", panel.here, "this instance");
     const say = el("p", "say");
     if (row.explain != null) {
-      say.appendChild(el("span", "v " + (VERDICT_TONE[row.verdict] || "grey"), (VERDICT_SAY[row.verdict] || row.verdict) + "."));
+      say.appendChild(el("span", "v " + (VERDICT_TONE[row.verdict] || "grey"), (sayWord(row.verdict) || row.verdict) + "."));
       say.appendChild(document.createTextNode(" " + str(row.explain)));
     } else {
       say.appendChild(document.createTextNode(str(row.text)));
@@ -844,7 +1040,7 @@
 
   function thereBadge(answer) {
     const kind = THERE_WORDS[answer.kind] ? answer.kind : "cant";
-    const badge = el("span", "badge b-there" + thereTone(kind), THERE_WORDS[kind]);
+    const badge = el("span", "badge b-there" + thereTone(kind), thereWord(kind));
     badge.title = str(answer.text);
     return badge;
   }
@@ -894,7 +1090,7 @@
     top.appendChild(name);
     top.appendChild(el("span", "r-action", row.action || ""));
     const badges = el("span", "badges");
-    badges.appendChild(el("span", "badge b-" + row.verdict, BADGE_WORDS[row.verdict] || row.verdict));
+    badges.appendChild(el("span", "badge b-" + row.verdict, badgeWord(row.verdict) || row.verdict));
     const answer = remoteAnswer(row);
     if (answer) badges.appendChild(thereBadge(answer));
     else if (notCompared(row)) badges.appendChild(notComparedBadge(row));
@@ -974,6 +1170,8 @@
         els.rows.appendChild(el("div", "empty", "Checking…"));
       } else if (view.batch && !view.batch.included) {
         els.rows.appendChild(el("div", "empty", "This set holds no updates itself. Include its child sets to check the batch."));
+      } else if (groupOn(view)) {
+        els.rows.appendChild(el("div", "empty", "These sets hold no updates."));
       } else {
         els.rows.appendChild(el("div", "empty", "This set holds no updates."));
       }
@@ -1004,7 +1202,7 @@
     setHidden(els.continueButton, !view.canContinue);
     setDisabled(els.continueButton, Boolean(view.busy));
     setHidden(els.copyButton, Boolean(view.retrieved));
-    setDisabled(els.copyButton, Boolean(view.busy) || !view.subject);
+    setDisabled(els.copyButton, Boolean(view.busy) || !(view.subject || groupOn(view)));
   }
 
   function paint() {
@@ -1022,10 +1220,11 @@
     ]);
     const rows = view.rows || [];
     const filter = activeFilter(rows);
-    const local = !view.retrieved && Boolean(view.subject);
+    const local = !view.retrieved && (Boolean(view.subject) || groupOn(view));
     paintHeader(view);
     paintBanners(view);
     paintBatch(local ? view : {});
+    paintGroup(local ? view : {});
     setHidden(els.summary, !local);
     setHidden(els.check, !local);
     setHidden(els.chips, !local || !rows.length);
@@ -1105,6 +1304,8 @@
     section.appendChild(banners);
     const batch = el("div", null);
     section.appendChild(batch);
+    const group = el("div", null);
+    section.appendChild(group);
 
     const summary = el("div", "summary");
     const sumMain = el("div", "sum-main");
@@ -1178,7 +1379,7 @@
     shadow.appendChild(overlay);
 
     els = {
-      overlay, section, subtitle, banners, batch, summary, sumMain, sumNewer, progress,
+      overlay, section, subtitle, banners, batch, group, summary, sumMain, sumNewer, progress,
       check, checkRow, select, checkButton, checkHint, checkOut, chips, rows, footer,
       copyButton, continueButton, footerClose, closeButton, live,
     };
@@ -1248,7 +1449,7 @@
   /*
    * open({ view, origins, here, callbacks, opener })
    *   here: this instance's name, for the heading of its card
-   *   callbacks: onToggleBatch(on), onContinue(), onCheckRemote(origin, token),
+   *   callbacks: onToggleBatch(on), onToggleStory(on), onContinue(), onCheckRemote(origin, token),
    *   onOpenUrl(url), onOpenRecord(updateName), onOpenVersionLens(updateName)
    *   and onOpenRemote({ origin, table, sysId } | { origin, name }), the last
    *   three -> Promise<{ ok, message }>, onCopy(text) -> Promise<boolean>,

@@ -8101,8 +8101,10 @@ function updateSetLensInputCommand() {
 }
 
 /* U1: when a name matches several sets they are listed here, under the
- * input, and nothing opens until one is picked. */
+ * input, and nothing opens until one is picked. They are listed once typing
+ * pauses (scheduleUpdateSetLookup), and by Enter at once. */
 function mountUpdateSetChooser({ row, input, keydown }) {
+  if (updateSetChooser) clearTimeout(updateSetChooser.timer);
   const chooser = document.createElement("div");
   chooser.id = "arg-chooser";
   chooser.className = "usl-chooser";
@@ -8111,7 +8113,10 @@ function mountUpdateSetChooser({ row, input, keydown }) {
   const hint = document.createElement("div");
   hint.id = "arg-hint";
   hint.className = "cmd-input-hint";
-  hint.textContent = "A name, a sys_id, or the set's link. Names match ignoring capitals and trailing spaces.";
+  /* It says what a pause found ("Press Enter to open …"), so it is read out. */
+  hint.setAttribute("aria-live", "polite");
+  hint.textContent = "Type a set's name or a story number: matching sets are listed as you type. " +
+    "A sys_id or the set's link works too.";
   row.appendChild(chooser);
   row.appendChild(hint);
   input.addEventListener("keydown", (event) => {
@@ -8121,10 +8126,39 @@ function mountUpdateSetChooser({ row, input, keydown }) {
     event.preventDefault();
     first.focus();
   });
+  /* `typed` and `lone` say which text the list or the lone match on screen
+   * answers. Both are compared with the text before use, so typing need not
+   * clear them: typed away and back, what is on screen still answers it. */
+  const state = {
+    chooser, hint, input, keydown, typed: null,
+    /* What a pause found: the one set Enter would open, for this text. */
+    lone: null,
+    timer: null,
+    /* Bumped by every keystroke and every lookup, so only the newest
+     * answer lands: an Enter's answer for "Fix" is dropped once the person
+     * types on, even before the next pause asks. */
+    asked: 0,
+    idleHint: hint.textContent,
+    /* The hint that went with the answer on screen. */
+    answeredHint: "",
+  };
   input.addEventListener("input", () => {
-    if (updateSetChooser && updateSetChooser.chooser === chooser) updateSetChooser.typed = null;
+    if (updateSetChooser !== state) return;
+    state.asked += 1;
+    /* An Enter's busy line or its "not found" was for older text. */
+    hidePaletteToast();
+    /* The line under the input follows the text at once, not after the
+     * pause: back to what is on screen when the text is answered again, and
+     * no longer naming a lone match that Enter would not open. Unchanged
+     * text is not set again, because the line is read out. */
+    const text = String(input.value || "").trim();
+    let next = null;
+    if (updateSetAnswerOnScreen(state, text)) next = state.answeredHint;
+    else if (state.lone && hint.textContent === state.answeredHint) next = state.idleHint;
+    if (next !== null && hint.textContent !== next) hint.textContent = next;
+    scheduleUpdateSetLookup(state);
   });
-  updateSetChooser = { chooser, hint, input, keydown, typed: null };
+  updateSetChooser = state;
 }
 
 function updateSetChoiceMeta(set) {
@@ -8136,22 +8170,57 @@ function updateSetChoiceMeta(set) {
   ].filter(Boolean).join(" · ");
 }
 
+/* Every listed set has a tick box beside its name: a name opens that set
+ * alone, and two or more ticked sets can be checked together. A story
+ * number's list comes oldest first with its live sets already ticked. */
 function showUpdateSetChoices(result) {
   const state = updateSetChooser;
   if (!state || !state.chooser.isConnected) return;
   const { chooser, hint, keydown } = state;
+  const story = result.kind === "story";
+  /* A pause can replace the list while it is in use: removing the focused
+   * control would drop focus out of the palette onto the page. Focus goes
+   * back to the input, not onto the new list, where a key already on its way
+   * (Space, Enter) would open a set the person never chose. */
+  const hadFocus = focusInUpdateSetChoices(chooser);
   chooser.textContent = "";
+  chooser.className = story ? "usl-chooser story" : "usl-chooser";
   chooser.setAttribute(
     "aria-label",
-    result.kind === "choose" ? "Sets with this name" : "Sets whose names contain it"
+    story ? "Sets for " + result.story : result.kind === "choose" ? "Sets with this name" : "Sets whose names contain it"
   );
   const note = document.createElement("div");
   note.className = "usl-chooser-note";
-  note.textContent = result.kind === "choose"
-    ? result.sets.length + " sets share this name. Pick one."
-    : "No set is named exactly that. Sets whose names contain it:";
+  note.textContent = story
+    ? result.sets.length + " sets for " + result.story + ", oldest first. Tick the ones to check together, or pick a name to open it alone."
+    : result.kind === "choose"
+      ? result.sets.length + " sets share this name. Pick one, or tick two or more to check together."
+      : "No set is named exactly that. Sets whose names contain it:";
   chooser.appendChild(note);
-  const options = result.sets.map((set) => {
+  const ticked = new Set(story && Array.isArray(result.preselected) ? result.preselected : []);
+  const together = document.createElement("button");
+  together.type = "button";
+  together.className = "usl-together";
+  const refreshTogether = () => {
+    const count = result.sets.filter((set) => ticked.has(set.sysId)).length;
+    together.textContent = count >= 2
+      ? "Check the " + count + " ticked sets together"
+      : "Tick two or more sets to check them together";
+    together.disabled = count < 2;
+  };
+  const rows = result.sets.map((set) => {
+    const row = document.createElement("div");
+    row.className = "usl-choice";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "usl-tick";
+    box.checked = ticked.has(set.sysId);
+    box.setAttribute("aria-label", "Include “" + (set.name || "Unnamed update set") + "”");
+    box.addEventListener("change", () => {
+      if (box.checked) ticked.add(set.sysId);
+      else ticked.delete(set.sysId);
+      refreshTogether();
+    });
     const option = document.createElement("button");
     option.type = "button";
     option.className = "usl-option";
@@ -8170,40 +8239,120 @@ function showUpdateSetChoices(result) {
     option.appendChild(name);
     option.appendChild(meta);
     option.addEventListener("click", () => pickUpdateSet(set));
-    chooser.appendChild(option);
-    return option;
+    row.appendChild(box);
+    row.appendChild(option);
+    chooser.appendChild(row);
+    return { box, option };
   });
-  options.forEach((option, index) => {
+  /* Up and Down move along a column (names, or tick boxes); Left and Right
+   * cross between a row's tick box and its name. */
+  const move = (event, index, column) => {
+    if (event.key === "Escape") {
+      keydown(event);
+      return true;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      const next = index + (event.key === "ArrowDown" ? 1 : -1);
+      if (next < 0) state.input.focus();
+      else if (rows[next]) rows[next][column].focus();
+      else if (event.key === "ArrowDown" && !together.disabled) together.focus();
+      return true;
+    }
+    if (event.key === "ArrowLeft" && column === "option") {
+      event.preventDefault();
+      event.stopPropagation();
+      rows[index].box.focus();
+      return true;
+    }
+    if (event.key === "ArrowRight" && column === "box") {
+      event.preventDefault();
+      event.stopPropagation();
+      rows[index].option.focus();
+      return true;
+    }
+    return false;
+  };
+  rows.forEach(({ box, option }, index) => {
     option.onkeydown = (event) => {
-      if (event.key === "Escape") {
-        keydown(event);
-        return;
-      }
+      if (move(event, index, "option")) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         event.stopPropagation();
         option.click();
         return;
       }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (event.key !== "Tab") event.stopPropagation();
+    };
+    box.onkeydown = (event) => {
+      if (move(event, index, "box")) return;
+      /* Space ticks it, as a tick box does; Enter does too, here. */
+      if (event.key === "Enter") {
         event.preventDefault();
-        event.stopPropagation();
-        const next = index + (event.key === "ArrowDown" ? 1 : -1);
-        if (next < 0) state.input.focus();
-        else if (options[next]) options[next].focus();
-        return;
+        box.click();
       }
       if (event.key !== "Tab") event.stopPropagation();
     };
   });
+  together.addEventListener("click", () => {
+    const picked = result.sets.filter((set) => ticked.has(set.sysId));
+    if (picked.length < 2) return;
+    closePalette();
+    startUpdateSetLens({ kind: "group", sets: picked, story: story ? result.story : "" }, {});
+  });
+  together.onkeydown = (event) => {
+    if (event.key === "Escape") {
+      keydown(event);
+      return;
+    }
+    if (event.key === "ArrowUp" && rows.length) {
+      event.preventDefault();
+      event.stopPropagation();
+      rows[rows.length - 1].option.focus();
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      together.click();
+      return;
+    }
+    if (event.key !== "Tab") event.stopPropagation();
+  };
+  refreshTogether();
+  chooser.appendChild(together);
   if (result.more) {
     const more = document.createElement("div");
     more.className = "usl-chooser-note";
-    more.textContent = "More sets share this name; type more of it or paste the sys_id.";
+    more.textContent = story
+      ? "This story has more sets than shown; open a set's own link to check one of the rest."
+      : "More sets share this name; type more of it or paste the sys_id.";
     chooser.appendChild(more);
   }
   chooser.hidden = false;
   hint.textContent = "Enter does nothing until a set is picked. Names match ignoring capitals and trailing spaces.";
+  state.answeredHint = hint.textContent;
+  if (hadFocus) state.input.focus();
+}
+
+/* Whether keyboard focus is on a control in the list. */
+function focusInUpdateSetChoices(chooser) {
+  const root = typeof chooser.getRootNode === "function" ? chooser.getRootNode() : document;
+  for (let node = root && root.activeElement; node; node = node.parentNode) {
+    if (node === chooser) return true;
+  }
+  return false;
+}
+
+/* Hidden and emptied: the palette's Tab trap skips only controls that are
+ * hidden themselves, so rows left in a hidden list made Tab from the input
+ * stop dead. Focus in the list goes back to the input. */
+function hideUpdateSetChoices(state) {
+  const hadFocus = focusInUpdateSetChoices(state.chooser);
+  state.chooser.hidden = true;
+  state.chooser.textContent = "";
+  if (hadFocus) state.input.focus();
 }
 
 function pickUpdateSet(set) {
@@ -8217,31 +8366,133 @@ async function runUpdateSetLensInput(value) {
   const text = String(value || "").trim();
   /* Enter never picks: with the same text, the list on screen stands. */
   if (state && state.typed !== null && state.typed === text && !state.chooser.hidden) return;
+  /* A pause already found the one set Enter would open. */
+  const lone = state && state.lone && state.lone.text === text ? state.lone.result : null;
   if (state) {
+    clearTimeout(state.timer);
+    state.timer = null;
+    state.asked += 1;
     state.typed = null;
-    state.chooser.hidden = true;
+    state.lone = null;
+    hideUpdateSetChoices(state);
+    state.hint.textContent = state.idleHint;
   }
+  if (lone) {
+    closePalette();
+    startUpdateSetLens(lone, {});
+    return;
+  }
+  const asked = state ? state.asked : 0;
+  /* Typed on, Esc back to the commands, or the row opened again. */
+  const superseded = () => Boolean(state) &&
+    (state !== updateSetChooser || state.asked !== asked || !state.chooser.isConnected);
   const paletteAtStart = paletteHost;
   showToast("Looking up the update set…", false, 0, { busy: true });
   let result;
   try {
-    result = await engine.resolveUpdateSetInput(text, updateSetLensContext());
+    result = await engine.resolveUpdateSetInput(text, updateSetLensContext({ shouldStop: superseded }));
   } catch (error) {
     result = { kind: "error", message: String((error && error.message) || error) };
   }
   if (!paletteHost || paletteHost !== paletteAtStart) return;
+  if (superseded()) {
+    /* After Esc the busy line is this Enter's alone. A newer row or a
+     * newer lookup owns the line by now, so it is theirs to clear. */
+    if (state === updateSetChooser && !state.chooser.isConnected) hidePaletteToast();
+    return;
+  }
   if (result.kind === "set" || result.kind === "retrieved") {
     closePalette();
     startUpdateSetLens(result, {});
     return;
   }
-  if (result.kind === "choose" || result.kind === "suggest") {
+  if (result.kind === "choose" || result.kind === "suggest" || result.kind === "story") {
     hidePaletteToast();
     if (state) state.typed = text;
     showUpdateSetChoices(result);
     return;
   }
   showToast(result.message || "Couldn't find that update set.", true, 7000);
+}
+
+/*
+ * Sets are listed once typing pauses, as Impersonate and Record Lens search.
+ * Reported: that Enter was needed to see any set was not obvious. A pause
+ * only ever lists. A lone match is named in the hint for Enter to open and is
+ * never opened by the pause, because the name typed so far ("Fix") can be a
+ * whole set's name while the person is still typing a longer one ("Fix login
+ * V2"). Short text lists nothing: a name holding one or two letters is no
+ * clue which set is meant. Enter still asks at any length.
+ */
+const UPDATE_SET_LOOKUP_DELAY_MS = 500;
+const UPDATE_SET_LOOKUP_MIN_CHARS = 3;
+
+function scheduleUpdateSetLookup(state) {
+  clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    lookUpTypedUpdateSet(state);
+  }, UPDATE_SET_LOOKUP_DELAY_MS);
+}
+
+/* Whether what is on screen already answers this text: the list a lookup
+ * drew for it, or the lone match the hint names. */
+function updateSetAnswerOnScreen(state, text) {
+  return (state.typed === text && !state.chooser.hidden) || Boolean(state.lone && state.lone.text === text);
+}
+
+async function lookUpTypedUpdateSet(state) {
+  if (state !== updateSetChooser || !state.chooser.isConnected) return;
+  const text = String(state.input.value || "").trim();
+  /* What is on screen already answers this text (a space typed and taken
+   * back): asking again would cost the reads and reset the ticks. */
+  if (updateSetAnswerOnScreen(state, text)) {
+    state.hint.textContent = state.answeredHint;
+    return;
+  }
+  const asked = ++state.asked;
+  if (text.length < UPDATE_SET_LOOKUP_MIN_CHARS) {
+    state.typed = null;
+    state.lone = null;
+    hideUpdateSetChoices(state);
+    state.hint.textContent = text
+      ? "Keep typing: sets are listed from " + UPDATE_SET_LOOKUP_MIN_CHARS + " characters."
+      : state.idleHint;
+    return;
+  }
+  const paletteAtStart = paletteHost;
+  /* A newer keystroke, an Enter, or the palette closing drops this answer,
+   * and stops its reads at the next one. */
+  const superseded = () => state !== updateSetChooser || state.asked !== asked || !state.chooser.isConnected ||
+    paletteHost !== paletteAtStart || String(state.input.value || "").trim() !== text;
+  state.hint.textContent = "Looking for sets…";
+  let result;
+  try {
+    result = await globalThis.SNUpdateSetLens.resolveUpdateSetInput(
+      text, updateSetLensContext({ shouldStop: superseded })
+    );
+  } catch (error) {
+    result = { kind: "error", message: String((error && error.message) || error) };
+  }
+  if (superseded()) return;
+  if (result.kind === "choose" || result.kind === "suggest" || result.kind === "story") {
+    state.typed = text;
+    state.lone = null;
+    showUpdateSetChoices(result);
+    return;
+  }
+  state.typed = null;
+  hideUpdateSetChoices(state);
+  if (result.kind === "set" || result.kind === "retrieved") {
+    state.lone = { text, result };
+    const name = result.kind === "set" ? result.set && result.set.name : result.remote && result.remote.name;
+    state.hint.textContent = "Press Enter to open " + (result.kind === "retrieved" ? "the retrieved set " : "") +
+      "“" + (name || "Unnamed update set") + "”.";
+    state.answeredHint = state.hint.textContent;
+    return;
+  }
+  state.lone = null;
+  state.hint.textContent = result.message || "Couldn't find that update set.";
 }
 
 async function loadUpdateSetCheckOrigins(ui, isCurrent) {
@@ -8280,6 +8531,7 @@ function startUpdateSetLens(resolution, options) {
     here: prefillInstanceLabel(location.origin),
     callbacks: {
       onToggleBatch: (on) => session.setIncludeChildren(on),
+      onToggleStory: (on) => session.setIncludeStory(on),
       onContinue: () => session.continue(),
       onCheckRemote: (origin, remoteToken) => checkUpdateSetElsewhere(session, origin, remoteToken, token),
       onOpenUrl: (url, opts) => openLensUrl(url, opts),
@@ -8353,7 +8605,12 @@ async function checkUpdateSetElsewhere(session, origin, remoteToken, panelToken)
   let placed = null;
   try {
     placed = await session.placeRemote(reply, request, () => {
-      if (live()) ui.showRemote({ state: "busy", message: "Finding what " + instance + " runs in this set's history…" }, remoteToken);
+      if (live()) {
+        ui.showRemote({
+          state: "busy",
+          message: "Finding what " + instance + " runs in " + (request.unit === "group" ? "these sets'" : "this set's") + " history…",
+        }, remoteToken);
+      }
     });
   } catch (error) {
     placed = null;
@@ -9984,11 +10241,28 @@ const PALETTE_CSS = `
     border-color:var(--teal);background:color-mix(in srgb, var(--teal) 18%, var(--palette-raised));
   }
   #palette-confirm button:focus{outline:2px solid var(--teal);outline-offset:2px}
+  /* The bottom padding keeps a row focused by arrow key clear of the
+     sticky "check together" button. A story's list is taller: with ten
+     sets, 260 px showed two of them. */
   .usl-chooser{
     display:flex;flex-direction:column;gap:4px;max-height:260px;overflow:auto;padding:5px;
-    background:#171724;border:1px solid #565681;border-radius:8px;
+    background:#171724;border:1px solid #565681;border-radius:8px;scroll-padding-bottom:48px;
   }
+  .usl-chooser.story{max-height:min(55vh,460px)}
   .usl-chooser-note{padding:6px 9px 4px;color:#9999b1;font-size:11px;line-height:1.4}
+  .usl-choice{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:2px}
+  .usl-tick{width:15px;height:15px;margin:0 4px 0 7px;accent-color:var(--teal);cursor:pointer}
+  .usl-tick:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  /* Held at the bottom of the scrolling list: a story can list ten sets, and
+     a button below them all was out of sight on the live instance. */
+  .usl-together{
+    position:sticky;bottom:0;z-index:1;
+    margin:4px 0 2px;padding:7px 10px;border:1px solid var(--teal);border-radius:6px;cursor:pointer;
+    background:color-mix(in srgb, var(--teal) 18%, #171724);color:#ececf7;font:inherit;font-size:12px;text-align:left;
+    box-shadow:0 -6px 10px #171724;
+  }
+  .usl-together:disabled{border-color:#4d5079;background:#171724;color:#9a9ab3;cursor:default}
+  .usl-together:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
   .usl-option{
     display:grid;gap:3px;width:100%;padding:9px;border:1px solid transparent;border-radius:6px;
     background:transparent;color:#ececf7;text-align:left;cursor:pointer;font:inherit;

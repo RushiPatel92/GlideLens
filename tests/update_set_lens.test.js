@@ -1850,3 +1850,533 @@ test("the batch's newest update, where the other instance runs an older update o
   assert.strictEqual(between.placed.size, 0);
   assert.strictEqual(between.shown.perRow[between.newest.key].kind, "other");
 });
+
+/* ------------------------------------------------------------------ *
+ * 9. Sets checked together: one story's separate sets
+ *
+ * A story's work often sits in separate sets named for it ("… V1", "V2",
+ * "V3"), not a batch. Checked one at a time, a newer version in a sibling
+ * reads Stale; checked together it is "in these sets", and the sets must be
+ * committed in an order that leaves each record's newest version last.
+ * ------------------------------------------------------------------ */
+
+const V1 = id(11);
+const V2 = id(12);
+const V3 = id(13);
+
+function storyWorld() {
+  return {
+    sets: [
+      setRow(11, { name: "Team_STRY0000101_AB_V1", sys_created_on: "2026-10-01 09:00:00" }),
+      setRow(12, { name: "Team_STRY0000101_AB_V2", sys_created_on: "2026-10-03 09:00:00" }),
+      setRow(13, { name: "Team_STRY0000101_CD_V3", state: "in progress", sys_created_on: "2026-10-05 09:00:00" }),
+      setRow(14, { name: "Team_STRY0000101_old", state: "ignore", sys_created_on: "2026-09-01 09:00:00" }),
+      /* A longer number that merely contains the story's: never one of its sets. */
+      setRow(15, { name: "Team_STRY00001012_other", sys_created_on: "2026-10-02 09:00:00" }),
+      setRow(16, { name: "Team_STRY0000202_V1", sys_created_on: "2026-10-07 09:00:00" }),
+    ],
+    xml: [
+      xmlRow(V1, NAME(1), guid(1), "1"),
+      xmlRow(V3, NAME(1), guid(3), "3"),
+      xmlRow(V2, NAME(2), guid(4), "4"),
+      xmlRow(V1, NAME(2), guid(5), "5"),
+      xmlRow(V2, NAME(3), guid(6), "7"),
+      xmlRow(V3, NAME(3), guid(7), "7"),
+      xmlRow(V2, NAME(4), guid(8), "8"),
+      xmlRow(id(16), NAME(4), guid(9), "9"),
+      xmlRow(V3, NAME(5), guid(10), "10"),
+    ],
+    versions: [
+      /* NAME(1): V3 holds the newest; V1 the older. Creation order works. */
+      versionRow(NAME(1), V3, "current", guid(3), "3", "2026-10-05 10:00:00"),
+      versionRow(NAME(1), V1, "previous", guid(1), "1", "2026-10-01 10:00:00"),
+      /* NAME(2): V1 was saved again after V2, so V1 must go after V2. */
+      versionRow(NAME(2), V1, "current", guid(5), "5", "2026-10-06 10:00:00"),
+      versionRow(NAME(2), V2, "previous", guid(4), "4", "2026-10-03 10:00:00"),
+      /* NAME(3): the same content in V2 and V3: no order asked. */
+      versionRow(NAME(3), V3, "current", guid(7), "7", "2026-10-05 11:00:00"),
+      versionRow(NAME(3), V2, "previous", guid(6), "7", "2026-10-03 11:00:00"),
+      /* NAME(4): another story changed it since: Stale stays Stale. */
+      versionRow(NAME(4), id(16), "current", guid(9), "9", "2026-10-08 10:00:00"),
+      versionRow(NAME(4), V2, "previous", guid(8), "8", "2026-10-03 12:00:00"),
+      versionRow(NAME(5), V3, "current", guid(10), "10", "2026-10-05 12:00:00"),
+    ],
+  };
+}
+
+const storySet = (world, n) => lens.normalizeSet(world.sets.find((row) => row.sys_id === id(n)));
+const storyReads = (instance) => instance.requests.filter((request) => /^nameLIKE/.test(request.query));
+
+test("a story number is one whole token, uppercased; a longer number or a letter run-in is not it", () => {
+  assert.strictEqual(lens.storyToken("Team.App_STRY0000101_New form_AB_V1"), "STRY0000101");
+  assert.strictEqual(lens.storyToken("stry0000101 fix"), "STRY0000101");
+  assert.strictEqual(lens.storyToken("Release20261101"), "", "seven letters is a word, not a prefix");
+  assert.strictEqual(lens.storyToken("Set 1"), "");
+  assert.strictEqual(lens.namesStory("Fix STRY0000101-V2", "STRY0000101"), true);
+  assert.strictEqual(lens.namesStory("Team_STRY00001012_other", "STRY0000101"), false);
+  assert.strictEqual(lens.namesStory("XSTRY0000101", "STRY0000101"), false);
+});
+
+test("typing a story number lists its sets oldest first, live ones ticked, in one read", async () => {
+  const world = storyWorld();
+  const instance = fakeInstance(world);
+  const result = await lens.resolveUpdateSetInput("stry0000101", ctxFor(instance));
+  assert.strictEqual(result.kind, "story");
+  assert.strictEqual(result.story, "STRY0000101");
+  assert.deepStrictEqual(plain(result.sets.map((set) => set.sysId)), [id(14), V1, V2, V3], "the longer number is left out");
+  assert.deepStrictEqual(plain(result.preselected), [V1, V2, V3], "an Ignore set is listed, not ticked");
+  assert.strictEqual(result.more, false);
+  assert.strictEqual(instance.requests.length, 1);
+  assert.strictEqual(instance.requests[0].query, "nameLIKESTRY0000101^ORDERBYsys_created_on");
+
+  const one = await lens.resolveUpdateSetInput("STRY0000202", ctxFor(fakeInstance(world)));
+  assert.deepStrictEqual([one.kind, one.set.sysId], ["set", id(16)], "one set opens as itself");
+  const none = await lens.resolveUpdateSetInput("STRY0000999", ctxFor(fakeInstance(world)));
+  assert.strictEqual(none.kind, "none", "no set for it falls back to the name search");
+});
+
+test("more than 50 sets for one story says so", async () => {
+  const sets = Array.from({ length: 52 }, (_, index) => setRow(100 + index, {
+    name: "STRY0000404 part " + index, sys_created_on: "2026-10-01 10:" + String(index).padStart(2, "0") + ":00",
+  }));
+  const result = await lens.resolveUpdateSetInput("STRY0000404", ctxFor(fakeInstance({ sets })));
+  assert.strictEqual(result.kind, "story");
+  assert.strictEqual(result.sets.length, 50);
+  assert.strictEqual(result.more, true);
+});
+
+test("sets checked together: a sibling's newer version is in these sets, another story's is still Stale", async () => {
+  const world = storyWorld();
+  const instance = fakeInstance(world);
+  const session = lens.createSession(
+    { kind: "group", sets: [storySet(world, 13), storySet(world, 11), storySet(world, 12)], story: "STRY0000101" },
+    ctxFor(instance), {}
+  );
+  await session.prepare();
+  let view = session.view();
+  assert.strictEqual(view.subject, null);
+  assert.strictEqual(view.group.included, true);
+  assert.strictEqual(view.group.fixed, true);
+  assert.deepStrictEqual(plain(view.group.sets.map((set) => set.sysId)), [V1, V2, V3], "oldest first");
+  await session.start();
+  view = session.view();
+  assert.strictEqual(view.unit, "group");
+  const at = (setId, n) => view.rows.find((row) => row.setId === setId && row.name === NAME(n));
+  assert.strictEqual(view.rows.length, 9 - 1, "the other story's own row is not among these sets");
+  assert.strictEqual(at(V1, 1).verdict, "batch");
+  assert.strictEqual(at(V1, 1).text, "Newer version is in “Team_STRY0000101_CD_V3”", "the badge already says In these sets");
+  assert.strictEqual(at(V1, 1).ownSavedRaw, "2026-10-01 10:00:00", "rule 6 placed V1's own version here");
+  assert.strictEqual(at(V1, 1).orderReason, "");
+  assert.strictEqual(at(V1, 1).childSet, "Team_STRY0000101_AB_V1", "every row names its set");
+  assert.strictEqual(at(V3, 1).childSet, "Team_STRY0000101_CD_V3");
+  assert.strictEqual(at(V2, 2).verdict, "batch");
+  assert.strictEqual(at(V1, 2).verdict, "current");
+  assert.strictEqual(at(V2, 3).verdict, "batch");
+  assert.strictEqual(at(V2, 3).newerSameContent, true);
+  assert.strictEqual(at(V2, 4).verdict, "stale");
+  assert.strictEqual(at(V2, 4).text, "Newer version in “Team_STRY0000202_V1”");
+  assert.ok(!view.banners.some((banner) => banner.kind === "warn"));
+
+  /* V1 holds NAME(2)'s newest, saved after V2's: V2 goes first. */
+  const order = plain(view.group.order);
+  assert.deepStrictEqual(order.sets.map((set) => set.name),
+    ["Team_STRY0000101_AB_V2", "Team_STRY0000101_AB_V1", "Team_STRY0000101_CD_V3"]);
+  assert.deepStrictEqual(order.sets.map((set) => set.after), [
+    [],
+    [{ sysId: V2, name: "Team_STRY0000101_AB_V2", records: 1 }],
+    [{ sysId: V1, name: "Team_STRY0000101_AB_V1", records: 1 }],
+  ]);
+  assert.deepStrictEqual(order.sets.map((set) => set.held), [0, 1, 1]);
+  assert.strictEqual(order.rules, 2);
+  assert.strictEqual(order.records, 2, "the same content in two sets asks for no order");
+  assert.strictEqual(order.unplaced, 0);
+  assert.strictEqual(order.matchesCreation, false);
+  assert.deepStrictEqual(order.against, [
+    { firstId: V2, first: "Team_STRY0000101_AB_V2", thenId: V1, then: "Team_STRY0000101_AB_V1", records: 1 },
+  ]);
+  assert.strictEqual(order.cycle, null);
+  assert.strictEqual(order.soFar, false);
+  /* Which of the sets were backed out here is read once, one read a set. */
+  const backedOutReads = instance.requests.filter((request) => /state=backedout/.test(request.query));
+  assert.strictEqual(backedOutReads.length, 3);
+});
+
+test("a set named for a story offers its story's other live sets behind a tick box", async () => {
+  const world = storyWorld();
+  const instance = fakeInstance(world);
+  const session = lens.createSession({ kind: "set", set: storySet(world, 11) }, ctxFor(instance), {});
+  await session.prepare();
+  let view = session.view();
+  assert.strictEqual(storyReads(instance).length, 1, "one read, beside the others");
+  assert.deepStrictEqual(
+    { story: view.group.story, included: view.group.included, fixed: view.group.fixed, others: view.group.others, order: view.group.order },
+    { story: "STRY0000101", included: false, fixed: false, others: 2, order: null },
+    "the Ignore set and the longer number are not offered"
+  );
+  await session.start();
+  view = session.view();
+  assert.strictEqual(view.unit, "set");
+  assert.deepStrictEqual(plain(view.rows.map((row) => [row.name, row.verdict])), [[NAME(1), "stale"], [NAME(2), "current"]],
+    "alone, V3's newer version reads Stale");
+  assert.strictEqual(view.rows[0].childSet, "");
+
+  await session.setIncludeStory(true);
+  view = session.view();
+  assert.strictEqual(view.unit, "group");
+  assert.strictEqual(view.rows.length, 8);
+  assert.strictEqual(view.rows.find((row) => row.setId === V1 && row.name === NAME(1)).verdict, "batch");
+  assert.ok(view.group.order);
+  assert.strictEqual(storyReads(instance).length, 1, "ticking reads no story again");
+
+  await session.setIncludeStory(false);
+  assert.strictEqual(session.view().rows.length, 2);
+});
+
+test("a batch parent's line is the batch's, never its story's", async () => {
+  const sets = [
+    setRow(30, { name: "Release STRY0000303" }),
+    setRow(31, { name: "STRY0000303 part A", parent: id(30) }),
+  ];
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(sets[0]) }, ctxFor(fakeInstance({ sets })), {});
+  await session.prepare();
+  const view = session.view();
+  assert.ok(view.batch);
+  assert.strictEqual(view.group, null);
+});
+
+test("a set with no story number, or whose story has no other live set, reads nothing for it", async () => {
+  const plainSet = setRow(40, { name: "Approval fix" });
+  const instance = fakeInstance({ sets: [plainSet] });
+  const session = lens.createSession({ kind: "set", set: lens.normalizeSet(plainSet) }, ctxFor(instance), {});
+  await session.prepare();
+  assert.strictEqual(session.view().group, null);
+  assert.strictEqual(storyReads(instance).length, 0);
+
+  const alone = setRow(41, { name: "STRY0000505 only" });
+  const lonely = lens.createSession({ kind: "set", set: lens.normalizeSet(alone) }, ctxFor(fakeInstance({ sets: [alone] })), {});
+  await lonely.prepare();
+  assert.strictEqual(lonely.view().group, null);
+});
+
+test("commit order: creation order when it works, a cycle named, same content and outside sets ignored", () => {
+  const S = (n, created) => ({ sysId: id(n), name: "Set " + n, createdOnRaw: created, stateLabel: "Complete", createdOn: created });
+  const sets = [S(3, "2026-10-03 00:00:00"), S(1, "2026-10-01 00:00:00"), S(2, "2026-10-02 00:00:00")];
+  const rule = (from, to, name, extra) => Object.assign({ verdict: "batch", setId: id(from), newerSetId: id(to), name }, extra);
+
+  const forward = lens.commitOrder(sets, [rule(1, 3, "a"), rule(2, 3, "b")], false);
+  assert.deepStrictEqual(plain(forward.sets.map((set) => set.name)), ["Set 1", "Set 2", "Set 3"]);
+  assert.strictEqual(forward.matchesCreation, true);
+  assert.deepStrictEqual(plain(forward.against), []);
+
+  const none = lens.commitOrder(sets, [
+    rule(1, 3, "a", { newerSameContent: true }),
+    Object.assign(rule(2, 1, "c"), { verdict: "stale" }),
+    Object.assign(rule(9, 1, "d"), { verdict: "batch" }),
+  ], true);
+  assert.strictEqual(none.rules, 0, "same content, a lone Stale row, and a row from a set outside ask for no order");
+  assert.strictEqual(none.unplaced, 0);
+  assert.strictEqual(none.matchesCreation, true);
+  assert.strictEqual(none.soFar, true);
+
+  /* A sibling whose own version rule 6 couldn't place makes no rule, and
+   * its record is unplaced rather than "the order doesn't matter". */
+  const guarded = lens.commitOrder(sets, [rule(3, 1, "e", { orderReason: "backed-out-here" })], false);
+  assert.deepStrictEqual([guarded.rules, guarded.unplaced], [0, 1]);
+
+  const cycle = lens.commitOrder(sets, [rule(1, 2, "a"), rule(2, 1, "b"), rule(2, 3, "c")], false);
+  assert.deepStrictEqual(plain(cycle.cycle), ["Set 1", "Set 2"], "a set only after the cycle is not on it");
+  assert.deepStrictEqual(plain(cycle.cycleIds), [id(1), id(2)]);
+  assert.strictEqual(cycle.matchesCreation, false);
+  assert.deepStrictEqual(plain(cycle.sets.map((set) => set.name)), ["Set 1", "Set 2", "Set 3"], "every set still listed");
+});
+
+test("commit order when the running version is elsewhere: two sets go in the order their own versions were recorded", () => {
+  const S = (n, created) => ({ sysId: id(n), name: "Set " + n, createdOnRaw: created });
+  const sets = [S(1, "2026-10-01 00:00:00"), S(2, "2026-10-02 00:00:00")];
+  const stale = (n, hash, saved, extra) => Object.assign({ verdict: "stale", setId: id(n), name: "a", hash, ownSavedRaw: saved }, extra);
+
+  /* Set 1 was saved again after set 2: set 2 goes first, against creation. */
+  const later = lens.commitOrder(sets, [stale(1, "1", "2026-10-06 10:00:00"), stale(2, "2", "2026-10-03 10:00:00")], false);
+  assert.deepStrictEqual(plain(later.sets.map((set) => set.name)), ["Set 2", "Set 1"]);
+  assert.deepStrictEqual([later.rules, later.unplaced, later.matchesCreation], [1, 0, false]);
+
+  assert.strictEqual(lens.commitOrder(sets, [stale(1, "7", "2026-10-06 10:00:00"), stale(2, "7", "2026-10-03 10:00:00")], false).rules, 0,
+    "the same content in both asks for no order");
+
+  /* Set 1 holds the content that runs here (Same content) and saved it
+   * last: it goes last, so the target ends on what runs here. */
+  const holdsRunning = lens.commitOrder(sets, [
+    stale(1, "9", "2026-10-05 10:00:00", { verdict: "same" }),
+    stale(2, "2", "2026-10-03 10:00:00"),
+  ], false);
+  assert.deepStrictEqual(plain(holdsRunning.sets.map((set) => set.name)), ["Set 2", "Set 1"]);
+  assert.deepStrictEqual([holdsRunning.rules, holdsRunning.unplaced, holdsRunning.matchesCreation], [1, 0, false]);
+
+  /* Saved BEFORE the Stale one, it holds old content another set put back:
+   * a revert. It is not the newer version, and the record is unplaced. */
+  const revert = lens.commitOrder(sets, [
+    stale(1, "9", "2026-10-01 10:00:00", { verdict: "same" }),
+    stale(2, "2", "2026-10-03 10:00:00"),
+  ], false);
+  assert.deepStrictEqual([revert.rules, revert.unplaced], [0, 1]);
+  assert.deepStrictEqual(plain(revert.unplacedRecords), [{ name: "a", reason: "revert", setId: "" }], "about the record, no set");
+  const unguarded = lens.commitOrder(sets, [
+    stale(1, "9", "", { verdict: "same", orderReason: "not-applied" }),
+    stale(2, "2", "2026-10-03 10:00:00"),
+  ], false);
+  assert.deepStrictEqual(plain(unguarded.unplacedRecords), [{ name: "a", reason: "not-applied", setId: id(1) }],
+    "its own rule-6 reason, kept with the set it is about");
+
+  /* Two such records asking for opposite orders (measured once in 200
+   * stories): both go, whichever row is read first, and there is no "no
+   * order works": a batch would not fix a version neither set holds. */
+  const recordA = [stale(1, "1", "2026-10-02 10:00:00"), stale(2, "2", "2026-10-03 10:00:00")];
+  const recordB = [stale(1, "9", "2026-10-05 10:00:00", { verdict: "same", name: "b" }), stale(2, "3", "2026-10-03 10:00:00", { name: "b" })];
+  const shape = (order) => ({
+    sets: order.sets.map((set) => set.name), rules: order.rules, records: order.records, cycle: order.cycle,
+    unplaced: order.unplacedRecords.map((entry) => entry.name + ":" + entry.reason).sort(),
+  });
+  const aFirst = plain(shape(lens.commitOrder(sets, recordA.concat(recordB), false)));
+  const bFirst = plain(shape(lens.commitOrder(sets, recordB.concat(recordA), false)));
+  assert.deepStrictEqual(aFirst, bFirst, "the same evidence gives the same answer in either row order");
+  assert.deepStrictEqual(aFirst, {
+    sets: ["Set 1", "Set 2"], rules: 0, records: 0, cycle: null, unplaced: ["a:soft-conflict", "b:soft-conflict"],
+  });
+
+  /* A record the sets do run (a hard rule) always wins over a soft one. */
+  const hardFirst = lens.commitOrder(sets, [
+    { verdict: "batch", setId: id(1), newerSetId: id(2), name: "h", hash: "1" },
+    stale(1, "9", "2026-10-05 10:00:00", { verdict: "same", name: "b" }), stale(2, "3", "2026-10-03 10:00:00", { name: "b" }),
+  ], false);
+  assert.deepStrictEqual(plain(hardFirst.sets.map((set) => set.name)), ["Set 1", "Set 2"]);
+  assert.deepStrictEqual([hardFirst.rules, hardFirst.unplaced], [1, 1]);
+  assert.deepStrictEqual(plain(hardFirst.unplacedRecords), [{ name: "b", reason: "soft-conflict", setId: "" }]);
+  for (const [label, rows] of [
+    ["a Can't tell holder", [stale(1, "1", "2026-10-06 10:00:00"), stale(2, "2", "", { verdict: "cant" })]],
+    ["no recorded time", [stale(1, "1", ""), stale(2, "2", "2026-10-03 10:00:00")]],
+    ["the same second", [stale(1, "1", "2026-10-03 10:00:00"), stale(2, "2", "2026-10-03 10:00:00")]],
+  ]) {
+    const order = lens.commitOrder(sets, rows, false);
+    assert.deepStrictEqual([order.rules, order.unplaced], [0, 1], label);
+  }
+});
+
+/* Found by review: three records the order once got wrong. */
+function reviewWorld(versions, extraXml) {
+  return {
+    sets: [
+      setRow(11, { name: "Team_STRY0000101_AB_V1", sys_created_on: "2026-10-01 09:00:00" }),
+      setRow(12, { name: "Team_STRY0000101_AB_V2", sys_created_on: "2026-10-03 09:00:00" }),
+      setRow(16, { name: "Team_STRY0000202_V1", sys_created_on: "2026-10-07 09:00:00" }),
+    ],
+    xml: [xmlRow(V1, NAME(1), guid(1), "1"), xmlRow(V2, NAME(1), guid(2), "2")].concat(extraXml || []),
+    versions,
+  };
+}
+
+async function reviewGroup(world) {
+  const session = lens.createSession(
+    { kind: "group", sets: [storySet(world, 11), storySet(world, 12)], story: "STRY0000101" }, ctxFor(fakeInstance(world)), {}
+  );
+  await session.prepare();
+  await session.start();
+  return session.view();
+}
+
+test("checked together, a record another story changed since is ordered by its own saves, never 'doesn't matter'", async () => {
+  const view = await reviewGroup(reviewWorld([
+    versionRow(NAME(1), id(16), "current", guid(3), "3", "2026-10-08 10:00:00"),
+    versionRow(NAME(1), V1, "previous", guid(1), "1", "2026-10-06 10:00:00"),
+    versionRow(NAME(1), V2, "previous", guid(2), "2", "2026-10-03 10:00:00"),
+  ], [xmlRow(id(16), NAME(1), guid(3), "3")]));
+  assert.deepStrictEqual(plain(view.rows.map((row) => row.verdict)), ["stale", "stale"], "both still Stale");
+  const order = plain(view.group.order);
+  assert.deepStrictEqual(order.sets.map((set) => set.name), ["Team_STRY0000101_AB_V2", "Team_STRY0000101_AB_V1"],
+    "V1 was saved last, so it goes last");
+  assert.deepStrictEqual([order.rules, order.unplaced, order.matchesCreation], [1, 0, false]);
+});
+
+test("checked together, a sibling backed out here or never loaded here makes no order and says why", async () => {
+  const backedOut = await reviewGroup(reviewWorld([
+    versionRow(NAME(1), V1, "current", guid(1), "1", "2026-10-01 10:00:00"),
+    versionRow(NAME(1), V2, "backedout", guid(2), "2", "2026-10-03 10:00:00"),
+  ]));
+  const neverLoaded = await reviewGroup(reviewWorld([
+    versionRow(NAME(1), V1, "current", guid(1), "1", "2026-10-01 10:00:00"),
+  ]));
+  for (const [view, reason, words] of [
+    [backedOut, "backed-out-here", "this set's version was backed out here"],
+    [neverLoaded, "not-applied", "no version from this set is recorded here"],
+  ]) {
+    const row = view.rows.find((candidate) => candidate.setId === V2);
+    assert.strictEqual(row.verdict, "batch");
+    assert.strictEqual(row.orderReason, reason);
+    assert.ok(row.text.startsWith("The version in “Team_STRY0000101_AB_V1” runs here, and " + words), row.text);
+    assert.ok(!/Newer/.test(row.text), "it is not the older one");
+    const order = plain(view.group.order);
+    assert.deepStrictEqual([order.rules, order.unplaced, order.against.length], [0, 1, 0], reason);
+    /* Both rows of the record carry the flag the panel filters on. The
+     * reason speaks of "this set", so only V2's row says it; V1's row, whose
+     * version runs here, points to V2's row instead (Fable, round 3). */
+    view.rows.forEach((candidate) => assert.strictEqual(candidate.orderUnknown, true));
+    const lead = "which of these sets should go last for it can't be told: ";
+    assert.ok(row.notes.includes(lead + words + (reason === "backed-out-here" ? "" : ": skipped at commit, or added to the set without a save")),
+      JSON.stringify(row.notes));
+    const runs = view.rows.find((candidate) => candidate.setId === V1);
+    assert.ok(runs.notes.includes(lead + "see its row from “Team_STRY0000101_AB_V2”"), JSON.stringify(runs.notes));
+    assert.ok(!runs.notes.some((note) => /this set/.test(note)), "never a claim about V1's own set");
+  }
+  assert.ok(backedOut.banners.some((banner) => /backed out on this instance/.test(banner.text)));
+});
+
+test("checked together, a set holding content another story put back is not the newer one: a revert is unplaced", async () => {
+  /* V1 saved content 1, V2 saved content 2 later, another story put content
+   * 1 back. V1's row is Same content, but V1 does not hold the newer version. */
+  const view = await reviewGroup(reviewWorld([
+    versionRow(NAME(1), id(16), "current", guid(3), "1", "2026-10-08 10:00:00"),
+    versionRow(NAME(1), V1, "previous", guid(1), "1", "2026-10-01 10:00:00"),
+    versionRow(NAME(1), V2, "previous", guid(2), "2", "2026-10-03 10:00:00"),
+  ], [xmlRow(id(16), NAME(1), guid(3), "1")]));
+  const at = (setId) => view.rows.find((row) => row.setId === setId);
+  assert.strictEqual(at(V1).verdict, "same");
+  assert.strictEqual(at(V1).ownSavedRaw, "2026-10-01 10:00:00", "a Same content row is guarded too");
+  assert.strictEqual(at(V2).verdict, "stale");
+  const order = plain(view.group.order);
+  assert.deepStrictEqual([order.rules, order.unplaced, order.matchesCreation], [0, 1, true]);
+  assert.deepStrictEqual(order.unplacedRecords, [{ name: NAME(1), reason: "revert", setId: "" }]);
+  for (const setId of [V1, V2]) {
+    assert.ok(at(setId).notes.includes("which of these sets should go last for it can't be told: " +
+      "the content that runs here was saved in one of these sets before the other's change, and put back since"),
+    "a reason about the record is on every row of it");
+  }
+
+  /* A Same content capture with no version of its own (an identical
+   * re-save, or a record added to the set) is timed by when it was
+   * captured: after the Stale save it goes last, before it is a revert. */
+  const versionless = (captured) => reviewGroup({
+    sets: reviewWorld([]).sets,
+    xml: [
+      xmlRow(V1, NAME(1), guid(1), "1", { sys_updated_on: captured }),
+      xmlRow(V2, NAME(1), guid(2), "2"),
+      xmlRow(id(16), NAME(1), guid(3), "1"),
+    ],
+    versions: [
+      versionRow(NAME(1), id(16), "current", guid(3), "1", "2026-10-08 10:00:00"),
+      versionRow(NAME(1), V2, "previous", guid(2), "2", "2026-10-03 10:00:00"),
+    ],
+  });
+  const later = await versionless("2026-10-09 10:00:00");
+  const laterRow = later.rows.find((row) => row.setId === V1);
+  assert.deepStrictEqual([laterRow.verdict, laterRow.ownSavedRaw, laterRow.orderReason], ["same", "2026-10-09 10:00:00", ""]);
+  assert.deepStrictEqual(plain(later.group.order.sets.map((set) => set.name)), ["Team_STRY0000101_AB_V2", "Team_STRY0000101_AB_V1"]);
+  assert.strictEqual(later.group.order.unplaced, 0);
+  const earlier = await versionless("2026-10-02 10:00:00");
+  assert.deepStrictEqual(plain(earlier.group.order.unplacedRecords), [{ name: NAME(1), reason: "revert", setId: "" }]);
+
+  /* Saved after the Stale one, the same-content set does go last. */
+  const forward = await reviewGroup(reviewWorld([
+    versionRow(NAME(1), id(16), "current", guid(3), "2", "2026-10-08 10:00:00"),
+    versionRow(NAME(1), V1, "previous", guid(1), "1", "2026-10-01 10:00:00"),
+    versionRow(NAME(1), V2, "previous", guid(2), "2", "2026-10-03 10:00:00"),
+  ], [xmlRow(id(16), NAME(1), guid(3), "2")]));
+  const ahead = plain(forward.group.order);
+  assert.deepStrictEqual([ahead.rules, ahead.unplaced, ahead.matchesCreation], [1, 0, true]);
+  assert.ok(!forward.rows.some((row) => row.orderUnknown));
+});
+
+test("checked together, every set's banner names it: Default, backed out here, merged", async () => {
+  const world = {
+    sets: [
+      setRow(11, { name: "Team_STRY0000101_AB_V1", sys_created_on: "2026-10-01 09:00:00", merged_to: id(16) }),
+      setRow(12, { name: "Team_STRY0000101_AB_V2", sys_created_on: "2026-10-03 09:00:00", is_default: "true" }),
+      setRow(16, { name: "Release target", sys_created_on: "2026-10-07 09:00:00" }),
+    ],
+    xml: [xmlRow(V1, NAME(1), guid(1), "1")],
+    versions: [
+      versionRow(NAME(1), V1, "current", guid(1), "1", "2026-10-01 10:00:00"),
+      versionRow(NAME(2), V2, "backedout", guid(2), "2", "2026-10-03 10:00:00"),
+    ],
+  };
+  const view = await reviewGroup(world);
+  const texts = view.banners.map((banner) => banner.text);
+  assert.ok(texts.includes("“Team_STRY0000101_AB_V2” is a Default set. Default sets aren't meant to be moved; this is a snapshot."));
+  assert.ok(texts.includes("“Team_STRY0000101_AB_V2” was backed out on this instance; its versions here are marked backed out."));
+  /* The sets here are normalised from raw rows, so the merged-into name is
+   * its id; a real read brings the display name. */
+  const merged = view.banners.find((banner) => /^“Team_STRY0000101_AB_V1” was merged into “/.test(banner.text));
+  assert.ok(merged);
+  assert.deepStrictEqual(plain(merged.links), [{ label: "Open that set", url: ORIGIN + "/sys_update_set.do?sys_id=" + id(16) }]);
+});
+
+test("checked together, a set's rows found only under its retrieved copy still count, and say so", async () => {
+  const world = {
+    sets: [
+      setRow(11, { name: "Team_STRY0000101_AB_V1", sys_created_on: "2026-10-01 09:00:00", remote_sys_id: id(51) }),
+      setRow(12, { name: "Team_STRY0000101_AB_V2", sys_created_on: "2026-10-03 09:00:00" }),
+    ],
+    xml: [
+      xmlRow("", NAME(1), guid(1), "1", { remote_update_set: id(51) }),
+      xmlRow(V2, NAME(1), guid(2), "2"),
+    ],
+    versions: [
+      versionRow(NAME(1), V2, "current", guid(2), "2", "2026-10-05 10:00:00"),
+      versionRow(NAME(1), V1, "previous", guid(1), "1", "2026-10-02 10:00:00"),
+    ],
+  };
+  const view = await reviewGroup(world);
+  const retrieved = view.rows.find((row) => row.asRetrieved);
+  assert.ok(retrieved, "the retrieved-only row is listed");
+  assert.strictEqual(retrieved.setId, V1, "under its local set");
+  assert.strictEqual(retrieved.verdict, "batch");
+  assert.ok(view.banners.some((banner) => /listed only under the retrieved set/.test(banner.text)));
+  const order = plain(view.group.order);
+  assert.deepStrictEqual(order.sets.map((set) => [set.name, set.arrived]),
+    [["Team_STRY0000101_AB_V1", true], ["Team_STRY0000101_AB_V2", false]], "an arrived set is marked");
+});
+
+test("checked together on another instance, past ten sets the rest are tallied without dates", () => {
+  const setIds = Array.from({ length: 12 }, (_, index) => id(200 + index));
+  const request = {
+    unit: "group", setIds, setNames: setIds.map((_, index) => "Story set " + (index + 1)),
+    records: [], keys: [], filtered: [], unsent: 0,
+  };
+  const reply = { copies: [copy("committed", { set: 11, committedOn: "12 Oct 2026", localStateLabel: "Complete", linked: true })], clones: [] };
+  const lines = lens.remoteView(reply, request, [], "exampletest", ORIGIN, null).lines.map((line) => line.text);
+  assert.strictEqual(lines.length, 11);
+  assert.strictEqual(lines[0], "“Story set 1” on exampletest: not found, or not visible to your account.");
+  assert.strictEqual(lines[10], "2 more sets on exampletest: not found, or not visible to your account 1, committed 1.");
+});
+
+test("a name with two numbers takes the first as its story", () => {
+  assert.strictEqual(lens.storyToken("CHG0099887 STRY0000101 fix"), "CHG0099887");
+  assert.strictEqual(lens.namesStory("CHG0099887 STRY0000101 fix", "STRY0000101"), true, "either number finds it from the palette");
+});
+
+test("checked together on another instance: each set's presence by name, and these sets' words", async () => {
+  const world = storyWorld();
+  const session = lens.createSession(
+    { kind: "group", sets: [storySet(world, 11), storySet(world, 12), storySet(world, 13)], story: "STRY0000101" },
+    ctxFor(fakeInstance(world)), {}
+  );
+  await session.prepare();
+  await session.start();
+  const request = session.remoteRequest();
+  assert.strictEqual(request.unit, "group");
+  assert.deepStrictEqual(plain(request.setIds), [V1, V2, V3]);
+  assert.deepStrictEqual(plain(request.setNames), ["Team_STRY0000101_AB_V1", "Team_STRY0000101_AB_V2", "Team_STRY0000101_CD_V3"]);
+  const rows = session.view().rows;
+  const replaced = rows.find((row) => row.setId === V1 && row.name === NAME(1));
+  const reply = Object.assign(batchReply(request, { [guid(1)]: ["other", guid(3) + ":3", true] }), {
+    copies: [copy("committed", { set: 0, committedOn: "12 Oct 2026", localStateLabel: "Complete", linked: true })],
+  });
+  const shown = lens.remoteView(reply, request, rows, "exampletest", ORIGIN, null);
+  assert.deepStrictEqual(plain(shown.lines.slice(0, 3).map((line) => line.text)), [
+    "“Team_STRY0000101_AB_V1” on exampletest: committed on 12 Oct 2026 (its local set is complete).",
+    "“Team_STRY0000101_AB_V2” on exampletest: not found, or not visible to your account.",
+    "“Team_STRY0000101_CD_V3” on exampletest: not found, or not visible to your account.",
+  ], "a line each: every committed set carries its own date");
+  assert.deepStrictEqual(plain(shown.perRow[replaced.key]),
+    { kind: "inbatch", text: "On exampletest: runs the newest update of it in these sets" });
+  assert.deepStrictEqual(plain(shown.lines[shown.lines.length - 1]),
+    { kind: "ok", text: "exampletest matches: every record runs the newest update of it in these sets." });
+});

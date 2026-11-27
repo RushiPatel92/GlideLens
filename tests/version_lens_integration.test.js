@@ -99,9 +99,12 @@ test("58: the Update Set Lens export surface is a superset; classifyRows adds on
   ];
   shipped.concat(shared).forEach((name) => assert.ok(usl[name] !== undefined, name));
 
-  const before = ["sysId", "name", "state", "stateLabel", "isDefault", "scope", "parent", "parentName", "base", "mergedTo",
-    "mergedToName", "remoteSysId", "originSysId", "createdBy", "createdOn", "updatedOn", "updatedOnRaw"];
-  assert.deepStrictEqual(Object.keys(usl.normalizeSet(setRow(1, { completed_on: "2026-10-03 10:00:00" }))), before.concat(["completedOn"]));
+  /* createdOnRaw came later, with sets checked together (their commit
+   * order follows creation); completedOn is still Version Lens's only key. */
+  const keys = ["sysId", "name", "state", "stateLabel", "isDefault", "scope", "parent", "parentName", "base", "mergedTo",
+    "mergedToName", "remoteSysId", "originSysId", "createdBy", "createdOn", "createdOnRaw", "updatedOn", "updatedOnRaw",
+    "completedOn"];
+  assert.deepStrictEqual(Object.keys(usl.normalizeSet(setRow(1, { completed_on: "2026-10-03 10:00:00" }))), keys);
   assert.ok(usl.SET_FIELDS.split(",").includes("completed_on"));
 
   /* The rows themselves, pinned field by field, and one more key beside them. */
@@ -118,9 +121,14 @@ test("58: the Update Set Lens export surface is a superset; classifyRows adds on
   assert.deepStrictEqual(Object.keys(result), ["rows", "versionsRefused", "current"]);
   assert.deepStrictEqual(Object.keys(result.current), ["byName", "failed", "saturated"]);
   const row = plain(result.rows[0]);
+  /* newerSameContent, ownSavedRaw and orderReason came later, with sets
+   * checked together: what the commit order is built from. */
   assert.deepStrictEqual(Object.keys(row), ["key", "sysId", "name", "type", "target", "action", "setId", "verdict", "reason",
-    "text", "flags", "who", "notes", "links", "asRetrieved", "newerSetId", "newerSetName", "newerSetState", "guid", "hash",
-    "explain", "newerSave"]);
+    "text", "flags", "who", "notes", "links", "asRetrieved", "newerSetId", "newerSetName", "newerSetState",
+    "newerSameContent", "ownSavedRaw", "orderReason", "guid", "hash", "explain", "newerSave"]);
+  assert.strictEqual(row.newerSameContent, false);
+  assert.strictEqual(row.ownSavedRaw, "2026-10-01 10:00:00", "rule 6's baseline, kept for the order");
+  assert.strictEqual(row.orderReason, "");
   assert.strictEqual(row.verdict, "stale");
   assert.strictEqual(row.text, "Newer version in “Newer”");
   assert.strictEqual(row.newerSetState, "In progress");

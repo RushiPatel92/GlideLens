@@ -53,6 +53,9 @@
     setsPerRead: 80,
     appliedLimit: 1000,
     chooser: 20,
+    /* Sets offered for one story number, in the palette and on a set's own
+     * panel. Of 200 recent stories measured, 31 had six or more sets. */
+    storySets: 50,
     batchDepth: 6,
     batchSets: 1000,
     concurrency: 2,
@@ -78,9 +81,14 @@
     "merged_to", "remote_sys_id", "origin_sys_id", "sys_created_by", "sys_created_on",
     "sys_updated_on", "completed_on",
   ].join(",");
+  /* sys_updated_on is when this update row was last written: a save in this
+   * set, or a move or merge into it. Read only for the commit order of sets
+   * checked together: a Same content capture with no version of its own (an
+   * identical re-save, or a record added to the set without a save) has no
+   * other save time. On an instance the set arrived on it is commit time. */
   const MEMBER_FIELDS = [
     "sys_id", "name", "update_set", "remote_update_set", "action", "type", "target_name",
-    "update_guid", "payload_hash",
+    "update_guid", "payload_hash", "sys_updated_on",
   ].join(",");
   const VERSION_FIELDS = [
     "name", "state", "source", "source_table", "update_guid", "payload_hash", "action",
@@ -128,6 +136,26 @@
     "runs-older": "The version that runs here is older than this set's version",
     "too-many-versions": "Too many versions to check",
   };
+
+  /* Why the commit order of sets checked together can't place a record,
+   * beside the rule-6 reasons above, for the note on that record's rows. */
+  const ORDER_UNKNOWN = {
+    "holder-cant": "one of these sets' rows for it is Can't tell",
+    "same-second": "two of these sets saved it in the same second",
+    revert: "the content that runs here was saved in one of these sets before the other's change, and put back since",
+    "soft-conflict": "another record needs these sets in the opposite order",
+    "no-order": "these sets can't be put in any order",
+  };
+
+  /* A reason about the record (ORDER_UNKNOWN) is said on every row of it. A
+   * rule-6 reason speaks of "this set": said on that set's row, and on the
+   * others as a pointer to it, never as a claim about the row's own set. */
+  function orderUnknownNote(reason, elsewhere) {
+    const lead = "which of these sets should go last for it can't be told: ";
+    if (ORDER_UNKNOWN[reason]) return lead + ORDER_UNKNOWN[reason];
+    if (elsewhere) return lead + "see its row from “" + elsewhere + "”";
+    return lead + lowerFirst(str(CANT_TELL[reason] || CANT_TELL["versions-failed"]));
+  }
 
   /* ------------------------------------------------------------------ *
    * Small helpers
@@ -371,6 +399,9 @@
       originSysId: ref("origin_sys_id"),
       createdBy: raw(row, "sys_created_by"),
       createdOn: shown(row, "sys_created_on"),
+      /* Raw UTC "YYYY-MM-DD HH:MM:SS", so text order is time order: the
+       * order separate sets of one story are offered and committed in. */
+      createdOnRaw: raw(row, "sys_created_on"),
       updatedOn: shown(row, "sys_updated_on"),
       updatedOnRaw: raw(row, "sys_updated_on"),
       completedOn: shown(row, "completed_on"),
@@ -481,9 +512,73 @@
       .map((entry) => entry.set);
   }
 
+  /* A story, task or incident number inside a set's name: letters, then
+   * digits, as one whole token, uppercased ("STRY0012345"). Teams split one
+   * story's work across separate sets named for it ("<story> … V1", "V2"),
+   * and that number is how its sets are found together. Whole token, so
+   * STRY0012345 never takes STRY00123451. Generic on purpose: STRY, INC,
+   * DFCT and the like all work. */
+  const STORY_TOKEN = /(?<![A-Za-z0-9])([A-Za-z]{2,6})(\d{5,10})(?![0-9])/;
+  const STORY_ONLY = /^[A-Za-z]{2,6}\d{5,10}$/;
+
+  function storyToken(name) {
+    const match = STORY_TOKEN.exec(str(name));
+    return match ? (match[1] + match[2]).toUpperCase() : "";
+  }
+
+  function namesStory(name, token) {
+    const wanted = str(token).toUpperCase();
+    if (!wanted) return false;
+    const pattern = new RegExp(STORY_TOKEN.source, "g");
+    for (const match of str(name).matchAll(pattern)) {
+      if ((match[1] + match[2]).toUpperCase() === wanted) return true;
+    }
+    return false;
+  }
+
+  function byCreation(left, right) {
+    return (left.createdOnRaw < right.createdOnRaw ? -1 : left.createdOnRaw > right.createdOnRaw ? 1 : 0) ||
+      (left.sysId < right.sysId ? -1 : left.sysId > right.sysId ? 1 : 0);
+  }
+
+  /* Live sets are the ones a story deploys: in progress or complete, never a
+   * Default set. Ignore sets are listed but not offered ticked. */
+  function isLiveSet(set) {
+    return Boolean(set) && !set.isDefault && (set.state === "in progress" || set.state === "complete");
+  }
+
+  /* Every set whose name holds this story number as a whole token, oldest
+   * first. One read; the server's LIKE is checked again in code. */
+  async function readStorySets(token, ctx) {
+    const limit = LIMITS.storySets + 1;
+    const answer = await readTable(
+      ctx, "sys_update_set", "nameLIKE" + token + "^ORDERBYsys_created_on", SET_FIELDS, limit
+    );
+    const sets = answer.rows.map(normalizeSet).filter((set) => set && namesStory(set.name, token));
+    sets.sort(byCreation);
+    return { sets: sets.slice(0, LIMITS.storySets), more: answer.rows.length >= limit || sets.length > LIMITS.storySets };
+  }
+
   async function resolveByName(text, ctx) {
     const limit = LIMITS.chooser + 1;
     try {
+      /* A story number alone lists that story's sets, oldest first, its live
+       * ones ticked to check together. One set opens as itself. */
+      if (STORY_ONLY.test(text)) {
+        const story = storyToken(text);
+        const found = await readStorySets(story, ctx);
+        if (found.sets.length === 1) return { kind: "set", set: found.sets[0] };
+        if (found.sets.length > 1) {
+          return {
+            kind: "story",
+            typed: text,
+            story,
+            sets: found.sets,
+            preselected: found.sets.filter(isLiveSet).map((set) => set.sysId),
+            more: found.more,
+          };
+        }
+      }
       const exact = await readTable(
         ctx, "sys_update_set", "name=" + text + "^ORDERBYDESCsys_updated_on", SET_FIELDS, limit
       );
@@ -654,7 +749,9 @@
      * skipped, so the state alone does not prove the order. Raw values are
      * "YYYY-MM-DD HH:MM:SS" in UTC, so text order is time order. */
     if (c.createdOnRaw < baseline.createdOnRaw) return { verdict: "cant", reason: "runs-older", c };
-    return { verdict: "stale", c, matchedByContent: !byGuid.length };
+    /* The baseline is kept: sets checked together order two such rows by
+     * when each one's own version was recorded here. */
+    return { verdict: "stale", c, matchedByContent: !byGuid.length, baseline };
   }
 
   function staleText(row, c, setName) {
@@ -822,7 +919,7 @@
 
   /* The row the panel draws: everything as text, links from allowlisted
    * fields only. */
-  function presentRow(row, outcome, sets, origin) {
+  function presentRow(row, outcome, sets, origin, unit) {
     const c = outcome.c || null;
     const newerSet = c && c.sourceTable === "sys_update_set" ? sets.get(c.source) || null : null;
     const name = c && c.sourceTable === "sys_update_set" ? setLabel(newerSet, c.source) : "";
@@ -844,7 +941,17 @@
     } else if (outcome.verdict === "same") {
       text = "Same content, versioned under " + sourceWords(c, name);
     } else if (outcome.verdict === "batch") {
-      text = "Newer version is in " + sourceWords(c, name) + " of this batch";
+      /* Checked together, the badge already says "In these sets". A row
+       * whose own version never loaded here, or was backed out, is not
+       * older than the one that runs: it says what rule 6 found instead. */
+      if (unit === "group" && outcome.orderReason) {
+        text = "The version in " + sourceWords(c, name) + " runs here, and " +
+          lowerFirst(CANT_TELL[outcome.orderReason] || CANT_TELL["versions-failed"]);
+      } else {
+        text = unit === "group"
+          ? "Newer version is in " + sourceWords(c, name)
+          : "Newer version is in " + sourceWords(c, name) + " of this batch";
+      }
     } else {
       text = "This set's version is the one that runs here.";
       if (outcome.laterSave) notes.push("later save in this set");
@@ -869,6 +976,14 @@
       newerSetId: newerSet ? newerSet.sysId : (c && c.sourceTable === "sys_update_set" ? c.source : ""),
       newerSetName: c && c.sourceTable === "sys_update_set" && outcome.verdict === "stale" ? name : "",
       newerSetState: newerSet ? (newerSet.isDefault ? "default set" : newerSet.stateLabel || newerSet.state) : "",
+      /* A sibling's newer version with this row's exact content asks for no
+       * commit order: either order leaves the same content. */
+      newerSameContent: outcome.verdict === "batch" && Boolean(c && c.hash && c.hash === row.hash),
+      /* For the commit order of sets checked together: when this row's own
+       * version was recorded here (rule 6's baseline), or why it can't be
+       * placed. Both raw, never shown. */
+      ownSavedRaw: str(outcome.ownSavedRaw || (outcome.baseline && outcome.baseline.createdOnRaw) || ""),
+      orderReason: str(outcome.orderReason || ""),
       guid: row.guid,
       hash: row.hash,
       /* For the panel's card: the text without its verdict word, and the
@@ -927,6 +1042,12 @@
     const current = await readCurrentVersions(names, ctx);
     const outcomes = new Map();
     const candidates = [];
+    /* Sets checked together are committed one by one, so a sibling's newer
+     * version asks for an order, and that order is only as good as rule 6:
+     * this row's own version must have loaded here and been replaced. A
+     * batch needs no order (it commits the newest version), so only a group
+     * pays for this read, and only for rows whose content differs. */
+    const guarded = [];
     rows.forEach((row) => {
       const found = {
         unsafe: nameQueryKind(row.name) === "unsafe",
@@ -936,10 +1057,41 @@
       };
       const first = firstPass(row, found, batchIds);
       if (first.candidate) candidates.push({ row, c: first.candidate });
-      else outcomes.set(row.key, first);
+      else {
+        outcomes.set(row.key, first);
+        /* A Same content row is guarded too: it may go last only when its
+         * own save is the latest, and that needs its own version's time. */
+        if (opts.unit === "group" && first.c &&
+          ((first.verdict === "batch" && first.c.hash !== row.hash) || first.verdict === "same")) {
+          guarded.push({ row, c: first.c });
+        }
+      }
     });
-    if (candidates.length) {
-      const own = await readOwnVersions(candidates, ctx);
+    if (candidates.length || guarded.length) {
+      const own = await readOwnVersions(candidates.concat(guarded), ctx);
+      guarded.forEach(({ row, c }) => {
+        const outcome = outcomes.get(row.key);
+        if (own.failed.has(row.name)) {
+          const error = own.failed.get(row.name);
+          outcome.orderReason = error && error.code === "access" ? "versions-refused" : "versions-failed";
+          return;
+        }
+        if (own.saturated.has(row.name)) {
+          outcome.orderReason = "too-many-versions";
+          return;
+        }
+        const guard = appliedGuard(row, c, own.own.get(row.setId + "\u0000" + row.name) || []);
+        if (guard.verdict === "stale") outcome.ownSavedRaw = guard.baseline.createdOnRaw;
+        else if (outcome.verdict === "same" && guard.reason === "not-applied" && row.capturedRaw) {
+          /* A Same content capture with no version of its own: an identical
+           * re-save writes none, nor does adding a record to a set. When its
+           * row was last written stands in for its save time (measured: 548
+           * of 549 such heads on a customer instance had no own version). A
+           * move or merge also writes the row, so an early capture moved late
+           * reads as late: harmless to the target, where this content runs. */
+          outcome.ownSavedRaw = row.capturedRaw;
+        } else outcome.orderReason = guard.reason || "versions-failed";
+      });
       candidates.forEach(({ row, c }) => {
         if (own.failed.has(row.name)) {
           const error = own.failed.get(row.name);
@@ -970,7 +1122,7 @@
     /* `current` is the version read itself ({ byName, failed, saturated }),
      * for Version Lens's "Runs here" line. This panel ignores it. */
     return {
-      rows: rows.map((row) => presentRow(row, outcomes.get(row.key), sets, ctx.origin)),
+      rows: rows.map((row) => presentRow(row, outcomes.get(row.key), sets, ctx.origin, opts.unit)),
       versionsRefused,
       current,
     };
@@ -993,6 +1145,7 @@
       target: raw(row, "target_name"),
       guid: raw(row, "update_guid"),
       hash: raw(row, "payload_hash"),
+      capturedRaw: raw(row, "sys_updated_on"),
     };
   }
 
@@ -1171,9 +1324,288 @@
     };
   }
 
+  /* The sets checked as one, when they are more than one: a batch with its
+   * children included, or sets checked together. A newer version in one of
+   * them is "in this batch" (or "in these sets"), not Stale. Version Lens
+   * passes a plain { rows, sets, includeChildren, scope }, with no group. */
+  function scopeIds(state) {
+    const grouped = Boolean(state.group && state.group.included);
+    if ((state.includeChildren || grouped) && state.scope.length > 1) {
+      return new Set(state.scope.map((set) => set.sysId));
+    }
+    return null;
+  }
+
+  function scopeUnit(state) {
+    if (state.group && state.group.included && state.scope.length > 1) return "group";
+    if (state.includeChildren && state.scope.length > 1) return "batch";
+    return "set";
+  }
+
+  /*
+   * The order to commit separate sets in. Committed one by one, the set
+   * holding the version that runs here must go after every other set of the
+   * group that saved the same record with different content, or the target
+   * ends on the older content. (A ServiceNow batch commits only the newest
+   * version of each record, so a batch needs none of this.)
+   *
+   * `sets` are the group's sets, `rows` the checked rows. Rules come from
+   * two places. A "batch" row whose content differs from the running
+   * version is "this row's set before the set holding it", but only when
+   * rule 6 placed this row's own version here (`ownSavedRaw`): a version
+   * backed out here, or never loaded, is not older, and says so
+   * (`orderReason`). Those rules are hard. When the running version is
+   * elsewhere, soft rules (below) order the holders. Anything else two sets
+   * changed differently is `unplaced`, with its reason: the panel then never
+   * says the order doesn't matter. Kahn's algorithm, taking the
+   * earliest-created set whenever several may go next, so the answer is
+   * creation order whenever creation order works (75 of 76 stories measured
+   * on a customer instance; name order failed 17, because names carry the
+   * developer's initials before the version number). On sets committed
+   * here from elsewhere (`arrived`), creation here is commit here.
+   *
+   * Returns { sets: [{ sysId, name, stateLabel, createdOn, after, held,
+   *   arrived }], rules, records, unplaced, unplacedRecords, matchesCreation,
+   *   against, cycle, cycleIds, soFar }:
+   *   after    the sets this one must follow, with how many records each
+   *   held     how many records this set holds the newer version of
+   *   against  rules creation order breaks: { firstId, first, thenId, then,
+   *            records }, "commit `then` after `first`"
+   *   cycle    the names (and cycleIds the ids) of sets no order can place
+   */
+  function commitOrder(sets, rows, partial) {
+    const list = (sets || []).filter(Boolean).slice().sort(byCreation);
+    const rank = new Map(list.map((set, index) => [set.sysId, index]));
+    const rules = new Map();
+    const records = new Set();
+    /* Records two of these sets changed differently whose order can't be
+     * told, each with its reason (an ORDER_UNKNOWN key, or a rule-6 reason):
+     * never answered "the order doesn't matter". The first reason stays. A
+     * rule-6 reason speaks of "this set", so it keeps the set whose row gave
+     * it: only that row says it; the record's other rows point there. */
+    const unplaced = new Map();
+    const mark = (name, reason, setId) => {
+      if (!unplaced.has(name)) unplaced.set(name, { reason, setId: setId || "" });
+    };
+    const markRow = (name, row) => mark(name, row && row.orderReason ? row.orderReason : "holder-cant",
+      row && row.orderReason ? row.setId : "");
+    const addRule = (from, to, name) => {
+      const key = from + "\u0000" + to;
+      if (!rules.has(key)) rules.set(key, { from, to, names: new Set() });
+      rules.get(key).names.add(name);
+      records.add(name);
+    };
+    const inGroup = (rows || []).filter((row) => row && rank.has(row.setId));
+    /* The running version is in one of these sets: every other set holding
+     * the record goes before it, if rule 6 placed that set's own version
+     * here (a backed-out or never-loaded one is not older). These rules are
+     * hard: the story's own sets hold what runs. */
+    const runsInGroup = new Set();
+    inGroup.forEach((row) => {
+      if (row.verdict !== "batch") return;
+      runsInGroup.add(row.name);
+      if (row.newerSameContent) return;
+      if (row.orderReason || !rank.has(row.newerSetId) || row.newerSetId === row.setId) {
+        markRow(row.name, row);
+        return;
+      }
+      addRule(row.setId, row.newerSetId, row.name);
+    });
+    /* The running version is elsewhere (another story, say). Two Stale sets
+     * go in the order their own versions were recorded here, which rule 6
+     * read for each. A set holding the running version itself (credited
+     * elsewhere) goes last. So does a set with the content that runs here
+     * (Same content), but only when its own save is the latest of the
+     * holders: then content and time agree. Saved earlier, it holds an OLD
+     * content another set put back, a revert, and "holds the newer version"
+     * would be false (Fable's re-check); the record is unplaced, as Version
+     * Lens's placing never matches a later revert to an older entry.
+     * Measured: 551 of 570 records a first cut left unplaced were a Same
+     * content set beside a Stale one. */
+    const holders = new Map();
+    inGroup.forEach((row) => {
+      if (runsInGroup.has(row.name)) return;
+      if (!holders.has(row.name)) holders.set(row.name, new Map());
+      if (!holders.get(row.name).has(row.setId)) holders.get(row.name).set(row.setId, row);
+    });
+    const soft = new Map();
+    holders.forEach((bySet, name) => {
+      const held = Array.from(bySet.values());
+      if (held.length < 2 || new Set(held.map((row) => str(row.hash))).size < 2) return;
+      const heads = held.filter((row) => row.verdict === "same" || row.verdict === "current");
+      const older = held.filter((row) => row.verdict === "stale" && row.ownSavedRaw);
+      if (heads.length + older.length < held.length) {
+        markRow(name, held.find((row) => !heads.includes(row) && !older.includes(row)));
+        return;
+      }
+      const latest = older.reduce((max, row) => (row.ownSavedRaw > max ? row.ownSavedRaw : max), "");
+      for (const head of heads) {
+        if (head.verdict === "current") continue;
+        if (head.orderReason || !head.ownSavedRaw) {
+          markRow(name, head);
+          return;
+        }
+        if (head.ownSavedRaw < latest) {
+          mark(name, "revert");
+          return;
+        }
+      }
+      const pairs = [];
+      older.sort((a, b) => (a.ownSavedRaw < b.ownSavedRaw ? -1 : a.ownSavedRaw > b.ownSavedRaw ? 1 : 0));
+      for (let i = 0; i < older.length; i++) {
+        heads.forEach((head) => pairs.push([older[i].setId, head.setId]));
+        for (let j = i + 1; j < older.length; j++) {
+          if (str(older[i].hash) === str(older[j].hash)) continue;
+          if (older[i].ownSavedRaw === older[j].ownSavedRaw) mark(name, "same-second");
+          else pairs.push([older[i].setId, older[j].setId]);
+        }
+      }
+      if (pairs.length && !unplaced.has(name)) soft.set(name, pairs);
+    });
+    /* These rules are soft. The version that runs here is in neither set, so
+     * the story's own sets can't reproduce it whatever their order, and two
+     * such records can ask for opposite orders (measured: one story in 200).
+     * Dropped symmetrically, so the answer never depends on which update row
+     * has the lower sys_id (Fable's re-check): (1) a soft record that alone
+     * conflicts with the hard rules goes; (2) the rest are added together;
+     * (3) if that leaves no order, every soft record with a pair inside a
+     * cycle of the combined graph goes. What stays is acyclic: inside any
+     * cycle only hard rules remain, and those alone have an order. A soft
+     * conflict never becomes "no order works, make them one batch". */
+    const hardEdges = Array.from(rules.values()).map((rule) => [rule.from, rule.to]);
+    const graphOf = (edges) => {
+      const out = new Map(list.map((set) => [set.sysId, []]));
+      edges.forEach(([from, to]) => out.get(from).push(to));
+      return out;
+    };
+    const acyclic = (edges) => {
+      const out = graphOf(edges);
+      const wait = new Map(list.map((set) => [set.sysId, 0]));
+      edges.forEach(([, to]) => wait.set(to, wait.get(to) + 1));
+      const queue = list.filter((set) => !wait.get(set.sysId)).map((set) => set.sysId);
+      let seen = 0;
+      while (queue.length) {
+        const id = queue.pop();
+        seen += 1;
+        out.get(id).forEach((to) => {
+          wait.set(to, wait.get(to) - 1);
+          if (!wait.get(to)) queue.push(to);
+        });
+      }
+      return seen === list.length;
+    };
+    const reaches = (out, start, goal) => {
+      const seen = new Set([start]);
+      const stack = [start];
+      while (stack.length) {
+        const id = stack.pop();
+        if (id === goal) return true;
+        out.get(id).forEach((to) => { if (!seen.has(to)) { seen.add(to); stack.push(to); } });
+      }
+      return false;
+    };
+    if (!acyclic(hardEdges)) {
+      soft.forEach((pairs, name) => mark(name, "no-order"));
+    } else {
+      const kept = new Map();
+      soft.forEach((pairs, name) => {
+        if (acyclic(hardEdges.concat(pairs))) kept.set(name, pairs);
+        else mark(name, "soft-conflict");
+      });
+      const together = hardEdges.concat(...Array.from(kept.values()));
+      if (!acyclic(together)) {
+        const out = graphOf(together);
+        Array.from(kept.entries()).forEach(([name, pairs]) => {
+          if (pairs.some(([from, to]) => reaches(out, to, from))) {
+            kept.delete(name);
+            mark(name, "soft-conflict");
+          }
+        });
+      }
+      kept.forEach((pairs, name) => pairs.forEach(([from, to]) => addRule(from, to, name)));
+    }
+    const next = new Map(list.map((set) => [set.sysId, []]));
+    const before = new Map(list.map((set) => [set.sysId, []]));
+    const waiting = new Map(list.map((set) => [set.sysId, 0]));
+    /* The records each set holds the newer version of, counted once however
+     * many earlier sets also changed them. */
+    const heldBy = new Map(list.map((set) => [set.sysId, new Set()]));
+    rules.forEach((rule) => {
+      next.get(rule.from).push(rule.to);
+      before.get(rule.to).push(rule);
+      waiting.set(rule.to, waiting.get(rule.to) + 1);
+      rule.names.forEach((name) => heldBy.get(rule.to).add(name));
+    });
+    const placed = [];
+    const done = new Set();
+    for (;;) {
+      const ready = list.filter((set) => !done.has(set.sysId) && waiting.get(set.sysId) === 0);
+      if (!ready.length) break;
+      const pick = ready[0];
+      done.add(pick.sysId);
+      placed.push(pick);
+      next.get(pick.sysId).forEach((id) => waiting.set(id, waiting.get(id) - 1));
+    }
+    let cycle = null;
+    let cycleIds = null;
+    if (placed.length < list.length) {
+      /* What Kahn's algorithm leaves is on a cycle or after one. Peeling the
+       * sets nothing left still needs to follow names only those on one. */
+      const left = new Set(list.filter((set) => !done.has(set.sysId)).map((set) => set.sysId));
+      let peeled = true;
+      while (peeled) {
+        peeled = false;
+        left.forEach((id) => {
+          if (!next.get(id).some((to) => left.has(to))) {
+            left.delete(id);
+            peeled = true;
+          }
+        });
+      }
+      cycleIds = list.filter((set) => left.has(set.sysId)).map((set) => set.sysId);
+      cycle = list.filter((set) => left.has(set.sysId)).map((set) => set.name || "an unnamed update set");
+      list.forEach((set) => { if (!done.has(set.sysId)) placed.push(set); });
+    }
+    const nameOf = (id) => (list[rank.get(id)] && list[rank.get(id)].name) || "an unnamed update set";
+    const against = [];
+    rules.forEach((rule) => {
+      if (rank.get(rule.from) > rank.get(rule.to)) {
+        against.push({
+          firstId: rule.from, first: nameOf(rule.from), thenId: rule.to, then: nameOf(rule.to), records: rule.names.size,
+        });
+      }
+    });
+    return {
+      sets: placed.map((set) => ({
+        sysId: set.sysId,
+        name: set.name,
+        stateLabel: set.stateLabel || set.state || "",
+        createdOn: set.createdOn || "",
+        isDefault: Boolean(set.isDefault),
+        after: before.get(set.sysId).map((rule) => ({ sysId: rule.from, name: nameOf(rule.from), records: rule.names.size })),
+        held: heldBy.get(set.sysId).size,
+        /* Committed here from another instance: its creation here is its
+         * commit here, so the order read here is the order it ran here. */
+        arrived: Boolean(set.remoteSysId),
+      })),
+      rules: rules.size,
+      records: records.size,
+      unplaced: unplaced.size,
+      /* Each unplaced record's name and reason, for a note on its rows, and
+       * the set a rule-6 reason belongs to ("" for one about the record). */
+      unplacedRecords: Array.from(unplaced.entries()).map(([name, entry]) => ({ name, reason: entry.reason, setId: entry.setId })),
+      matchesCreation: !cycle && !against.length,
+      against,
+      cycle,
+      cycleIds,
+      soFar: Boolean(partial),
+    };
+  }
+
   /*
    * createSession(resolution, ctx, options) -> session
-   *   resolution: { kind: "set", set } or { kind: "retrieved", remote }
+   *   resolution: { kind: "set", set } or { kind: "retrieved", remote }, or
+   *     { kind: "group", sets, story } for sets checked together
    *   ctx: { origin, transport?, sysIdFromText?, shouldStop? }
    *   options: { pageSysId }
    *
@@ -1181,6 +1613,7 @@
    * session.start()        checks the first 2,000 rows
    * session.continue()     checks the next 2,000
    * session.setIncludeChildren(on)
+   * session.setIncludeStory(on)   the other sets named for this set's story
    * session.view()         the panel's snapshot
    * session.onChange(fn)   called with a fresh snapshot after every step
    * session.cancel()
@@ -1208,6 +1641,10 @@
       ownTotal: null,
       batch: null,
       includeChildren: false,
+      /* Sets checked together: { story, sets (oldest first), included,
+       * fixed, more, backedOut }. Fixed when the palette picked them; on a
+       * single set's panel, its story's other live sets behind a tick box. */
+      group: null,
       scope: [],
       sets: new Map(),
       lists: [],
@@ -1239,6 +1676,27 @@
     async function prepare() {
       const token = generation;
       try {
+        if (resolution.kind === "group") {
+          const seen = new Set();
+          const sets = (resolution.sets || []).filter((set) => {
+            if (!set || !isSysId(set.sysId) || seen.has(set.sysId)) return false;
+            seen.add(set.sysId);
+            return true;
+          }).sort(byCreation);
+          if (sets.length === 1) {
+            resolution = { kind: "set", set: sets[0] };
+          } else if (!sets.length) {
+            throw lensError("internal", "No update sets were picked.");
+          } else {
+            sets.forEach((set) => state.sets.set(set.sysId, set));
+            state.group = {
+              story: str(resolution.story), sets, included: true, fixed: true, more: false, backedOut: null,
+            };
+            state.phase = "ready";
+            emit();
+            return;
+          }
+        }
         if (resolution.kind === "retrieved") {
           const remote = resolution.remote;
           if (remote.state === "committed" && remote.updateSet) {
@@ -1261,11 +1719,15 @@
         }
         const set = state.subject;
         state.sets.set(set.sysId, set);
+        const story = set.isDefault ? "" : storyToken(set.name);
         const probes = await Promise.all([
           countChildren(set, sessionCtx).catch(() => null),
           ownCount(set).catch(() => null),
           set.remoteSysId ? readRetrievedById(set.remoteSysId, sessionCtx).catch(() => null) : null,
           backedOutHere(set).catch(() => false),
+          /* Read beside the others so the panel waits for no extra round
+           * trip; dropped for a batch parent, whose line is the batch's. */
+          story ? readStorySets(story, sessionCtx).catch(() => null) : null,
         ]);
         if (stale(token)) return;
         const [children, own, provenance] = probes;
@@ -1276,6 +1738,19 @@
           state.batch = { children, walked: false, setCount: null, capped: false, depthCapped: false };
           /* Q3: on when the set holds no rows itself (95 of 102 parents). */
           state.includeChildren = own === 0;
+        } else if (probes[4]) {
+          const others = probes[4].sets.filter((other) => other.sysId !== set.sysId && isLiveSet(other));
+          if (others.length) {
+            others.forEach((other) => state.sets.set(other.sysId, other));
+            state.group = {
+              story,
+              sets: [set].concat(others).sort(byCreation),
+              included: false,
+              fixed: false,
+              more: probes[4].more,
+              backedOut: null,
+            };
+          }
         }
         state.phase = "ready";
         emit();
@@ -1323,6 +1798,25 @@
     }
 
     async function buildScope(token) {
+      const group = state.group;
+      if (group && group.included) {
+        /* Sets checked together are the sets named, no child walk. Which of
+         * them were backed out here is read once, for their banners, two
+         * reads at a time like every other fan-out here. The scope is set
+         * first, so the progress line already speaks of these sets. */
+        state.scope = group.sets.slice();
+        if (!group.backedOut) {
+          state.progress = "Reading these sets…";
+          emit();
+          const found = new Set();
+          await drain(group.sets.slice(), LIMITS.concurrency, async (set) => {
+            if (await backedOutHere(set).catch(() => false)) found.add(set.sysId);
+          });
+          if (stale(token)) return null;
+          group.backedOut = found;
+        }
+        return group.sets.slice();
+      }
       const set = state.subject;
       let scope = [set];
       if (state.includeChildren && state.batch) {
@@ -1344,7 +1838,7 @@
       generation += 1;
       const token = generation;
       resetRun();
-      if (!state.subject) return;
+      if (!state.subject && !(state.group && state.group.included)) return;
       state.phase = "running";
       state.busy = true;
       state.error = "";
@@ -1417,19 +1911,19 @@
 
     async function checkNext(token) {
       let room = LIMITS.rowCap;
-      const batchIds = state.includeChildren && state.scope.length > 1
-        ? new Set(state.scope.map((set) => set.sysId)) : null;
+      const batchIds = scopeIds(state);
+      const unit = scopeUnit(state);
       while (room > 0) {
         const list = state.lists.find((candidate) => !candidate.done);
         if (!list) break;
-        state.progress = "Reading this set's updates…";
+        state.progress = unit === "group" ? "Reading these sets' updates…" : "Reading this set's updates…";
         const page = await nextPage(list, sessionCtx, room);
         if (stale(token)) return;
         const fresh = addRows(page);
         if (fresh.length) {
           state.progress = "Checking versions… " + (state.rows.length + fresh.length).toLocaleString() + " read";
           emit();
-          const classified = await classifyRows(fresh, sessionCtx, { batchIds, sets: state.sets });
+          const classified = await classifyRows(fresh, sessionCtx, { batchIds, sets: state.sets, unit });
           if (stale(token)) return;
           if (classified.versionsRefused) state.versionsRefused = true;
           classified.rows.forEach((shownRow, index) => {
@@ -1470,6 +1964,13 @@
       start();
     }
 
+    function setIncludeStory(on) {
+      const group = state.group;
+      if (!group || group.fixed || Boolean(on) === group.included) return Promise.resolve();
+      group.included = Boolean(on);
+      return start();
+    }
+
     function totals() {
       const lists = state.lists;
       if (!lists.length) return { checked: state.rows.length, total: null, exact: false };
@@ -1480,10 +1981,39 @@
       return { checked: state.rows.length, total, exact: false };
     }
 
+    /* Sets checked together: each banner names its set. Provenance is left
+     * out; each set's own panel still says it. */
+    function groupBanners(out) {
+      const origin = ctx.origin;
+      const group = state.group;
+      const quoted = (set) => "“" + (set.name || "an unnamed update set") + "”";
+      group.sets.forEach((set) => {
+        if (set.isDefault) {
+          out.push({ kind: "warn", text: quoted(set) + " is a Default set. Default sets aren't meant to be moved; this is a snapshot.", links: [] });
+        }
+        if (group.backedOut && group.backedOut.has(set.sysId)) {
+          out.push({ kind: "warn", text: quoted(set) + " was backed out on this instance; its versions here are marked backed out.", links: [] });
+        }
+        if (set.mergedTo) {
+          out.push({
+            kind: "info",
+            text: quoted(set) + " was merged into “" + (set.mergedToName || "another set") + "”.",
+            links: [{ label: "Open that set", url: origin + "/sys_update_set.do?sys_id=" + set.mergedTo }],
+          });
+        }
+      });
+    }
+
     function banners() {
       const out = [];
       const set = state.subject;
-      if (!set) return out;
+      const grouped = Boolean(state.group && state.group.included);
+      if (!set && !grouped) return out;
+      if (grouped) {
+        groupBanners(out);
+        commonBanners(out);
+        return out;
+      }
       const origin = ctx.origin;
       if (state.viaRetrieved) {
         const links = opts.pageSysId === state.viaRetrieved.sysId ? [] : [{
@@ -1500,15 +2030,7 @@
           ? [] : [{ label: "Open retrieved set", url: origin + "/sys_remote_update_set.do?sys_id=" + remote.sysId }];
         out.push({ kind: "info", text: "Committed here from a retrieved set (" + from + ")" + when + ".", links });
       }
-      const onlyRetrieved = state.rows.filter((row) => row.asRetrieved).length;
-      if (onlyRetrieved) {
-        out.push({
-          kind: "info",
-          text: onlyRetrieved + (onlyRetrieved === 1 ? " update is" : " updates are") +
-            " listed only under the retrieved set.",
-          links: [],
-        });
-      }
+      retrievedOnlyBanner(out);
       if (set.isDefault) {
         out.push({ kind: "warn", text: "Default sets aren't meant to be moved; this is a snapshot.", links: [] });
       }
@@ -1526,6 +2048,24 @@
           links: [{ label: "Open that set", url: origin + "/sys_update_set.do?sys_id=" + set.mergedTo }],
         });
       }
+      commonBanners(out);
+      return out;
+    }
+
+    function retrievedOnlyBanner(out) {
+      const onlyRetrieved = state.rows.filter((row) => row.asRetrieved).length;
+      if (onlyRetrieved) {
+        out.push({
+          kind: "info",
+          text: onlyRetrieved + (onlyRetrieved === 1 ? " update is" : " updates are") +
+            " listed only under the retrieved set.",
+          links: [],
+        });
+      }
+    }
+
+    function commonBanners(out) {
+      if (state.group && state.group.included) retrievedOnlyBanner(out);
       if (state.versionsRefused) {
         out.push({
           kind: "warn",
@@ -1534,7 +2074,12 @@
         });
       }
       if (state.membershipUnreadable) {
-        out.push({ kind: "warn", text: "Can't read this set's updates. The count says there are some, but none could be read.", links: [] });
+        out.push({
+          kind: "warn",
+          text: "Can't read " + (scopeUnit(state) === "group" ? "these sets'" : "this set's") +
+            " updates. The count says there are some, but none could be read.",
+          links: [],
+        });
       }
       if (state.countsDisagree) {
         out.push({ kind: "warn", text: "The update count and the updates read disagree; the list may be incomplete.", links: [] });
@@ -1552,8 +2097,42 @@
       const set = state.subject;
       const childNames = new Map();
       state.scope.forEach((scopeSet) => childNames.set(scopeSet.sysId, scopeSet.name));
-      const inBatch = state.includeChildren && state.scope.length > 1;
+      const unit = scopeUnit(state);
+      const inBatch = unit === "batch";
+      /* In a group every row names its set, the subject's included: no set
+       * is "this" one. */
+      const named = (row) => (unit === "group" || (inBatch && row.setId !== (set && set.sysId))
+        ? childNames.get(row.setId) || "" : "");
+      const canContinue = state.phase === "done" && state.lists.some((list) => !list.done) && !state.membershipUnreadable;
+      const group = state.group;
+      const partial = state.lists.some((list) => !list.done) || state.countsDisagree || state.membershipUnreadable;
+      const order = group && unit === "group" && state.phase === "done" ? commitOrder(group.sets, state.rows, partial) : null;
+      /* A record the order can't place says why on each of its rows, which
+       * the panel's amber count can filter to. */
+      const unknown = new Map(order ? order.unplacedRecords.map((entry) => [entry.name, entry]) : []);
+      const noteFor = (row) => {
+        const entry = unknown.get(row.name);
+        const other = entry.setId && entry.setId !== row.setId
+          ? str((state.sets.get(entry.setId) || {}).name) || "an unnamed update set" : "";
+        return orderUnknownNote(entry.reason, other);
+      };
       return {
+        unit,
+        group: group ? {
+          story: group.story,
+          included: group.included,
+          fixed: group.fixed,
+          more: Boolean(group.more),
+          others: group.sets.filter((other) => !set || other.sysId !== set.sysId).length,
+          sets: group.sets.map((other) => ({
+            sysId: other.sysId,
+            name: other.name,
+            stateLabel: other.stateLabel || other.state || "",
+            createdOn: other.createdOn || "",
+            isDefault: Boolean(other.isDefault),
+          })),
+          order,
+        } : null,
         phase: state.phase,
         busy: state.busy,
         error: state.error,
@@ -1577,13 +2156,14 @@
           setCount: state.includeChildren && state.batch.walked ? state.batch.setCount : null,
         } : null,
         rows: state.rows.map((row) => Object.assign({}, row, {
-          childSet: inBatch && row.setId !== (set && set.sysId) ? childNames.get(row.setId) || "" : "",
-          notes: row.notes.slice(),
+          childSet: named(row),
+          orderUnknown: unknown.has(row.name),
+          notes: unknown.has(row.name) ? row.notes.concat([noteFor(row)]) : row.notes.slice(),
           flags: row.flags.slice(),
           links: row.links.slice(),
         })),
         totals: totals(),
-        canContinue: state.phase === "done" && state.lists.some((list) => !list.done) && !state.membershipUnreadable,
+        canContinue,
       };
     }
 
@@ -1592,6 +2172,7 @@
       start,
       continue: continueRun,
       setIncludeChildren,
+      setIncludeStory,
       view,
       onChange: (fn) => { if (typeof fn === "function") listeners.push(fn); },
       cancel: () => { cancelled = true; },
@@ -1623,8 +2204,13 @@
         filtered.push(row.key);
       }
     });
+    const sent = setIds.slice(0, LIMITS.remoteSets);
     return {
-      setIds: setIds.slice(0, LIMITS.remoteSets),
+      setIds: sent,
+      /* Local only, never sent: content.js gives the worker setIds and
+       * records alone. A group's presence is said set by set, by name. */
+      unit: scopeUnit(state),
+      setNames: sent.map((id) => str(((state.sets && state.sets.get(id)) || {}).name)),
       records,
       keys,
       filtered,
@@ -1844,8 +2430,7 @@
       byName.get(version.name).push(version);
     });
 
-    const batchIds = state.includeChildren && state.scope.length > 1
-      ? new Set(state.scope.map((set) => set.sysId)) : null;
+    const batchIds = scopeIds(state);
     const unknownSets = new Set();
     targets.forEach((target) => {
       const { row } = target;
@@ -2029,8 +2614,43 @@
     const bySet = request.setIds.map(() => []);
     copies.forEach((copy) => { if (bySet[copy.set]) bySet[copy.set].push(copy); });
 
+    /* Sets checked together are named one by one, a line each: which of a
+     * story's sets already reached that instance is the question, and each
+     * committed set carries its own date, so one sentence for all of them
+     * ran past 600 characters. Past ten sets, the rest are tallied. */
+    const group = request.unit === "group";
+    const GROUP_LINES = 10;
     if (reply.presenceFailure) {
       lines.push({ kind: "warn", text: presenceFailureText(reply.presenceFailure, instance, reply.sourceImpersonating) });
+    } else if (group && request.setIds.length > 1) {
+      const tally = new Map();
+      bySet.forEach((found, index) => {
+        const remoteCopies = found.filter((copy) => copy.match === "remote");
+        const best = remoteCopies.length ? bestCopy(remoteCopies) : null;
+        let word;
+        if (best) word = lowerFirst(presenceWords(best));
+        else if (found.length) word = "arrived through another instance";
+        else if (clones.has(index)) word = "same id only because the instance was copied";
+        else word = "not found, or not visible to your account";
+        if (index < GROUP_LINES) {
+          const name = str(request.setNames && request.setNames[index]) || "an unnamed update set";
+          lines.push({ kind: "state", text: "“" + name + "” on " + instance + ": " + word + "." });
+          return;
+        }
+        /* Tallied without dates, as a batch's children are. */
+        const short = best ? lowerFirst(presenceWords(Object.assign({}, best, {
+          committedOn: "", retrievedOn: "", collisions: "", localStateLabel: "", linked: undefined,
+        }))) : word;
+        tally.set(short, (tally.get(short) || 0) + 1);
+      });
+      if (tally.size) {
+        const rest = request.setIds.length - GROUP_LINES;
+        lines.push({
+          kind: "state",
+          text: rest + (rest === 1 ? " more set" : " more sets") + " on " + instance + ": " +
+            Array.from(tally.entries()).map(([word, count]) => word + " " + count).join(", ") + ".",
+        });
+      }
     } else if (request.setIds.length === 1) {
       const found = bySet[0];
       const remoteCopies = found.filter((copy) => copy.match === "remote");
@@ -2154,7 +2774,9 @@
           const newest = sibling.verdict !== "batch" && sibling.verdict !== "cant";
           counts.inBatch += 1;
           if (newest) counts.inBatchNewest += 1;
-          answer(key, "inbatch", "Runs " + (newest ? "this batch's newest update of it" : "another update of this batch"), { note });
+          answer(key, "inbatch", group
+            ? (newest ? "Runs the newest update of it in these sets" : "Runs another update from these sets")
+            : "Runs " + (newest ? "this batch's newest update of it" : "another update of this batch"), { note });
         } else if (replacedInBatch && moved[index] !== true) {
           counts.other += 1;
           answer(key, "other", "Runs another version", { note });
@@ -2171,7 +2793,8 @@
           answer(key, "built", "Runs the version this set was built on", { note, already, matched });
         } else if (place && place.kind === "earlier" && neverThere) {
           counts.earlier += 1;
-          answer(key, "earlier", "Runs an earlier save of this " + (place.batch ? "batch" : "set"), { note, already, matched });
+          answer(key, "earlier", "Runs an earlier save of " + (place.batch ? (group ? "these sets" : "this batch") : "this set"),
+            { note, already, matched });
         } else if (place && place.kind === "behind") {
           counts.behind += 1;
           answer(key, "behind", "Runs an older version of this update", {
@@ -2209,6 +2832,10 @@
       };
     });
     const compared = request.keys.length + request.filtered.length;
+    /* Checked together no set is "this" one: the summaries speak of these
+     * sets. A row's own words keep "this set", since the row names its set. */
+    const ours = group ? "the version from these sets" : "this set's version";
+    const builtOn = group ? "one they were built on" : "one it was built on";
     if (compared && counts.runs === compared) {
       /* Every record compared runs this set's version there: said as a
        * match, and as a match so far while some were not compared. */
@@ -2216,8 +2843,8 @@
       lines.push({
         kind: "ok",
         text: request.unsent || request.partial
-          ? instance + " matches so far: it runs this set's version for " + all + " compared."
-          : instance + " matches: it runs this set's version for " + all + ".",
+          ? instance + " matches so far: it runs " + ours + " for " + all + " compared."
+          : instance + " matches: it runs " + ours + " for " + all + ".",
       });
     } else if (compared && counts.runs + counts.inBatchNewest === compared) {
       /* The rest run the newest update of their record in this batch, which
@@ -2225,23 +2852,30 @@
       lines.push({
         kind: "ok",
         text: request.unsent || request.partial
-          ? instance + " matches so far: every record compared runs this batch's newest update of it."
-          : instance + " matches: every record runs this batch's newest update of it.",
+          ? instance + " matches so far: every record compared runs " +
+            (group ? "the newest update of it in these sets." : "this batch's newest update of it.")
+          : instance + " matches: every record runs " +
+            (group ? "the newest update of it in these sets." : "this batch's newest update of it."),
       });
     } else if (compared) {
       const one = (count, single, plural) => count + " " + (count === 1 ? single : plural);
       const bits = [
-        instance + " runs this set's version for " + counts.runs + " of " + one(compared, "record", "records"),
+        instance + " runs " + ours + " for " + counts.runs + " of " + one(compared, "record", "records"),
       ];
       if (counts.same) bits.push(one(counts.same, "has", "have") + " the same content under another update");
-      if (counts.inBatch) bits.push(one(counts.inBatch, "runs", "run") + " another update of this batch");
-      if (counts.built) bits.push(one(counts.built, "runs", "run") + " the version this set was built on");
+      if (counts.inBatch) {
+        bits.push(one(counts.inBatch, "runs", "run") + (group ? " another update from these sets" : " another update of this batch"));
+      }
+      if (counts.built) {
+        bits.push(one(counts.built, "runs", "run") + (group ? " the version these sets were built on" : " the version this set was built on"));
+      }
       if (counts.earlier) {
-        bits.push(one(counts.earlier, "runs", "run") + " an earlier save of this " + (request.setIds.length > 1 ? "batch" : "set"));
+        bits.push(one(counts.earlier, "runs", "run") + " an earlier save of " +
+          (request.setIds.length > 1 ? (group ? "these sets" : "this batch") : "this set"));
       }
       if (counts.behind) bits.push(one(counts.behind, "runs", "run") + " an older version, missing changes saved here since");
       if (counts.diverged) bits.push(one(counts.diverged, "runs", "run") + " a version that isn't in its update's history");
-      if (counts.moved) bits.push(counts.moved + " had this set's version and changed it since");
+      if (counts.moved) bits.push(counts.moved + " had " + ours + " and changed it since");
       if (counts.other) {
         const stale = !counts.otherStale ? ""
           : counts.other === 1 ? " (already stale here)"
@@ -2259,10 +2893,10 @@
         lines.push({
           kind: "ok",
           text: request.unsent || request.partial
-            ? "So far, promoting this set replaces nothing changed on " + instance +
-              ": every record compared runs this set's version or one it was built on."
-            : "Promoting this set replaces nothing changed on " + instance +
-              ": every record there runs this set's version or one it was built on.",
+            ? "So far, promoting " + (group ? "these sets" : "this set") + " replaces nothing changed on " + instance +
+              ": every record compared runs " + ours + " or " + builtOn + "."
+            : "Promoting " + (group ? "these sets" : "this set") + " replaces nothing changed on " + instance +
+              ": every record there runs " + ours + " or " + builtOn + ".",
         });
       }
       /* Same content there is told, not flagged: the content matches. */
@@ -2335,6 +2969,9 @@
     classifyRows,
     recordUrl,
     walkBatch,
+    storyToken,
+    namesStory,
+    commitOrder,
     createSession,
     remoteRequest,
     parseLineage,
